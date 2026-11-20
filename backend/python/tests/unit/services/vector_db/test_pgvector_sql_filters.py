@@ -54,6 +54,13 @@ CASES = {
     "another payload key": (
         E(must=[F("metadata.orgId", ORG), F("metadata.isBlock", True)]),
         f"{ORG_COND} AND (pt.payload #>> $6::text[] = ANY($7::text[]))", [[ORG], ["metadata", "isBlock"], ["true"]]),
+    "weight precision of one record (the end-of-record leak check)": (
+        E(must=[F("metadata.orgId", ORG), F("metadata.virtualRecordId", "r1"), F("metadata.embedPrecision", values=["int8-w"])]),
+        f"{ORG_COND} AND (p.vrid = ANY($6::text[])) AND (pt.payload #>> $7::text[] = ANY($8::text[]))",
+        [[ORG], ["r1"], ["metadata", "embedPrecision"], ["int8-w"]]),
+    "weight precision in an org (the first-claim probe)": (
+        E(must=[F("metadata.orgId", ORG), F("metadata.embedPrecision", values=["fp32"])]),
+        f"{ORG_COND} AND (pt.payload #>> $6::text[] = ANY($7::text[]))", [[ORG], ["metadata", "embedPrecision"], ["fp32"]]),
     "an empty value list matches nothing": (E(must=[F("metadata.orgId", ORG), F("metadata.virtualRecordId", values=[])]), f"{ORG_COND} AND (false)", [[ORG]]),
 }
 

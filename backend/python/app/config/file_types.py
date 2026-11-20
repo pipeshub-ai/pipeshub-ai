@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Final, Literal
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-REGISTRY_VERSION: Final = 2
+REGISTRY_VERSION: Final = 3
 
 Tier = Literal["heavy", "light"]
 MimeRole = Literal["gate", "parse", "tier", "kind", "ext_hint", "code", "reconcile", "ooxml"]
@@ -247,7 +247,7 @@ _MIME_ROLES: dict[str, frozenset[MimeRole]] = {
     "application/x-rtf": _ALL,
     "text/x-log": _ALL,
     "text/x-cfg": _ALL,
-    "application/vnd.ms-powerpoint.presentation.macroEnabled.12": _OOXML,
+    "application/vnd.ms-powerpoint.presentation.macroEnabled.12": _roles("gate", "parse", "tier", "kind", "ooxml"),
 }
 
 # Mime -> extension hints that are not the owning type's first extension, keyed exactly as the
@@ -566,8 +566,11 @@ FILE_TYPES: tuple[FileType, ...] = (
     _repo_text("css", "text/css"),
     _repo_text("sql", "application/sql"),
     # An Office container only the password check knows.
-    FileType(key="pptm", extensions=("pptm",),
-             mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), ooxml_container=True),
+    # Read by its mime only, as the pptx it is: python-pptx opens a macro-enabled deck as it is.
+    FileType(key="pptm", format="pptx", extensions=("pptm",),
+             mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), mime_indexable=True,
+             mime_tier="heavy", mime_kind="docling_docx", route=Route.PPTX, ooxml_container=True,
+             since=3, route_since=3),
     # PipesHub's own types: connectors write these mimes, no file carries them.
     _internal("gmail", "text/gmail_content", "application/vnd.google-apps.gmail", format="html",
               mime_indexable=True, mime_tier="light", route=Route.GMAIL),
@@ -1143,6 +1146,10 @@ class GateDecision:
     # The .log/.cfg extension the size limit applies under: the record's own, or its name's when
     # the record carries none. None for any other file.
     limited_as: str | None = None
+    # The reader for a CODE_FILE accepted only as repository text: the dispatch reads its mime,
+    # which the gate did not judge. None for anything else. It is the gate's judgement, not always
+    # the reader the dispatch picks, so the dispatch uses it only where its own labels name none.
+    route: Dispatch | None = None
 
 
 def gate_decision(
@@ -1182,8 +1189,10 @@ def gate_decision(
             by_ext is not None and by_ext.ext_indexable
         )
         decisive = by_ext
+        route = None if by_ext is not None and by_ext.ext_indexable else Dispatch(Route.CODE, None)
     else:
         judged = extension
+        route = None
         by_ext = _ext_type(extension)
         by_mime = _mime_type(mime)
         if by_mime is None and mime in GATE_MIMES:
@@ -1214,7 +1223,7 @@ def gate_decision(
         return GateDecision(False, judged, decisive, "disabled")
     if limited_as is not None and isinstance(size_bytes, int) and size_bytes > TEXT_LOG_HARD_LIMIT_BYTES:
         return GateDecision(False, judged, decisive, "too_large", limited_as)
-    return GateDecision(True, judged, decisive, None, limited_as)
+    return GateDecision(True, judged, decisive, None, limited_as, route)
 
 
 def _limited_as(judged: object, record_name: str | None) -> str | None:

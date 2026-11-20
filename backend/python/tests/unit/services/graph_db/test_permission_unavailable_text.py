@@ -23,8 +23,10 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
 from app.utils import chat_helpers
 from app.utils.error_class import log_failure, mark_error
+from tests.support.graph_read_errors import DRIVER_TEXT as SENTINEL
+from tests.support.graph_read_errors import SENTINELS
+from tests.support.log_capture import assert_not_logged, assert_text_free
 
-SENTINEL = "neo4j://graph-db.internal.example:7687 MATCH (u:User {id: 'gk-7f3a9c'}) RETURN 'Quarterly salary review'"
 FIXED = "The graph could not verify access."
 BACKENDS = [Neo4jProvider, ArangoHTTPProvider, PostgresGraphProvider]
 
@@ -171,7 +173,7 @@ async def test_the_cause_still_decides_class_and_hides_its_text_in_log_failure(c
         log_failure(logging.getLogger("test.pvue"), "search.access_unreadable", err.value)
     (record,) = caplog.records
     assert record.error_class == "timeout" and record.levelno == logging.WARNING
-    assert SENTINEL not in str(vars(record))
+    assert_text_free([record], *SENTINELS)
 
 
 # Where the copied text landed: handlers that log the error with ``%s``.
@@ -184,7 +186,7 @@ async def test_enrichment_log_line_does_not_carry_the_driver_text(caplog) -> Non
         assert await chat_helpers.accessible_node_ids_for_enrichment(graph, {"n1"}, "u1", "org-1") == set()
     lines = [r.getMessage() for r in caplog.records]
     assert f"Enrichment access check unavailable; naming no neighbours: {FIXED}" in lines
-    assert not any(SENTINEL in line for line in lines), lines
+    assert_not_logged(caplog.records, *SENTINELS)
 
 
 @pytest.mark.asyncio

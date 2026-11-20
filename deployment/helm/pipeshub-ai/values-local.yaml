@@ -86,6 +86,14 @@ mongodb:
     enabled: true
     rootUser: root
     # rootPassword/usernames/passwords MUST be supplied via --set or another -f file.
+  # The stores keep their earlier, smaller sizes here so they fit on a laptop cluster.
+  resources:
+    limits:
+      cpu: 750m
+      memory: 768Mi
+    requests:
+      cpu: 500m
+      memory: 512Mi
 
 # ----- Redis: single master, no sentinel -----
 redis:
@@ -116,14 +124,39 @@ kafka:
 zookeeper:
   replicaCount: 1
 
+# ----- ArangoDB (when arango.enabled): the earlier, smaller size -----
+arango:
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
 # ----- Qdrant + Neo4j: single node -----
 qdrant:
   replicaCount: 1
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 1000m
+      memory: 2Gi
 
 neo4j:
   enabled: true
   replicaCount: 1
   # auth.password MUST be supplied via --set.
+  # The 4Gi limit gives a 2g heap and 1g page cache (see neo4j.env in values.yaml).
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 1000m
+      memory: 2Gi
 
 # ----- No ingress; use `kubectl port-forward` for local access -----
 ingress:

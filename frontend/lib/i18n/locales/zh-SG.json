@@ -3246,7 +3246,8 @@
             "max_pages": "已达到最大页数限制",
             "time_limit": "已达到时间限制；下次同步将继续",
             "stalled": "网站停止响应；下次同步将继续",
-            "rate_limited": "网站一再要求减少请求；下次同步将继续"
+            "rate_limited": "网站一再要求减少请求；下次同步将继续",
+            "start_not_recorded": "同步无法保存其开始记录，因此未运行；下次同步将重试"
           },
           "pagesSaved": "已保存 {{count}} 个页面",
           "failed": "{{count}} 个页面失败",
@@ -3701,6 +3702,91 @@
           "sweep": "此连接器的权限更新持续失败。请让运行 PipesHub 的人员检查其日志。",
           "other": "此连接器的权限需要有人查看。",
           "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
+        }
+      },
+      "userAccess": {
+        "connect": "连接",
+        "reconnect": "重新连接",
+        "connected": "已连接",
+        "connectedAs": "已以 {{account}} 连接",
+        "connectDialog": {
+          "title": "将你的账户连接到 {{name}}",
+          "description": "粘贴你自己的 {{source}} 账户中的个人访问令牌。PipesHub 只会向你显示你的账户可以打开的页面。",
+          "howTo": "如何创建个人访问令牌",
+          "tokenLabel": "个人访问令牌",
+          "submitting": "正在连接…",
+          "errorFallback": "无法连接你的账户，请重试。",
+          "signInHint": "{{source}} 只列出你拥有完全访问权限的页面。所选页面的子页面（包括新建的）都会包含在内。之后如需添加更多页面，请重新登录。",
+          "signingIn": "正在等待 {{source}}…",
+          "signInFailed": "登录未完成。请重试。",
+          "popupBlocked": "浏览器拦截了登录窗口。请允许此网站的弹出窗口后重试。"
+        },
+        "admin": {
+          "title": "已连接的用户",
+          "description": "此连接器只向每个人显示其自己账户可以打开的内容。未连接的人看不到任何内容。",
+          "remove": "移除",
+          "removeTitle": "移除 {{email}} 的连接？",
+          "removeMessage": "在重新连接之前，对方将看不到此连接器的结果。",
+          "removing": "正在移除…",
+          "removed": "连接已移除",
+          "status": {
+            "connected": "已连接",
+            "needs_reconnect": "需要重新连接",
+            "invited": "已邀请",
+            "not_invited": "未邀请",
+            "opted_out": "不希望收到提醒",
+            "no_account": "没有 PipesHub 账户"
+          },
+          "noAccountHint": "请先邀请他们加入 PipesHub",
+          "invite": "邀请",
+          "remind": "提醒",
+          "sent_other": "已发送给 {{count}} 人",
+          "notEmailed_other": "有 {{count}} 人的邮件未能发送；他们仍收到了应用内通知。",
+          "lastSent": "上次发送于 {{time}}",
+          "connectedAt": "连接于 {{time}}",
+          "membersUpdated": "成员列表上次读取于 {{time}}",
+          "membersPending": "成员列表将在下次同步后显示",
+          "queued_other": "正在发送给 {{count}} 人。他们会收到一条通知和一封邮件。",
+          "nothingSent": "未发送任何内容",
+          "skipReason": {
+            "connected": "已连接。",
+            "not_found": "已不是成员。",
+            "opted_out": "不希望收到提醒。",
+            "recently_sent": "过去一天内已发送过。",
+            "not_sent": "无法发送。请稍后重试。"
+          },
+          "inviteWho": "邀请 {{name}}",
+          "remindWho": "提醒 {{name}}",
+          "removeWho": "移除 {{name}} 的连接",
+          "yourAccount": "你的账号",
+          "connectedOf": "{{total}} 人中已有 {{connected}} 人连接",
+          "needReconnect_other": "{{count}} 人需要重新连接",
+          "search": "按姓名或邮箱搜索",
+          "inviteEveryoneHint": "所有尚未连接的人",
+          "inviteEveryone": "全部邀请（{{count}}）",
+          "noMatches": "没有与“{{q}}”匹配的人",
+          "nobody": "暂时没有人。下次同步后会显示。"
+        },
+        "link": {
+          "title": "连接你的 {{source}} 账户",
+          "forEmail": "适用于 {{email}}",
+          "continue": "继续前往 {{source}}",
+          "loading": "正在检查链接…",
+          "alreadyConnected": "你的 {{source}} 账户已连接。",
+          "openApp": "打开 PipesHub",
+          "expired": "此链接已过期或已被使用。请向管理员索取新链接，或在 PipesHub 的“您的个人连接器”中连接。",
+          "optedOut": "你将不会再收到此连接器的提醒。",
+          "error": "出了点问题。请一分钟后重试。",
+          "noSignIn": "此连接器使用个人访问令牌。打开 PipesHub，在通知中选择“连接”来粘贴你的令牌。",
+          "done": "{{name}} 已连接。几分钟后，你的页面将出现在 PipesHub 搜索中。",
+          "doneUnnamed": "你的账户已连接。几分钟后，你的页面将出现在 PipesHub 搜索中。",
+          "failedTitle": "无法连接",
+          "failedRetry": "请使用邮件中的链接重试。",
+          "confirmOptOut": "停止 {{name}} 的提醒？",
+          "stopReminders": "停止提醒",
+          "rateLimited": "尝试次数过多，请一分钟后重试。",
+          "cancelled": "你取消了登录。",
+          "signInFailed": "登录未完成。请重试。"
         }
       }
     },
@@ -4635,6 +4721,9 @@
           "label": "提取服务",
           "description": "基于 LLM 的文档分类和元数据提取"
         }
+      },
+      "healthWarnings": {
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜索索引超出了向量数据库的内存",

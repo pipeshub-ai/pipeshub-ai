@@ -175,6 +175,8 @@ except Exception as e:
 - `classify_error(exc_or_status)` is one of `auth_expired`, `forbidden`, `not_found`, `rate_limited`, `timeout`, `upstream_5xx`,
   `bad_request`, `conflict`, `unavailable`, `cancelled`, `misconfigured`, `internal`. `misconfigured` is **our** configuration: the
   LLM provider rejected our key, no LLM is configured, an OAuth client registration was rejected, or a service token was refused.
+  A credential refresh also classes a token URL that cannot be sent to (no `https://`), or a token endpoint that answers 2xx
+  without a token, as `misconfigured` (see Credential refresh).
   `auth_expired` is a user's or a connector's grant that expired or was revoked. The first decisive exception in the chain wins,
   outermost first (`__cause__`, else `__context__` unless `from None`). OAuth error codes are read before the HTTP status, our
   own `HTTPException` 5xx counts as `internal`, and our programming errors (`KeyError`, `TypeError`, …) stop the walk. It never raises.
@@ -187,7 +189,8 @@ except Exception as e:
   raised `from` it, is DEBUG unless it asks for a higher level. `include_error_text=False` leaves `error_message` out and prints
   each exception in the stack as `Type: <message omitted>`, for errors whose text can echo what was sent (an MCP or OpenAPI server's
   answer quoting tool arguments). That record carries the stack as `exc_text` only, with no `exc_info`, so a handler that formats
-  `exc_info` itself cannot print the message either.
+  `exc_info` itself cannot print the message either. Tests check such a line with `tests/support/log_capture.py`:
+  `failure_line(records, event, error_class, level, *values)` and `assert_text_free(records, *values)`.
 - `logged_level(exc)` is the highest level `log_failure` already wrote `exc` (or an exception it was raised `from`) at, or `None`.
   A per-unit line that must keep its level when several units fail with one shared exception checks it: `log_failure` when it is
   `None` or lower, else `log_event` at the unit's level with the error fields (see "Tool calls and MCP").
@@ -388,7 +391,7 @@ or the one minted for an envelope without one), binds its org and notes `record_
 
 | Event | Level | Fields |
 | --- | --- | --- |
-| `index.end` | see below | `outcome` (`success`, `skipped`, `failure`), `disposition` (`ack`, `retry`, `dead_letter`), `reason`, `attempt`, `tier`, `duration_ms`, `record_id`, `event_type`; timings `wait_slot_ms`, `held_ms`, `pre_parse_ms`, `parse_wait_ms`, `parse_ms`, `post_parse_ms`, `stages` (busy time per step, largest first, steps under 50 ms left out), `slow_steps`; what was learned on the way: `extension`, `mime_type` (as the file-type registry knows them, else `unknown`: never the text of a name or a MIME parameter), `size_bytes`, `blocks`, `chunks`, `failed_batches`, `page` (an OCR page), `block_group` (the block group a failure was in), `duplicate_of` (the shared virtual record id; absent while the twin is still being indexed), `timeout_s`, `phase` (`enrichment`, `after_indexing_complete`), `code` (a hand-back's type), `pool` (the slot a parse-slot wait ran out on), and for a stage job `stage`, `job`; for an exception, the `log_failure` fields and `cause_type` |
+| `index.end` | see below | `outcome` (`success`, `skipped`, `failure`), `disposition` (`ack`, `retry`, `dead_letter`), `reason`, `attempt`, `tier`, `duration_ms`, `record_id`, `event_type`; timings `wait_slot_ms`, `held_ms`, `pre_parse_ms`, `parse_wait_ms`, `parse_ms`, `post_parse_ms`, `stages` (busy time per step, largest first, steps under 50 ms left out), `slow_steps`; what was learned on the way: `extension`, `mime_type` (as the file-type registry knows them, else `unknown`: never the text of a name or a MIME parameter), `size_bytes`, `blocks`, `chunks`, `failed_batches`, `page` (an OCR page), `block_group` (the block group a failure was in), `duplicate_of` (the shared virtual record id; absent while the twin is still being indexed), `timeout_s`, `phase` (`enrichment`, `after_indexing_complete`), `code` (a hand-back's type), `pool` (the slot a parse-slot wait ran out on), and for a stage job `stage`, `job`, `stage_outcome` (`completed`, `retry`, `paused`, `failed`), `stage_attempt` and, for a superseded run, `owner_attempt` (the attempt that owns the state now), and for a state a newer release owns, `foreign_status` (the status it wrote); for an exception, the `log_failure` fields and `cause_type` |
 
 Levels and outcome:
 - `ack`: `success`, or `skipped` when the handler noted a skip (`reason`: `duplicate`, `already_indexed`, `replayed` (an exact
@@ -396,6 +399,9 @@ Levels and outcome:
   `connector_inactive`, `parse_now_refused`, `folder`, `unsupported_type`, `too_large` (a file too large to read), `metadata_file`, `code_file_skipped` (a generated or oversized code file), `no_virtual_record_id`, `stored_content_missing` (a vector-only reindex whose stored blocks could not be read; the
   record is marked failed, and `index.blob_read_failed` says why), `nothing_to_rerun` (a stage re-run that dispatched no job: a
   newer release owns the revision, or every stage was current), `duplicate_envelope` (PostgreSQL)). INFO.
+- A stage delivery that did no work is `skipped` with `reason`: `stale` (its revision is gone), `unchanged` (inputs and output already
+  current), `duplicate` (the job was already settled), `not_applicable` (the stage did not apply), `foreign_state` (a newer release
+  owns its state), `superseded` (another run took the state over; the run's result was not recorded). INFO.
 - Handed back without an attempt counted: `skipped`, `retry`; `reason=requeued` is WARNING (waiting on capacity), or the level the
   hand-back asks for (a paused stage job that wakes into the same outage is DEBUG), `contended` INFO.
 - A failure that will be retried: `failure`, `retry`, at WARNING, or ERROR for `internal`/`misconfigured`.
@@ -431,8 +437,11 @@ Levels and outcome:
 - `timeout_s` is the record's configured processing budget. The embedding stall timer (`RecordProgress`) can end the same
   budget earlier; its `embed cut (stall)` line says so, and `duration_ms` is the time the attempt ran.
 - The ack or commit failed after the record was indexed (`reason=ack_failed` or `commit_failed`): `success` (or `skipped`,
-  for a delivery the handler skipped), `retry`, WARNING; the redelivery is deduped. A handler that raised after
-  `INDEXING_COMPLETE` is still a `failure` when the settlement of its retry then fails. An ack that fails while dead-lettering leaves the entry pending: `retry`, `reason=ack_failed`.
+  for a delivery the handler skipped), `retry`, WARNING; the redelivery is deduped. No attempt is counted and nothing is
+  re-published for it. A handler that raised after `INDEXING_COMPLETE` is still a `failure` when the settlement of its retry then fails. An ack that fails while dead-lettering leaves the entry pending: `retry`, `reason=ack_failed`.
+  On Kafka in FIFO mode, a dead-letter whose commit fails (`reason=commit_failed`) is read again, so the sink can be told twice,
+  which is harmless; an `attempts_exhausted` one comes back with a fresh attempt count. Under fair scheduling it is not
+  read again: the next commit covers its offset.
 - A failure with no exception and no class is WARNING, except the dead-letters above (`unfinished_attempts`, `backstop`),
   which stay ERROR.
 - `error_class` is `classify_error`'s, except that a `DocumentProcessingError` whose direct cause is a programming error
@@ -457,7 +466,7 @@ Other lines on the path, each once:
 | Event | Level | When |
 | --- | --- | --- |
 | `index.slow_step` | WARNING | a step ran past `INDEXING_SLOW_STEP_SECONDS`; `step`, `duration_ms`, `threshold_ms`, `detail`, `record_id`; at most three per step per record |
-| `index.parse_fallback` | its class's level: WARNING; ERROR for `misconfigured` (an API mismatch between indexing and Docling, or a refused service token) | Docling could not parse the PDF or could not be asked, and the PdfPlumber path runs next. `parser=docling`, `reason` (Docling's `errorCode` in lower case such as `parse_failed`, `parse_timeout`; `invalid_input`, `too_large`, `unreadable`; `unavailable`), `status` (Docling's HTTP status, when it answered), and the `log_failure` fields without `error_message`. A failed request (a 500, a 429 without `Retry-After`, a connection lost mid-answer) has no `reason`: `error_class` says why, and `status` adds Docling's HTTP status when it answered with one (a lost connection has none) |
+| `index.parse_fallback` | its class's level: WARNING; ERROR for `misconfigured` (an API mismatch between indexing and Docling, or a refused service token) | Docling could not parse the PDF or could not be asked, and the PdfPlumber path runs next. `parser=docling`, `reason` (Docling's `errorCode` in lower case such as `parse_failed`, `parse_timeout`; `invalid_input`, `too_large`, `unreadable`; `unavailable`), `status` (Docling's HTTP status, when it answered), and the `log_failure` fields without `error_message`. `unavailable` also covers a 5xx or a 429 without `Retry-After` that outlived the retries and a connection lost mid-answer (Docling answers a file it cannot parse with a 422 and its code, never a 5xx); `error_class` then says which. Only a client-side request error (ours, such as a wrong URL scheme) has no `reason` |
 | `index.download_fallback` | WARNING | the signed-URL download failed; the connector stream is tried next (no text: it can carry the URL) |
 | `index.requeue_failed` | WARNING | the re-queue of a failed or handed-back record failed; it stays pending (no text) |
 | `index.ack_failed` | WARNING | Redis: the replacement was sent, but the original's ack failed; it stays pending and is deduped when redelivered (no text) |
@@ -470,6 +479,8 @@ Other lines on the path, each once:
 | `index.ack_failed` | WARNING | Redis: the XACK of a dead-letter failed; the entry stays pending (no text; `index.end` keeps the record's own exception) |
 | `index.dedup_normalize_failed` | WARNING | HTML could not be normalised for duplicate detection; the raw bytes are hashed instead (no text: it can carry the document) |
 | `index.task_failed` | per class | a processing task ended with an exception nobody handled; DEBUG for one already written (by `index.end`, `index.requeue_failed` or `index.commit_failed`) |
+| `stage.abandon_failed` | WARNING | a dead-lettered stage job could not be marked FAILED (no text when it quotes content) |
+| `stage.follow_up_failed` | WARNING | a failed stage's follow-up hook (releasing queued copies) could not run |
 | `stage.run_failed` | WARNING | a stage failed after another worker took its job over (`reason=superseded`): the failure's only trace |
 
 On Redis and Kafka, deliveries that end before the timeline opens write no `index.end`: an unparseable message (a WARNING, the
@@ -534,6 +545,9 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   turn's. `toolset.route.failed op=load_instances` also appears on agent chat requests (`get_authenticated_toolsets`). An OAuth
   callback's failure is on the line with `outcome=failure` and the body's `error` code as `reason`; a provider's `error=` is
   `reason=provider_error` with `oauth_error` (a code RFC 6749 or OpenID Connect defines, else `other`) and is never ERROR.
+  The connector OAuth callback (`connectors/api/router.py`) does the same for its token exchange (`reason=server_error`, no text:
+  the error can quote the token URL's query or the provider's answer), a provider's `error=`, and an unknown connector
+  (`reason=instance_not_found`).
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
   duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line.
@@ -574,6 +588,8 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
 | `middleware.failed` | `log_failure`, no error text | `middleware`, `context` (the hook context's type); a fail-closed pipeline also denies with `deny_reason=middleware_error` |
 | `orchestrator.dispatch.end` | INFO; `orchestrator.dispatch.failed` `log_failure` (falls back to LLM dispatch) | `steps`, `outcome` |
 | `turn_scope.check_failed`, `prefetch.failed` (no error text), `agent_turn.cleanup_failed` (`step`) | `log_failure` | the turn carries on |
+| `repo_instructions.resolve_failed` | `log_failure`, no error text; a timeout is `timeout` | the repo-instructions refresh failed or timed out and is retried on the next refresh, at most 3 times per run |
+| `repo_instructions.fetch_failed` | `log_failure`, no error text; content that is unavailable is `unavailable` (WARNING), at most 3 times per file per run | `record_id` |
 
 - An approval answer is logged once whatever happens next: on the decided path the line is written first in `_settle`'s `finally`,
   before the outcome is kept and before the card's row is shown, so Stop or a client disconnect while the approved call runs is
@@ -624,11 +640,11 @@ refresh of one credential reads the same everywhere:
 | --- | --- | --- |
 | `credential_refresh.scheduled` | INFO when the refresh time is new, DEBUG when a scan re-arms the same one | `next_refresh_at` (UTC), `delay_s` |
 | `credential_refresh.start` | DEBUG | |
-| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
+| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `no_access_token`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
 | `credential_refresh.check_failed` | the failure's level; DEBUG when the attempt's `end` already logged it | as a failed `end` |
-| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated), the cause's `error_class` and `oauth_error` |
-| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`), `path` (MCP: `background` after 3 rejections, `route` after one) |
-| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone |
+| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated; MCP adds `reason`: `rotated`, `within_window`, `not_saved`), the cause's `error_class` and `oauth_error` |
+| `credential_refresh.deauthenticated` | WARNING | `reason` (`refresh_token_invalid`; MCP also `oauth_client_rejected`), `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`) |
+| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone; MCP adds `strike` |
 | `credential_refresh.skipped` | WARNING | `outcome=skipped`, `reason` (`lock_wait_timeout`: another refresh of the same credential holds its lock) |
 
 Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), `trigger` (`scan`, `scheduled`, `on_demand`), the
@@ -637,19 +653,27 @@ sign-in belongs to; MCP: `mcp_server_id` and `owner_id`), `provider` (the connec
 `provider`), and the org as a job context when nothing else bound one. A timer
 firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
 written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
-rejected our client) is ERROR with a stack once per credential per hour and DEBUG in between. `trigger` is set by the refresh
+rejected our client, a token URL that cannot be sent to, or a 2xx answer with no token) is ERROR with a stack once per credential
+per hour and DEBUG in between. A 2xx answer whose `error` is a dead-grant code (`invalid_grant`, `bad_refresh_token`, ...) is
+`auth_expired`, like the same code on a 400: the user signs in again. A 2xx answer whose `error` says the provider is busy or down is `unavailable`, `rate_limited` or `upstream_5xx`,
+and a programming error raised while handling one stays `internal`. `trigger` is set by the refresh
 scope and never inherited from a sync's own `trigger`. The toolset service has no on-demand refresh: its lines say `trigger=scan`
 or `scheduled`, and `on_demand` only on the `scheduled` line written when a sign-in completes.
 
 Every MCP refresh, whoever starts it (the background service, the refresh route, tool listing or discovery, an agent's 401), goes
 through `app/agents/mcp/token_refresh.py`, which writes its `end`; `duration_ms` includes waiting for another process's refresh lock.
+A refusal that says the sign-in can't be renewed (a dead grant, or the provider refusing our client) is a strike on the
+credential record, whichever path saw it, at most one per 5 minutes; the third signs it out with `deauthReason`, and a
+success clears the count. A refused request shape (`invalid_request`, `invalid_scope`, `unsupported_grant_type`) is no
+such strike; only the background service counts it, in process. The refresh route signs nobody out itself.
 The tool call and discovery lines of the same failure carry the same `error_class` and keep their own level. Per-turn MCP lines
 classed `misconfigured` share one hourly ERROR per server and class (`tool_call.end`, `mcp.discover.end` turn and listing); the
 others in that hour are DEBUG. A token host that does not resolve is `host_unresolved` (`unavailable`, WARNING); only a URL the
 guard refuses by policy is `url_blocked` (`misconfigured`).
 
 Nothing a token endpoint answered is logged as text: its body, and the token URL and redirect URI in the exception message, can
-quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, every failure line of
+quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, or an unusable token URL
+(aiohttp's error text is the URL, query included), every failure line of
 a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
 `Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
 
@@ -661,10 +685,17 @@ which every Postgres graph provider runs through) write one record per call that
 
 | Event | Level | Fields |
 | --- | --- | --- |
-| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
+| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR), and DEBUG for a code the caller declared expected with `db_query_log.expecting` (claiming an existing stage state: unique-constraint violation) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
 | `db.query.slow` | WARNING | `backend`, `op`, `site`, `caller`, `duration_ms`, `threshold_ms`; Postgres `db_request_id` |
 | `db.query.retry` | WARNING | `backend=neo4j`, `op`, `reason=connection_lost`, `error_type` |
 | `db.connect.failed`, `db.disconnect.failed`, `db.schema.failed`, `db.edge.failed` | `log_failure` | `backend`, `op` (schema or edge) |
+
+- **A graph provider that re-raises writes nothing.** A Neo4j, ArangoDB or PostgreSQL provider method whose handler re-raises
+  (as is, or `raise … from e`) has no log line of its own: `db.query.failed` (with `caller`, the provider line) and the handler
+  that catches the exception are the record of that failure. A Neo4j knowledge-hub listing that ran out of transaction memory
+  still writes `kh.listing.out_of_memory` (WARNING, `connector_id`, `duration_ms`, no error) before it is refused as too large or
+  busy. A handler that logs and carries on with a fallback is not a re-raising handler: the knowledge-hub listing's scope-page
+  enrichment still logs a WARNING (with the driver's text, for now) before it runs the full query, which may then re-raise.
 
 - **One record per call, outside the client's own retries.** A write conflict the ArangoDB or Neo4j client retries and wins
   writes nothing; one it gives up on writes one record. Retries above the client (`KernelDB.run`, the KB push, a provider
@@ -680,8 +711,14 @@ which every Postgres graph provider runs through) write one record per call that
   hides the text and leaves the class to `classify_error`), so `classify_error` returns its class and `log_failure` leaves `error_message` out and
   prints the stack as `Type: <message omitted>` for any chain, or exception group member, that holds it. This also hides the
   server's own text for our bugs (an ArangoDB 1501 "syntax error … near …" reads `code=1501 caller=…`): diagnose from `code`,
-  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible (the
-  Neo4j memory-limit hint).
+  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible when
+  they chain no stamped error (raised outside its `except`, as the Neo4j memory-limit hint is, or `from None`); an exception
+  raised `from` a stamped error, or while handling one, loses its message too, and keeps its type and frames. A
+  `logger.exception` or `exc_info=True` record of such a chain prints the same text-free stack, exception-group members
+  included: its `exc_info` is None and its `exc_text` holds the stack, and a filter reads the exception with
+  `error_class.record_exception(record)`. A message that embeds the error's text is not covered: `traceback.format_exc()`
+  (log with `exc_info=True` instead), `%s` of the error, and asyncio's "Task exception was never retrieved", whose message holds
+  the task's `repr` with the exception's text.
 - **Classes.** Only our bugs and our configuration are ERROR classes. Conflicts and lost races (ArangoDB 1200, 1210, 29, 1654,
   1655; Neo4j constraint, deadlock, entity lost to a delete; Postgres 23xxx, 40001, 40P01) are `conflict`; ArangoDB 18 and 1500,
   Neo4j transaction timeouts and Postgres 57014/55P03 are `timeout`; Postgres 22xxx, 54xxx, 23502 and 23514, and Neo4j data
@@ -698,8 +735,8 @@ record content. Like any `log_failure` line it is DEBUG when the same exception,
 higher, so at a WARNING threshold a handled failure can leave no event. The user is the bound `user_id`; the graph key is never
 logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. When the batch access read
 fails, `check_access` first logs a `check_access failed …` ERROR with only the counts and the error's class. The
-`PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause, which a
-traceback (`exc_info=True`, `logger.exception`) still prints.
+`PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause; its chain
+is always text-hidden, so an `exc_info` record of it prints each exception as `Type: <message omitted>`.
 
 | Event | What the search does next | Fields |
 | --- | --- | --- |

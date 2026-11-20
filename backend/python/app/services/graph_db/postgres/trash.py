@@ -97,8 +97,7 @@ class TrashMixin(PgBase):
 
         try:
             row = await self._q(go, transaction, write=True)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to move records to the trash: {e}")
+        except Exception:
             raise
         return soft_delete_result(record_ids, list(row["root_keys"]), row["marked"], batch_id)
 
@@ -470,8 +469,7 @@ class TrashMixin(PgBase):
                 )
             }
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
+        except Exception:
             raise
 
     async def reindex_single_record(

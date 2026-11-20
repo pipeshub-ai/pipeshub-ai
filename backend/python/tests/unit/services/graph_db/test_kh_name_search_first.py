@@ -120,7 +120,9 @@ async def test_neo4j_no_match_lists_nothing_without_walking() -> None:
     {"flatten": False},
     {"start_id": "g1", "start_type": "recordGroup"},
 ])
-async def test_neo4j_browsing_is_unchanged(overrides) -> None:
+async def test_neo4j_browsing_is_unchanged(overrides, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The fake answers the legacy browse statement; split is the default (docs/knowledge-hub-browse.md).
+    monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
     provider = _neo4j(["r1"])
     provider._kh_v3_connector_and_size = AsyncMock(return_value=(APP, 0))
     provider._kh_v3_chain_tops = AsyncMock(return_value={})

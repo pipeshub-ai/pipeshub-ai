@@ -308,7 +308,7 @@ class _AlreadyLogged(logging.Filter):
     """On ``uvicorn.error``: drops "Exception in ASGI application" for an exception ``http.request.end`` logged."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        exc = record.exc_info[1] if record.exc_info else None
+        exc = error_class.record_exception(record)
         return exc is None or error_class.logged_level(exc) is None
 
 

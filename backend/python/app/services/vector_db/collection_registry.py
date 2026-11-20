@@ -20,16 +20,19 @@ only resolves *which* collection(s) an operation targets and executes the
 uncontroversial collection-level operations.
 """
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
+from app.core.org_context import for_org
 from app.exceptions.indexing_exceptions import VectorStoreError
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.vector_db.collection_manifest import (
     CollectionManifestStore,
     ManagedCollection,
 )
+from app.services.vector_db.collection_pin import CollectionPinStore
 from app.services.vector_db.collections import CollectionType, sanitize_collection_name
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -41,6 +44,7 @@ from app.services.vector_db.const.const import (
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import CollectionConfig
+from app.services.vector_db.precision_guard import PrecisionGuard
 from app.services.vector_db.strategy import (
     CollectionStrategy,
     DeleteAction,
@@ -59,6 +63,8 @@ _EXISTENCE_CACHE_TTL_SECONDS = 60
 LivenessProbe = Callable[[DeleteContext, str], Awaitable[bool]]
 
 
+_SECOND_RESET_ATTEMPTS = 3
+_SECOND_RESET_WAITS = (0.2, 1.0)
 _FENCE_FIELDS = frozenset({CONTENT_REV_FIELD, EMBED_KEY_FIELD})
 
 
@@ -136,6 +142,9 @@ class CollectionRegistry:
         # no other reason to know what the provider supports.
         self._max_collections_advisory = max_collections_advisory
         self._existence = _ExistenceCache()
+        listen = getattr(type(vector_db_service), "add_space_replaced_listener", None)
+        if callable(listen):
+            listen(vector_db_service, self.replace_stale_org_pin)
         # Collections whose lexical scoring this process has already brought up
         # to date, so the write path asks the vector DB once, not every TTL.
         self._lexically_reconciled: set[str] = set()
@@ -295,6 +304,7 @@ class CollectionRegistry:
 
         await self._warn_if_over_advisory_ceiling(name)
 
+        absent_at = self._pins().now()
         config = self._collection_config_factory(embedding_size)
         try:
             await self._vector_db_service.create_collection(
@@ -318,6 +328,9 @@ class CollectionRegistry:
             await self._ensure_payload_indexes(name)
             await self._reconcile_lexical(name, embedding_size)
 
+        # A pin left over by a crash between a drop and the pin's removal; one claimed after the
+        # collection came to exist is the writer's and stays.
+        await self._guard().replace_stale_for_writer(name, ctx.embedding_model, absent_at)
         # Manifest first, for the same reason as the branch above.
         await self._record_in_manifest(name, ctx, embedding_size)
         self._existence.mark(name, dimension=embedding_size)
@@ -579,19 +592,84 @@ class CollectionRegistry:
             return ctx
         return replace(ctx, is_last_writer_to_collection=is_last)
 
+    def _pins(self) -> CollectionPinStore:
+        # The pin lives in the same configuration store as the manifest, and the registry has no other use for it.
+        return CollectionPinStore(self._manifest_store.config_service, self._logger)
+
+    def _guard(self) -> PrecisionGuard:
+        return PrecisionGuard(self._pins(), self._vector_db_service, self._logger)
+
+    async def replace_stale_org_pin(self, org: str, model: str | None, observed_at: float) -> list[str]:
+        """After a store with one space per org replaced an org's empty space: replace that org's stale pins.
+
+        Only this event, never an empty space on its own: an empty space is not re-pinned on a count.
+        """
+        replaced: list[str] = []
+        for entry in await self.list_managed_collections():
+            did = await self._guard().replace_stale_for_writer(entry.name, entry.embedding_model or model, observed_at, org)
+            if did:
+                replaced.append(entry.name)
+        return replaced
+
+    async def release_orphan_pins(self) -> list[str]:
+        """Release the pins of collections that no longer exist; a pin over a collection that is there stays."""
+        return await self._pins().release_orphans(self._vector_db_service.collection_exists)
+
+    async def sweep_dead_epochs(self, org_ids: list[str]) -> None:
+        """Delete, from every managed collection, the points written under retired epochs, for each of *org_ids* (the cleanup's tail).
+
+        Every store deletes for one organisation, so the sweep runs once per organisation, each under its own
+        scope. A sweep that cannot run is repeated at the end of the next record of that organisation.
+        """
+        for entry in await self.list_managed_collections(fresh=True):
+            for org in org_ids:
+                with for_org(org, job="epoch_sweep"):
+                    await self._guard().sweep_dead(entry.name, org)
+
     async def delete_collection(self, name: str) -> None:
         """Idempotent drop: a missing collection is treated as success."""
         await self._drop(name)
         await self._manifest_store.forget(name)
 
     async def _drop(self, name: str) -> None:
+        # A new epoch is current before anything is dropped, so a batch that was embedded for the old index can
+        # no longer claim a pin or confirm a write; the old one is retired only once the drop is confirmed.
+        # A bump that cannot be written stops the drop here.
+        ticket = await self._pins().epochs.begin_reset(name)
         try:
             await self._vector_db_service.delete_collection(name)
         except Exception as e:
             if not _is_collection_missing(e):
                 raise
             self._logger.info("Collection %s already absent", name)
+        # A second epoch after the delete returned: a batch that was accepted under the first one while the delete was running
+        # (it wrote into the collection being dropped) can no longer confirm. Retried like the first; if it cannot be made, the first
+        # reset is still confirmed (the drop did happen) and the error is raised, so the cleanup fails visibly and can be run
+        # again; the collection is absent until then and is created by the next writer.
+        epochs = self._pins().epochs
+        try:
+            for attempt in range(_SECOND_RESET_ATTEMPTS):
+                try:
+                    ticket = await epochs.begin_reset(name)
+                    break
+                except Exception:
+                    if attempt == _SECOND_RESET_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(_SECOND_RESET_WAITS[min(attempt, len(_SECOND_RESET_WAITS) - 1)])
+        except Exception:
+            self._logger.error(
+                "Collection %s was dropped but its epoch could not be moved again; writers that began during the drop are not fenced. "
+                "Run the cleanup again", name,
+            )
+            await epochs.confirm_reset(ticket)
+            self._existence.invalidate(name)
+            raise
+        await epochs.confirm_reset(ticket)
         self._existence.invalidate(name)
+        # After the vectors, never before: a crash in between leaves a pin over nothing, which the next
+        # creator of the collection replaces; the other order would leave vectors with no pin. A pin the
+        # store cannot confirm gone fails the drop, so the cleanup fails visibly and can be run again.
+        await self._pins().release_collection(name)
 
     # ------------------------------------------------------------------
     # Model-change rebuild
@@ -636,11 +714,13 @@ class CollectionRegistry:
                 )
                 continue
             await self._drop(entry.name)
+            absent_at = self._pins().now()
             await self._vector_db_service.create_collection(
                 collection_name=entry.name,
                 config=self._collection_config_factory(records_dimension),
             )
             await self._ensure_payload_indexes(entry.name)
+            await self._guard().replace_stale_for_writer(entry.name, entry.embedding_model, absent_at)
             await self._manifest_store.record(
                 ManagedCollection(
                     name=entry.name,

@@ -20,12 +20,8 @@ from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
 from app.services.llm_gateway.gateway import ProviderUnavailableError
 from app.utils.table_enrichment import fallback_table_summary
-from tests.support.provider_errors import (
-    assert_text_free,
-    failure_line,
-    httpx_error,
-    openai_error,
-)
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import SENTINELS, httpx_error, openai_error
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -54,8 +50,8 @@ async def test_a_failed_csv_table_summary_falls_back_with_one_text_free_line(cap
     summary = await parser.get_table_summary(MagicMock(), [{"name": "a"}])
 
     assert summary == fallback_table_summary(["name"], 1)
-    assert failure_line(caplog.records, "table_summary.failed", error_class, level)["parser"] == "csv"
-    assert_text_free(caplog.records)
+    assert failure_line(caplog.records, "table_summary.failed", error_class, level, *SENTINELS)["parser"] == "csv"
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 @pytest.mark.parametrize(("error", "error_class", "level"), [*_ERRORS, (_outage, "upstream_5xx", logging.WARNING)])
@@ -68,8 +64,8 @@ async def test_a_failed_excel_table_summary_falls_back_with_one_text_free_line(c
     summary = await parser.get_table_summary({"headers": ["name"], "data": [[{"header": "name", "value": "a"}]]})
 
     assert summary == fallback_table_summary(["name"], 1)
-    assert failure_line(caplog.records, "table_summary.failed", error_class, level)["parser"] == "excel"
-    assert_text_free(caplog.records)
+    assert failure_line(caplog.records, "table_summary.failed", error_class, level, *SENTINELS)["parser"] == "excel"
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 def _vlm(monkeypatch: pytest.MonkeyPatch, invoke: AsyncMock, pages: int = 1) -> VLMOCRStrategy:
@@ -97,9 +93,9 @@ async def test_a_page_the_model_keeps_refusing_is_retried_then_given_up_once(cap
     retries = [r for r in caplog.records if "retrying" in r.getMessage()]
     assert len(retries) == 2
     assert {r.error_type for r in retries} == {"BadRequestError"}
-    fields = failure_line(caplog.records, "vlm_ocr.page_failed", "bad_request", logging.WARNING)
+    fields = failure_line(caplog.records, "vlm_ocr.page_failed", "bad_request", logging.WARNING, *SENTINELS)
     assert (fields["page"], fields["attempts"]) == (2, 3)
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 def _only_page_two_fails(call: Callable[[str, int], Awaitable[str]], ok: SimpleNamespace) -> Callable[[str, int], Awaitable[str]]:
@@ -121,8 +117,8 @@ async def test_every_page_failing_raises_the_last_error_with_one_line_per_page(c
     with pytest.raises(type(error)):
         await strategy.load_document(b"%PDF")
 
-    failure_line(caplog.records, "vlm_ocr.page_failed", "misconfigured", logging.ERROR)
-    assert_text_free(caplog.records)
+    failure_line(caplog.records, "vlm_ocr.page_failed", "misconfigured", logging.ERROR, *SENTINELS)
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 async def test_the_ocr_handler_re_raises_without_a_line_of_its_own(caplog) -> None:
@@ -139,4 +135,4 @@ async def test_the_ocr_handler_re_raises_without_a_line_of_its_own(caplog) -> No
 
     assert raised.value is error
     assert not [r for r in caplog.records if r.name == "test.ocr_handler" and r.levelno >= logging.WARNING]
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)

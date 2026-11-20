@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -103,8 +103,9 @@ async def test_a_pdf_docling_could_not_parse_is_raised_once_with_its_status_and_
         (_answer(404, text="<html>Not Found</html>"), 404),
         (_answer(200, text="<html>Sign in to the proxy</html>"), 200),
         (_answer(200, {"success": True, "parse_result": None}), 200),
+        (_answer(501, {"detail": "Not Implemented"}), 501),
     ],
-    ids=["400", "422-validation", "404-html", "200-html", "200-null-document"],
+    ids=["400", "422-validation", "404-html", "200-html", "200-null-document", "501"],
 )
 async def test_an_answer_that_is_not_doclings_own_is_raised_as_misconfigured(
     handler: Handler, status: int, caplog: pytest.LogCaptureFixture,
@@ -122,65 +123,51 @@ async def test_an_answer_that_is_not_doclings_own_is_raised_as_misconfigured(
     assert not _failure_lines(caplog)
 
 
-async def test_a_500_is_retried_then_raised_from_the_service_error(caplog: pytest.LogCaptureFixture) -> None:
-    requests: list[httpx.Request] = []
-
-    with caplog.at_level(logging.DEBUG), pytest.raises(DoclingParseError) as raised:
-        await _parse(_client(_answer(500, {"detail": "Docling service not available"}), requests))
-
-    assert len(requests) == 3
-    assert raised.value.status_code == 500
-    assert isinstance(raised.value.__cause__, ServiceCallError)
-    assert error_class.classify_error(raised.value) == "upstream_5xx"
-    [summary] = _failure_lines(caplog)  # only the base client's summary of the retries
-    assert summary.name == "app.services.base_client.DoclingService"
-    assert_not_logged(caplog.records, NAME)
-
-
-async def test_a_bare_429_is_retried_then_raised_as_rate_limited_not_as_an_outage() -> None:
-    """A 429 without Retry-After is a transient status, not backpressure: 3 requests, then the record falls back."""
+async def test_a_client_side_request_error_is_ours_not_an_outage() -> None:
+    """A wrong URL scheme is our configuration, not Docling down: one request, no status, not retried later."""
     requests: list[httpx.Request] = []
 
     with pytest.raises(DoclingParseError) as raised:
-        await _parse(_client(_answer(429, {"detail": "busy"}), requests))
+        await _parse(_client(_raise(httpx.UnsupportedProtocol, "Request URL has an unsupported protocol"), requests))
 
-    assert len(requests) == 3
-    assert raised.value.status_code == 429
-    assert error_class.classify_error(raised.value) == "rate_limited"
-
-
-async def test_a_connection_lost_mid_answer_is_classified_by_its_cause() -> None:
-    """The base client does not retry a RemoteProtocolError: one request, no status, not the file's fault."""
-    requests: list[httpx.Request] = []
-
-    with pytest.raises(DoclingParseError) as raised:
-        await _parse(_client(_raise(httpx.RemoteProtocolError, "Server disconnected without sending a response."), requests))
-
+    assert not isinstance(raised.value, DoclingUnavailableError)
     assert len(requests) == 1
     assert raised.value.status_code is None
     assert str(raised.value) == "Docling request failed"
-    assert error_class.classify_error(raised.value) == "unavailable"
 
 
-# Characterisation: main already raised DoclingUnavailableError after 3 requests; `reason` and the
-# name-free cause text are new.
+# Docling answers a file it cannot parse with a 422 and its errorCode, never a 5xx: a status the retries gave up on
+# (its own 500 when unwired, Starlette's for a crash outside the handler, a proxy's 5xx or bare 429) and a connection
+# dropped mid-answer say it was not serving. The base client retries a status 3 times and a drop not at all.
 @pytest.mark.parametrize(
-    ("handler", "expected_class", "status"),
+    ("handler", "expected_class", "status", "expected_requests"),
     [
-        (_answer(503, {"detail": "down"}), "unavailable", 503),
-        (_raise(httpx.ReadTimeout, "read timed out"), "timeout", None),
+        (_answer(503, {"detail": "down"}), "unavailable", 503, 3),
+        (_raise(httpx.ReadTimeout, "read timed out"), "timeout", None, 3),
+        (_answer(500, {"detail": "Docling service not available"}), "upstream_5xx", 500, 3),
+        (_answer(500, text="Internal Server Error"), "upstream_5xx", 500, 3),
+        (_answer(429, {"detail": "busy"}), "rate_limited", 429, 3),
+        (_answer(507, text="Insufficient Storage"), "upstream_5xx", 507, 3),
+        (_answer(520, text="Web server returned an unknown error"), "upstream_5xx", 520, 3),
+        (_raise(httpx.ReadError, "connection reset by peer"), "unavailable", None, 1),
+        (_raise(httpx.RemoteProtocolError, "Server disconnected without sending a response."), "unavailable", None, 1),
     ],
-    ids=["503", "read-timeout"],
+    ids=["503", "read-timeout", "500-unwired", "500-crash", "429-no-retry-after", "507", "520", "read-error",
+         "dropped-mid-answer"],
 )
-async def test_a_service_that_is_not_serving_stays_unavailable(
-    handler: Handler, expected_class: str, status: int | None, caplog: pytest.LogCaptureFixture,
+async def test_a_service_that_is_not_serving_is_unavailable(
+    handler: Handler, expected_class: str, status: int | None, expected_requests: int,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     requests: list[httpx.Request] = []
 
     with caplog.at_level(logging.DEBUG), pytest.raises(DoclingUnavailableError) as raised:
         await _parse(_client(handler, requests))
 
-    assert len(requests) == 3
+    assert len(requests) == expected_requests
+    assert isinstance(raised.value.__cause__, ServiceCallError)
+    [line] = _failure_lines(caplog)  # only the base client's own line: the retries' summary, or the drop
+    assert line.name == "app.services.base_client.DoclingService"
     assert raised.value.reason == "unavailable"
     assert raised.value.status_code == status
     assert error_class.classify_error(raised.value) == expected_class
@@ -239,3 +226,47 @@ async def test_a_failing_batch_stops_the_parse_before_the_next_batch() -> None:
         await _parse(_client(lambda _r: next(answers), requests), page_count=5, batch_size=2)
 
     assert len(requests) == 2  # pages 5-5 are never sent
+
+
+class _ConversionFails:
+    async def parse_pdf_only(self, *_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("pdfium could not open the file")
+
+
+@pytest.mark.parametrize(
+    ("service", "expected_type", "status", "reason", "expected_requests"),
+    [
+        (None, DoclingUnavailableError, 500, "unavailable", 3),
+        (_ConversionFails(), DoclingParseError, 422, "parse_failed", 1),
+    ],
+    ids=["unwired-500", "conversion-fails-422"],
+)
+async def test_the_docling_services_own_answers_map_to_the_rule(
+    service: object | None, expected_type: type[Exception], status: int, reason: str, expected_requests: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real /parse-pdf route behind the real client: a file it cannot parse is its 422, a 500 is the service itself."""
+    from app.services.docling import docling_service as service_module
+
+    # Process globals other tests set: no gate, no member budget, no lanes, so the answer cannot become a 429.
+    monkeypatch.setattr(service_module, "docling_service", service)
+    monkeypatch.setattr(service_module, "_resource_governor", None)
+    monkeypatch.setattr(service_module, "reserve_or_adopt", AsyncMock(return_value=None))
+    monkeypatch.setattr(service_module, "lanes_active", lambda: False)
+    requests: list[httpx.Request] = []
+    asgi = httpx.ASGITransport(app=service_module.app)
+
+    class _Counted(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return await asgi.handle_async_request(request)
+
+    client = DoclingClient(service_url="http://docling.test", timeout=5.0, max_retries=3, retry_delay=0.0)
+    client._make_client = lambda: httpx.AsyncClient(transport=_Counted())  # type: ignore[method-assign]
+
+    with pytest.raises((DoclingParseError, DoclingUnavailableError)) as raised:
+        await _parse(client)
+
+    assert type(raised.value) is expected_type
+    assert (raised.value.status_code, raised.value.reason) == (status, reason)
+    assert len(requests) == expected_requests

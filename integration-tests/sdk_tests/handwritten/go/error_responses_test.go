@@ -48,7 +48,7 @@ func TestHandwritten_ErrorResponses(t *testing.T) {
 	_, err = s.Connector.GetRecordContent(ctx, operations.GetRecordContentRequest{RecordID: noUUID})
 	requireStatus(t, 403, err)
 	// ENABLE_SOFT_DELETE is off on the CI app (the default), so the trash refuses.
-	_, err = s.KnowledgeBase.ListTrash(ctx, noUUID, nil, nil)
+	_, err = s.KnowledgeBase.ListTrash(ctx, noUUID, nil, nil, nil)
 	requireStatus(t, 403, err)
 	_, err = s.KnowledgeBase.RestoreRecord(ctx, noUUID)
 	requireStatus(t, 403, err)
@@ -141,14 +141,15 @@ func TestHandwritten_SessionErrorResponses(t *testing.T) {
 
 	// A personal access token works on the API but not on the routes that manage tokens and apps.
 	created, err := session.PersonalAccessTokens.CreatePersonalAccessToken(ctx, components.CreatePatRequest{
-		Name:       "sdk-test-pat-refused",
-		Scopes:     []string{"openid", "kb:read"},
-		ExpiryDays: pipeshub.Pointer(components.CreateExpiryDaysExpiryDaysEnum(components.ExpiryDaysEnumThirty)),
+		// No ExpiryDays: the default (30 days) is enough here, and the field's generated type
+		// is renamed whenever its allowed values change.
+		Name:   "sdk-test-pat-refused",
+		Scopes: []string{"openid", "kb:read"},
 	})
 	require.NoError(t, err)
 	token := created.CreatePatResponse.Token
 	pat := newBearerClient(token.AccessToken)
-	_, err = pat.OAuthApps.ListOAuthApps(ctx, nil, nil, nil, nil)
+	_, err = pat.OAuthApps.ListOAuthApps(ctx, operations.ListOAuthAppsRequest{})
 	assert.Equal(t, 403, statusOf(err), "%v", err)
 	_, err = pat.PersonalAccessTokens.CreatePersonalAccessToken(ctx, components.CreatePatRequest{Name: "sdk-test"})
 	assert.Equal(t, 403, statusOf(err), "%v", err)

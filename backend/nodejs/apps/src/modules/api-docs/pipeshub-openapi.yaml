@@ -839,6 +839,115 @@ components:
             mcp:write: Add, configure and authenticate MCP servers
             mcp:delete: Remove MCP servers and their credentials
   schemas:
+    ConnectorUserConnection:
+      type: object
+      description: One user's connection to a per-user connector. The credential is never included.
+      required: [userId, email, sourceUserId, sourceEmail, status, connectedAt]
+      properties:
+        userId:
+          type: string
+        email:
+          type: string
+          description: The user's PipesHub email
+        sourceUserId:
+          type: string
+          description: The account's ID at the source
+        sourceEmail:
+          type: string
+        workspaceId:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [active, revoked]
+          description: '`revoked` when the source refused the credential; the user must connect again.'
+        connectedAt:
+          type: integer
+          format: int64
+        lastCompleteListingAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: When a sync last read everything this account can open (epoch ms)
+        lastError:
+          type: string
+          nullable: true
+        method:
+          type: string
+          enum: [token, oauth]
+          description: '`token` when the user pasted a token, `oauth` when they signed in with the source.'
+    ConnectorUserConnectionStatus:
+      type: object
+      required: [connected, connection, signInAvailable]
+      properties:
+        connected:
+          type: boolean
+        signInAvailable:
+          type: boolean
+          description: True when users can sign in with the source (the connector uses an OAuth app); otherwise they paste a token.
+        connection:
+          allOf:
+            - $ref: '#/components/schemas/ConnectorUserConnection'
+          nullable: true
+    ConnectorUserInvite:
+      type: object
+      description: The invitations sent to one person to connect their account.
+      required: [firstSentAt, lastSentAt, sendCount, optedOut]
+      properties:
+        firstSentAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms; null when nothing was sent yet
+        lastSentAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms; null when nothing was sent yet
+        sendCount:
+          type: integer
+          description: Invitations and reminders sent so far (0 when the person opted out before any)
+        optedOut:
+          type: boolean
+          description: True when the person asked not to be reminded
+    ConnectorUserRosterPerson:
+      type: object
+      required: [name, email, sourceUserId, userId, status, connection, invite]
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: The name at the source, else the PipesHub name
+        email:
+          type: string
+        sourceUserId:
+          type: string
+          nullable: true
+          description: Null for a PipesHub user who is not in the source's member list
+        userId:
+          type: string
+          nullable: true
+          description: Null when no PipesHub account has this email
+        status:
+          type: string
+          enum: [connected, needs_reconnect, invited, not_invited, opted_out, no_account]
+        connection:
+          allOf:
+            - $ref: '#/components/schemas/ConnectorUserConnection'
+          nullable: true
+        invite:
+          allOf:
+            - $ref: '#/components/schemas/ConnectorUserInvite'
+          nullable: true
+    ConnectAccountLinkToken:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 300
+          description: The token from the emailed connect link
     McpAccessPolicy:
       type: object
       description: What an organization's admins allow on the inbound `/mcp` endpoint. Nothing saved means the defaults below.
@@ -17815,7 +17924,9 @@ components:
           type: integer
           format: int64
           nullable: true
-          description: Epoch ms when the last sync run started; absent before the first run
+          description: >-
+            Epoch ms when the last sync run started; absent before the first run. A pass that links newly added users to the
+            connector moves it too, when it starts.
         lastSyncFinishedAtTimestamp:
           type: integer
           format: int64
@@ -17831,7 +17942,8 @@ components:
           nullable: true
           additionalProperties: true
           description: >-
-            What the last run did, in the connector's own terms. For a Web connector: pagesSaved (written this run),
+            What the last run did, in the connector's own terms. Any connector: stopReason start_not_recorded when the run
+            did not start because its start could not be saved. For a Web connector: pagesSaved (written this run),
             pagesStored (kept after it, which Maximum pages caps), pagesVisited, failed, failedByStatus, robotsSkipped, noindexSkipped, skippedMaxPages,
             deferred, pruned, sitemapUrls, stopReason (max_pages, time_limit, stalled, rate_limited or null) and resumed.
         actionItems:
@@ -25711,6 +25823,286 @@ components:
                     type: string
         moreRecords:
           type: boolean
+    EntityCapabilities:
+      type: object
+      description: Which entity lookups the caller is served; see `GET /search/entities/capabilities`.
+      required: [entitySearch, entityRecords, namedEntities, coMentions, recordsByValue, recordsByEntities, recordsByPerson]
+      properties:
+        entitySearch:
+          type: boolean
+          description: '`POST /search/entities`.'
+        entityRecords:
+          type: boolean
+          description: '`POST /search/entities/records`.'
+        namedEntities:
+          type: boolean
+          description: Named-entity extraction is on, so `named_entity` entities and kinds can be asked for.
+        coMentions:
+          type: boolean
+          description: '`POST /search/entities/co-mentioned`.'
+        recordsByValue:
+          type: boolean
+          description: '`POST /search/records/by-value`.'
+        recordsByEntities:
+          type: boolean
+          description: '`POST /search/records/by-entities`.'
+        recordsByPerson:
+          type: boolean
+          description: '`POST /search/records/by-person`; always true.'
+      additionalProperties: false
+    EntityToolListing:
+      type: object
+      description: A listing as the assistant reads it, with record ids and links, and the next page's call at its end when there is one.
+      required: [text]
+      properties:
+        text:
+          type: string
+      additionalProperties: false
+    EntityRecordsRequest:
+      type: object
+      description: Request body for `POST /search/entities/records`.
+      required: [entityId, entityType]
+      properties:
+        entityId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "`entityId` from `POST /search/entities`."
+        entityType:
+          $ref: '#/components/schemas/EntitySearchResultType'
+        recordTypes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Record types to keep, e.g. FILE, MAIL, TICKET.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: From the previous page's continue call.
+      additionalProperties: false
+    CoMentionedEntitiesRequest:
+      type: object
+      description: Request body for `POST /search/entities/co-mentioned`.
+      required: [entityIds]
+      properties:
+        entityIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          description: Every id `POST /search/entities` returned for the one entity.
+        kinds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Kinds to list, e.g. person, organization, product. Emails and phones are listed only when named here.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+      additionalProperties: false
+    RecordsByPersonRequest:
+      type: object
+      description: Request body for `POST /search/records/by-person`.
+      required: [person]
+      properties:
+        person:
+          type: string
+          minLength: 1
+          maxLength: 320
+          description: A full name, an email, or `me`.
+        roles:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 32
+            enum: [assignee, reporter, creator, author, owner, editor, reviewer, recipient, lead, mentioned, involved]
+          description: Roles to keep; every role when omitted.
+        recordTypes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+      additionalProperties: false
+    RecordsByValueRequest:
+      type: object
+      description: >-
+        Request body for `POST /search/records/by-value`. Give at least one constraint: `entityIds`, `name`,
+        `kinds`, a date, an amount or `currency`, a quantity or `dimension`, or a percentage. `currency` alone
+        finds any amount in that currency.
+      properties:
+        kinds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Value kinds, e.g. date, currency, percentage, dimension.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: A company, person or product the records must also mention.
+        entityIds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          description: Entity ids from `POST /search/entities` the records must mention.
+        dateFrom:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Earliest date mentioned, ISO 8601.
+        dateTo:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Latest date mentioned, ISO 8601.
+        amountMin:
+          type: number
+        amountMax:
+          type: number
+        currency:
+          type: string
+          minLength: 1
+          maxLength: 16
+          description: ISO 4217 code, e.g. USD.
+        quantityMin:
+          type: number
+          description: In SI units.
+        quantityMax:
+          type: number
+        dimension:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The quantity's dimension, e.g. time, length, mass, data.
+        percentMin:
+          type: number
+          description: As a fraction, 0.2 for 20%.
+        percentMax:
+          type: number
+        recordTypes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        sourceIds:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          description: App or knowledge base ids to look in.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+      additionalProperties: false
+    RecordsByEntitiesRequest:
+      type: object
+      description: Request body for `POST /search/records/by-entities`.
+      required: [mentions]
+      properties:
+        mentions:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items:
+            type: object
+            required: [name]
+            properties:
+              name:
+                type: string
+                minLength: 1
+                maxLength: 200
+              kind:
+                type: string
+                minLength: 1
+                maxLength: 64
+                description: person, organization, product, event, location, ... when known.
+            additionalProperties: false
+        match:
+          type: string
+          enum: [any, all]
+          default: any
+          description: '`all` keeps the records that mention every name.'
+        query:
+          type: string
+          maxLength: 1000
+          description: What to look for inside those records; the names when omitted.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+          description: Passages to return.
+        maxChunksPerRecord:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: At most this many passages from one record.
+      additionalProperties: false
+    RecordsByEntitiesResponse:
+      type: object
+      required: [entities, chunks, incomplete]
+      properties:
+        entities:
+          type: string
+          description: How each name was resolved, with how many readable records mention it and the look-alikes that are not the same.
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetrieveChunk'
+        incomplete:
+          type: boolean
+          description: True when part of the search could not run.
+        message:
+          type: string
+          nullable: true
+          description: Why `chunks` is empty, when the search gave a reason.
+      additionalProperties: false
     EntityNeighborsRequest:
       type: object
       description: Request body for `POST /search/entities/neighbors`.
@@ -40651,6 +41043,78 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/purge-batch:
+    post:
+      tags:
+        - Internal Storage
+      summary: Remove the paid-result folders of up to 100 records in one call (service-to-service)
+      description: |
+        The same removal as `DELETE /document/internal/paid-results/{recordId}` without `before`, for many
+        records at once, so that a re-purge of a large delete costs one request per 100 records instead of
+        one per record. The organization is the scoped token's; a body that names one (or any other field)
+        is refused. Each record gets its own result, so one folder that cannot be removed never hides the
+        others: the caller repeats only the ones that failed. A record with nothing stored is a success,
+        and so is a repeat.
+      operationId: internalPaidResultsPurgeBatch
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - recordIds
+              properties:
+                recordIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  uniqueItems: true
+                  items:
+                    type: string
+                    pattern: '^[A-Za-z0-9_-]{1,128}$'
+                    not:
+                      const: org
+      responses:
+        '200':
+          description: One result per requested record, in request order. The call is 200 even when some records failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - results
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - recordId
+                        - purged
+                      properties:
+                        recordId:
+                          type: string
+                        purged:
+                          type: boolean
+                        error:
+                          type: string
+                          description: Present when `purged` is false.
+        '400':
+          description: A record id is not valid, one is repeated, there are none or more than 100, or the body has a field other than `recordIds` (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /document/internal/paid-results/{recordId}/purge-cutoff:
     post:
       tags:
@@ -42506,7 +42970,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: Connector service unavailable or connection refused
+          description: |
+            Connector service unavailable or connection refused, or (with `X-Record-Content-Open: 1`)
+            the record's connector could not be read because the database was unreachable. Safe to retry.
           content:
             application/json:
               schema:
@@ -43094,6 +43560,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/stream/record/{recordId}:
+    # Response headers on this operation (ETag, Content-Range, Retry-After, ...) are described in
+    # prose only. Declaring one under `headers:` changes the TypeScript SDK's return type to
+    # {headers, result} and breaks every caller; SDK Tests' surface check fails on it.
     get:
       tags:
         - Knowledge Base
@@ -43256,6 +43725,15 @@ paths:
           description: |
             The record has no file content the connector service can fetch, for example a
             folder: `{"error": "Could not retrieve this item right now. Please try again later."}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '503':
+          description: |
+            The record, its organization or its connector could not be read because the database
+            was unreachable. The record may well exist. The response carries `Retry-After` (seconds,
+            usually 5); retry after that long.
           content:
             application/json:
               schema:
@@ -58298,6 +58776,673 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: The connector service could not be reached. Safe to retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/mine:
+    get:
+      tags:
+        - Connector Instances
+      summary: List the per-user connectors you can connect your account to
+      description: |
+        The caller's organization's active team connectors in per-user mode, each with whether
+        the caller has connected their own account. Only ids, names and types are returned. Any
+        member of the organization may call it.
+      operationId: listMyPerUserConnectors
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The per-user connectors
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connectors]
+                properties:
+                  connectors:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/ConnectorUserConnectionStatus'
+                        - type: object
+                          required: [connectorId, name, type, optedOut, invited]
+                          properties:
+                            connectorId:
+                              type: string
+                            name:
+                              type: string
+                            type:
+                              type: string
+                            optedOut:
+                              type: boolean
+                              description: True when the caller asked not to be reminded to connect.
+                            invited:
+                              type: boolean
+                              description: True when an admin has asked the caller to connect.
+  /connectors/{connectorId}/user-access:
+    parameters:
+      - name: connectorId
+        in: path
+        required: true
+        description: Connector instance ID (`_key` of the instance).
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+    get:
+      tags:
+        - Connector Instances
+      summary: Get your own connection to a per-user connector
+      description: |
+        A team connector in per-user mode shows each user only what the source returns to that
+        user's own account. This returns whether the caller has connected their account, without
+        the credential. Any member of the connector's organization may call it. A connector that
+        does not exist, belongs to another organization, or is not in per-user mode gets `404`.
+      operationId: getMyConnectorConnection
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The caller's connection, if any
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorUserConnectionStatus'
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Connector Instances
+      summary: Connect your own account to a per-user connector
+      description: |
+        Stores the caller's own credential for the connector's source (for Notion, a personal
+        access token). It is accepted only when it belongs to the same workspace as the connector
+        and to an account whose email is the caller's PipesHub email, and when no other user has
+        connected that account. A sync is requested so the caller's content appears soon.
+      operationId: connectMyConnectorAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                  description: The caller's own credential for the source. It is never returned.
+      responses:
+        '200':
+          description: Connected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorUserConnectionStatus'
+        '400':
+          description: The credential cannot be connected (another workspace or person, not a personal credential, or refused by the source)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Another user has already connected this source account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The source could not be reached to check the credential. Safe to retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - Connector Instances
+      summary: Disconnect your own account from a per-user connector
+      description: |
+        Deletes the caller's credential and removes their access to the connector's content at
+        once. Content no other connected user can open is deleted at the next sync.
+      operationId: disconnectMyConnectorAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: Disconnected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorUserConnectionStatus'
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/oauth/authorize:
+    parameters:
+      - name: connectorId
+        in: path
+        required: true
+        description: Connector instance ID (`_key` of the instance).
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+    get:
+      tags:
+        - Connector Instances
+      summary: Start signing in to a per-user connector with your own account
+      description: |
+        Returns the source's sign-in URL for the caller, using the connector's own OAuth app. The
+        source sends the browser back to the connector OAuth callback page, which completes the
+        sign-in through `GET /connectors/oauth/callback`; only the user who started the sign-in can
+        complete it. The account is checked as for `POST /connectors/{connectorId}/user-access`.
+        For Notion, the user picks the pages to share, and only those (and their sub-pages) reach them.
+      operationId: startMyConnectorSignIn
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: The sign-in URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl:
+                    type: string
+                    format: uri
+        '400':
+          description: The connector has no OAuth app to sign in with; connect with a token instead
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/users:
+    get:
+      tags:
+        - Connector Instances
+      summary: List who has connected to a per-user connector
+      description: Org admins only. Credentials are never returned. Anyone else gets `404`.
+      operationId: listConnectorUserConnections
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      responses:
+        '200':
+          description: Every user's connection
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connections]
+                properties:
+                  connections:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConnectorUserConnection'
+        '404':
+          description: Not an admin, or no per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/users/{userId}:
+    delete:
+      tags:
+        - Connector Instances
+      summary: Remove a user's connection to a per-user connector
+      description: Org admins only. Deletes the user's credential and removes their access at once.
+      operationId: removeConnectorUserConnection
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed:
+                    type: boolean
+        '404':
+          description: Not an admin, or no per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/roster:
+    get:
+      tags:
+        - Connector Instances
+      summary: List everyone who could connect to a per-user connector
+      description: |
+        Org admins only; anyone else gets `404`. Each person in the source's member list (read at
+        the last sync), plus anyone who connected or was invited, with their connection and
+        invitation state. A PipesHub account that is in none of those is not listed, and neither is
+        the caller. Sorted by status (`needs_reconnect`, `not_invited`, `invited`, `opted_out`,
+        `connected`, `no_account`), then by name or email. Returns one page; `counts` covers everyone
+        and `total` is how many match `q`. Credentials are never returned.
+      operationId: getConnectorUserRoster
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+        - name: q
+          in: query
+          required: false
+          description: Only people whose name or email contains this (case-insensitive)
+          schema:
+            type: string
+            maxLength: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: The roster
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [membersUpdatedAt, people, counts, total]
+                properties:
+                  membersUpdatedAt:
+                    type: integer
+                    format: int64
+                    nullable: true
+                    description: When a sync last read the source's member list (epoch ms); null if never
+                  people:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConnectorUserRosterPerson'
+                  counts:
+                    type: object
+                    description: People per status, over everyone (not only this page or `q`)
+                    additionalProperties:
+                      type: integer
+                  total:
+                    type: integer
+                    description: How many people match `q` (everyone without it)
+        '404':
+          description: Not an admin, or no per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/invites:
+    post:
+      tags:
+        - Connector Instances
+      summary: Ask people to connect their account to a per-user connector
+      description: |
+        Org admins only; anyone else gets `404`. Sends each person an in-app notification and an
+        email (best effort). `all` reaches every person on the roster with a PipesHub account who
+        is not connected, has not opted out and was not sent anything in the last day; listed
+        `userIds` also reach people who opted out.
+      operationId: inviteConnectorUsers
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [userIds]
+                  properties:
+                    userIds:
+                      type: array
+                      minItems: 1
+                      maxItems: 500
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 128
+                - type: object
+                  additionalProperties: false
+                  required: [all]
+                  properties:
+                    all:
+                      type: boolean
+                      enum: [true]
+      responses:
+        '200':
+          description: The invitations sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent, emailed, queued, skipped]
+                properties:
+                  sent:
+                    type: integer
+                  emailed:
+                    type: integer
+                    nullable: true
+                    description: |
+                      Lower than `sent` when email is not set up or failed; the in-app notification still went.
+                      Null when `queued`, as the emails are still being sent.
+                  queued:
+                    type: boolean
+                    description: True for `all`, which is sent in the background.
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      required: [userId, reason]
+                      properties:
+                        userId:
+                          type: string
+                        reason:
+                          type: string
+                          enum: [connected, not_found, opted_out, recently_sent, not_sent]
+        '400':
+          description: Invalid body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not an admin, or no per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/reminders:
+    post:
+      tags:
+        - Connector Instances
+      summary: Turn reminders to connect your account on or off
+      description: Sets "Don't remind me" for the caller on this connector.
+      operationId: setMyConnectorReminders
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [optedOut]
+              properties:
+                optedOut:
+                  type: boolean
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [optedOut]
+                properties:
+                  optedOut:
+                    type: boolean
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/link/info:
+    post:
+      tags:
+        - Connector Instances
+      summary: Describe an emailed connect link
+      description: Public; the link token is the credential. Rate limited per address.
+      operationId: getConnectAccountLinkInfo
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectAccountLinkToken'
+      responses:
+        '200':
+          description: The connector and account the link is for
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connectorName, sourceType, email, connected, signInAvailable, expiresAt]
+                properties:
+                  connectorName:
+                    type: string
+                  sourceType:
+                    type: string
+                  email:
+                    type: string
+                  connected:
+                    type: boolean
+                  signInAvailable:
+                    type: boolean
+                  expiresAt:
+                    type: integer
+                    format: int64
+                    description: Epoch ms
+        '404':
+          description: The link has expired or was already used
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/link/authorize:
+    post:
+      tags:
+        - Connector Instances
+      summary: Start signing in from an emailed connect link
+      description: Public; the link token is the credential. Returns the source's sign-in URL. Rate limited per address.
+      operationId: authorizeConnectAccountLink
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectAccountLinkToken'
+      responses:
+        '200':
+          description: The sign-in URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl:
+                    type: string
+                    format: uri
+        '400':
+          description: The connector has no OAuth app to sign in with
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The link has expired or was already used
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/link/complete:
+    post:
+      tags:
+        - Connector Instances
+      summary: Finish a sign-in started from an emailed connect link
+      description: |
+        Public; called by the OAuth callback page with the source's `code` and `state`. Always
+        answers 200 with whether the account was connected. Rate limited per address.
+      operationId: completeConnectAccountLink
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, state]
+              properties:
+                code:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+                state:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+      responses:
+        '200':
+          description: The outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success]
+                properties:
+                  success:
+                    type: boolean
+                  connectorName:
+                    type: string
+                  error_message:
+                    type: string
+        '429':
+          description: Too many requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/link/opt-out:
+    post:
+      tags:
+        - Connector Instances
+      summary: Stop reminders from an emailed connect link
+      description: Public; the link token is the credential. Rate limited per address.
+      operationId: optOutConnectAccountLink
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectAccountLinkToken'
+      responses:
+        '200':
+          description: Reminders stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [optedOut]
+                properties:
+                  optedOut:
+                    type: boolean
+        '404':
+          description: The link has expired or was already used
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests
           content:
             application/json:
               schema:
@@ -78493,6 +79638,339 @@ paths:
           description: The AI search service did not answer in time.
         '503':
           description: The AI search service could not be reached, or the lookup failed or timed out. This is not an empty result; try again.
+
+  /search/entities/capabilities:
+    get:
+      tags:
+        - Semantic Search
+      summary: Which entity lookups the caller is served
+      description: |
+        Which of the entity lookups below this deployment, organisation and caller
+        are served. They depend on what the deployment and organisation turn on:
+
+        - `entitySearch`, `entityRecords`: an entity store with this organisation's
+          entities in it.
+        - `namedEntities`, `coMentions`, `recordsByValue`: named-entity extraction
+          (`HIGH_ACCURACY_MODE`, or the organisation's Labs setting).
+        - `recordsByEntities`: both of the above and the deployment's
+          `ENTITY_SEARCH_TOOL` switch.
+        - `recordsByPerson`: always.
+
+        The MCP server lists only the entity tool actions marked `true`. Every lookup
+        also checks its own condition, so calling one that is `false` answers 404.
+      operationId: entityCapabilities
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      responses:
+        '200':
+          description: The lookups this caller is served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityCapabilities'
+        '400':
+          description: The connected app's knowledge limit is too large to resolve.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: Access could not be checked, or the AI search service could not be reached; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/entities/records:
+    post:
+      tags:
+        - Semantic Search
+      summary: List an entity's records
+      description: |
+        Every record connected to one entity that the caller can read, newest first,
+        in pages: every record tagged with a department, category, subcategory, topic
+        or language, every record directly inside a record group, every record naming
+        a person, every record of an organisation's account or naming it, every record
+        that mentions a named entity, or the record itself for a `record` entity.
+
+        The listing is returned as text, as the assistant reads it, with the next
+        page's call at its end. An entity the caller cannot reach and an entity with
+        no readable records answer the same way.
+      operationId: listEntityRecords
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntityRecordsRequest'
+            examples:
+              topic:
+                summary: Records tagged with a topic
+                value:
+                  entityId: "0c9b3e0e-6f4e-4f07-a6d3-2a8c1d7e9b11"
+                  entityType: topic
+      responses:
+        '200':
+          description: The listing, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example an unsupported `entityType`, `named_entity` while named-entity extraction is off, or a cursor from another listing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: Nothing has been indexed into the entity store for this organisation yet, so entity lookups are not served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/entities/co-mentioned:
+    post:
+      tags:
+        - Semantic Search
+      summary: List the entities mentioned with an entity
+      description: |
+        The named entities (people, organisations, products, places, events, ...)
+        mentioned in the readable records that mention one entity, with how many of
+        those records mention each, most first. Pass every id `POST /search/entities`
+        returned for that entity, aliases included.
+      operationId: listCoMentionedEntities
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoMentionedEntitiesRequest'
+            examples:
+              people:
+                summary: People mentioned with a company
+                value:
+                  entityIds: ["7d1f0a52-55c2-4a8e-9f1c-0b6e3f2a9d40"]
+                  kinds: ["person"]
+      responses:
+        '200':
+          description: The entities, most mentioned first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example no `kinds` this lookup can list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: Named-entity extraction is off for this organisation (it is on under `HIGH_ACCURACY_MODE` or with the Labs setting), so this lookup is not served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/records/by-person:
+    post:
+      tags:
+        - Semantic Search
+      summary: List the records linked to a person
+      description: |
+        The records the connectors link to a person by role (assignee, reporter,
+        creator, author, owner, editor, reviewer, recipient, lead, mentioned,
+        involved) that the caller can read, newest first. `person` is a full name, an
+        email, or `me`; several people with one name are listed to pick from by email.
+        Served in every deployment.
+      operationId: listRecordsByPerson
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordsByPersonRequest'
+            examples:
+              mine:
+                summary: Tickets assigned to the caller
+                value:
+                  person: me
+                  roles: [assignee]
+                  recordTypes: [TICKET]
+      responses:
+        '200':
+          description: The listing, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example an unknown role or a cursor from another listing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/records/by-value:
+    post:
+      tags:
+        - Semantic Search
+      summary: List the records that mention a typed value
+      description: |
+        The records the caller can read that mention a date range, an amount in a
+        currency, a quantity or a percentage, however the record writes it, most
+        recently modified first, each with the values that matched.
+      operationId: listRecordsByValue
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordsByValueRequest'
+            examples:
+              amount:
+                summary: Amounts over 50,000 USD
+                value:
+                  amountMin: 50000
+                  currency: USD
+      responses:
+        '200':
+          description: The listing, most recently modified first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example no constraint at all, or an inverted range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: Named-entity extraction is off for this organisation (it is on under `HIGH_ACCURACY_MODE` or with the Labs setting), so this lookup is not served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/records/by-entities:
+    post:
+      tags:
+        - Semantic Search
+      summary: Search inside the records that mention named entities
+      description: |
+        Each name is linked to the entities extracted from the documents: an exact
+        name settles it, and look-alikes go through one model check, so "Acme
+        Robotics" never returns "Acme Financial". Then the best passages for `query`
+        (the names, when it is omitted) are returned from inside the readable records
+        that mention them: any of them, or every one of them for `match: all`.
+        `entities` says how each name was resolved.
+      operationId: searchRecordsByEntities
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordsByEntitiesRequest'
+            examples:
+              together:
+                summary: Records naming two companies
+                value:
+                  mentions:
+                    - name: Acme Robotics
+                      kind: organization
+                    - name: Globex
+                  match: all
+                  query: renewal terms
+      responses:
+        '200':
+          description: How each name was resolved, and the best passages inside the records naming them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordsByEntitiesResponse'
+        '400':
+          description: The request is invalid, for example no names.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: This deployment does not serve this search, which needs the entity store, named-entity extraction and the `ENTITY_SEARCH_TOOL` switch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
 
   /search/updateAppConfig:
     post:

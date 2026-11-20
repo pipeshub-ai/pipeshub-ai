@@ -66,6 +66,7 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
 )
+from app.api.middlewares.request_log import add_request_log_fields, mark_request_failure
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -158,6 +159,7 @@ from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildConflictError,
     acquire_rebuild_lock,
     assert_no_indexing_in_flight,
+    precision_wait_in_force,
     list_rebuild_apps,
     release_rebuild_lock,
     schedule_vector_store_job_async,
@@ -220,12 +222,18 @@ from app.utils.oauth_config import (
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
+from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.utils.user_lookup import (
+    get_document_or_503,
+    get_org_or_503,
+    get_record_or_503,
+    get_user_or_503,
+)
 
 logger = create_logger("connector_service")
 
@@ -650,7 +658,7 @@ async def _resolve_record_content_response(
         )
 
     connector_id = record.connector_id
-    connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    connector_instance = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
     refuse_connector_state(connector_instance, loaded=True)
 
     container: ConnectorAppContainer = request.app.container
@@ -848,7 +856,7 @@ async def get_record_content_internal(
                 detail="Token missing userId — this endpoint requires a user-bound token",
             )
 
-        record = await graph_provider.get_record_by_id(record_id)
+        record = await get_record_or_503(graph_provider, record_id)
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
@@ -1468,7 +1476,7 @@ async def get_signed_url(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
 
-        record = await graph_provider.get_record_by_id(record_id)
+        record = await get_record_or_503(graph_provider, record_id)
         if not record:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
@@ -1533,7 +1541,7 @@ async def stream_record_internal(
                 detail="Missing orgId in token"
             )
 
-        record_task = graph_provider.get_record_by_id(record_id)
+        record_task = get_record_or_503(graph_provider, record_id)
         org_task = get_org_or_503(graph_provider, org_id)
         record, org = await asyncio.gather(record_task, org_task)
 
@@ -1589,7 +1597,7 @@ async def stream_record_internal(
             return Response(content=buffer or b'', media_type=mime_type)
 
         connector_id = record.connector_id
-        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        connector_instance = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
         if not connector_instance:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
@@ -1692,9 +1700,7 @@ async def download_file(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Get record details
-        record = await graph_provider.get_record_by_id(
-            record_id
-        )
+        record = await get_record_or_503(graph_provider, record_id)
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
@@ -1723,7 +1729,7 @@ async def download_file(
             graph_provider, request.app.container.config_service(), org_id, user_id, connector_id
         )
         # Get connector instance to check scope and existence
-        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        connector_instance = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
         connector_type = connector_instance.get("type", None) if connector_instance else None
         if not connector_instance or connector_type is None:
             raise HTTPException(
@@ -1774,9 +1780,7 @@ async def stream_record(
         user_id = user.get("userId")
 
         org_task = get_org_or_503(graph_provider, org_id)
-        record_task = graph_provider.get_record_by_id(
-            record_id
-        )
+        record_task = get_record_or_503(graph_provider, record_id)
         org, record = await asyncio.gather(org_task, record_task)
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
@@ -2082,7 +2086,7 @@ async def _refuse_connector_state_for_open(graph_provider: IGraphDBProvider, doc
         Connectors.ATTACHMENTS.value, Connectors.CODING_SANDBOX.value,
     ):
         return
-    connector_instance = await graph_provider.get_document(doc.get("connectorId"), CollectionNames.APPS.value)
+    connector_instance = await get_document_or_503(graph_provider, doc.get("connectorId"), CollectionNames.APPS.value)
     refuse_connector_state(connector_instance)
 
 
@@ -3168,7 +3172,10 @@ async def _accept_vector_store_job(
     # the same VRID can interleave delete-then-upsert into duplicates.
     try:
         apps = await list_rebuild_apps(graph_provider, org_id=org_id)
-        await assert_no_indexing_in_flight(graph_provider, apps)
+        # A cleanup is how an index is moved to another weight precision: while indexing is waiting for the
+        # embedding precision its queued records are not work in flight, so only IN_PROGRESS ones are counted.
+        waiting_for_precision = operation == "cleanup" and await precision_wait_in_force(config_service)
+        await assert_no_indexing_in_flight(graph_provider, apps, waiting_for_precision=waiting_for_precision)
     except VectorStoreRebuildConflictError as exc:
         await release_rebuild_lock(lock, redis)
         raise HTTPException(
@@ -3189,6 +3196,7 @@ async def _accept_vector_store_job(
         if operation == "cleanup":
             job = start_vector_store_cleanup(
                 logger=logger,
+                config_service=config_service,
                 graph_provider=graph_provider,
                 kafka_service=kafka_service,
                 lock=lock,
@@ -3196,6 +3204,7 @@ async def _accept_vector_store_job(
                 org_id=org_id,
                 user_id=user_id,
                 apps=apps,
+                waiting_for_precision=waiting_for_precision,
             )
         else:
             data_store = await container.data_store()
@@ -7264,7 +7273,9 @@ async def handle_oauth_callback(
             error = None
 
         if error:
-            logger.error(f"OAuth error: {error}")
+            # The raw parameter is anyone's input: only a code a spec defines goes on the line.
+            add_request_log_fields(request, oauth_error=authorization_error_code(error))
+            mark_request_failure(request, None, error_class=authorization_error_class(error), reason="provider_error")
             return {
                 "success": False,
                 "error": error,
@@ -7306,6 +7317,18 @@ async def handle_oauth_callback(
                 "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=invalid_state"
             }
 
+        # A user signing in with their own account to a per-user connector, not the connector's own sign-in.
+        from app.connectors.api.user_access_router import (
+            complete_user_sign_in,
+            is_user_sign_in_state,
+        )
+
+        if is_user_sign_in_state(state_data):
+            return await complete_user_sign_in(
+                request, graph_provider, connector_id=connector_id, state=original_state, code=code,
+                base_url=base_url, settings_url=f"{base_url}{settings_base_path}",
+            )
+
         # ============================================================
         # 3. Authorization & Configuration Retrieval
         # ============================================================
@@ -7317,7 +7340,8 @@ async def handle_oauth_callback(
             is_admin=is_admin
         )
         if not instance:
-            logger.error(f"Instance {connector_id} not found or access denied")
+            # connector_id comes from the caller's state: kept off the line.
+            mark_request_failure(request, None, error_class="not_found", reason="instance_not_found")
             return {
                 "success": False,
                 "error": "instance_not_found",
@@ -7480,7 +7504,8 @@ async def handle_oauth_callback(
         }
 
     except Exception as e:
-        logger.error(f"Error handling OAuth callback: {e}", exc_info=True)
+        # Text-free: the exchange's errors quote the token URL with its query and the provider's answer.
+        mark_request_failure(request, e, reason="server_error", include_error_text=False)
 
         # Update instance authentication status on error
         if connector_id:

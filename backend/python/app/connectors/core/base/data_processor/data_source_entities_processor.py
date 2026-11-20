@@ -92,6 +92,7 @@ from app.connectors.core.base.data_processor.record_links import (
 )
 from app.models.permission import EntityType, Permission, PermissionType, read_role
 from app.modules.code_graph import deleted_files
+from app.modules.indexing.parse_now_marker import PARSE_NOW_STATUS
 from app.modules.indexing.record_diagnostics import FIRST_QUEUED_AT, INDEXING_ATTEMPTS, WriteKind
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.services.cache.invalidation_hooks import (
@@ -103,7 +104,7 @@ from app.services.cache.invalidation_hooks import (
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
-from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
+from app.services.graph_db.common.record_visibility import HAS_INDEXED_COPY, RecordVisibility, is_live_record
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
@@ -186,6 +187,9 @@ class SyncStamp:
             raise ReindexSuperseded(f"a sync of connector {self.connector_id} ran while this reindex read the source")
 
 
+#: How long a user-link pass's mark counts as a running pass (see `unless_synced_since`); the pass rewrites it 4 times as often.
+USER_LINK_MARK_TTL_MS = 120_000
+
 _REINDEX_STAMP: contextvars.ContextVar[SyncStamp | None] = contextvars.ContextVar("reindex_sync_stamp", default=None)
 
 
@@ -205,10 +209,16 @@ async def unless_synced_since(graph_provider: IGraphDBProvider, connector_id: st
     started_here = syncs_started(connector_id)
     # A failed read is an error, not a sign that a sync ran.
     app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+    # A running user-link pass, in any process, rewrites its mark every USER_LINK_MARK_TTL_MS / 4; a mark that is not older
+    # than the TTL may be one, whatever ran since. A pass that ended or crashed stops counting once its mark is that old.
+    # shortcut: the mark is the pass's clock and the age this process's; clocks more than 1/4 of the TTL apart can hide a
+    # running pass. Stamp the mark with the store's own time if hosts can drift that far.
+    link_mark = app.get(ConnectorStateKeys.USER_LINK_STARTED_AT) if app else None
     running = (
         not app
         or connector_sync_lock(connector_id).locked()
         or app.get("status") in (AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value)
+        or (link_mark is not None and get_epoch_timestamp_in_ms() - link_mark < USER_LINK_MARK_TTL_MS)
     )
     # Not the status: a sync queued for a slot has not read the source, and its start moves the start time.
     stamp = SyncStamp(connector_id, None if running else {
@@ -3368,6 +3378,7 @@ class DataSourceEntitiesProcessor:
         replace = replace_permissions or (
             permissions_fetched
             and existing_record is not None
+            and not record.adds_permissions
             and self._first_full_sync_visit(record.connector_id, PERMISSIONS_REWRITTEN, record.id)
         )
         await self._handle_record_permissions(record, permissions, tx_store, replace=replace)
@@ -7481,6 +7492,41 @@ class DataSourceEntitiesProcessor:
         if edges:
             await self._access_changed([connector_id])
 
+    async def drop_indexed_copies(self, records: list[Record], connector_id: str) -> None:
+        """Take records out of search until they are indexed again, then queue that: their stored copy holds
+        content that must no longer be served (search serves a record while it has an indexed copy)."""
+        live = [r for r in records if r.id]
+        for start in range(0, len(live), 500):
+            chunk = live[start:start + 500]
+            async with self.data_store_provider.transaction() as tx_store:
+                now = get_epoch_timestamp_in_ms()
+                updates = []
+                for r in chunk:
+                    stored = await tx_store.get_record_by_key(r.id, raise_on_error=True)
+                    # A stored parse-now copy is served by id too: it waits for the new copy like search does.
+                    fields = {"indexingStatus": ProgressStatus.QUEUED.value, "queuedAtTimestamp": now,
+                              HAS_INDEXED_COPY: False, PARSE_NOW_STATUS: ProgressStatus.QUEUED.value}
+                    updates.append({"id": r.id, **fields, **run_reference(stored, WriteKind.QUEUE, now)})
+                await tx_store.batch_update_nodes(updates, CollectionNames.RECORDS.value)
+        if live:
+            await self._access_changed([connector_id])
+            await self.reindex_existing_records(live)
+
+    async def resume_inheriting_permissions(
+        self, record_id: str, connector_id: str, *, parent_record_id: str | None = None,
+        record_group_id: str | None = None,
+    ) -> None:
+        """Undo stop_inheriting_permissions: inherit again from the parent record, or from the group when
+        the record hangs off it."""
+        async with self.data_store_provider.transaction() as tx_store:
+            if parent_record_id:
+                await tx_store.create_inherit_permissions_relation_record(record_id, parent_record_id)
+            elif record_group_id:
+                await tx_store.create_inherit_permissions_relation_record_group(record_id, record_group_id)
+            else:
+                return
+        await self._access_changed([connector_id])
+
     @retry_on_deadlock()
     async def delete_group_permission_from_record(self, record_id: str, group_external_id: str, connector_id: str) -> None:
         """Delete a group's (by its id at the source) permission edge to a record. A group the store does not hold
@@ -7697,6 +7743,40 @@ class DataSourceEntitiesProcessor:
             removed = await tx_store.remove_user_access_to_connector(connector_id, user.id)
         if removed:
             await self._access_changed([connector_id])
+        return removed
+
+    async def get_user_granted_records(self, connector_id: str, user_node_id: str) -> list[dict[str, Any]]:
+        """The connector's records the user (graph node id) holds a direct USER grant on. A failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_user_granted_records(connector_id, user_node_id)
+
+    @retry_on_deadlock()
+    async def remove_user_grants(self, connector_id: str, user_node_id: str, record_ids: list[str]) -> None:
+        """Delete the user's own direct grants on these records; everyone else's stay."""
+        if not record_ids:
+            return
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            await tx_store.batch_delete_edges([
+                {
+                    "from_id": user_node_id,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": record_id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                }
+                for record_id in record_ids
+            ], collection=CollectionNames.PERMISSION.value)
+
+    @retry_on_deadlock()
+    async def withdraw_user_from_connector(self, connector_id: str, user_node_id: str) -> int:
+        """Take away everything the user holds on the connector directly: their grants and their link to it.
+        For a per-user connection that was revoked, went stale or was disconnected."""
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            removed = await tx_store.remove_user_access_to_connector(connector_id, user_node_id)
+            await tx_store.delete_edge(
+                user_node_id, CollectionNames.USERS.value,
+                connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value,
+            )
         return removed
 
     @retry_on_deadlock()

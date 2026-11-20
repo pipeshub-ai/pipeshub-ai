@@ -97,7 +97,7 @@ def _only(*extensions: str) -> dict:
 
 
 async def test_a_not_modified_extensionless_page_is_classified_from_its_stored_copy_under_not_in(
-    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     # The 304 carries no Content-Type and the URL no extension, so only the stored
     # record says this page is text; read as html, "not in txt" would keep it.
@@ -107,7 +107,7 @@ async def test_a_not_modified_extensionless_page_is_classified_from_its_stored_c
     assert START_URL in db.pages()
 
     connector.config_service.filters = _exclude("txt")
-    checkpoints.sync_points.clear()
+    # Incremental: a full sync fetches every page in full, so it never gets a 304.
     await connector.run_sync()
 
     assert site.not_modified == [START_URL]
@@ -115,7 +115,7 @@ async def test_a_not_modified_extensionless_page_is_classified_from_its_stored_c
 
 
 async def test_a_not_modified_extensionless_page_is_classified_from_its_stored_copy_under_in(
-    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     # Read as html, "in pdf" would delete a PDF the 304 says is unchanged.
     site.add(START_URL, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
@@ -124,7 +124,7 @@ async def test_a_not_modified_extensionless_page_is_classified_from_its_stored_c
     kept = db.pages()[START_URL]
 
     connector.config_service.filters = _only("pdf")
-    checkpoints.sync_points.clear()
+    # Incremental: a full sync fetches every page in full, so it never gets a 304.
     await connector.run_sync()
 
     assert site.not_modified == [START_URL]
