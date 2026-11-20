@@ -136,8 +136,13 @@ def kafka_class() -> type:
 
 
 async def detected(kind: str) -> bool:
+    # a mutated Kafka run that stalls would otherwise run to the step limit; the golden ends in 252 steps
+    world_args = {"max_steps": 300} if kind == "kafka" else {}
     try:
-        return world.constructor_state(kind) != golden(kind)["constructor"] or await world.collect(kind) != golden(kind)["run"]
+        return (
+            world.constructor_state(kind) != golden(kind)["constructor"]
+            or await world.collect(kind, **world_args) != golden(kind)["run"]
+        )
     except Exception:  # a mutation that breaks the consumer outright is noticed too
         return True
 
@@ -203,3 +208,57 @@ async def test_m7_an_observer_wired_with_no_bundle_is_noticed(monkeypatch: pytes
         "if True:\n        self.admission_backlog.observer = object()",
     )])
     assert await detected("kafka")
+
+
+@pytest.mark.parametrize("kind", ["kafka", "redis"])
+def test_the_factory_leaves_operator_key_fields_and_the_off_switch_alone_with_no_bundle(kind: str) -> None:
+    from app.services.messaging.scheduling.interface import FairSchedulerConfig
+
+    narrowed = make_with(kind, FairSchedulerConfig(enabled=True, key_fields=("orgId",)))
+    assert narrowed.fair_scheduler_config.key_fields == ("orgId",)
+    assert narrowed.key_extractor.inner.extract(world_message()) == ("o",)
+    off = make_with(kind, FairSchedulerConfig(enabled=False))
+    assert off._scheduler is None
+    assert list((off.kafka_config if kind == "kafka" else off.config).topics) == ["record-events"]
+
+
+def make_with(kind: str, fair: object) -> object:
+    from app.services.messaging.config import (
+        ConsumerType,
+        MessageBrokerType,
+        RedisStreamsConfig,
+    )
+    from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+    from app.services.messaging.messaging_factory import MessagingFactory
+
+    if kind == "kafka":
+        config = KafkaConsumerConfig(
+            topics=["record-events"], client_id="c", group_id="g", auto_offset_reset="earliest",
+            enable_auto_commit=False, bootstrap_servers=["k:1"],
+        )
+    else:
+        config = RedisStreamsConfig(host="h", port=1, client_id="c", group_id="g", topics=["record-events"])
+    broker = MessageBrokerType.KAFKA if kind == "kafka" else MessageBrokerType.REDIS
+    return MessagingFactory.create_consumer(
+        logging.getLogger("factory-operator"), config, broker_type=broker, consumer_type=ConsumerType.INDEXING,
+        fair_scheduler_config=fair,
+    )
+
+
+async def test_q1_a_factory_that_resets_operator_key_fields_with_no_bundle_is_noticed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.messaging.messaging_factory import MessagingFactory
+
+    apply(monkeypatch, MessagingFactory, "create_consumer", [(
+        "    effective_fair_config = fair_scheduler_config or _fair_scheduler_config_from_env()\n",
+        "    effective_fair_config = fair_scheduler_config or _fair_scheduler_config_from_env()\n"
+        "    effective_fair_config = dataclasses.replace(effective_fair_config, key_fields=('orgId', 'connectorId'))\n",
+    )])
+    with pytest.raises(AssertionError):
+        test_the_factory_leaves_operator_key_fields_and_the_off_switch_alone_with_no_bundle("kafka")
+
+
+async def test_q3_a_queue_claim_that_reverses_each_batch_is_noticed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.messaging.postgres.queue import PgQueue
+
+    apply(monkeypatch, PgQueue, "claim", [("key=lambda d: d.message_id", "key=lambda d: -d.message_id")])
+    assert await detected("pg")

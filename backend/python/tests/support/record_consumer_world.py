@@ -468,6 +468,7 @@ async def run_pg(
     monkeypatch: Any = None,  # noqa: ANN401 - pytest's MonkeyPatch, or None for a plain process
     max_seconds: float = 30.0,
     on_claim: Callable[[Any], None] | None = None,
+    handler: Any = None,  # noqa: ANN401 - an async generator function, for a test that needs records to take unequal times
 ) -> tuple[Trace, Any, FakePgRuntime]:
     import os
 
@@ -490,8 +491,10 @@ async def run_pg(
     )
     queue = PgQueue(runtime)  # type: ignore[arg-type]
     consumer = pg_consumer.PgMessagingConsumer(LOGGER, config, indexing=True, queue=queue, **(consumer_kwargs or {}))
-    handler = Handler(turns=1)
+    handler = handler or Handler(turns=1)
     consumer.message_handler = handler
+    if on_claim is not None:
+        on_claim(consumer)
     consumer.running = True
     consumer._wake = asyncio.Event()
     consumer._ordered = any(
@@ -514,7 +517,7 @@ async def run_pg(
             os.environ.pop("PG_QUEUE_ORDERED_TOPICS", None)
         else:
             os.environ["PG_QUEUE_ORDERED_TOPICS"] = saved_ordered
-    trace = Trace(dispatch=sorted(handler.seen))
+    trace = Trace(dispatch=list(handler.seen))
     trace.extra["statements"] = [s for s in runtime.statements if s[0] in {"claim", "lock"}]
     trace.extra["claim_sql"] = pg_claim_sql()
     return trace, consumer, runtime

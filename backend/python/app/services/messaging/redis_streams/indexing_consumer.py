@@ -3436,7 +3436,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             extra = [t for t in streams if _LANE_SUFFIX.sub("", t) in self._fairness.extra_topics]
             topics = list(self.config.topics)
             start = self._read_offset % len(topics)
-            chosen = sorted(extra, key=lambda t: (topics.index(t) - start) % len(topics))[: extra_budget // per_stream]
+            chosen = sorted(extra, key=lambda t: (topics.index(t) - start) % len(topics))[: max(0, extra_budget) // per_stream]
             if chosen:
                 self._read_offset = topics.index(chosen[-1]) + 1
             streams = {t: ">" for t in streams if t not in extra or t in chosen}

@@ -2487,12 +2487,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         buffer_room = self._fairness.buffer_room if self._fairness else None
         for entity in remembered.entities():
             free = cap - scheduler.pending_count_for(entity)
-            shared = buffer_room(entity, scheduler) if buffer_room else None  # less what this plan took from its bucket
+            shared = buffer_room(entity, scheduler) if buffer_room else None
+            chunk = min(cap // 2, remembered.count(entity))
             if shared is not None:
-                free = min(free, shared[1] - planned.get(shared[0], 0))
+                # Less what this plan took from its bucket; a chunk is never more than the bucket has left to give.
+                left = shared[1] - planned.get(shared[0], 0)
+                free, chunk = min(free, left), min(chunk, left)
             # Refilled in chunks, not a message at a time as the connector's
             # buffered work is dispatched: each fetch is a broker round trip.
-            if free < max(1, min(cap // 2, remembered.count(entity))):
+            if free < max(1, chunk):
                 continue
             take = min(free, room, _FETCH_BACK_BATCH)
             if take <= 0:

@@ -13,7 +13,7 @@ import json
 import logging
 import re
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -208,10 +208,12 @@ class CountingFetcher:
         return await self.inner.fetch(wanted, **kwargs)
 
 
-async def fetched_per_buffered(seed: int, limit: int) -> float:
-    """Messages fetched back over messages buffered from remembered positions, for a world of two orgs whose
-    connectors share each org's room."""
-    messages = world.generate_messages(seed, 900, orgs=2, hot_share=0.5)
+async def fetch_world(
+    seed: int, orgs: int, count: int, limit: int, cap: int, buffered: int, hot_share: float = 0.5
+) -> tuple[float, int]:
+    """(messages fetched back over messages buffered from remembered positions, records that never ran) for a world
+    whose orgs each have one bucket of ``limit`` places shared by the org's connectors."""
+    messages = world.generate_messages(seed, count, orgs=orgs, hot_share=hot_share)
     state: dict[str, Any] = {"pops": 0}
 
     def watch(run: Any, step: int) -> None:  # noqa: ANN401
@@ -229,37 +231,74 @@ async def fetched_per_buffered(seed: int, limit: int) -> float:
 
         remembered.pop = counting_pop
 
-    await world.run_kafka(
-        messages, consumer_kwargs={"fairness": bundle(buffer_room=OrgRoom(limit))}, on_step=watch,
-        fair=world.fair_config(max_per_entity_messages=40, max_buffered_messages=200),
+    trace = await world.run_kafka(
+        messages, consumer_kwargs={"fairness": bundle(buffer_room=OrgRoom(limit))}, on_step=watch, max_steps=3_000,
+        fair=world.fair_config(max_per_entity_messages=cap, max_buffered_messages=buffered),
     )
-    return state["fetcher"].fetched / max(1, state["pops"])
+    return state["fetcher"].fetched / max(1, state["pops"]), len({m.record_id for m in messages} - set(trace.dispatch))
 
 
-FETCH_WORLDS = [(21, 25), (22, 40), (23, 60), (24, 30), (25, 50), (26, 45)]
+# (seed, orgs, records, org room, per-connector cap, buffer). The first five have an org room below cap // 2: the
+# chunk threshold used to be out of their reach, so their remembered positions were never fetched back.
+FETCH_WORLDS = [
+    (31, 5, 700, 16, 60, 300), (32, 3, 700, 27, 60, 120), (33, 2, 700, 26, 60, 500), (34, 6, 700, 21, 60, 300),
+    (35, 5, 700, 15, 60, 200),
+    (36, 4, 700, 47, 20, 120), (37, 6, 700, 30, 20, 200), (38, 3, 700, 34, 30, 200), (39, 2, 700, 57, 60, 300),
+]
 
 
-async def test_fetch_back_fetches_at_most_twice_what_it_buffers_in_random_worlds() -> None:
-    ratios = [await fetched_per_buffered(seed, limit) for seed, limit in FETCH_WORLDS]
-    assert max(ratios) <= 2.0, ratios
+@pytest.mark.parametrize("params", FETCH_WORLDS, ids=lambda p: f"room{p[3]}-cap{p[4]}")
+async def test_fetch_back_drains_every_world_and_fetches_at_most_twice_what_it_buffers(params: tuple) -> None:
+    ratio, never_ran = await fetch_world(*params)
+    assert never_ran == 0, f"{never_ran} records never ran: their positions stayed remembered"
+    assert ratio <= 2.0, ratio
 
 
-async def test_fetch_back_without_the_running_bucket_total_fetches_more_than_twice_what_it_buffers(
+async def planned_total(connectors: int = 3, left: int = 12) -> int:
+    """Positions one fetch-back plan asks for when ``connectors`` connectors of one org (one shared bucket with
+    ``left`` places) each have 30 remembered."""
+    async with world.kafka_world(
+        [], fair=world.fair_config(max_per_entity_messages=40, max_buffered_messages=200), produce=False,
+        consumer_kwargs={"fairness": bundle(buffer_room=lambda key, s: ("org", left - s.pending_count_for(key[:1])))},
+    ) as run:
+        from aiokafka.structs import TopicPartition
+
+        tp = TopicPartition("record-events", 0)
+        for c in range(connectors):
+            for offset in range(30):
+                run.consumer._remembered.remember(("org-0", f"conn-{c}"), tp, c * 100 + offset)
+        asked: list[int] = []
+
+        class Fetcher:
+            async def fetch(self, wanted: dict, **_k: Any) -> tuple[dict, set]:  # noqa: ANN401
+                asked.append(sum(len(v) for v in wanted.values()))
+                return {}, set()
+
+        run.consumer._offset_fetcher = Fetcher()
+        await run.consumer._IndexingKafkaConsumer__fetch_back_remembered()
+        await asyncio.sleep(0.02)
+    return sum(asked)
+
+
+async def test_one_plan_asks_a_shared_bucket_for_no_more_than_its_room_in_total() -> None:
+    assert await planned_total() == 12
+
+
+async def test_a_plan_without_the_running_bucket_total_asks_for_more_than_twice_the_room(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Negative control: every entity planning the bucket's whole room, as the earlier rule did."""
+    """Negative control: every connector planning the bucket's whole room, as the earlier rule did."""
     from app.services.messaging.kafka.consumer.indexing_consumer import (
         IndexingKafkaConsumer,
     )
 
     name = "_IndexingKafkaConsumer__fetch_back_remembered"
     monkeypatch.setattr(IndexingKafkaConsumer, name, getattr(IndexingKafkaConsumer, name))
-    mutate(IndexingKafkaConsumer, name, [("shared[1] - planned.get(shared[0], 0)", "shared[1]")])
-    ratios = [await fetched_per_buffered(seed, limit) for seed, limit in FETCH_WORLDS]
-    assert max(ratios) > 2.0, ratios
+    mutate(IndexingKafkaConsumer, name, [("left = shared[1] - planned.get(shared[0], 0)", "left = shared[1]")])
+    assert await planned_total() > 2 * 12
 
 
-async def test_fetch_back_waits_while_the_room_left_is_below_the_chunk_threshold() -> None:
+async def test_fetch_back_takes_what_a_small_bucket_has_left_and_nothing_when_it_has_none() -> None:
     async with world.kafka_world(
         [], fair=world.fair_config(max_per_entity_messages=20, max_buffered_messages=200),
         consumer_kwargs={"fairness": bundle(buffer_room=lambda key, _s: ("b", ROOM["left"]))}, produce=False,
@@ -278,14 +317,13 @@ async def test_fetch_back_waits_while_the_room_left_is_below_the_chunk_threshold
                 return {}, set()
 
         consumer._offset_fetcher = Fetcher()
-        for left in (3, 9):
+        for left in (0, -2, 3, 12):
             ROOM["left"] = left
-            await consumer._IndexingKafkaConsumer__fetch_back_remembered()
-        assert asked == []  # the chunk threshold is min(cap // 2, remembered) = 10
-        ROOM["left"] = 12
-        await consumer._IndexingKafkaConsumer__fetch_back_remembered()
-        await asyncio.sleep(0.05)
-        assert asked == [12]
+            await consumer._IndexingKafkaConsumer__fetch_back_remembered()  # starts a fetch, or not
+            await asyncio.sleep(0.02)
+            await consumer._IndexingKafkaConsumer__fetch_back_remembered()  # takes its result
+        # room of 3, below the chunk threshold of min(cap // 2, remembered) = 10: still fetched, up to the room
+        assert asked == [3, 12]
 
 
 ROOM = {"left": 0}
@@ -345,6 +383,47 @@ async def test_with_no_budget_every_extra_stream_is_read_in_one_pass() -> None:
         run.consumer._xreadgroup_grouped = spy
         await world.redis_step(run)
     assert seen == [len(BASE_STREAMS) + len(EXTRA_STREAMS)]
+
+
+async def one_budget_pass(budget: int, room: int = 2000, offset: int = 0) -> list[str]:
+    """The streams one read phase reads, with 4 base streams, 40 extra ones and the given budget."""
+    from app.services.messaging.redis_streams.indexing_consumer import (
+        IndexingRedisStreamsConsumer,
+    )
+
+    fairness = bundle(extra_topics=("extra-events",), extra_read_budget=lambda _s: budget)
+    config = RedisStreamsConfig(
+        host="h", port=1, client_id="c", group_id="g", topics=[*BASE_STREAMS, *EXTRA_STREAMS], batch_size=500, block_ms=1
+    )
+    consumer = IndexingRedisStreamsConsumer(
+        logging.getLogger("edges"), config, fair_scheduler_config=world.fair_config(), fairness=fairness
+    )
+    consumer.redis = AsyncMock()
+    consumer.main_loop = asyncio.get_running_loop()
+    consumer.running = True
+    consumer._read_offset = offset
+    read: list[str] = []
+
+    async def grouped(streams: dict, count: int, block_ms: Any) -> list:  # noqa: ANN401
+        read.extend(streams)
+        return []
+
+    consumer._xreadgroup_grouped = grouped
+    consumer._IndexingRedisStreamsConsumer__buffer_room = lambda: room
+    consumer._IndexingRedisStreamsConsumer__drain_deferred = AsyncMock()
+    await consumer._IndexingRedisStreamsConsumer__read_phase()
+    return read
+
+
+@pytest.mark.parametrize("budget", [-100, -45, -1, 0, 1, 44])
+async def test_a_budget_below_one_batch_or_below_zero_reads_no_extra_stream(budget: int) -> None:
+    read = await one_budget_pass(budget)  # 44 streams share 2000 places: 45 per stream
+    assert [s for s in read if s in EXTRA_STREAMS] == []
+    assert [s for s in read if s in BASE_STREAMS] == BASE_STREAMS
+
+
+async def test_a_short_window_of_extra_streams_only_with_no_budget_left_reads_nothing_and_does_not_fail() -> None:
+    assert await one_budget_pass(0, room=2, offset=10) == []  # the window is two extra streams
 
 
 SWEEP_BASE = [f"record-events.{i}" for i in range(8)]
@@ -440,41 +519,69 @@ async def test_the_other_readings_of_the_cursor_starve_streams_and_are_noticed(
 
 
 # -- O-8: claim steps on the PostgreSQL queue ---------------------------------------------------------------------------
+class Uneven(world.Handler):
+    """Records take 0 to 60 ms, so some finish while others run on."""
+
+    async def __call__(self, message: Any) -> Any:  # noqa: ANN401
+        await asyncio.sleep(0.02 * (int(str(message.payload["recordId"]).split("-")[1]) % 4))
+        async for event in super().__call__(message):
+            yield event
+
+
 async def test_claim_steps_claim_one_topic_at_a_time_in_the_order_and_amounts_given() -> None:
-    messages = world.generate_messages(41, 300)
-    snapshots: list[dict[str, int]] = []
+    messages = world.generate_messages(41, 120)
+    seen: list[tuple[dict[str, int], dict[str, int]]] = []
+    holder: dict[str, Any] = {}
 
     def steps(free: int, in_flight: Any) -> list[tuple[str, int]]:  # noqa: ANN401
-        snapshots.append(dict(in_flight))
-        return [("aux-events", 2), ("record-events", free), ("ignored-because-full", 5)]
+        held = Counter(topic for topic, _id in holder["consumer"]._held)
+        seen.append((dict(in_flight), dict(held)))
+        return [("aux-events", 2), ("record-events", free), ("empty-events", 5)]
 
-    trace, _consumer, _runtime = await world.run_pg(messages, consumer_kwargs={"fairness": bundle(claim_steps=steps)})
+    trace, _consumer, _runtime = await world.run_pg(
+        messages, consumer_kwargs={"fairness": bundle(claim_steps=steps)}, on_claim=lambda c: holder.update(consumer=c),
+        handler=Uneven(),
+    )
     claims = [s[2] for s in trace.extra["statements"] if s[0] == "claim"]
     assert {m.record_id for m in messages} == set(trace.dispatch)
     assert claims and all(len(topics) == 1 for _group, topics, *_rest in claims)
-    assert {topics[0] for _group, topics, *_rest in claims} <= {"aux-events", "record-events"}
+    assert {topics[0] for _group, topics, *_rest in claims} <= {"aux-events", "record-events", "empty-events"}
     assert all(limit <= 2 for _g, topics, limit, *_rest in claims if topics == ["aux-events"])
+    assert all(limit <= 5 for _g, topics, limit, *_rest in claims if topics == ["empty-events"])
     assert all(limit >= 1 for *_x, limit, _v, _c in claims)
     # the first claim of a pass is the first step's topic
     assert claims[0][1] == ["aux-events"]
-    assert all(set(s) <= {"aux-events", "record-events"} and max(s.values(), default=0) <= 4 for s in snapshots)
-    assert snapshots
+    # the handlers in flight per topic are what the steps are told
+    assert all(told == held for told, held in seen)
+    assert any(told for told, _held in seen), "some pass starts while a handler is still running"
+    assert all(set(told) <= {"aux-events", "record-events"} for told, _held in seen)
 
 
 async def test_claim_steps_stop_once_the_free_places_are_used() -> None:
     messages = world.generate_messages(42, 60)
     asked: list[int] = []
+    calls: list[tuple[list[str], int]] = []
 
     def steps(free: int, _in_flight: Any) -> list[tuple[str, int]]:  # noqa: ANN401
         asked.append(free)
         return [("aux-events", 100), ("record-events", 100)]
 
-    trace, _c, _r = await world.run_pg(
-        messages, consumer_kwargs={"fairness": bundle(claim_steps=steps)}, batch_size=3, concurrency=3
+    def spy(consumer: Any) -> None:  # noqa: ANN401
+        real = consumer.queue.claim
+
+        async def claim(group: str, topics: list[str], who: str, limit: int, visibility: float, **kw: Any) -> Any:  # noqa: ANN401
+            calls.append((list(topics), limit))
+            return await real(group, topics, who, limit, visibility, **kw)
+
+        consumer.queue.claim = claim
+
+    await world.run_pg(
+        messages, consumer_kwargs={"fairness": bundle(claim_steps=steps)}, batch_size=3, concurrency=3, on_claim=spy
     )
-    claims = [s[2] for s in trace.extra["statements"] if s[0] == "claim"]
-    # with 3 places and 100 rows offered, the first topic's claim takes the whole pass; the second is not asked
-    assert claims[0][1] == ["aux-events"] and claims[0][2] <= 3
+    # 30 messages on each topic, 3 places a pass, 100 rows offered: while the first topic has rows, its claim takes
+    # the whole pass, and the second topic is not asked at all (not even for nothing)
+    assert calls[:10] == [(["aux-events"], 3)] * 10
+    assert all(limit > 0 for _topics, limit in calls)
     assert asked and max(asked) <= 3
 
 
@@ -493,6 +600,15 @@ async def test_the_bundles_observer_is_told_entered_and_left_once_each_per_wait(
         messages, consumer_kwargs={"fairness": bundle(observer=observer)},
         fair=world.fair_config(),
     )
+    assert observer.entries, "records wait for admission in this world"
+    assert len(observer.entries) == len(observer.exits)
+    assert sorted(map(repr, observer.entries)) == sorted(map(repr, observer.exits))
+
+
+async def test_the_bundles_observer_is_told_on_redis_streams_too() -> None:
+    observer = Observer()
+    messages = world.generate_messages(52, 300)
+    await world.run_redis(messages, consumer_kwargs={"fairness": bundle(observer=observer)})
     assert observer.entries, "records wait for admission in this world"
     assert len(observer.entries) == len(observer.exits)
     assert sorted(map(repr, observer.entries)) == sorted(map(repr, observer.exits))
