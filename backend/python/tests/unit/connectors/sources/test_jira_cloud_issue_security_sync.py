@@ -106,7 +106,7 @@ def _issue(
 
 def _present(members=None) -> IssueSecurityContext:
     return IssueSecurityContext(
-        knowledge=SchemeKnowledge.PRESENT, scheme_id="10002", members_readable=True,
+        knowledge=SchemeKnowledge.PRESENT, scheme_id="10002", members_readable=True, group_names_are_ids=False,
         members_by_level=members if members is not None else {"10102": [
             {"type": "group", "value": "group-1"},
             {"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9"}},
@@ -3972,12 +3972,42 @@ class TestAGroupPickerOnALeveledIssue:
         renamed = {**PICKED, "name": "approvers-renamed"}
         assert (await self._access(renamed, {"g-pick": [_users()[0]]}))[0] == AccessRule.OPEN
         ctx = _picker_context({"approvers": [_users()[0]]})
+        for browse in ([{"type": "reporter"}], []):  # with Browse naming people on each issue, and without
+            ctx.browse_holders = browse
+            record = _stored_ticket()
+            perms, skipped, _ = apply_issue_access_settled(
+                record, _picked_issue({"name": "approvers"})["fields"], is_subtask=False, project_key="PROJ", context=ctx,
+                user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
+            # No grant to "approvers": that name may be another group's id, whose members would read the issue.
+            assert (record.access_rule, record.access_group_external_id, perms) == (AccessRule.STRICT, "level:p-1:10102", [])
+            assert "groupCustomField" in skipped
+            assert (LEVEL_MEMBERS_UNREAD in skipped) == bool(browse)  # someone Browse names may be in it: unread
+
+    def test_data_center_names_its_groups_by_name(self) -> None:
+        """On Data Center a group's name is its id (its groups are keyed by name), so a picker entry naming one grants it."""
+        ctx = _picker_context(None)
+        ctx.group_names_are_ids, ctx.browse_holders = True, []
         record = _stored_ticket()
-        _, skipped, _ = apply_issue_access_settled(
-            record, _picked_issue({"name": "approvers"})["fields"], is_subtask=False, project_key="PROJ", context=ctx,
-            user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
-        assert (record.access_rule, record.access_group_external_id) == (AccessRule.STRICT, "level:p-1:10102")
-        assert LEVEL_MEMBERS_UNREAD in skipped
+        perms, skipped, _ = apply_issue_access_settled(
+            record, _picked_issue({"name": "jira-developers"})["fields"], is_subtask=False, project_key="PROJ",
+            context=ctx, user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
+        assert ([(p.entity_type, p.external_id) for p in perms], skipped) == ([(EntityType.GROUP, "jira-developers")], [])
+
+
+@pytest.mark.asyncio
+async def test_a_level_s_group_holder_without_an_id_is_never_granted_by_its_name() -> None:
+    """A group holder is "`parameter` : group name, `value` : group ID": one Jira sends without the id resolves by name to the
+    group listed with it, or to no group; a name may be another group's id, whose members would read the level's issues."""
+    c = _connector()
+    c._group_ids_by_name = {"devs": "group-1"}
+    members = {"isLast": True, "values": [
+        {"issueSecurityLevelId": "10102", "holder": {"type": "group", "parameter": "devs"}},
+        {"issueSecurityLevelId": "10102", "holder": {"type": "group", "parameter": "group-2"}}]}  # a name that is another id
+    c._call_with_retry = AsyncMock(side_effect=[_resp(200, SCHEME), _resp(200, members)])
+    ctx = await c._load_issue_security("PROJ", cached=False)
+    await c._write_level_groups(PROJECT_ID, "PROJ", ctx, ["10102"], {})
+    (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+    assert sorted(p.external_id for p in grants) == ["group-1", "unresolved-group-name:group-2"]
 
 
 class TestAGroupPickerMembershipChange:

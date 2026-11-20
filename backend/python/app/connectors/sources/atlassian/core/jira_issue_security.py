@@ -132,6 +132,9 @@ class IssueSecurityContext:
     # every group of the site was listed, so a group this map does not hold has no member (it was deleted).
     group_members: dict[str, list[Any] | None] | None = None
     groups_complete: bool = False
+    # Whether a group picker entry may name its group by name, as on Data Center, whose groups are keyed by name. Jira Cloud
+    # sets False: there ``groupId`` "uniquely identifies the group" (GroupName) and a name may be another group's id.
+    group_names_are_ids: bool = True
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -554,6 +557,7 @@ def _permissions_for_holder(
     seen: set[str],
     reporter_account: str | None = None,
     assignee_account: str | None = None,
+    names_are_ids: bool = True,
 ) -> tuple[list[Permission], bool, str | None]:
     """Return ``(grants, field_unreadable, skipped_type)``.
 
@@ -659,7 +663,9 @@ def _permissions_for_holder(
         unresolved = False
         for entry in _field_entries(value_at_field):
             if holder_type == HOLDER_GROUP_FIELD:
-                add_group(entry.get("groupId") or entry.get("name") or entry.get("value"))
+                group_id = _entry_group_id(entry, names_are_ids=names_are_ids)
+                add_group(group_id)
+                unresolved = unresolved or not group_id  # a group not named by id grants nobody: unread, not granted
             else:
                 email, inactive, account = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
@@ -683,7 +689,20 @@ def _holder_field_value(holder: dict[str, Any], fields: dict[str, Any]) -> tuple
     return (key is not None), (fields.get(key) if key is not None else None)
 
 
-def field_group_ids(holders: list[dict[str, Any]], fields: dict[str, Any]) -> tuple[set[str], bool]:
+def _entry_group_id(entry: dict[str, Any], *, names_are_ids: bool) -> str | None:
+    """The id of the group a group picker entry names: its ``groupId``, or, where names are ids, its name."""
+    group_id = entry.get("groupId")
+    if isinstance(group_id, str) and group_id:
+        return group_id
+    if not names_are_ids:
+        return None
+    fallback = entry.get("name") or entry.get("value")
+    return str(fallback) if fallback else None
+
+
+def field_group_ids(
+    holders: list[dict[str, Any]], fields: dict[str, Any], *, names_are_ids: bool = False,
+) -> tuple[set[str], bool]:
     """The ids of the groups this issue's group pickers select for a level's ``groupCustomField`` holders ("Grant for a
     user in the group selected in the specified custom field", api-group-permission-schemes), and whether one is not
     known: its field not returned, or an entry without ``groupId``, which "uniquely identifies the group" (GroupName,
@@ -697,8 +716,8 @@ def field_group_ids(holders: list[dict[str, Any]], fields: dict[str, Any]) -> tu
         present, value = _holder_field_value(holder, fields)
         unknown = unknown or not present
         for entry in _field_entries(value):
-            group_id = entry.get("groupId")
-            if isinstance(group_id, str) and group_id:
+            group_id = _entry_group_id(entry, names_are_ids=names_are_ids)
+            if group_id:
                 ids.add(group_id)
             else:
                 unknown = True
@@ -743,7 +762,7 @@ def browse_issue_holders(permission_grants: object) -> list[dict[str, Any]]:
 def browse_holder_grants(
     holders: list[dict[str, Any]], *, project_key: str, fields: dict[str, Any], user_by_id: dict[str, Any],
     reporter_email: str | None, assignee_email: str | None,
-    reporter_account: str | None = None, assignee_account: str | None = None,
+    reporter_account: str | None = None, assignee_account: str | None = None, names_are_ids: bool = True,
 ) -> list[Permission]:
     """The people a project's Browse holders name on this issue. A holder whose field is not
     in the payload grants nobody; it does not stop the others."""
@@ -753,7 +772,7 @@ def browse_holder_grants(
         portion, _unreadable, _skipped = _permissions_for_holder(
             holder, project_key=project_key, fields=fields, user_by_id=user_by_id, app_roles_mapping=None,
             reporter_email=reporter_email, assignee_email=assignee_email, seen=seen,
-            reporter_account=reporter_account, assignee_account=assignee_account,
+            reporter_account=reporter_account, assignee_account=assignee_account, names_are_ids=names_are_ids,
         )
         grants.extend(portion)
     return grants
@@ -770,6 +789,7 @@ def level_grants(
     assignee_email: str | None,
     reporter_account: str | None = None,
     assignee_account: str | None = None,
+    names_are_ids: bool = True,
 ) -> tuple[list[Permission], bool, list[str]]:
     grants: list[Permission] = []
     skipped: list[str] = []
@@ -788,6 +808,7 @@ def level_grants(
             seen=seen,
             reporter_account=reporter_account,
             assignee_account=assignee_account,
+            names_are_ids=names_are_ids,
         )
         if unreadable:
             return [], True, skipped
@@ -941,6 +962,7 @@ def apply_issue_access_settled(
             context.browse_holders or [], project_key=project_key, fields=fields or {},
             user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
             reporter_account=reporter_account, assignee_account=assignee_account,
+            names_are_ids=context.group_names_are_ids,
         ) if top_level else []
         record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
         record.rewrite_permissions = True
@@ -983,13 +1005,15 @@ def apply_issue_access_settled(
         assignee_email=assignee_email,
         reporter_account=reporter_account,
         assignee_account=assignee_account,
+        names_are_ids=context.group_names_are_ids,
     )
     if unreadable:
         return close()
     record.rewrite_permissions = True
     if grouped:
         record.access_group_external_id = level_group_external_id(project_id, level_id)
-        picked, picked_unknown = field_group_ids(context.members_by_level.get(level_id, []), fields or {})
+        picked, picked_unknown = field_group_ids(context.members_by_level.get(level_id, []), fields or {},
+                                                 names_are_ids=context.group_names_are_ids)
         # Only where the caller tracks group members (``group_members``) and so writes that record group.
         if context.browse_holders and context.group_members is not None and picked and not picked_unknown \
                 and not getattr(record, "is_placeholder", False):
@@ -1040,7 +1064,8 @@ def _reads_alone(
     # The same people the level's grants name, by account where the directory holds no email for them.
     browse = browse_holder_grants(context.browse_holders, project_key=project_key, fields=fields, user_by_id=users,
                                   reporter_email=reporter_email, assignee_email=assignee_email,
-                                  reporter_account=reporter_account, assignee_account=assignee_account)
+                                  reporter_account=reporter_account, assignee_account=assignee_account,
+                                  names_are_ids=context.group_names_are_ids)
     static, _ = level_group_grants(context.members_by_level.get(level_id, []), project_key=project_key,
                                    user_by_id=users, app_roles_mapping=app_roles_mapping)
     named = {_grant_key(g) for g in dynamic} | {_grant_key(g) for g in static if g.entity_type == EntityType.USER}
@@ -1050,7 +1075,8 @@ def _reads_alone(
         named |= readers
     # The members of the groups this issue's group pickers select are in the level on this issue (admin guide: "anyone
     # listed in a Group picker (single or multi-select) type field on a work item").
-    picked, picked_unread = field_group_ids(context.members_by_level.get(level_id, []), fields)
+    picked, picked_unread = field_group_ids(context.members_by_level.get(level_id, []), fields,
+                                            names_are_ids=context.group_names_are_ids)
     if context.group_members is not None:
         for group_id in picked:
             members = context.group_members.get(group_id, [] if context.groups_complete else None)

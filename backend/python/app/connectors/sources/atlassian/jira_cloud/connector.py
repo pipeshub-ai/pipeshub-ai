@@ -4931,6 +4931,7 @@ class JiraConnector(BaseConnector):
         context = IssueSecurityContext(
             knowledge=knowledge,
             scheme_id=scheme_id,
+            group_names_are_ids=False,  # GroupName.groupId "uniquely identifies the group"; a name may be another's id
             scheme_forbidden=response.status == HttpStatusCode.FORBIDDEN.value,
             defer_checkpoint=http_status_is_transient(response.status),
             read_status=response.status if knowledge == SchemeKnowledge.UNKNOWN else None,
@@ -4970,7 +4971,10 @@ class JiraConnector(BaseConnector):
             members = (True, index_members(values))
             if cached:
                 self._scheme_members[scheme_id] = members
-        context.members_readable, context.members_by_level = members
+        # A group holder is "`parameter` : group name, `value` : group ID" (api-group-permission-schemes): one with no id is
+        # resolved by name to the group listed with it, or to no group, never granted by its name (``_by_group_id``).
+        context.members_readable = members[0]
+        context.members_by_level = {lid: self._by_group_id(holders) for lid, holders in members[1].items()}
         context.custom_field_ids = custom_field_ids_from_members(context.members_by_level)
         return context
 
