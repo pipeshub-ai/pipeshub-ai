@@ -307,6 +307,27 @@ describe('GetSupportDialog', { timeout: 15000 }, () => {
     expect(decodeURIComponent(href)).toContain('Something is off here');
   });
 
+  it('sends an edited request under a new key, and an unchanged retry under the same one', async () => {
+    mocks.getContext.mockResolvedValue(context(true));
+    mocks.submit.mockRejectedValue({ statusCode: 503, message: 'Service unavailable' });
+    renderAndOpen();
+    await chooseArea('other');
+    typeDescription('Something is off here');
+    const keys = () => mocks.submit.mock.calls.map(([payload]) => (payload as { requestKey: string }).requestKey);
+
+    fireEvent.click(screen.getByRole('button', { name: 'support.send' }));
+    await screen.findByText('support.errors.send');
+    fireEvent.click(screen.getByRole('button', { name: 'support.send' }));
+    await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(2));
+    typeDescription('Something is off here, with more detail');
+    fireEvent.click(screen.getByRole('button', { name: 'support.send' }));
+    await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(3));
+
+    const [first, second, third] = keys();
+    expect(second).toBe(first);
+    expect(third).not.toBe(first);
+  });
+
   it('shows the server message for a rejected field and offers no email detour for it', async () => {
     mocks.getContext.mockResolvedValue(context(true));
     mocks.submit.mockRejectedValue({ statusCode: 400, message: 'Attachments can total up to 8 MB' });

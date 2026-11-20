@@ -4,6 +4,7 @@ import { AuthMiddleware } from '../../libs/middlewares/auth.middleware';
 import { FileProcessingType } from '../../libs/middlewares/file_processor/fp.constant';
 import { FileProcessorFactory } from '../../libs/middlewares/file_processor/fp.factory';
 import { createKeyedRateLimiter } from '../../libs/middlewares/rate-limit.middleware';
+import { requireSessionAuth } from '../../libs/middlewares/require-session-auth.middleware';
 import { ValidationMiddleware } from '../../libs/middlewares/validation.middleware';
 import { Logger } from '../../libs/services/logger.service';
 import { MailSenderService } from '../mail/services/mail.sender.service';
@@ -82,6 +83,8 @@ export function createSupportRouter(container: Container): Router {
   router.post(
     '/',
     auth,
+    // Each send emails support from the workspace's SMTP as the person, so a bearer token held by a client is not enough.
+    requireSessionAuth,
     ...attachmentUpload(),
     ValidationMiddleware.validate(createSupportRequestSchema),
     hourlyLimit(logger, 'support'),
@@ -103,6 +106,8 @@ export function createFeedbackRouter(container: Container): Router {
   router.post(
     '/',
     auth,
+    // Each send emails support from the workspace's SMTP as the person, so a bearer token held by a client is not enough.
+    requireSessionAuth,
     ...attachmentUpload(),
     ValidationMiddleware.validate(createFeedbackSchema),
     hourlyLimit(logger, 'feedback'),

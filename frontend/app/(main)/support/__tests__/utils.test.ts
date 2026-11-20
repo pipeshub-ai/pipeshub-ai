@@ -22,6 +22,25 @@ describe('buildMailto', () => {
     expect(href.length).toBeLessThanOrEqual(MAILTO_URL_LIMIT);
   });
 
+  it('keeps the generated details when the person typed a separator of their own', () => {
+    const written = `Intro
+
+---
+${'a'.repeat(5000)}`;
+    const { href } = buildMailto('help@example.test', 'S', message(written));
+
+    const body = decodeURIComponent(href.split('&body=')[1]);
+    expect(href.length).toBeLessThanOrEqual(MAILTO_URL_LIMIT);
+    expect(body.endsWith('Workspace: Acme')).toBe(true);
+    expect(body).toContain('Your reference: SUP-ABC234');
+  });
+
+  it('keeps the link within the limit when the subject is very long', () => {
+    const { href } = buildMailto('help@example.test', '問'.repeat(220), message('It broke.'));
+
+    expect(href.length).toBeLessThanOrEqual(MAILTO_URL_LIMIT);
+  });
+
   it('trims what the person wrote and keeps the details support needs', () => {
     const { href, shortened } = buildMailto('help@example.test', 'S', message('a'.repeat(5000)));
 

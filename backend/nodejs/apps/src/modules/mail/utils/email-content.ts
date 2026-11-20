@@ -77,13 +77,15 @@ export function getEmailContent(
       return sandboxCapacityAlert(templateData);
     case EmailTemplateType.ConnectorAccountConnect as string:
       return connectorAccountConnect(templateData);
-    case EmailTemplateType.SupportRequest:
+
+    // `as string`: the type is a plain string here, as for every case above.
+    case EmailTemplateType.SupportRequest as string:
       return supportRequest(templateData);
 
-    case EmailTemplateType.FeedbackReceived:
+    case EmailTemplateType.FeedbackReceived as string:
       return feedbackReceived(templateData);
 
-    case EmailTemplateType.FeedbackCopy:
+    case EmailTemplateType.FeedbackCopy as string:
       return feedbackCopy(templateData);
 
     default:

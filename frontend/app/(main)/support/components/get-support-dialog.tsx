@@ -206,8 +206,20 @@ function SupportDialog() {
     };
   };
 
+  // One key per distinct request: a retry of the same one is answered with the first result, an edited one must be sent.
+  const [attempt, setAttempt] = useState<{ base: string; fingerprint: string; key: string } | null>(null);
+
   const send = async () => {
     if (!context || !area || blocked || submitting) return;
+    const fingerprint = JSON.stringify([
+      area,
+      draft.description.trim(),
+      draft.includeErrors,
+      draft.files.map((file) => `${file.name}:${file.size}:${file.lastModified}`),
+    ]);
+    const previous = attempt?.base === draft.requestKey ? attempt : null;
+    const requestKey = !previous ? draft.requestKey : previous.fingerprint === fingerprint ? previous.key : newRequestKey();
+    setAttempt({ base: draft.requestKey, fingerprint, key: requestKey });
     setSubmitting(true);
     setSendError(null);
     setCanEmailInstead(false);
@@ -215,7 +227,7 @@ function SupportDialog() {
       const result = await SupportApi.submit({
         area,
         description: draft.description.trim(),
-        requestKey: draft.requestKey,
+        requestKey,
         recentErrors: draft.includeErrors ? recentErrors : [],
         files: draft.files,
       });
