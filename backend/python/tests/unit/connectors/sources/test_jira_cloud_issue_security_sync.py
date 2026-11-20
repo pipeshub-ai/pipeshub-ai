@@ -25,6 +25,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     SchemeKnowledge,
     apply_issue_access_settled,
     browse_issue_holders,
+    group_members_digest,
     picker_group_external_id,
     unreadable_reason,
     user_grant_key,
@@ -35,6 +36,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     ANONYMOUS_READ_PAGES,
     ISSUE_PLACEMENT,
     ISSUE_SEARCH_FIELDS,
+    UNREAD_SYNCS_BEFORE_CLOSE,
     JiraConnector,
     _ParentLevel,
 )
@@ -959,6 +961,24 @@ class TestAReindexReadsOnlyTheGroupsItsIssuesNeed:
         assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1002"]
 
     @pytest.mark.asyncio
+    async def test_a_sub_task_reads_no_level_members_and_leaves_the_cap_to_the_next_issue(self) -> None:
+        """A leveled sub-task holds a copy of its level's holders and never reads alone (``grouped``), so its level's
+        members change nothing for it. With room for one group, the issue after it still gets its reporter's grant."""
+        subtask = _issue({"id": "10103", "name": "Everyone"}, updated="2025-01-01T00:00:00.000+0000", issue_id="1003")
+        subtask["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        c, pages, point = self._reindex(subtask, [{"type": "reporter"}])
+        cache: dict = {}
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.REINDEX_GROUP_READS", 1):
+            await c._check_and_fetch_updated_issue(_stored_ticket(id="rid-3", external_record_id="1003"),
+                                                   {"acc-1": _users()[0]}, cache)
+            assert pages == []
+            c.data_source.get_issue = AsyncMock(return_value=_resp(200, TestReindexAppliesTheLevel.LEVELED))
+            record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]}, cache)
+        assert pages == ["group-1"]
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert "1001" not in TestTheRetryListKeepsWhatAReindexAdds._queued(point)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("browse", [[], None])
     async def test_no_group_is_read_when_browse_names_no_one_on_each_issue(self, browse: list | None) -> None:
         """With no per-issue Browse holder (or none read), no level member can read an issue alone, so nothing is read; the
@@ -1014,6 +1034,34 @@ class TestAReindexResolvesProjectRolesAndLeads:
         assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
 
     @pytest.mark.asyncio
+    async def test_a_role_group_without_a_known_id_leaves_the_level_unknown_and_queues_the_issue(self) -> None:
+        """The reporter is a user actor of the role too, but the role's other group cannot be read: the level is unknown."""
+        _, ((record, perms),), pages, point = await self._run(self.ROLE, actors=[
+            {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}},
+            {"type": "atlassian-group-role-actor", "displayName": "Renamed devs"}])
+        assert (pages, record.access_rule, perms, record.source_updated_at) == ([], AccessRule.STRICT, [], 1)
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("level_a", "status", "named"), [
+        (LEAD, 403, "Get project PROJ"), (ROLE, 404, "Get project role PROJ_10002")])
+    async def test_a_refused_lead_or_role_read_is_logged_with_its_status_and_jira_s_message(
+        self, level_a: list, status: int, named: str, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """What failed, where, and Jira's own message (ErrorCollection.errorMessages), with an address in it masked."""
+        c, pages, point = TestAReindexReadsOnlyTheGroupsItsIssuesNeed._reindex(
+            TestReindexAppliesTheLevel.LEVELED, [{"type": "reporter"}], level_a)
+        refused = _resp(status, {"errorMessages": ["Caller rep@x.com may not administer PROJ"], "errors": {"k": "v@x.com"}})
+        c.data_source.get_project = c.data_source.get_project_role = AsyncMock(return_value=refused)
+        with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
+            record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert (record.access_rule, perms) == (AccessRule.STRICT, [])
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
+        (line,) = [r.getMessage() for r in caplog.records if named in r.getMessage()]
+        assert f"HTTP {status}" in line and "may not administer PROJ" in line
+        assert "@x.com" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_a_reporter_in_the_level_s_role_as_a_user_reads_it(self) -> None:
         c, ((record, perms), _), _, _ = await self._run(
             self.ROLE, actors=[{"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}}], issues=2)
@@ -1061,6 +1109,39 @@ def test_a_role_group_actor_is_found_by_the_documented_actor_group_id() -> None:
     assert ([u.source_user_id for u in members], unread) == (["acc-1"], None)
     assert c._role_actor_members("x", [{"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "g"}}],
                                  {}, {}, {"g": None})[1] == "g"
+    # Left out of the group read on purpose, as the sync does: app accounts, no people to grant.
+    assert c._role_actor_members("x", [{"type": "atlassian-group-role-actor", "actorGroup": {
+        "groupId": "g-addons", "name": "atlassian-addons-admin"}}], {}, {}, {}) == ([], None)
+
+
+
+@pytest.mark.parametrize("actor", [
+    {"type": "atlassian-group-role-actor", "displayName": "Renamed devs"},  # no id, a name no group read resolves
+    {"type": "atlassian-group-role-actor", "actorGroup": {}},
+    {"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "group-not-read"}},  # an id outside the groups read
+])
+def test_a_role_group_actor_whose_members_are_not_known_leaves_the_role_unread(actor: dict) -> None:
+    """``actorGroup.groupId`` is not a required field (ProjectRoleGroup), so a group may come without one: its members are
+    not known, which is never "no members"."""
+    c = _connector()
+    members, unread = c._role_actor_members("PROJ/Developers", [actor], {}, {}, {"group-1": [_users()[0]]})
+    assert unread
+
+
+@pytest.mark.asyncio
+async def test_the_sync_keeps_a_role_whose_group_actor_it_cannot_resolve() -> None:
+    """The role is not written with that group's members missing: its stored members stay, the project counts as failed,
+    and the level readers hold no members for it (unknown, so no one reads a leveled issue alone through it)."""
+    c = _connector()
+    roles = _resp(200, {"Developers": "https://x.atlassian.net/rest/api/3/project/PROJ/role/10002"})
+    role = _resp(200, {"name": "Developers", "actors": [
+        {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}},
+        {"type": "atlassian-group-role-actor", "displayName": "Renamed devs"}]})
+    c._call_with_retry = AsyncMock(side_effect=[roles, role])
+    users = {u.source_user_id: u for u in _users()}
+    key, project_roles, failed = await c._fetch_project_roles("PROJ", {}, users, {"group-1": [_users()[0]]})
+    assert (key, project_roles, failed) == ("PROJ", [], True)
+    assert ("role", "PROJ_10002") in c._kept_after_refusal
 
 
 GROUP_ONLY_LEVEL = {"10102": [{"type": "group", "value": "group-1"}]}
@@ -4107,3 +4188,96 @@ class TestAReindexReadsTheGroupsAPickerSelects:
         assert (record.access_rule, record.source_updated_at) == (AccessRule.STRICT, 1)
         assert all(p.entity_type != EntityType.USER for p in perms)
         assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
+
+
+class TestALastingUnreadReadStopsKeepingStoredMembers:
+    """A group whose members, or a role whose group, cannot be read keeps its stored members for a transient failure. Read
+    so for ``UNREAD_SYNCS_BEFORE_CLOSE`` syncs in a row it is a lasting one, and the stored members may hold someone Jira
+    removed: the group is written with no members and the role with the members read. Its level readers stay unknown."""
+
+    @staticmethod
+    async def _role_sync(points: _KeptSyncPoints) -> JiraConnector:
+        c = _connector()
+        c.issues_sync_point, c.notify = points, AsyncMock()
+        c.data_source = MagicMock()
+        c.data_entities_processor.on_new_app_roles = AsyncMock()
+        c._call_with_retry = AsyncMock(side_effect=[
+            _resp(200, {"Developers": "https://x.atlassian.net/rest/api/3/project/PROJ/role/10002"}),
+            _resp(200, {"name": "Developers", "actors": [
+                {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}},
+                {"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "group-unread"}}]})])
+        await c._sync_project_roles(["PROJ"], _users(), {"group-unread": None})
+        return c
+
+    @staticmethod
+    def _written(c: JiraConnector) -> dict[str, list[str]]:
+        return {role.source_role_id: [u.source_user_id for u in members]
+                for call in c.data_entities_processor.on_new_app_roles.await_args_list for role, members in call.args[0]}
+
+    @pytest.mark.asyncio
+    async def test_a_role_whose_group_stays_unread_is_written_with_the_members_read_after_the_bound(self) -> None:
+        points = _KeptSyncPoints()
+        for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
+            c = await self._role_sync(points)
+            assert self._written(c) == {}, "a transient failure keeps the stored members"
+        c = await self._role_sync(points)
+        assert self._written(c) == {"PROJ_10002": ["acc-1"]}  # the stored members are not kept: only those read now
+        assert "PROJ_10002" not in c._role_members  # its level readers stay unknown, so leveled issues wait
+
+    @pytest.mark.asyncio
+    async def test_a_sync_that_reads_the_role_in_full_starts_the_count_again(self) -> None:
+        points = _KeptSyncPoints()
+        for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
+            await self._role_sync(points)
+        c = _connector()
+        c.issues_sync_point, c.notify = points, AsyncMock()
+        c.data_entities_processor.on_new_app_roles = AsyncMock()
+        assert await c._unread_streaks("role", set(), {"PROJ_10002"}) == set()
+        c = await self._role_sync(points)
+        assert self._written(c) == {}, "one failure after a full read is transient again"
+
+    @staticmethod
+    async def _group_sync(points: _KeptSyncPoints) -> JiraConnector:
+        c = _connector()
+        c.issues_sync_point = points
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+        c._fetch_groups = AsyncMock(return_value=([{"groupId": "group-1", "name": "devs"}], False))
+        c._fetch_group_members = AsyncMock(return_value=([], False))
+        await c._sync_user_groups(_users())
+        return c
+
+    @pytest.mark.asyncio
+    async def test_a_group_whose_members_stay_unread_is_written_with_none_after_the_bound(self) -> None:
+        points = _KeptSyncPoints()
+        for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
+            c = await self._group_sync(points)
+            assert c.data_entities_processor.on_new_user_groups.await_count == 0, "a transient failure keeps them"
+        c = await self._group_sync(points)
+        ((group, members),) = c.data_entities_processor.on_new_user_groups.await_args.args[0]
+        assert (group.source_user_group_id, members) == ("group-1", [])
+        assert c._group_members.get("group-1") is None  # unknown to level readers, not "no members"
+
+    @pytest.mark.asyncio
+    async def test_a_picked_group_unread_or_closed_after_the_bound_grants_nobody_alone(self) -> None:
+        """The reporter is in group-1, which an issue's group picker selects. Its members cannot be read: while its stored
+        members are kept, and after the bound closes it, the reporter gets no grant of their own and the issue reports its
+        level's members unread (the sync reads it again once the group's digest moves)."""
+        points = _KeptSyncPoints()
+        for n in range(UNREAD_SYNCS_BEFORE_CLOSE):
+            c = await self._group_sync(points)
+            ctx = _picker_context(c._group_members, complete=c._groups_complete)
+            record = _stored_ticket()
+            perms, skipped, settled = apply_issue_access_settled(
+                record, _picked_issue({"groupId": "group-1", "name": "devs"})["fields"], is_subtask=False,
+                project_key="PROJ", context=ctx, user_by_account_id={u.source_user_id: u for u in _users()},
+                project_id=PROJECT_ID)
+            assert (record.access_rule, perms, settled) == (AccessRule.STRICT, [], True), n
+            assert LEVEL_MEMBERS_UNREAD in skipped
+            assert group_members_digest(c._group_members.get("group-1", [])) == "?"
+
+    @pytest.mark.asyncio
+    async def test_a_count_that_cannot_be_saved_closes_nothing_and_the_sync_goes_on(self) -> None:
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
+        assert await c._unread_streaks("role", {"PROJ_10002"}, set()) == set()

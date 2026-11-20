@@ -194,6 +194,7 @@ from app.sources.external.common.atlassian import (
 )
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
@@ -301,6 +302,13 @@ INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 ISSUE_PLACEMENT: str = "issues-under-readable-parent+restricted-comment-records"
 # Marks a group a level names by a name no read resolved to an id: it names no group read, so its members are unknown.
 _UNRESOLVED_GROUP: str = "unresolved-group-name:"
+# Syncs in a row a group's members, or a role's group, may stay unread while their stored members are kept. A read that
+# fails for longer is not passing: the stored members may hold someone Jira has since removed, so the group is written
+# with no members and the role with the members read (``_unread_streaks``).
+UNREAD_SYNCS_BEFORE_CLOSE: int = 5
+UNREAD_STREAKS_KEY: str = "unread_streaks"
+# An address in a vendor's error message, masked before it is logged.
+_EMAIL_IN_TEXT = re.compile(r"[^\s@]+@[^\s@]+")
 # Groups a reindex reads again per project to apply its issues' levels (``_reindex_level_readers``).
 REINDEX_GROUP_READS: int = 20
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
@@ -645,6 +653,8 @@ class JiraConnector(BaseConnector):
         # groups are unknown. They are noted as seen before run_sync returns, so a full
         # sync's unlink leaves them alone without the refusal making every full sync incomplete.
         self._kept_after_refusal: list[tuple[str, str]] = []
+        # Roles this sync held back for a group whose members are not known: (role, the members that were read, the group).
+        self._roles_unread: list[tuple[AppRole, list[AppUser], str]] = []
         # This sync's users-and-roles reads, which the later steps of run_sync rely on:
         # the stored app users and deactivated accounts (_fetch_users) decide the withdraw,
         # and the application-role mapping is read once and reused for project access.
@@ -3880,7 +3890,21 @@ class JiraConnector(BaseConnector):
                 # Add group to batch (with or without members)
                 user_groups_batch.append((user_group, _listed(app_users, listed)))
 
+            # None for a group listed whose members were not read: unknown, never "no member" (``groups_complete``).
             self._group_members = groups_members_map
+            unread = {group_id: (user_group, group_name) for group_id, group_name, user_group, app_users in
+                      (r for r in results if r is not None) if group_id and app_users is None}
+            for group_id in await self._unread_streaks(
+                    "user_group", set(unread), {k for k, v in groups_members_map.items() if v is not None}):
+                user_group, group_name = unread[group_id]
+                self.logger.error(
+                    f"Group {group_name}: its members could not be read for {UNREAD_SYNCS_BEFORE_CLOSE} syncs in a row; "
+                    "writing it with no members, so no one Jira removed keeps access"
+                )
+                user_groups_batch.append((user_group or AppUserGroup(
+                    app_name=self.connector_name, connector_id=self.connector_id, source_user_group_id=group_id,
+                    name=group_name or group_id, org_id=self.data_entities_processor.org_id,
+                    description=f"Jira user group: {group_name or group_id}"), []))
 
             if self._user_read_unfinished:
                 user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
@@ -4159,6 +4183,7 @@ class JiraConnector(BaseConnector):
                             f"members of group '{unreadable_group}' could not be read"
                         )
                         self._kept_after_refusal.append(("role", f"{project_key}_{role_id}"))
+                        self._roles_unread.append((app_role, member_users, unreadable_group))
                         role_skipped = True
                         continue
 
@@ -4179,6 +4204,29 @@ class JiraConnector(BaseConnector):
             self._note_unread(None)
             return project_key, project_roles, True
 
+    async def _unread_streaks(self, kind: str, unread: set[str], read: set[str]) -> set[str]:
+        """Count, per ``kind`` (``user_group`` or ``role``), the syncs in a row that left each one unread, saved across
+        syncs; one read in full starts again at none. Returns those unread for ``UNREAD_SYNCS_BEFORE_CLOSE`` syncs or more:
+        a transient failure keeps the stored members, a lasting one does not. When the count cannot be read or saved,
+        nothing is closed this sync and the group and role sync goes on."""
+        try:
+            state = (await self.issues_sync_point.read_sync_point(UNREAD_STREAKS_KEY)) or {}
+            try:
+                streaks = json.loads(state.get(kind) or "{}")
+            except (TypeError, ValueError):
+                streaks = {}
+            if not isinstance(streaks, dict):
+                streaks = {}
+            now = {k: v for k, v in streaks.items() if k not in read and isinstance(v, int)}
+            now.update({k: now.get(k, 0) + 1 for k in unread})
+            if now != streaks:
+                await self.issues_sync_point.update_sync_point(
+                    UNREAD_STREAKS_KEY, {**state, kind: json.dumps(now, sort_keys=True)})
+        except Exception as e:
+            self.logger.warning(f"Could not count the syncs that left a {kind} unread: {e}")
+            return set()
+        return {k for k in unread if now[k] >= UNREAD_SYNCS_BEFORE_CLOSE}
+
     def _role_actor_group_id(self, actor: dict[str, Any]) -> Optional[str]:
         """A group actor's id: ``actorGroup.groupId``, where Get project role for project documents it ("As a group's name can
         change, use of `groupId` is recommended to identify the group.",
@@ -4193,8 +4241,11 @@ class JiraConnector(BaseConnector):
         user_by_account_id: dict[str, AppUser], groups_members_map: dict[str, Optional[list[AppUser]]],
     ) -> tuple[list[AppUser], Optional[str]]:
         """A project role's members from its actors: users by account, then email; groups from ``groups_members_map``.
-        Returns ``(members, the first group whose members were not read)``; with a group named, the members are partial."""
+        Returns ``(members, the first group whose members are not known)``: one not read, without an id, or outside
+        ``groups_members_map``. With a group named, the members are the others' only and the caller treats the role as
+        unread."""
         member_users: list[AppUser] = []
+        unknown: Optional[str] = None
         for actor in actors:
             actor_type = actor.get("type", "")
             if actor_type == ROLE_ACTOR_TYPE_USER:
@@ -4209,17 +4260,18 @@ class JiraConnector(BaseConnector):
                 else:
                     self.logger.debug(f"  {where}: User not found - accountId={account_id}, email={email}")
             elif actor_type == ROLE_ACTOR_TYPE_GROUP:
-                group_name = actor.get("name") or actor.get("displayName")
+                group = actor.get("actorGroup") if isinstance(actor.get("actorGroup"), dict) else {}
+                if str(group.get("name") or actor.get("name") or actor.get("displayName") or "").startswith("atlassian-addons"):
+                    continue  # left out of the group read on purpose (``_process_group``): app accounts, not people
+                # ProjectRoleGroup requires no field: a group with no id, or one outside the groups read, has members
+                # unknown, which is never "no members".
                 group_id = self._role_actor_group_id(actor)
-                group_members: Optional[list[AppUser]] = []
-                if group_id and group_id in groups_members_map:
-                    group_members = groups_members_map[group_id]
-                else:
-                    self.logger.debug(f"  {where}: Group actor '{group_name}' (id: {group_id}) not found in synced groups")
+                group_members = groups_members_map.get(group_id) if group_id else None
                 if group_members is None:
-                    return member_users, group_name or group_id
+                    unknown = unknown or group_id or actor.get("name") or actor.get("displayName") or "a group with no id"
+                    continue
                 member_users.extend(group_members)
-        return member_users, None
+        return member_users, unknown
 
     async def _sync_project_roles(
         self,
@@ -4257,6 +4309,7 @@ class JiraConnector(BaseConnector):
         total_roles = 0
         total_members = 0
         failed_project_keys: list[str] = []
+        self._roles_unread = []
 
         # Fetch each project's roles concurrently (read-only); batch the single write below.
         role_fetch_results = await self._map_bounded(
@@ -4273,6 +4326,16 @@ class JiraConnector(BaseConnector):
             self._role_members.update({role.source_role_id: members for role, members in project_roles})
             total_roles += len(project_roles)
             total_members += sum(len(members) for _, members in project_roles)
+        closed = await self._unread_streaks(
+            "role", {role.source_role_id for role, _, _ in self._roles_unread}, {role.source_role_id for role, _ in roles_to_sync})
+        for role, members, group in self._roles_unread:
+            if role.source_role_id in closed:
+                # Its level readers stay unknown (no ``_role_members`` entry): issues that read through it wait.
+                self.logger.error(
+                    f"Role {role.name}: the members of its group '{group}' could not be read for {UNREAD_SYNCS_BEFORE_CLOSE} "
+                    "syncs in a row; writing it with the members that were read, so no one Jira removed keeps access"
+                )
+                roles_to_sync.append((role, members))
 
         if failed_project_keys:
             preview = ", ".join(failed_project_keys[:10])
@@ -5367,6 +5430,7 @@ class JiraConnector(BaseConnector):
                     lambda ds: ds.get_project(projectIdOrKey=project_key, expand="lead"), ctx=f"lead of project {project_key}")
                 body = response.json() if response.status == HttpStatusCode.OK.value else None
                 if not isinstance(body, dict):
+                    self._warn_reindex_read_failed(f"Get project {project_key}", response)
                     return None
                 lead = body.get("lead") if isinstance(body.get("lead"), dict) else {}
                 return [users[lead["accountId"]]] if lead.get("accountId") in users else []
@@ -5377,6 +5441,7 @@ class JiraConnector(BaseConnector):
             body = response.json() if response.status == HttpStatusCode.OK.value else None
             actors = body.get("actors") if isinstance(body, dict) else None
             if not isinstance(actors, list):
+                self._warn_reindex_read_failed(f"Get project role {role_id}", response)
                 return None
             actor_groups = {gid: await self._reindex_group_members(security, gid, users) for actor in actors
                             if isinstance(actor, dict) and actor.get("type") == ROLE_ACTOR_TYPE_GROUP
@@ -5384,10 +5449,27 @@ class JiraConnector(BaseConnector):
             members, unread = self._role_actor_members(
                 f"{project_key}/{role_id}", [a for a in actors if isinstance(a, dict)],
                 {u.email.lower(): u for u in users.values() if u.email}, users, actor_groups)
-            return None if unread else members
+            if unread:
+                self.logger.warning(f"Role {role_id} for a reindex: the members of its group {unread} are not known")
+                return None
+            return members
         except Exception as e:
             self.logger.warning(f"Could not read the members of {role_id} for a reindex: {e}")
             return None
+
+    def _warn_reindex_read_failed(self, operation: str, response: Any) -> None:  # noqa: ANN401
+        """Log a read a reindex could not use: the operation, its HTTP status and Jira's own error messages
+        (ErrorCollection.errorMessages, https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/#status-codes),
+        masked (``redact_error_for_log``) with any address in them replaced. ``errors`` is left out: it echoes input values."""
+        try:
+            messages = response.json().get("errorMessages")
+        except Exception:
+            messages = None
+        text = "; ".join(m for m in messages if isinstance(m, str)) if isinstance(messages, list) else ""
+        self.logger.warning(
+            "%s for a reindex: HTTP %s %s; its level grants no one alone until the next sync", operation,
+            getattr(response, "status", None), _EMAIL_IN_TEXT.sub("[email]", redact_error_for_log(text, max_len=300)),
+        )
 
     def _plan_level_reread(
         self, security: IssueSecurityContext, stored: dict[str, str] | None, *, is_new_project: bool,
@@ -8681,9 +8763,11 @@ class JiraConnector(BaseConnector):
                 )
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
-            picked_groups = await self._reindex_level_readers(
-                security, project.get("key") or project_ref, synced_user_by_account_id or {}, read_security_level(fields)[1],
-                fields)
+            picked_groups: set[str] = set()
+            if not (fields.get("issuetype") or {}).get("subtask"):  # a sub-task's level readers are never used (``grouped``)
+                picked_groups = await self._reindex_level_readers(
+                    security, project.get("key") or project_ref, synced_user_by_account_id or {}, read_security_level(fields)[1],
+                    fields)
 
             # The epic's level may have changed since the last sync read it.
             await self._learn_parent_levels([issue], refresh=True, security=security)
