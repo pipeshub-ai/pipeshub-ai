@@ -43,6 +43,7 @@ SITES: dict[tuple[str, str, str], str] = {
     ("modules/transformers/pipeline.py", "IndexingPipeline.apply", "update_node"): NO_RUN_FIELDS,
     ("modules/transformers/sink_orchestrator.py", "SinkOrchestrator._update_indexing_status", "batch_update_nodes"): NO_RUN_FIELDS,
     ("modules/transformers/swap_commit.py", "SwapCommitter.commit", "update_node"): NO_RUN_FIELDS,  # the retired mark on the old copy's mapping row, not a record write
+    ("modules/transformers/swap_commit.py", "SwapCommitter._confirm_after_commit", "update_node"): NO_RUN_FIELDS,  # hasIndexedCopy off for a copy known to be incomplete: not a run field
     ("services/graph_db/arango/arango_http_provider.py", "ArangoHTTPProvider.update_queued_duplicates_status", "batch_update_nodes"): STATUS_VAR,
     ("services/graph_db/neo4j/neo4j_provider.py", "Neo4jProvider.update_queued_duplicates_status", "batch_update_nodes"): STATUS_VAR,
     ("connectors/api/router.py", "reindex_single_record", "reindex_single_record"): DELEGATE,
