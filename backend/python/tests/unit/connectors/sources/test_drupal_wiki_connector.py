@@ -24,6 +24,7 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
 )
 from app.connectors.sources.drupal_wiki.connector import (
+    ATTACHMENT_RECHECKS_PER_RUN,
     GRAPHQL_PROBE_TIMEOUT_S,
     PAGE_SIZE,
     PAGE_STRUCTURE_REFUSED_ACTION_CODE,
@@ -146,6 +147,8 @@ def connector(processor: MagicMock) -> DrupalWikiConnector:
     )
     instance.base_url = BASE_URL
     instance.data_source = MagicMock()
+    # An attachment no listing has is removed only on this lookup's 404.
+    instance.data_source.get_attachment = AsyncMock(return_value=response(status=404))
     instance.sync_filters = FilterCollection()
     instance.indexing_filters = FilterCollection()
     instance.record_sync_point.read_sync_point = AsyncMock(return_value={})
@@ -3484,3 +3487,282 @@ class TestPeopleWhoLostAccess:
 
         processor.get_all_app_users.assert_not_awaited()
         processor.withdraw_app_user_access.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Attachments of pages a run does not write
+# ---------------------------------------------------------------------------
+
+class QuietWiki:
+    """A wiki whose pages never change date, and a store the connector writes into and reads back.
+
+    Every page sits in space 12 below its checkpoint, so a run writes none of them; only the
+    attachment recheck looks at their attachments.
+    """
+
+    def __init__(self, connector: DrupalWikiConnector, processor: MagicMock, pages: dict[int, list[int]],
+                 spaces: dict[int, int] | None = None) -> None:
+        self.pages = {p: list(a) for p, a in pages.items()}  # what the wiki has: page -> attachment ids
+        self.space_of = spaces or dict.fromkeys(pages, 12)
+        self.gone: set[int] = set()  # attachment lookups that answer 404 although listed
+        self.store: dict[str, MagicMock] = {}
+        for page_id, attachments in pages.items():
+            self.store[f"page:{page_id}"] = stored_record(page_id, space_id=self.space_of[page_id])
+            for a in attachments:
+                held = attachment_record(a, page_id=page_id)
+                held.external_record_group_id = str(self.space_of[page_id])
+                self.store[f"attachment:{a}"] = held
+        self.checkpoints = TestMovesAndDeletions.remembered(connector)
+        for space in set(self.space_of.values()):
+            self.checkpoints[f"WEBPAGE/space_pages/{space}"] = {"last_modified": 5000}
+        # A clean pass stands one second behind its newest page, which would write that page
+        # on every run; these runs keep the cursor ahead of every page.
+        connector.record_sync_point.update_sync_point = AsyncMock(side_effect=lambda key, payload: None
+                                                                  if key.startswith("WEBPAGE/")
+                                                                  else self.checkpoints.__setitem__(key, dict(payload)))
+        connector.data_source.list_pages = AsyncMock(side_effect=lambda space_id, **_: response(spring_page([
+            page_payload(p, space_id=space_id) for p in sorted(self.pages) if self.space_of[p] == space_id
+        ])))
+        connector.data_source.list_attachments = AsyncMock(side_effect=lambda page_id, page=0, size=PAGE_SIZE, **_: response([
+            {"id": a, "fileName": f"{a}.pdf", "lastModified": 1000} for a in self.pages.get(page_id, [])
+        ][page * size:(page + 1) * size]))
+        connector.data_source.get_attachment = AsyncMock(side_effect=lambda aid: response(
+            {"id": aid}, status=200 if any(aid in a for a in self.pages.values()) and aid not in self.gone else 404
+        ))
+        connector.data_source.get_page = AsyncMock(side_effect=lambda pid: response(
+            page_payload(pid, space_id=self.space_of[pid]) if pid in self.pages else None,
+            status=200 if pid in self.pages else 404,
+        ))
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda _c, space, *_a, **_k: [
+            r for r in sorted(self.store.values(), key=lambda r: r.id) if r.external_record_group_id == space
+        ])
+        processor.get_records_by_parent = AsyncMock(side_effect=lambda _c, parent, *_a, **_k: [
+            r for r in self.store.values() if r.parent_external_record_id == parent
+            and r.external_record_id.startswith("attachment:")
+        ])
+        processor.get_record_by_external_id = AsyncMock(side_effect=lambda _c, ext: self.store.get(ext))
+        processor.on_new_records = AsyncMock(side_effect=self.write)
+        processor.delete_record_by_external_id = AsyncMock(side_effect=lambda _c, ext: self.store.pop(ext))
+
+    async def write(self, batch: list) -> None:
+        for record, _ in batch:
+            if record.external_record_id.startswith("attachment:"):
+                held = attachment_record(int(record.external_record_id.split(":")[1]),
+                                         page_id=int(record.parent_external_record_id.split(":")[1]))
+                held.external_record_group_id = record.external_record_group_id
+                self.store[record.external_record_id] = held
+
+    def attachments(self) -> set[str]:
+        return {e for e in self.store if e.startswith("attachment:")}
+
+
+class TestAttachmentsOfUnwrittenPages:
+    @pytest.mark.asyncio
+    async def test_an_attachment_deleted_without_its_page_changing_is_removed(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki = QuietWiki(connector, processor, {1: [88, 89]})
+        wiki.pages[1] = [88]
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert wiki.attachments() == {"attachment:88"}
+        processor.on_new_records.assert_not_awaited()  # the page itself was not written
+        assert not connector._failures
+        assert connector.full_sync_coverage().complete
+
+    @pytest.mark.parametrize("status", [200, 500])
+    @pytest.mark.asyncio
+    async def test_an_unlisted_attachment_is_kept_unless_its_lookup_answers_404(
+        self, connector: DrupalWikiConnector, processor: MagicMock, status: int
+    ) -> None:
+        # The listing is a bare array that ends on a short page; the spec does not say that page
+        # is the last, so the listing alone removes nothing.
+        wiki = QuietWiki(connector, processor, {1: [88, 89]})
+        wiki.pages[1] = [88]
+        connector.data_source.get_attachment = AsyncMock(return_value=response({"id": 89}, status=status))
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert wiki.attachments() == {"attachment:88", "attachment:89"}
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_token_on_the_lookup_stops_the_run(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki = QuietWiki(connector, processor, {1: [88, 89]})
+        wiki.pages[1] = [88]
+        connector.data_source.get_attachment = AsyncMock(return_value=response(status=401))
+
+        with pytest.raises(DrupalWikiAuthError):
+            await connector._sync_pages({12: {"id": 12}})
+
+        assert wiki.attachments() == {"attachment:88", "attachment:89"}
+
+    @pytest.mark.parametrize("page_answer", ["404", "moved"])
+    @pytest.mark.asyncio
+    async def test_an_attachment_dropped_while_its_page_is_not_written_still_goes(
+        self, connector: DrupalWikiConnector, processor: MagicMock, page_answer: str
+    ) -> None:
+        # The listing drops 89 and adds 90; the page is not written here (gone since its space
+        # listed it, or moved to another space), so 90 is not written, and 89 is still looked up.
+        wiki = QuietWiki(connector, processor, {1: [88, 89]})
+        wiki.pages[1] = [88, 90]
+        connector.data_source.get_page = AsyncMock(return_value=(
+            response(status=404) if page_answer == "404" else response(page_payload(1, space_id=99))
+        ))
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert wiki.attachments() == {"attachment:88"}
+        processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.parametrize("token_lists_spaces", [True, False], ids=["token-valid", "token-dead"])
+    @pytest.mark.asyncio
+    async def test_a_403_on_the_lookup_removes_it_unless_the_token_is_dead(
+        self, connector: DrupalWikiConnector, processor: MagicMock, token_lists_spaces: bool
+    ) -> None:
+        # Unlisted and refused while the token still lists spaces: its user may not read it, so
+        # the stored copy goes. Refused with the token refused too: a dead token stops the run.
+        wiki = QuietWiki(connector, processor, {1: [88, 89]})
+        wiki.pages[1] = [88]
+        connector.data_source.get_attachment = AsyncMock(return_value=response(status=403))
+        connector.data_source.list_spaces = AsyncMock(
+            return_value=response(spring_page([])) if token_lists_spaces else response(status=403)
+        )
+
+        if token_lists_spaces:
+            await connector._sync_pages({12: {"id": 12}})
+            assert wiki.attachments() == {"attachment:88"}
+        else:
+            with pytest.raises(DrupalWikiAuthError):
+                await connector._sync_pages({12: {"id": 12}})
+            assert wiki.attachments() == {"attachment:88", "attachment:89"}
+
+    @pytest.mark.parametrize("error", [
+        httpx.ReadTimeout("timed out"),
+        HostCheckError('"10.0.0.1" is a private address'),
+        RuntimeError("boom"),
+    ], ids=["timeout", "address refused", "anything else"])
+    @pytest.mark.asyncio
+    async def test_a_recheck_that_fails_keeps_everything_and_fails_nothing(
+        self, connector: DrupalWikiConnector, processor: MagicMock, error: Exception
+    ) -> None:
+        wiki = QuietWiki(connector, processor, {1: [88], 2: [90]})
+        wiki.pages[2] = []
+        connector.data_source.list_attachments = AsyncMock(side_effect=[error, response([])])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        # Page 1's listing failed and keeps 88; page 2 after it was still rechecked.
+        assert wiki.attachments() == {"attachment:88"}
+        assert not connector._failures
+        assert connector.full_sync_coverage().complete
+        assert wiki.checkpoints["attachment_recheck/space/all"] == {"after": 0}
+
+    @pytest.mark.asyncio
+    async def test_one_budget_per_run_shared_by_every_space_in_turn(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        pages = range(1, ATTACHMENT_RECHECKS_PER_RUN + 51)
+        QuietWiki(connector, processor, {p: [10_000 + p] for p in pages},
+                  spaces={p: 12 if p % 2 else 13 for p in pages})
+        spaces = {12: {"id": 12}, 13: {"id": 13}}
+
+        await connector._sync_pages(spaces)
+        first = [c.kwargs["page_id"] for c in connector.data_source.list_attachments.await_args_list]
+        connector.data_source.list_attachments.reset_mock()
+        await connector._sync_pages(spaces)
+        second = [c.kwargs["page_id"] for c in connector.data_source.list_attachments.await_args_list]
+
+        # Across both spaces, in page id order; past the last page the turn goes on from the first.
+        assert first == list(pages)[:ATTACHMENT_RECHECKS_PER_RUN]
+        assert second == list(pages)[ATTACHMENT_RECHECKS_PER_RUN:] + list(pages)[:50]
+
+    @pytest.mark.asyncio
+    async def test_a_page_whose_attachment_came_back_is_written_again(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Trashed between its space's listing and the recheck: its attachments are no longer listed
+        # and their lookup is a 404. Restored without a date change, it is never in a delta again;
+        # the recheck sees an attachment it does not store and writes the page.
+        wiki = QuietWiki(connector, processor, {1: [88]})
+        wiki.pages[1], wiki.gone = [], {88}
+
+        await connector._sync_pages({12: {"id": 12}})
+        assert wiki.attachments() == set()
+
+        wiki.pages[1], wiki.gone = [88], set()
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert wiki.attachments() == {"attachment:88"}
+        connector.data_source.get_page.assert_awaited_with(1)
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_the_filters_exclude_does_not_write_its_page(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki = QuietWiki(connector, processor, {1: [88]})
+        wiki.pages[1] = [88, 89]
+        connector.data_source.list_attachments = AsyncMock(return_value=response([
+            {"id": 88, "fileName": "a.pdf"}, {"id": 89, "fileName": "b.zip"},
+        ]))
+        connector.sync_filters = _extension_filter(MultiselectOperator.NOT_IN, ["zip"])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        connector.data_source.get_page.assert_not_awaited()
+        processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stored_attachments_are_read_past_the_first_thousand_records(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki = QuietWiki(connector, processor, {1: [88]})
+        filler = [attachment_record(50_000 + i, page_id=2) for i in range(1000)]
+        for r in filler:
+            r.id = f"a-{r.id}"  # sorted ahead of page 1's records
+        reads: list = []
+
+        async def read(_c: str, space: str, limit: int, after: str | None = None, **_: object) -> list:
+            reads.append(after)
+            records = filler + sorted(wiki.store.values(), key=lambda r: r.id)
+            start = next((i + 1 for i, r in enumerate(records) if r.id == after), 0) if after else 0
+            return records[start:start + limit]
+
+        processor.get_records_in_record_group = AsyncMock(side_effect=read)
+        wiki.pages[1] = []
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert reads == [None, filler[-1].id]
+        assert "attachment:88" not in wiki.attachments()
+
+    @pytest.mark.asyncio
+    async def test_a_stored_attachment_without_an_id_is_never_looked_up(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        wiki = QuietWiki(connector, processor, {1: [88]})
+        broken = attachment_record(0, page_id=1)
+        broken.external_record_id = "attachment:None"
+        wiki.store["attachment:None"] = broken
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert [c.args for c in connector.data_source.get_attachment.await_args_list] == []
+        assert "attachment:None" in wiki.store
+
+
+    @pytest.mark.asyncio
+    async def test_a_written_page_keeps_an_unlisted_attachment_the_wiki_still_serves(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # The same rule as for pages left unwritten: only the lookup's 404 removes.
+        TestMovesAndDeletions.page_with_attachments(connector, processor, {}, 1000, response([
+            {"id": 88, "fileName": "a.pdf", "lastModified": 1000},
+        ]))
+        connector.data_source.get_attachment = AsyncMock(return_value=response({"id": 89}))
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        processor.delete_record_by_external_id.assert_not_awaited()
