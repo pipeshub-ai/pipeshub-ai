@@ -67,12 +67,15 @@ def _handler_with_config(config: object, record: dict[str, Any]) -> RecordEventH
     return handler
 
 
-async def _gate_with(handler: RecordEventHandler, record: dict[str, Any], ext: str, mime: str | None) -> str:
+async def _gate_with(
+    handler: RecordEventHandler, record: dict[str, Any], ext: str, mime: str | None, **fields: object,
+) -> str:
     from app.services.messaging.config import IndexingEvent
 
     payload = {
         "recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "connectorId": "conn-1",
         "recordName": f"f.{ext}", "extension": ext, "mimeType": mime, "signedUrl": "https://example.invalid/f",
+        **fields,
     }
     gen_ = handler.process_event("newRecord", payload)
     try:
@@ -98,6 +101,26 @@ async def test_a_type_turned_off_is_refused_and_the_others_are_not() -> None:
     assert decision.startswith("FILE_TYPE_NOT_SUPPORTED|")
     record = _record("docm")
     assert await _gate_with(_handler_with_config({"disabled": ["msg"]}, record), record, "docm", None) == "ok"
+
+
+@pytest.mark.parametrize(("off", "refused"), [({"docx"}, False), ({"yaml"}, True)])
+async def test_the_off_switch_names_the_mime_not_the_name(off: set[str], refused: bool) -> None:
+    # A YAML file named like a document: YAML reads it, so only turning off yaml refuses it.
+    record = _record("yaml", recordName="Report.DOCX")
+    handler = _handler_with_config({"disabled": sorted(off)}, record)
+    decision = await _gate_with(handler, record, "unknown", "application/x-yaml", recordName="Report.DOCX")
+    assert decision.startswith("FILE_TYPE_NOT_SUPPORTED|") is refused, decision
+
+
+@pytest.mark.parametrize(("off", "refused"), [({"log"}, True), ({"docx"}, False)])
+async def test_the_gate_reads_the_path_the_dispatch_reads(off: set[str], refused: bool) -> None:
+    # The dispatch reads the path before the name: this file is read as a log, so the log switch decides.
+    record = _record("log", recordName="Report.docx")
+    handler = _handler_with_config({"disabled": sorted(off)}, record)
+    decision = await _gate_with(
+        handler, record, "unknown", "application/octet-stream", recordName="Report.docx", filePath="x/app.log",
+    )
+    assert decision.startswith("FILE_TYPE_NOT_SUPPORTED|") is refused, decision
 
 
 async def test_turning_off_a_type_the_extension_decides_wins_over_a_text_plain_mime() -> None:

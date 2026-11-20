@@ -17,6 +17,7 @@ from app.migrations.file_type_requeue.migration import (
     OUTBOX_DIRECTORY,
     PAGE_SIZE,
     count_still_selected,
+    is_selected,
     run_file_type_requeue,
 )
 from app.models.entities import FileRecord, RecordType
@@ -310,6 +311,13 @@ async def test_only_what_the_old_gate_refused_and_the_new_one_reads_is_selected(
     for untouched in ("a-zip", "c-gradle-text", "d-log-big", "f-code-big", "h-heic"):
         assert graph.status(untouched) == FTNS, untouched
     assert graph.records["f-code-big"].reason == "This file is too large to index"
+
+
+@pytest.mark.parametrize(("off", "expected"), [({"docx"}, (True, None)), ({"yaml"}, (False, "yaml"))])
+def test_the_type_that_reads_a_record_is_the_one_that_holds_it_back(off: set[str], expected: tuple) -> None:
+    # A YAML file named like a document is read by YAML: the docx switch no longer holds it back.
+    record = _file("y", "Report.DOCX", ext="unknown", mime="TEXT/YAML")
+    assert is_selected(record, {"mimeType": "TEXT/YAML"}, frozenset(off)) == expected
 
 
 async def test_placeholders_internal_and_trashed_records_are_left_alone() -> None:

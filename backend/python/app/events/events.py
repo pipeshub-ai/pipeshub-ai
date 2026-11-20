@@ -693,24 +693,12 @@ class EventProcessor:
         *gate_route* is the reader the record handler's gate accepted the file for; it is used only
         where the labels name none, so a file the gate accepted is never refused here.
         """
-        # A CODE_FILE's mime is not trustworthy: connectors that walk a git
-        # tree default it to text/plain for anything they do not recognise,
-        # and they do not always populate `extension`. Derive a separate
-        # extension for code dispatch and language detection — the original
-        # value must stay intact for reconciliation, tier, and generic dispatch.
-        code_ext = extension
-        if not code_ext or code_ext == "unknown":
-            fp_base = (file_path or "").rsplit("/", 1)[-1]
-            rn_base = record_name.rsplit("/", 1)[-1]
-            if "." in fp_base and fp_base.rsplit(".", 1)[-1]:
-                code_ext = fp_base.rsplit(".", 1)[-1].lower()
-            elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
-                code_ext = rn_base.rsplit(".", 1)[-1].lower()
+        code_ext = file_types.code_extension(extension, file_path, record_name)
         reads_as_code_file = EventProcessor._reads_as_code_file(
             record_type, mime_type, code_ext, record_name
         )
         dispatch = file_types.legacy_route(
-            mime_type, extension, code_extension=code_ext, reads_as_code_file=reads_as_code_file,
+            mime_type, extension, code_ext=code_ext, reads_as_code_file=reads_as_code_file,
             is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
         )
         if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:

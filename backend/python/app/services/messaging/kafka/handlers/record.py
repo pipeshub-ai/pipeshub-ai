@@ -2778,6 +2778,7 @@ class RecordEventHandler(BaseEventService):
                 record_name=payload.get("recordName"),
                 is_code_file=is_code_file,
                 code_file_extension=code_file_extension,
+                file_path=payload.get("filePath"),
                 size_bytes=known_size,
                 disabled=await self._disabled_file_types(),
             )

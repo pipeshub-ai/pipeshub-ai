@@ -34,6 +34,8 @@ REASONS: dict[str, str] = {
     "pptm-mime": "the macro-enabled deck mime, in any spelling, is indexable and read as PPTX (python-pptx opens "
           "it as it is) where main refused it or raised; a .pptm extension alone stays refused but has the pptx "
           "parse format",
+    "name-fallback": "a FILE with no extension of its own whose mime names nothing (none, octet-stream, unknown) is "
+          "read by its name's extension where main's dispatch raised; every such pinned cell is one the gate refuses",
     "filter-options": "the sync filter offers the new types; log moves from exclude-only to offered",
     "bounded-token-cost": "a .log/.cfg main read (as text, code or JSON) is indexed as at most "
                           "TEXT_LOG_MAX_BYTES of text and refused over TEXT_LOG_HARD_LIMIT_BYTES",
@@ -117,6 +119,20 @@ def main_indexed(row: list[Any]) -> bool:
     return row[4] == "ok" and not str(row[5]).startswith("!")
 
 
+def _read_by_its_name(row: list[Any], name_ext: str | None, new: object) -> bool:
+    """A cell main's gate refused and its dispatch raised for, now read by the parser of its name's type."""
+    from app.config import file_types
+    from tests.unit.config.file_types.test_registry_invariants import _ROUTE_HANDLER
+
+    ext, mime, _, record_type = row[:4]
+    named = file_types.by_extension(name_ext) if name_ext else None
+    return (
+        record_type == "FILE" and ext in (None, "", "unknown") and row[4] != "ok"
+        and row[5] == "!UnsupportedFormatError" and file_types._names_nothing(mime)
+        and named is not None and named.route is not None and new == _ROUTE_HANDLER.get(named.route)
+    )
+
+
 def classify_cell(oracle: Oracle, row: list[Any], column: str, new: object) -> str | None:
     """The reason a row's *column* may now read *new*, or None when no reviewed reason covers it."""
     if main_indexed(row):
@@ -134,6 +150,8 @@ def classify_cell(oracle: Oracle, row: list[Any], column: str, new: object) -> s
         return "log-cfg" if decided_by in ("log", "cfg") else "new-type"
     if m == _PPTM_MIME or e == "pptm":
         return "pptm-mime" if column in _PPTM_COLUMNS else None
+    if column == "legacy" and _read_by_its_name(row, name_ext, new):
+        return "name-fallback"
     if e in CODE_GRAMMARS or (record_type == "CODE_FILE" and name_ext in CODE_GRAMMARS):
         return "code-extension" if column == "gate" else None
     if e == "htm":
