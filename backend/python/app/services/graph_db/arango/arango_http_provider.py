@@ -198,6 +198,7 @@ from app.services.graph_db.common.name_match import aql_name_key, name_query_par
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
+    aql_holds_vrid,
     aql_live_record,
     aql_record_visibility,
     aql_searchable_record,
@@ -244,6 +245,7 @@ from app.services.graph_db.conditions import (
     EQ,
     IS_NULL,
     NULL_OR_EQ,
+    ONE_OF,
     Cond,
     check_conditions,
 )
@@ -321,6 +323,7 @@ from app.services.graph_db.vector_membership_queries import (
     can_use_membership_cleanup,
 )
 from app.utils import error_class
+from app.utils.db_query_log import expecting
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed, folder_in_trash
 
@@ -1562,6 +1565,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["virtualRecordId", "orgId"],
+        )
+        # SPARSE: the virtual record a record is indexing into. Only records mid-replace carry it; the holder lookups
+        # (record_visibility.aql_holds_vrid) match it, with a `!= null` guard so this index serves the correlated forms.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["pendingVirtualRecordId"],
+            sparse=True,
         )
 
         for fields in _STAGE_STATE_INDEXES:
@@ -3440,7 +3450,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         arango_doc = {k: v for k, v in document.items() if k != "id"}
         arango_doc["_key"] = document["id"]
         try:
-            await self._stage_aql("INSERT @doc INTO @@collection RETURN NEW._key", {"doc": arango_doc})
+            # An existing key is the expected answer of a claim, so the client logs it at DEBUG, not as a WARNING failure.
+            with expecting(ARANGO_UNIQUE_CONSTRAINT_VIOLATED):
+                await self._stage_aql("INSERT @doc INTO @@collection RETURN NEW._key", {"doc": arango_doc})
         except ArangoQueryError as exc:
             if exc.error_num in (ARANGO_UNIQUE_CONSTRAINT_VIOLATED, ARANGO_CONFLICT):
                 return False
@@ -3579,7 +3591,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER (newest || 0) < @before
                         LET held = (
                             FOR record IN {CollectionNames.RECORDS.value}
-                                FILTER record.virtualRecordId == v AND record.contentRev == rev
+                                FILTER record.virtualRecordId == v
+                                    AND (record.contentRev == rev OR (record.hasIndexedCopy == true AND record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
                                 LIMIT 1
                                 RETURN 1
                         )
@@ -3606,7 +3619,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR pair IN @pairs
                     LET held = (
                         FOR record IN {CollectionNames.RECORDS.value}
-                            FILTER record.virtualRecordId == pair[0] AND record.contentRev == pair[1]
+                            FILTER record.virtualRecordId == pair[0]
+                                AND (record.contentRev == pair[1] OR (record.hasIndexedCopy == true AND record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
                             LIMIT 1
                             RETURN 1
                     )
@@ -6947,6 +6961,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         clock_at_most: float | None = None,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
         if not expected:
@@ -6963,11 +6978,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars[f"v{i}"] = value
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
         newline = "\n                "
+        if unset:
+            # The named attributes go (never left null), by the update's own removal of a null: nested objects still merge as they do
+            # without ``unset``. A null in ``updates`` removes its attribute too, as on the other stores.
+            bind_vars["updates"] = {**bind_vars["updates"], **dict.fromkeys(unset)}
+            write = "UPDATE doc WITH @updates IN @@collection OPTIONS { keepNull: false }"
+        else:
+            write = "UPDATE doc WITH @updates IN @@collection"
         query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
                 {newline.join(filters)}
-                UPDATE doc WITH @updates IN @@collection
+                {write}
                 RETURN 1
             """
         # Two writers racing on one document: ArangoDB fails the loser with a write-write conflict
@@ -7028,6 +7050,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
             elif cond.op == NULL_OR_EQ:
                 filters.append(f"FILTER doc[@f{i}] == null || doc[@f{i}] == @v{i}")
+            elif cond.op == ONE_OF:
+                filters.append(f"FILTER doc[@f{i}] IN @v{i}")
             else:
                 # AQL orders a boolean below every number, so the type is checked: a non-number is never "not newer".
                 filters.append(f"FILTER doc[@f{i}] == null || (IS_NUMBER(doc[@f{i}]) && doc[@f{i}] <= @v{i})")
@@ -7042,6 +7066,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         replace_objects: bool = False,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if`.
 
@@ -7053,11 +7078,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         bind_vars: dict[str, Any] = {"@collection": collection, "key": key, "updates": dict(updates), **condition_vars}
         options = " OPTIONS { mergeObjects: false, keepNull: false }" if replace_objects else ""
         newline = "\n                "
+        if unset:
+            # The named attributes go (see update_node_fields_if_match); a sub-document still merges, or replaces, as it does without ``unset``
+            bind_vars["updates"] = {**bind_vars["updates"], **dict.fromkeys(unset)}
+            options = " OPTIONS { mergeObjects: false, keepNull: false }" if replace_objects else " OPTIONS { keepNull: false }"
+        write = f"UPDATE doc WITH @updates IN @@collection{options}"
         query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
                 {newline.join(filters)}
-                UPDATE doc WITH @updates IN @@collection{options}
+                {write}
                 RETURN 1
             """
         rows = await self._retry_write_conflicts(
@@ -27155,10 +27185,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not virtual_record_ids:
             return {}
         query = f"""
-        FOR r IN {CollectionNames.RECORDS.value}
-            FILTER r.virtualRecordId IN @vrids AND r.orgId == @org_id
+        FOR vid IN @vrids
+          FOR r IN {CollectionNames.RECORDS.value}
+            FILTER {aql_holds_vrid("r", "vid")} AND r.orgId == @org_id
             RETURN {{
-                vid: r.virtualRecordId, id: r._key, connectorId: r.connectorId,
+                vid: vid, id: r._key, connectorId: r.connectorId,
                 connectorName: r.connectorName, recordGroupId: r.recordGroupId,
                 recordName: r.recordName, webUrl: r.webUrl, contentRev: r.contentRev,
                 isDeleted: r.isDeleted == true
@@ -27191,7 +27222,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         FOR vrid IN @virtual_record_ids
             LET held = FIRST(
                 FOR record IN {CollectionNames.RECORDS.value}
-                    FILTER record.virtualRecordId == vrid
+                    FILTER {aql_holds_vrid("record", "vrid")}
                     AND {aql_record_visibility("record", visibility)}
                     LIMIT 1
                     RETURN 1
@@ -27266,7 +27297,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # AQL `!= true` is null-safe, so records predating the field pass.
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.virtualRecordId == @virtual_record_id
+                FILTER {aql_holds_vrid("record", "@virtual_record_id")}
                 AND {aql_record_visibility("record", visibility)}
             """
 

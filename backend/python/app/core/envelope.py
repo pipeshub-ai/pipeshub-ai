@@ -45,6 +45,12 @@ CTX_MISSING = METRICS_BACKEND.counter(
     "Broker messages accepted without a signed ctx (upgrade window)",
     ["topic"],
 )
+STALE_BY_TYPE = METRICS_BACKEND.counter(
+    "pipeshub_envelope_stale_by_type_total",
+    "Validly signed broker messages older than the accepted signature age, by event type (a self-scheduled control "
+    "message dropped for lag ends its chain)",
+    ["topic", "event_type"],
+)
 
 
 UNVERIFIED = METRICS_BACKEND.counter(
@@ -268,6 +274,7 @@ async def open_envelope(
     age = now() - c["issuedAt"]
     if age > max_age_seconds():
         STALE.inc(topic)
+        STALE_BY_TYPE.inc(topic, event_type[:64])
         if enforcing():
             raise EnvelopeRejected("stale")
         _log_loud(f"stale:{topic}", "validly signed envelope older than %ss topic=%s: accepted in shadow mode", max_age_seconds(), topic)

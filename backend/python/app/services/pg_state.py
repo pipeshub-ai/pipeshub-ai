@@ -13,18 +13,20 @@ Caches do not belong here: they stay in the process and are dropped by NOTIFY (s
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import contextlib
+from typing import TYPE_CHECKING, Any
 
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.pg_runtime import RuntimeDb
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
 
 LOCK_PREFIX = "state:lock:"
 COUNTER_PREFIX = "state:counter:"
 LEASE_PREFIX = "state:lease:"
 POOL_PREFIX = "state:pool:"
+WINDOW_PREFIX = "state:"
 
 _ACQUIRE = """/* pipeshub:state.lock */
 INSERT INTO platform.kv_entries (key, value, expires_at, updated_at)
@@ -79,6 +81,40 @@ UPDATE platform.kv_entries SET expires_at = now() + make_interval(secs => $2::do
 WHERE key = ANY($1::text[]) AND expires_at > now() RETURNING key"""
 
 
+_ROWS = """/* pipeshub:state.rows */
+SELECT key, convert_from(value, 'UTF8') AS v FROM platform.kv_entries
+WHERE key >= $1 AND key < $2 AND (expires_at IS NULL OR expires_at > now()) ORDER BY key"""
+
+
+_ROWS_PAGE = """/* pipeshub:state.rowspage */
+SELECT key, convert_from(value, 'UTF8') AS v FROM platform.kv_entries
+WHERE key >= $1 AND key < $2 AND key > $3 AND (expires_at IS NULL OR expires_at > now()) ORDER BY key LIMIT $4"""
+
+
+class LockedTx:
+    """Key-value access inside one transaction that holds an advisory lock (``PgState.locked``). Keys are the caller's,
+    under ``state:``; each read and write is one statement of the lock holder's transaction."""
+
+    def __init__(self, tx: Any) -> None:  # noqa: ANN401 - the unit of work
+        self._tx = tx
+
+    async def get(self, key: str) -> str | None:
+        return await self._tx.fetchval(_GET, WINDOW_PREFIX + key)  # type: ignore[no-any-return]
+
+    async def set(self, key: str, value: str, ttl_seconds: float | None) -> None:
+        await self._tx.execute(_SET, WINDOW_PREFIX + key, value, ttl_seconds)
+
+    async def delete(self, key: str) -> None:
+        await self._tx.execute(_DELETE, [WINDOW_PREFIX + key])
+
+    async def incr(self, key: str, ttl_seconds: float | None = None) -> int:
+        return int(await self._tx.fetchval(_INCR, WINDOW_PREFIX + key, ttl_seconds))
+
+    async def rows(self, prefix: str) -> list[tuple[str, str]]:
+        low, high = _range(WINDOW_PREFIX + prefix) if prefix.endswith(":") else (WINDOW_PREFIX + prefix, WINDOW_PREFIX + prefix + "\uffff")
+        return [(r["key"][len(WINDOW_PREFIX):], r["v"]) for r in await self._tx.fetch(_ROWS, low, high)]
+
+
 def _range(prefix: str) -> tuple[str, str]:
     """[prefix, end) covering every key that starts with ``prefix`` (the prefixes here end in ':', so the end is ';')."""
     return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
@@ -90,6 +126,22 @@ class PgState:
 
     async def _tx(self, *, write: bool = True):  # noqa: ANN202
         return (await self.rt.db()).runtime_uow(write=write)
+
+    async def read_rows(self, prefix: str, after: str | None, limit: int) -> list[tuple[str, str]]:
+        """At most ``limit`` live rows under ``prefix`` (ending in ``:``), in key order, after the key ``after``: a page of a
+        range that no one writes any more (a sealed window), read outside any lock. Keys come back without ``state:``."""
+        low, high = _range(WINDOW_PREFIX + prefix)
+        async with await self._tx(write=False) as tx:
+            rows = await tx.fetch(_ROWS_PAGE, low, high, (WINDOW_PREFIX + after) if after else "", limit)
+        return [(r["key"][len(WINDOW_PREFIX):], r["v"]) for r in rows]
+
+    @contextlib.asynccontextmanager
+    async def locked(self, lock_name: str) -> AsyncIterator[LockedTx]:
+        """One transaction holding the transaction-scoped advisory lock of ``lock_name`` (the pool pattern), so what runs
+        in it is serialised against every other ``locked`` of the same name; it commits when the block ends."""
+        async with await self._tx() as tx:
+            await tx.fetchval(_POOL_LOCK, lock_name)
+            yield LockedTx(tx)
 
     # leader keys / single-flight locks ----------------------------------------------------------------------
     async def lock_acquire(self, key: str, owner: str, ttl_seconds: float) -> bool:

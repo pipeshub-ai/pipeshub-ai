@@ -580,6 +580,8 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
 | `middleware.failed` | `log_failure`, no error text | `middleware`, `context` (the hook context's type); a fail-closed pipeline also denies with `deny_reason=middleware_error` |
 | `orchestrator.dispatch.end` | INFO; `orchestrator.dispatch.failed` `log_failure` (falls back to LLM dispatch) | `steps`, `outcome` |
 | `turn_scope.check_failed`, `prefetch.failed` (no error text), `agent_turn.cleanup_failed` (`step`) | `log_failure` | the turn carries on |
+| `repo_instructions.resolve_failed` | `log_failure`, no error text; a timeout is `timeout` | the repo-instructions refresh failed or timed out and is retried on the next refresh, at most 3 times per run |
+| `repo_instructions.fetch_failed` | `log_failure`, no error text; content that is unavailable is `unavailable` (WARNING), at most 3 times per file per run | `record_id` |
 
 - An approval answer is logged once whatever happens next: on the decided path the line is written first in `_settle`'s `finally`,
   before the outcome is kept and before the card's row is shown, so Stop or a client disconnect while the approved call runs is
@@ -667,7 +669,7 @@ which every Postgres graph provider runs through) write one record per call that
 
 | Event | Level | Fields |
 | --- | --- | --- |
-| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
+| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR), and DEBUG for a code the caller declared expected with `db_query_log.expecting` (claiming an existing stage state: unique-constraint violation) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
 | `db.query.slow` | WARNING | `backend`, `op`, `site`, `caller`, `duration_ms`, `threshold_ms`; Postgres `db_request_id` |
 | `db.query.retry` | WARNING | `backend=neo4j`, `op`, `reason=connection_lost`, `error_type` |
 | `db.connect.failed`, `db.disconnect.failed`, `db.schema.failed`, `db.edge.failed` | `log_failure` | `backend`, `op` (schema or edge) |

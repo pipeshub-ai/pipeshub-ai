@@ -317,3 +317,46 @@ class TestGetDocument:
 def test_describe(error: Exception, expected: tuple) -> None:
     code, cls, extra, hide = ahc.describe_arango_error(error)
     assert (code, cls, extra.get("status")) == expected and hide is True
+
+
+class TestStageStateClaimLogging:
+    """Claiming a stage state that exists is an ordinary answer (False), so its 409 is a DEBUG record; any other failure of the
+    same insert keeps its level."""
+
+    async def _create(self, logger: logging.Logger, status: int, num: int) -> bool:
+        from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+        client = _client(logger)
+        provider = ArangoHTTPProvider(logger, MagicMock())
+        provider.http_client = client
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=_session(post=Resp(status, _body(status, num)))):
+            return await provider.stage_state_create({"id": "k", "status": "QUEUED"})
+
+    async def test_an_existing_key_is_logged_at_debug_not_warning(self, capture) -> None:
+        logger, records = capture
+        assert await self._create(logger, 409, ahc.ARANGO_UNIQUE_CONSTRAINT_VIOLATED) is False
+        (record,) = _db_records(records)
+        assert record.levelno == logging.DEBUG
+        assert log_record_fields(record)["code"] == ahc.ARANGO_UNIQUE_CONSTRAINT_VIOLATED
+
+    async def test_a_write_conflict_of_the_insert_stays_a_warning(self, capture) -> None:
+        logger, records = capture
+        assert await self._create(logger, 409, ahc.ARANGO_CONFLICT) is False
+        (record,) = _db_records(records)
+        assert record.levelno == logging.WARNING
+
+    async def test_an_outage_of_the_insert_stays_a_warning_and_raises(self, capture) -> None:
+        logger, records = capture
+        with pytest.raises(ArangoQueryError):
+            await self._create(logger, 503, 21004)
+        (record,) = _db_records(records)
+        assert record.levelno >= logging.WARNING
+
+    async def test_the_expectation_does_not_leak_to_other_calls(self, capture) -> None:
+        logger, records = capture
+        await self._create(logger, 409, ahc.ARANGO_UNIQUE_CONSTRAINT_VIOLATED)
+        client = _client(logger)
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=_session(post=Resp(409, _body(409, 1210)))):
+            with pytest.raises(ArangoQueryError):
+                await provider_query(client)
+        assert [r.levelno for r in _db_records(records)] == [logging.DEBUG, logging.WARNING]

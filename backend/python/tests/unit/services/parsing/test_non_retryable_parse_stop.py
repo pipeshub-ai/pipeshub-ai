@@ -83,3 +83,14 @@ async def test_an_ordinary_pdfplumber_failure_still_falls_back_to_ocr() -> None:
 
     assert result.provider_used == _ok_result().provider_used
     ocr.parse.assert_awaited_once()
+
+
+async def test_a_record_deleted_mid_parse_passes_through_the_pdfplumber_wrap_and_is_never_a_parse_error() -> None:
+    """The stop must reach the route as RecordGone (a 410 the client confirms), not as PARSE_FAILED, and must not trigger OCR."""
+    from app.services.paid_cache.orphan import RecordGone
+
+    processor = MagicMock()
+    processor.parse_document = AsyncMock(return_value=object())
+    processor.create_blocks = AsyncMock(side_effect=RecordGone("rec-1"))
+    with pytest.raises(RecordGone):
+        await PdfPlumberParser(processor).parse(b"%PDF", "a.pdf")

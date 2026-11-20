@@ -12,6 +12,7 @@ import { extractStorageSaveErrorMessage } from '../utils/storage-save-error';
 import { resolveS3Credentials } from '../utils/s3-credentials';
 import { toast } from '@/lib/store/toast-store';
 import type { StorageFormData, StorageProviderType, OnboardingStepId } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 
 const selectStyle: React.CSSProperties = {
@@ -242,8 +243,8 @@ export function StepStorage({
               </Flex>
               <Flex direction="column" gap="1" style={{ flex: 1 }}>
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.secretKeyLabel')}</Text>
-                <TextField.Root
-                  type={showSecret ? 'text' : 'password'}
+                <SecretTextField
+                  masked={!showSecret}
                   placeholder={t('onboarding.stepStorage.secretKeyPlaceholder')}
                   value={form.s3SecretAccessKey ?? ''}
                   onChange={(e) => handleChange('s3SecretAccessKey', e.target.value)}
@@ -260,7 +261,7 @@ export function StepStorage({
                       </span>
                     </button>
                   </TextField.Slot>
-                </TextField.Root>
+                </SecretTextField>
               </Flex>
             </Flex>
             <Text
@@ -327,8 +328,8 @@ export function StepStorage({
             </Flex>
             <Flex direction="column" gap="1">
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.accountKeyLabel')}</Text>
-              <TextField.Root
-                type={showAccountKey ? 'text' : 'password'}
+              <SecretTextField
+                masked={!showAccountKey}
                 placeholder={t('onboarding.stepStorage.accountKeyPlaceholder')}
                 value={form.accountKey ?? ''}
                 onChange={(e) => handleChange('accountKey', e.target.value)}
@@ -345,7 +346,7 @@ export function StepStorage({
                     </span>
                   </button>
                 </TextField.Slot>
-              </TextField.Root>
+              </SecretTextField>
             </Flex>
             <Flex direction="column" gap="1">
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.containerLabel')}</Text>

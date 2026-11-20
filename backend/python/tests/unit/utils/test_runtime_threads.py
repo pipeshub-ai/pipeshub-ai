@@ -7,11 +7,25 @@ import os
 import sys
 from unittest.mock import patch
 
+import pytest
+
+import app.utils
+
+_MODULE = "app.utils.runtime_threads"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test imports the module again so its body re-runs; afterwards the original entry and the package attribute
+    are put back, so the rest of the process keeps one copy."""
+    monkeypatch.delitem(sys.modules, _MODULE, raising=False)
+    if hasattr(app.utils, "runtime_threads"):
+        monkeypatch.setattr(app.utils, "runtime_threads", app.utils.runtime_threads)
+
 
 def _reload_module() -> object:
-    """Reload runtime_threads so module-level code re-runs."""
-    sys.modules.pop("app.utils.runtime_threads", None)
-    return importlib.import_module("app.utils.runtime_threads")
+    """Import runtime_threads afresh so module-level code re-runs."""
+    return importlib.import_module(_MODULE)
 
 
 class TestEnvDefaults:
@@ -19,15 +33,13 @@ class TestEnvDefaults:
         keys = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "TOKENIZERS_PARALLELISM")
         saved = {k: os.environ.pop(k, None) for k in keys}
         try:
-            sys.modules.pop("app.utils.runtime_threads", None)
             with patch.dict(os.environ, {}, clear=False):
-                importlib.import_module("app.utils.runtime_threads")
+                _reload_module()
                 assert os.environ["OMP_NUM_THREADS"] == "2"
                 assert os.environ["OPENBLAS_NUM_THREADS"] == "2"
                 assert os.environ["MKL_NUM_THREADS"] == "2"
                 assert os.environ["TOKENIZERS_PARALLELISM"] == "false"
         finally:
-            sys.modules.pop("app.utils.runtime_threads", None)
             for k, v in saved.items():
                 if v is None:
                     os.environ.pop(k, None)
@@ -42,7 +54,6 @@ class TestEnvDefaults:
             _reload_module()
             assert os.environ["OMP_NUM_THREADS"] == "8"
         finally:
-            sys.modules.pop("app.utils.runtime_threads", None)
             if saved is None:
                 os.environ.pop("OMP_NUM_THREADS", None)
             else:
@@ -54,12 +65,10 @@ class TestEnvDefaults:
         saved_blas = os.environ.pop("OPENBLAS_NUM_THREADS", None)
         os.environ["OMP_NUM_THREADS"] = "4"
         try:
-            sys.modules.pop("app.utils.runtime_threads", None)
             with patch.dict(os.environ, {}, clear=False):
-                importlib.import_module("app.utils.runtime_threads")
+                _reload_module()
                 assert os.environ["OPENBLAS_NUM_THREADS"] == "4"
         finally:
-            sys.modules.pop("app.utils.runtime_threads", None)
             if saved_omp is None:
                 os.environ.pop("OMP_NUM_THREADS", None)
             else:

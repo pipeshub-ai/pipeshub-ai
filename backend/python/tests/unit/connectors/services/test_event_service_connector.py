@@ -1162,7 +1162,7 @@ class TestRunSyncTask:
         assert written[-1] == AppStatus.IDLE.value
 
     @pytest.mark.asyncio
-    async def test_status_write_failure_is_not_fatal(self):
+    async def test_an_unrecorded_start_stops_the_run(self):
         from app.connectors.core.sync.sync_runner import run_sync_task
 
         gp, logger = AsyncMock(), MagicMock()
@@ -1170,9 +1170,10 @@ class TestRunSyncTask:
         conn = AsyncMock()
         conn.run_sync = AsyncMock()
 
-        # A status write is bookkeeping; losing it must not fail the sync.
-        await run_sync_task(conn, "c1", gp, logger)
-        conn.run_sync.assert_awaited_once()
+        # A reindex sees a sync by its start time, so a run whose start is not recorded must not write.
+        with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()), pytest.raises(RuntimeError):
+            await run_sync_task(conn, "c1", gp, logger)
+        conn.run_sync.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cancellation_still_writes_idle(self):
