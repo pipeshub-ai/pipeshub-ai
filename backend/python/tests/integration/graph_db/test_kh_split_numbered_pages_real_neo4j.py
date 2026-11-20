@@ -1,0 +1,203 @@
+"""Numbered pages of a wide folder under the split browse, on a real Neo4j: what a page costs follows the page, not its number.
+
+The service reads the rows before page N (`KnowledgeHubService._walk_pages`) and then the page. Each read used to decide the whole
+folder's listing again with the batch check, so page 50 cost about fifty page 1s. Those reads now decide the listing once between them
+and read 1,000 rows at a time; the page itself decides afresh. The cost is counted in statements and listing decisions, not time, so
+the bound holds on any runner. Both browse modes must list the same rows, arrows and totals.
+
+Runs in backend-matrix on the Neo4j graph job. Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextvars
+import logging
+import uuid
+from typing import TYPE_CHECKING, Any
+
+import pytest
+
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
+from tests.integration.graph_permissions.loaders import EDGE_TARGETS, NODE_TARGETS
+from tests.integration.real_graph import backend_unavailable, connect_neo4j
+from tests.permissions.graph import Namespace, compile_world
+from tests.permissions.scenario import world_from_data
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module"), pytest.mark.timeout(900)]
+
+logger = logging.getLogger("kh-split-numbered-pages-it")
+USERS = ["u0", "u1", "u2", "u3"]
+FILES = 1_400
+LIMIT = 25      # page 50 is rows 1,226-1,250: two reads before it, the second resuming the first
+
+
+def _world() -> Any:  # noqa: ANN401
+    """A folder F of 1,400 files under a group R: u0 and u1 reach it by a group grant on R, u2 and u3 by their own grant on F (a seed).
+    Every tenth file has its own sharing (STRICT, no inheritance), granted to u0 and u2 or to u1 and u3; F also holds ten sub-folders
+    with two files each, four stubs whose STRICT child is granted to one pair, and a group that hides its children."""
+    nodes: list[dict] = [{"id": "A", "kind": "app", "app_type": "DRIVE"},
+                         {"id": "R", "kind": "group", "connector": "A", "rule": "OPEN", "parents": ["A"], "belongs": ["A"]},
+                         {"id": "F", "kind": "group", "connector": "A", "rule": "OPEN", "parents": ["R"], "inherits": ["R"], "belongs": ["R"]}]
+    grants = [["gAll", "R", "GROUP"], *([u, "F"] for u in USERS[2:])]
+    pairs = (["u0", "u2"], ["u1", "u3"])
+    inherit = {"connector": "A", "rule": "OPEN", "parents": ["F"], "inherits": ["F"], "belongs": ["F"]}
+    for i in range(FILES):
+        fid = f"Fx{i:05d}"
+        if i % 10 == 0:
+            nodes.append({"id": fid, "kind": "record", "connector": "A", "rule": "STRICT", "parents": ["F"], "belongs": ["F"]})
+            grants += [[u, fid] for u in pairs[(i // 10) % 2]]
+        else:
+            nodes.append({"id": fid, "kind": "record", **inherit})
+    for j in range(10):
+        sid = f"Fs{j:02d}"
+        nodes.append({"id": sid, "kind": "record", **inherit})
+        nodes += [{"id": f"{sid}c{k}", "kind": "record", "connector": "A", "rule": "OPEN", "parents": [sid], "inherits": [sid],
+                   "belongs": ["F"]} for k in range(2)]
+    for j in range(4):
+        pid = f"Fp{j:02d}"
+        nodes.append({"id": pid, "kind": "record", "placeholder": True, **inherit})
+        nodes.append({"id": f"{pid}c", "kind": "record", "connector": "A", "rule": "STRICT", "parents": [pid], "belongs": ["F"]})
+        grants += [[u, f"{pid}c"] for u in pairs[j % 2]]
+    nodes.append({"id": "Fh", "kind": "group", "hide_children": True, **inherit})
+    nodes += [{"id": f"Fhr{k}", "kind": "record", "connector": "A", "rule": "OPEN", "parents": ["Fh"], "inherits": ["Fh"], "belongs": ["Fh"]}
+              for k in range(2)]
+    return world_from_data({
+        "principals": [{"id": u} for u in USERS] + [{"id": "gAll", "kind": "group"}],
+        "nodes": nodes, "grants": grants, "memberships": [[u, "gAll"] for u in USERS[:2]], "gates": [[u, "A"] for u in USERS],
+    })
+
+
+class _Config:
+    async def get_config(self, *_a: Any, **_k: Any) -> dict:  # noqa: ANN401
+        return {"scopedJwtSecret": "kh-split-numbered-pages-it"}
+
+
+class _Hub:
+    """The world loaded under its own prefix, the product's browse service over it, and a count of what each request asked."""
+
+    def __init__(self, graph: Any, ns: Namespace) -> None:  # noqa: ANN401
+        self.graph, self.ns = graph, ns
+        self.service = KnowledgeHubService(logger, graph, _Config())
+        self._log: contextvars.ContextVar[dict | None] = contextvars.ContextVar("kh_it_request", default=None)
+        execute, listed = graph.client.execute_query, graph._kh_split_listed
+
+        async def counted_execute(*a: Any, **k: Any) -> Any:  # noqa: ANN401
+            if (log := self._log.get()) is not None:
+                log["statements"] += 1
+            return await execute(*a, **k)
+
+        async def counted_listed(*a: Any, **k: Any) -> Any:  # noqa: ANN401
+            if (log := self._log.get()) is not None:
+                log["decisions"] += 1
+            return await listed(*a, **k)
+
+        graph.client.execute_query, graph._kh_split_listed = counted_execute, counted_listed
+
+    async def browse(self, user: str, *, page: int = 1, cursor: str | None = None, sidebar: bool = False) -> dict:
+        log = {"statements": 0, "decisions": 0}
+        token = self._log.set(log)
+        try:
+            got = await self.service.get_nodes(
+                user_id=self.ns.id(user), org_id=self.ns.org, parent_id=self.ns.id("F"), parent_type="recordGroup", page=page,
+                limit=LIMIT, sort_by="name", sort_order="asc", only_containers=sidebar, cursor=cursor)
+        finally:
+            self._log.reset(token)
+        assert got.success, (got.errorCode, got.error)
+        return {"ids": [self.ns.local(i.id) for i in got.items], "arrows": [bool(i.hasChildren) for i in got.items],
+                "total": got.pagination.totalItems, "next": got.pagination.nextCursor, **log}
+
+
+@pytest.fixture(scope="module")
+async def hub() -> AsyncIterator[_Hub]:
+    with pytest.MonkeyPatch.context() as mp:
+        try:
+            graph = await connect_neo4j(logger, mp)
+        except Exception as exc:
+            backend_unavailable("neo4j", exc)
+        prefix = f"khsplit{uuid.uuid4().hex[:8]}"
+        compiled = compile_world(_world(), prefix)
+        kind_of = {n["id"]: n["kind"] for n in compiled["nodes"]}
+        try:
+            for kind, collection in NODE_TARGETS.items():
+                rows = [n["props"] for n in compiled["nodes"] if n["kind"] == kind]
+                if rows:
+                    assert await graph.batch_upsert_nodes(rows, collection=collection)
+            for edge_type, collection in EDGE_TARGETS.items():
+                rows = [{"from_id": e["from"], "from_collection": NODE_TARGETS[kind_of[e["from"]]],
+                         "to_id": e["to"], "to_collection": NODE_TARGETS[kind_of[e["to"]]], **e["props"]}
+                        for e in compiled["edges"] if e["type"] == edge_type]
+                if rows:
+                    assert await graph.batch_create_edges(rows, collection=collection)
+            yield _Hub(graph, Namespace(prefix))
+        finally:
+            await graph.client.execute_query("MATCH (n) WHERE n.id STARTS WITH $p DETACH DELETE n", parameters={"p": f"{prefix}-"})
+            await graph.client.execute_query("MATCH (n:Organization {id: $o}) DETACH DELETE n", parameters={"o": Namespace(prefix).org_node})
+            await graph.disconnect()
+
+
+async def test_a_numbered_page_costs_about_what_the_first_page_costs(hub: _Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    first = await hub.browse("u0")
+    assert len(first["ids"]) == LIMIT and first["decisions"] == 1
+    for page in (25, 50):
+        deep = await hub.browse("u0", page=page)
+        assert len(deep["ids"]) == LIMIT
+        # The reads before the page decide the listing once between them, and the page decides it again: never one decision per page.
+        assert deep["decisions"] == 2, (page, deep["decisions"])
+        assert deep["statements"] <= 3 * first["statements"], (page, deep["statements"], first["statements"])
+
+
+async def test_both_browse_modes_list_the_same_pages(hub: _Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    for user in ("u0", "u2"):
+        pages: dict[str, list] = {}
+        for mode in ("legacy", "split"):
+            monkeypatch.setenv("KH_BROWSE_MODE", mode)
+            first = await hub.browse(user)
+            shown = [first, await hub.browse(user, cursor=first["next"]), await hub.browse(user, page=25),
+                     await hub.browse(user, page=50), await hub.browse(user, sidebar=True)]
+            pages[mode] = [(p["ids"], p["arrows"], p["total"]) for p in shown]
+        assert pages["split"] == pages["legacy"], user
+        assert all(len(ids) == LIMIT for ids, _, _ in pages["split"][:4])
+
+
+async def test_concurrent_viewers_are_each_answered_from_their_own_access(hub: _Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    alone = {u: (await hub.browse(u, page=50))["ids"] for u in USERS}
+    together = await asyncio.gather(*(hub.browse(u, page=50) for u in USERS))
+    assert {u: p["ids"] for u, p in zip(USERS, together, strict=True)} == alone
+    # The pairs hold different files of their own sharing, so a page served from another viewer's decision would show.
+    assert alone["u0"] != alone["u1"]
+
+
+async def test_a_grant_removed_while_a_numbered_page_is_read_is_not_listed(hub: _Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reads before the page share a decision; the page does not reuse it, so access taken away meanwhile is not shown."""
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    before = (await hub.browse("u0", page=50))["ids"]
+    target = next(i for i in before if i.startswith("Fx") and int(i[2:]) % 10 == 0)      # a file only its own grant opens
+    user, record = hub.ns.id("u0"), hub.ns.id(target)
+    page_v3 = hub.graph.get_knowledge_hub_connector_page_v3
+    revoked: list[bool] = []
+
+    async def revoke_before_the_page(*a: Any, **k: Any) -> Any:  # noqa: ANN401
+        if k.get("limit") == LIMIT and not revoked:      # the page itself: the reads before it take 1,000 rows, then the 225 left
+            await hub.graph.client.execute_query("MATCH (:User {id: $u})-[p:PERMISSION]->(:Record {id: $r}) DELETE p",
+                                                 parameters={"u": user, "r": record})
+            revoked.append(True)
+        return await page_v3(*a, **k)
+
+    monkeypatch.setattr(hub.graph, "get_knowledge_hub_connector_page_v3", revoke_before_the_page)
+    try:
+        after = (await hub.browse("u0", page=50))["ids"]
+    finally:
+        await hub.graph.client.execute_query(
+            "MATCH (u:User {id: $u}), (r:Record {id: $r}) CREATE (u)-[:PERMISSION {type: 'USER', role: 'READER', createdAtTimestamp: 0}]->(r)",
+            parameters={"u": user, "r": record})
+    assert revoked == [True]
+    assert target not in after
+    assert set(after) - set(before) <= {i for i in after if i > before[-1]}, "only the next row moves up into the page"
