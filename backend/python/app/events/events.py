@@ -157,7 +157,6 @@ from app.utils.user_errors import (
     PDF_PAGE_LIMIT_NOTE,
     RETRY_SCHEDULED,
     binary_text_file,
-    pdf_over_page_limit,
 )
 
 # The readers that take a file's bytes as text, which the .log/.cfg size cap applies to.
@@ -193,6 +192,11 @@ def _is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
 
 # Storage cleanups of abandoned virtual record ids still running in the background.
 _ABANDONED_VRID_CLEANUPS: set[asyncio.Task] = set()
+
+#: Whether a PDF whose page count is not known yet stays on the copy it names until the page limit decides. Only a test turns it
+#: off, to show that the half-moved-record matrix fails without it.
+_DEFER_ISOLATION = True
+
 
 @dataclass
 class PageLimitGate:
@@ -595,6 +599,7 @@ class EventProcessor:
         content_rev: str | None = None,
         after_inspection: Callable[[InspectedPdf], Awaitable[bool]] | None = None,
         inspected: InspectedPdf | None = None,
+        leave_old_copy: Callable[[], Awaitable[None]] | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
         existing PDF pipeline would pick for a native PDF.
@@ -616,6 +621,8 @@ class EventProcessor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
             return
+        if leave_old_copy is not None:
+            await leave_old_copy()
         # The count of the bytes that are parsed (the pdfium rewrite when the file was repaired), written once per revision.
         await self._write_page_count(record_id, content_rev, inspected.page_count)
         # Every parser below reads the bytes that passed inspection.
@@ -836,6 +843,7 @@ class EventProcessor:
         file_path: str | None = None,
         content_rev: str | None = None,
         late_page_limit: Callable[[InspectedPdf], Awaitable[bool]] | None = None,
+        leave_old_copy: Callable[[], Awaitable[None]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """New orchestration path: parse → index → enrich via standalone services.
 
@@ -901,6 +909,9 @@ class EventProcessor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
             return
+        if leave_old_copy is not None:
+            # The page limit let the file through (or could not count it): only now does the record leave its old copy.
+            await leave_old_copy()
 
         record_doc = await self.graph_provider.get_document(
             record_id,
@@ -1448,6 +1459,11 @@ class EventProcessor:
         del content
         if isinstance(decision, (Keep, Refuse)):
             if isinstance(decision, Keep):
+                pending = keep_old_copy.pending_of(doc)
+                if pending and pending != record.get("virtualRecordId"):
+                    # An earlier attempt named a replacement copy: a kept record waits for none, and it is released.
+                    await self._clear_pending(doc)
+                    await self._release_pending_copy(org_id, pending)
                 await apply_keep(long_doc, decision)
             else:
                 await apply_refuse(long_doc, decision)
@@ -1500,7 +1516,7 @@ class EventProcessor:
                     # record still carries the revision this run wrote. A record that moved on is left to its writer.
                     still_ours = await self._put_back_kept_record(
                         record=record, doc=doc, record_id=record_id, content_rev=content_rev, org_id=long_doc.org_id,
-                        keep=late_decision, md5=md5, force_reindex=long_doc.force_reindex, released_vrid=long_doc.released_vrid
+                        keep=late_decision, md5=md5, force_reindex=long_doc.force_reindex,
                     )
                     if embed_marker and still_ours:
                         await self._discard_embed_marker(doc, embed_marker, org_id)
@@ -1524,40 +1540,22 @@ class EventProcessor:
 
     async def _put_back_kept_record(
         self, *, record: Mapping[str, Any], doc: dict[str, Any], record_id: str, content_rev: str | None, org_id: str,
-        keep: Keep, md5: str | None, force_reindex: bool, released_vrid: str | None,
+        keep: Keep, md5: str | None, force_reindex: bool,
     ) -> bool:
-        """Keep, after the run already wrote: put the record back on the copy the event found. True while the run owned it.
+        """Keep, after the run marked the record IN_PROGRESS: put the record back as the event found it. True while the run
+        owned it.
 
-        Three states of the record are met here. On the revision this run wrote with the virtual record id it read (the old
-        copy was kept untouched, a replacement pending under another id or not), it is put back, and a pending replacement is
-        dropped and released. Moved off its id (this run isolated it from a shared id and took it out of that id's points
-        before the count existed), it is put back on the old id and the old id's membership is rewritten with the record
-        holding it again, so it is searchable on the copy it was kept on; the id this run minted is released. On a newer
-        revision, or gone, it is left to its writer.
+        The record has not left the copy it names (the virtual record id is only changed once the page limit lets the file
+        through, ``leave_old_copy``), so what is put back is the status the run wrote, and a replacement copy pending under
+        another id is dropped and released. A record that has moved on (a newer revision, or another id) is left to its writer.
         """
         # A read that fails raises, so the event is retried: it is not a record that moved on.
         current = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True) or {}
-        if current.get("contentRev") != content_rev:
-            return False
         old_vrid = record.get("virtualRecordId")
-        moved_to = current.get("virtualRecordId")
+        if current.get("contentRev") != content_rev or current.get("virtualRecordId") != old_vrid:
+            return False
         pending = current.get(PENDING_VIRTUAL_RECORD_ID)
-        pipeline = self._indexing_pipeline()
-        moved = moved_to != old_vrid
-        if moved and (pipeline is None or not old_vrid):
-            # Nothing can put it back in the old copy's points: the copy is gone for this record, and a refusal says so.
-            pages = keep.pages
-            await apply_refuse(
-                LongDocument(
-                    record_id=record_id, snapshot=current, org_id=org_id, content=None, content_rev=content_rev, md5=md5,
-                    force_reindex=force_reindex, host=self, released_vrid=released_vrid,
-                ),
-                Refuse(
-                    status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, reason=pdf_over_page_limit(pages), pages=pages,
-                ),
-            )
-            return True
-        expected = {"contentRev": content_rev, "virtualRecordId": moved_to}
+        expected = {"contentRev": content_rev, "virtualRecordId": old_vrid}
         if pending:
             expected[PENDING_VIRTUAL_RECORD_ID] = pending
         put_back = {
@@ -1566,7 +1564,6 @@ class EventProcessor:
             "processingStartedAt": record.get("processingStartedAt"),
             "contentRev": record.get("contentRev"),
             "reason": record.get("reason"),
-            "virtualRecordId": old_vrid,
         }
         applied = await self.graph_provider.update_node_fields_if_match(
             record_id, CollectionNames.RECORDS.value, put_back, expected,
@@ -1574,11 +1571,8 @@ class EventProcessor:
         )
         if not applied:
             return True
-        # The old id's membership is rewritten with the record holding it again by ``apply_keep`` below (every keep does it,
-        # so a retry after a failure there settles the same way). It raises when the store cannot, so the event is retried.
-        for released in {v for v in (moved_to if moved else None, pending) if v and v != old_vrid}:
-            self._spawn_abandoned_vrid_cleanup(org_id, released)
-            await self._rewrite_or_delete_vrid_vectors(released)
+        if pending and pending != old_vrid:
+            await self._release_pending_copy(org_id, pending)
         doc.pop(PENDING_VIRTUAL_RECORD_ID, None)
         await apply_keep(
             LongDocument(
@@ -1588,6 +1582,11 @@ class EventProcessor:
             keep,
         )
         return True
+
+    async def _release_pending_copy(self, org_id: str, pending: str) -> None:
+        """Release the replacement copy a kept record no longer waits for, through the holder-checked deleters."""
+        self._spawn_abandoned_vrid_cleanup(org_id, pending)
+        await self._rewrite_or_delete_vrid_vectors(pending)
 
     async def vrid_has_stored_content(self, org_id: str, virtual_record_id: str) -> bool:
         return await self._vrid_has_stored_content(org_id, virtual_record_id)
@@ -2545,6 +2544,8 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
 
+            leave_old_copy: Callable[[], Awaitable[None]] | None = None
+            route_is_pdf_for_limit = dispatch is not None and dispatch.route is Route.PDF and not reads_as_code_file
             swap_new = False
             if swap_old_vrid and checkpoint is None and not rebuild_shared_vrid:
                 if virtual_record_id == swap_old_vrid and event_type in (
@@ -2585,18 +2586,20 @@ class EventProcessor:
             ):
                 # The same event again, resuming into the copy it was writing: the pending vrid already names it.
                 keep_old_copy.begin_swap(keep_old_copy.SwapRun(_record_key(doc), org_id, swap_old_vrid, virtual_record_id))
-            elif virtual_record_id != doc.get("virtualRecordId"):
-                await self.update_record_fields(
-                    doc, {"virtualRecordId": virtual_record_id}
-                )
-            if (
-                abandoned_virtual_record_id
-                and abandoned_virtual_record_id != virtual_record_id
-            ):
-                # Off the indexing slot: the cleanup waits to confirm no record
-                # still uses the vrid, and backs off on errors, before deleting.
-                self._spawn_abandoned_vrid_cleanup(org_id, abandoned_virtual_record_id)
-                await self._rewrite_or_delete_vrid_vectors(abandoned_virtual_record_id)
+            else:
+                async def _leave_old_copy(new_vrid: str = virtual_record_id, abandoned: str | None = abandoned_virtual_record_id) -> None:
+                    if new_vrid != doc.get("virtualRecordId"):
+                        await self.update_record_fields(doc, {"virtualRecordId": new_vrid})
+                    if abandoned and abandoned != new_vrid:
+                        self._spawn_abandoned_vrid_cleanup(org_id, abandoned)
+                        await self._rewrite_or_delete_vrid_vectors(abandoned)
+
+                if _DEFER_ISOLATION and late_page_limit is not None and checkpoint is None and route_is_pdf_for_limit:
+                    # The page count is not known yet: the record stays on the copy it names, untouched, until the late check lets the
+                    # file through. A keep or a refusal then decides on the record exactly as the event found it, on any delivery.
+                    leave_old_copy = _leave_old_copy
+                else:
+                    await _leave_old_copy()
 
             if resumable_kind:
                 begin_attempt(EmbedAttempt(
@@ -2767,6 +2770,7 @@ class EventProcessor:
                     file_path=event_data.get("filePath"),
                     content_rev=content_rev,
                     late_page_limit=late_page_limit,
+                    leave_old_copy=leave_old_copy,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None
@@ -2941,6 +2945,7 @@ class EventProcessor:
                     content_rev=content_rev,
                     after_inspection=late_page_limit,
                     inspected=page_gate.inspected,
+                    leave_old_copy=leave_old_copy,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None

@@ -429,41 +429,29 @@ def _service_world(record: dict, *, shared: bool) -> tuple[World, dict]:
 
 
 @pytest.mark.asyncio
-async def test_a_service_keep_after_the_run_left_the_shared_virtual_record_id_goes_back_to_it() -> None:
-    """The run isolated the record under a new id and took it out of the old id's points: it is put back on the old id, whose
-    membership is rewritten with the record holding it again, and the id the run minted is released."""
+async def test_a_service_keep_on_a_shared_virtual_record_id_never_leaves_it() -> None:
+    """The record stays on the id it names until the page limit has decided, so nothing is stripped, minted or released."""
     world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
     with patch("app.events.events.content_revision", return_value=REV):
         await world.run(UPDATE)
     record = world.graph.record
-    assert seen["vrid_at_parse"] != VRID
+    assert seen["vrid_at_parse"] == VRID
     assert not world.refused
     assert record["virtualRecordId"] == VRID and record["indexingStatus"] == COMPLETED
     assert record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
-    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with(VRID)
-    assert [c.args for c in world.rewrite.await_args_list][-1] == (seen["vrid_at_parse"],)
-    assert world.cleanup.call_args.args[1] == seen["vrid_at_parse"]
+    world.rewrite.assert_not_awaited()
+    world.cleanup.assert_not_called()
     world.unindex.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_a_service_keep_that_cannot_rewrite_the_old_membership_fails_the_event_with_the_record_back_on_its_id() -> None:
-    world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
-    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=RuntimeError("store down"))
+async def test_a_service_keep_whose_membership_sync_fails_fails_the_event_unacknowledged() -> None:
+    world, _ = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
+    world.processor.indexing_pipeline.sync_vector_membership = AsyncMock(side_effect=RuntimeError("store down"))
     with patch("app.events.events.content_revision", return_value=REV), pytest.raises(RuntimeError):
         await world.run(UPDATE)
     assert world.graph.record["virtualRecordId"] == VRID
     assert "indexingNote" not in world.graph.record
-
-
-@pytest.mark.asyncio
-async def test_a_service_keep_with_no_indexing_pipeline_to_restore_membership_is_a_refusal() -> None:
-    world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
-    world.processor.indexing_pipeline = None
-    with patch("app.events.events.content_revision", return_value=REV):
-        await world.run(UPDATE)
-    assert world.refused
-    assert world.graph.record["indexingStatus"] != COMPLETED
 
 
 @pytest.mark.asyncio
@@ -486,7 +474,31 @@ async def test_a_service_keep_in_keep_old_copy_mode_stays_on_the_old_copy_and_dr
     assert record["virtualRecordId"] == VRID and record["indexingStatus"] == COMPLETED
     assert PENDING_VIRTUAL_RECORD_ID not in record
     assert world.cleanup.call_args.args[1] == "v-pending"
-    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with(VRID)
+
+
+@pytest.mark.asyncio
+async def test_an_early_keep_drops_the_pending_copy_an_earlier_attempt_named() -> None:
+    from app.services.graph_db.common.record_visibility import PENDING_VIRTUAL_RECORD_ID
+
+    world = World(searchable(indexingStatus="QUEUED", **{PENDING_VIRTUAL_RECORD_ID: "v-pending"}))
+    world.count(600)
+    cleanup = world.stack.enter_context(patch.object(world.ep, "_spawn_abandoned_vrid_cleanup"))
+    await world.run(UPDATE)
+    assert PENDING_VIRTUAL_RECORD_ID not in world.graph.record
+    assert cleanup.call_args.args[1] == "v-pending"
+
+
+@pytest.mark.asyncio
+async def test_a_keep_for_a_record_in_the_trash_that_alone_holds_its_id_deletes_nothing() -> None:
+    """The graph lists no live holder for it: the call that deletes points when none remain must not be the keep's."""
+    world = World(searchable(indexingStatus="QUEUED", pageCount=700))
+    world.count(600)
+    delete_capable = AsyncMock(return_value="deleted")
+    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership = delete_capable
+    await world.run(UPDATE)
+    assert not world.refused
+    delete_capable.assert_not_awaited()
+    world.processor.indexing_pipeline.sync_vector_membership.assert_awaited_once_with(VRID)
 
 
 @pytest.mark.asyncio
@@ -631,8 +643,8 @@ async def test_a_routing_recount_over_the_limit_keeps_a_keep_eligible_record_on_
     assert record["indexingStatus"] == COMPLETED and record["virtualRecordId"] == VRID
     assert record["contentRev"] == "other" and record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
     world.unindex.assert_not_awaited()
-    restored = world.processor.indexing_pipeline.rewrite_or_delete_vector_membership
-    assert restored.await_count == 1, "every keep rewrites the membership of the copy it keeps"
+    world.processor.indexing_pipeline.sync_vector_membership.assert_awaited_once_with(VRID)
+    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
 
 
 # --- the late keep's re-read and marker ----------------------------------------------------------------------------------------
@@ -711,7 +723,7 @@ async def test_a_retry_after_a_failed_membership_rewrite_settles_with_the_record
     """The first run put the record back on its old id and the rewrite raised; the retry's early count is over the limit, so
     it settles at the early gate. That keep must rewrite the membership too."""
     first, _ = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
-    first.processor.indexing_pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=RuntimeError("store down"))
+    first.processor.indexing_pipeline.sync_vector_membership = AsyncMock(side_effect=RuntimeError("store down"))
     with patch("app.events.events.content_revision", return_value=REV), pytest.raises(RuntimeError):
         await first.run(UPDATE)
     stuck = dict(first.graph.record)
@@ -722,7 +734,7 @@ async def test_a_retry_after_a_failed_membership_rewrite_settles_with_the_record
     await retry.run(UPDATE)
     assert not retry.refused
     assert retry.graph.record["indexingStatus"] == COMPLETED and retry.graph.record["virtualRecordId"] == VRID
-    retry.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_awaited_with(VRID)
+    retry.processor.indexing_pipeline.sync_vector_membership.assert_awaited_with(VRID)
 
 
 @pytest.mark.asyncio
@@ -730,14 +742,14 @@ async def test_an_early_keep_rewrites_the_membership_of_the_copy_it_keeps() -> N
     world = World(searchable(indexingStatus="QUEUED"))
     world.count(600)
     await world.run(UPDATE)
-    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with(VRID)
+    world.processor.indexing_pipeline.sync_vector_membership.assert_awaited_once_with(VRID)
 
 
 @pytest.mark.asyncio
 async def test_a_keep_whose_membership_rewrite_fails_is_not_acknowledged() -> None:
     world = World(searchable(indexingStatus="QUEUED"))
     world.count(600)
-    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=RuntimeError("store down"))
+    world.processor.indexing_pipeline.sync_vector_membership = AsyncMock(side_effect=RuntimeError("store down"))
     with pytest.raises(RuntimeError):
         await world.run(UPDATE)
     assert world.graph.record["indexingStatus"] == "QUEUED" and "indexingNote" not in world.graph.record
