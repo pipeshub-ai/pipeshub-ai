@@ -35,6 +35,7 @@ logger = logging.getLogger("kh-split-numbered-pages-it")
 USERS = ["u0", "u1", "u2", "u3"]
 FILES = 1_400
 LIMIT = 25      # page 50 is rows 1,226-1,250: two reads before it, the second resuming the first
+CHAINS = (49, 50)
 
 
 def _world() -> Any:  # noqa: ANN401
@@ -67,9 +68,24 @@ def _world() -> Any:  # noqa: ANN401
     nodes.append({"id": "Fh", "kind": "group", "hide_children": True, **inherit})
     nodes += [{"id": f"Fhr{k}", "kind": "record", "connector": "A", "rule": "OPEN", "parents": ["Fh"], "inherits": ["Fh"], "belongs": ["Fh"]}
               for k in range(2)]
+    # Under App B, two chains of groups that inherit down from a top u0 is granted: C49 and C50 end in a start 49 and 50 hops below the App,
+    # each with one record below it. The check's walk from the App goes 50 hops, so only C49's record is admitted by it.
+    nodes.append({"id": "B", "kind": "app", "app_type": "DRIVE"})
+    for depth in CHAINS:
+        top = f"C{depth}n01"
+        nodes.append({"id": top, "kind": "group", "connector": "B", "rule": "OPEN", "parents": ["B"], "belongs": ["B"]})
+        grants.append(["u0", top])
+        for i in range(2, depth + 1):
+            above = f"C{depth}n{i - 1:02d}"
+            nodes.append({"id": f"C{depth}n{i:02d}", "kind": "group", "connector": "B", "rule": "OPEN", "parents": [above], "inherits": [above],
+                          "belongs": [above]})
+        start = f"C{depth}n{depth:02d}"
+        nodes.append({"id": f"C{depth}x", "kind": "record", "connector": "B", "rule": "OPEN", "parents": [start], "inherits": [start],
+                      "belongs": [start]})
     return world_from_data({
         "principals": [{"id": u} for u in USERS] + [{"id": "gAll", "kind": "group"}],
-        "nodes": nodes, "grants": grants, "memberships": [[u, "gAll"] for u in USERS[:2]], "gates": [[u, "A"] for u in USERS],
+        "nodes": nodes, "grants": grants, "memberships": [[u, "gAll"] for u in USERS[:2]],
+        "gates": [[u, app] for u in USERS for app in ("A", "B")],
     })
 
 
@@ -247,3 +263,30 @@ async def test_the_batch_check_is_asked_only_about_the_children_their_hop_does_n
     await hub.browse("u0")
     # The folder holds 1,415 children; the check is asked only about the 70 files shared with the other pair, which no hop admits.
     assert max(asked) == FILES // 20, asked
+
+
+@pytest.mark.parametrize(("depth", "admitted"), [(49, True), (50, False)])
+async def test_a_childs_hop_admits_it_only_where_its_route_from_the_app_stays_within_the_checks_cap(
+    hub: _Hub, monkeypatch: pytest.MonkeyPatch, depth: int, admitted: bool,
+) -> None:
+    """The check walks at most 50 hops up to the App, so the hop admits a child only below a start the walk reaches within 49. Below a start
+    50 hops down, the child's only route is 51 hops: the hop leaves it to the check, whose answer (no) is what the browse lists."""
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    graph, app, start, child = hub.graph, hub.ns.id("B"), hub.ns.id(f"C{depth}n{depth:02d}"), hub.ns.id(f"C{depth}x")
+    seen: list[dict] = []
+    listed = graph._kh_split_listed
+
+    async def keep_access(*a: Any, **k: Any) -> Any:  # noqa: ANN401
+        seen.append(k["access"])
+        return await listed(*a, **k)
+
+    monkeypatch.setattr(graph, "_kh_split_listed", keep_access)
+    got = await hub.service.get_nodes(user_id=hub.ns.id("u0"), org_id=hub.ns.org, parent_id=start, parent_type="recordGroup", limit=LIMIT,
+                                      sort_by="name", sort_order="asc")
+    assert got.success, (got.errorCode, got.error)      # the walk reaches the start itself in both chains
+    listing = await graph.get_knowledge_hub_access_v3(user_key=hub.ns.id("u0"), org_id=hub.ns.org)
+    for access in (seen[0], {**listing, "probe": None}):
+        by_hop = await graph._kh_split_admitted_by_hop(start, [child], app_id=app, org_id=hub.ns.org, access=access, transaction=None)
+        assert by_hop == ({child} if admitted else frozenset()), (depth, bool(access.get("probe")))
+        assert await graph._kh_v3_admitted([child], org_id=hub.ns.org, access=access, transaction=None) == by_hop
+    assert [i.id for i in got.items] == ([child] if admitted else [])
