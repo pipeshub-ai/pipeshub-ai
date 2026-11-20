@@ -3,12 +3,16 @@
 import logging
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.schema.arango.edges import permissions_schema
+from app.utils.error_class import mark_error
 from app.utils.record_access import (
     SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE,
     caller_can_read_virtual_record,
     service_account_upload_permission_edges,
 )
+from tests.support.log_capture import failure_line
 
 LOGGER = logging.getLogger("test")
 
@@ -61,6 +65,36 @@ class TestCallerCanReadVirtualRecord:
             graph, user_id="user-1", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
         )
         graph.check_record_access_with_details.assert_not_called()
+
+    @pytest.mark.parametrize("stamped", [False, True], ids=["unrecorded", "db_layer_recorded"])
+    async def test_denies_when_the_access_check_cannot_be_made_and_logs_it_without_its_text(
+        self, caplog: pytest.LogCaptureFixture, stamped: bool,
+    ) -> None:
+        """At WARNING either way: db.query.failed stamps the class, not a level already logged."""
+        down = ConnectionError("graph down at 10.0.0.7:8529")
+        if stamped:
+            mark_error(down, "unavailable")
+        graph = _graph()
+        graph.check_record_access_with_details.side_effect = down
+
+        with caplog.at_level(logging.DEBUG, logger=LOGGER.name):
+            assert not await caller_can_read_virtual_record(
+                graph, user_id="user-1", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
+            )
+
+        fields = failure_line(caplog.records, "record_access.check_failed", "unavailable", logging.WARNING, "10.0.0.7")
+        assert fields["record_id"] == "rec-1"
+
+    @pytest.mark.parametrize("edge", [{"type": "ORGANIZATION", "role": "READER"}, None], ids=["granted", "not_granted"])
+    async def test_a_service_account_whose_access_check_fails_still_gets_the_org_grant_answer(self, edge: dict | None) -> None:
+        graph = _graph()
+        graph.check_record_access_with_details.side_effect = ConnectionError("graph down")
+        graph.get_edge.return_value = edge
+
+        assert await caller_can_read_virtual_record(
+            graph, user_id="sa-1", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
+            is_service_account=True,
+        ) is (edge is not None)
 
     async def test_service_account_reads_an_org_granted_record(self) -> None:
         graph = _graph(allowed=False)

@@ -8,6 +8,7 @@ while the one before it worked, as a query timeout or a dropped connection does.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
@@ -19,9 +20,13 @@ from fastapi import HTTPException
 import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
 from app.config.constants.arangodb import Connectors
 from app.connectors.api import router as router_mod
+from app.core.org_context import OrgContext, bind
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.user_messages import DATABASE_UNREACHABLE
+from tests.support.log_capture import assert_text_free
+from tests.unit.services.graph_db import test_record_access_check_raise as access_stores
 
 RECORD_ID = "rec-1"
 ORG_ID = "org-1"
@@ -209,3 +214,105 @@ class TestTheOpenDetailsCall:
         with pytest.raises(HTTPException) as exc:
             await router_mod._refuse_connector_state_for_open(_neo4j(failing=set(), app_exists=False), self._DOC)
         assert exc.value.status_code == 404
+
+
+# ---- The access check ------------------------------------------------------------------------------------------------
+# ``check_record_access_with_details`` answers None for "may not open" and raises a read it could not make. Each route
+# that calls it answers the raise with the same 503 as a failed record read, and keeps its 403/404 for None.
+
+
+async def _signed_url_as_user(graph: Neo4jProvider) -> object:
+    """A session caller: unlike the indexing service token, it goes through the access check."""
+    return await router_mod.get_signed_url(
+        _request(_USER), ORG_ID, "u1", "drive", RECORD_ID, signed_url_handler=MagicMock(), graph_provider=graph
+    )
+
+
+async def _download_as_user(graph: Neo4jProvider) -> object:
+    handler = MagicMock()
+    handler.validate_token = MagicMock(
+        return_value=SimpleNamespace(user_id="u1", record_id=RECORD_ID, additional_claims={"org_id": ORG_ID})
+    )
+    return await router_mod.download_file(
+        _request(_USER), ORG_ID, RECORD_ID, "drive", "tok", signed_url_handler=handler, graph_provider=graph
+    )
+
+
+async def _record_details(graph: Neo4jProvider) -> object:
+    return await router_mod.get_record_by_id(RECORD_ID, _request(_USER), graph_provider=graph, x_record_content_open=None)
+
+
+async def _delete(graph: Neo4jProvider) -> object:
+    return await router_mod.delete_record(RECORD_ID, _request(_USER), graph_provider=graph, kafka_service=AsyncMock())
+
+
+# Route name -> (route, the status a refused check answers).
+ACL_ROUTES: dict[str, tuple[Route, int]] = {
+    "internal_content": (_internal_content, 403),
+    "signed_url": (_signed_url_as_user, 404),
+    "download_file": (_download_as_user, 404),
+    "stream_record": (_stream, 403),
+    "record_details": (_record_details, 404),
+    "delete_record": (_delete, 404),
+}
+
+
+def _capture_check() -> None:
+    """One known line, so a route that rightly logs nothing still gives ``assert_text_free`` records to search."""
+    logging.getLogger(__name__).debug("log capture is on")
+
+
+def _checked(check: object) -> Neo4jProvider:
+    graph = _with_record(_neo4j(failing=set()))
+    graph.check_record_access_with_details = AsyncMock(side_effect=check) if isinstance(check, Exception) \
+        else AsyncMock(return_value=check)
+    return graph
+
+
+class TestTheAccessCheck:
+    @pytest.mark.parametrize("error", [_Down("graph down"), PermissionVerificationUnavailableError()],
+                             ids=["read_failed", "check_unavailable"])
+    @pytest.mark.parametrize("route", [r for r, _ in ACL_ROUTES.values()], ids=ACL_ROUTES.keys())
+    async def test_a_check_that_could_not_be_made_is_503(
+        self, route: Route, error: Exception, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.DEBUG):
+            _capture_check()
+            exc = await _call(route, _checked(error), stop_at_content=True)
+        assert_text_free(caplog.records, "graph down")
+        assert exc is not None, "the route answered"
+        assert (exc.status_code, exc.detail) == (503, DATABASE_UNREACHABLE)
+        assert exc.headers["Retry-After"] == "5"
+        assert exc.__cause__ is error, "the graph error is kept as the cause"
+
+    @pytest.mark.parametrize(("route", "status"), ACL_ROUTES.values(), ids=ACL_ROUTES.keys())
+    async def test_a_refused_check_keeps_its_answer(self, route: Route, status: int) -> None:
+        exc = await _call(route, _checked(None), stop_at_content=True)
+        assert exc is not None
+        assert exc.status_code == status
+
+    async def test_the_stream_route_is_not_cached(self) -> None:
+        exc = await _call(_stream, _checked(_Down("graph down")), stop_at_content=True)
+        assert exc is not None
+        assert exc.status_code == 503
+        assert exc.headers["Cache-Control"] == "no-store"
+
+
+class TestTheWholeChain:
+    """The real provider of each store, one read inside the access check failing, through the route."""
+
+    @pytest.mark.parametrize("route", [_stream, _record_details], ids=["stream_record", "record_details"])
+    @pytest.mark.parametrize("store", ["arango", "neo4j", "postgres"])
+    async def test_a_failed_read_in_the_access_check_is_503(
+        self, store: str, route: Route, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        graph = access_stores.STORES[store](access_stores._Graph({"user"}))
+        graph.get_record_by_id = AsyncMock(return_value=_with_record(MagicMock()).get_record_by_id.return_value)
+        graph.get_document = AsyncMock(return_value={"id": ORG_ID})       # the route's own org read
+        with bind(OrgContext(ORG_ID, "u1", "user", "user:u1", "t")), caplog.at_level(logging.DEBUG):
+            _capture_check()
+            exc = await _call(route, graph, stop_at_content=True)
+        assert_text_free(caplog.records, "10.0.0.7", "graph down")
+        assert exc is not None, "the route answered"
+        assert (exc.status_code, exc.detail) == (503, DATABASE_UNREACHABLE)
+        assert isinstance(exc.__cause__, access_stores._Down)
