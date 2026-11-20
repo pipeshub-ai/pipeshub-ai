@@ -1109,8 +1109,8 @@ class TestViewersPastTheFirstHundred:
 
 class TestAFullPageWithNothingToSplitOn:
     """A full first page lists only the first 100 viewers: with no username to split on (a reindex in a process that has
-    not read the user list), or a synced account whose username is not known, the read is unread and the issue closed,
-    never stored open to the first page alone."""
+    not read the user list) the read is unread and the issue closed, never stored open to the first page alone. A synced
+    account whose username is not known is left out of the split: granted only if a page read lists it."""
 
     @staticmethod
     def _page(viewers: list[tuple[str, str]]):  # noqa: ANN205
@@ -1141,12 +1141,33 @@ class TestAFullPageWithNothingToSplitOn:
                                                               "k-u120": _user("k-u120", "u120@x.com")})
         assert {g.email for g in grants} == {"u001@x.com", "u120@x.com"} and record.access_rule == AccessRule.OPEN
 
-    async def test_a_synced_account_whose_username_is_not_known_makes_a_full_page_unread(self) -> None:
-        """The sync's case: a user list cut short leaves a linked account's username unknown."""
+    async def test_an_account_whose_username_is_not_known_is_left_out_and_the_rest_are_granted(self) -> None:
+        """The search fallback (10.2, 10.4 to 10.7) never reads the list in full, so a linked account it did not show is
+        kept without a username. It is left out of the split: granted only if a page lists it, never closing the issue
+        to the viewers the pages did list."""
         c = _connector()
-        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
-        c._dc_name_to_source_id = {"u001": "k-u001"}
+        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)] + [("zed", "zed@x.com")])
+        c._dc_name_to_source_id = {"u001": "k-u001", "u120": "k-u120"}
         record = _ticket()
-        grants = await c._viewer_grants(record, "P-1", "P", {"k-u001": _user("k-u001", "u001@x.com"),
-                                                              "k-u120": _user("k-u120", "u120@x.com")})
-        assert grants == [] and record.access_rule == AccessRule.RESTRICTED
+        users = {k: _user(k, f"{k[2:]}@x.com") for k in ("k-u001", "k-u120", "k-u130", "k-u050", "k-zed")}
+        grants = await c._viewer_grants(record, "P-1", "P", users)
+        # u050 and u130 have no known username but a page read lists them; zed has none and no page read lists it.
+        assert {g.email for g in grants} == {"u001@x.com", "u120@x.com", "u050@x.com", "u130@x.com"}
+        assert record.access_rule == AccessRule.OPEN
+
+    async def test_a_split_page_that_is_not_a_page_of_users_makes_the_read_unread(self) -> None:
+        c = _connector()
+        good = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+
+        async def broken(key: str, username: str | None) -> tuple[int, list[dict] | None]:
+            return (200, None) if username else await good(key, username)
+        c._viewers_page = broken
+        c._dc_name_to_source_id = {"u120": "k-u120"}
+        record = _ticket()
+        users = {"k-u120": _user("k-u120", "u120@x.com"), "k-u001": _user("k-u001", "u001@x.com")}
+        assert await c._viewer_grants(record, "P-1", "P", users) == [] and record.access_rule == AccessRule.RESTRICTED
+
+        c._viewers_page = good
+        record = _ticket()
+        grants = await c._viewer_grants(record, "P-1", "P", users)
+        assert {g.email for g in grants} == {"u001@x.com", "u120@x.com"} and record.access_rule == AccessRule.OPEN

@@ -3918,22 +3918,20 @@ class JiraDataCenterConnector(BaseConnector):
         ok = isinstance(body, list) and all(isinstance(u, dict) and isinstance(u.get("name") or "", str) for u in body)
         return response.status, body if ok else None
 
-    async def _issue_viewers(
-        self, issue_key: str, usernames: list[str], *, unnamed: bool = False,
-    ) -> tuple[int, list[dict[str, Any]] | None]:
+    async def _issue_viewers(self, issue_key: str, usernames: list[str]) -> tuple[int, list[dict[str, Any]] | None]:
         """The users Jira lists as able to browse the issue (Browse Projects there, its security level applied):
         ``(status, users)``, users None when a read failed. Every user a page lists has the permission, so a page is never
         read as wider than it is. A full page is split along ``usernames`` (the synced accounts, the only ones a grant can
         name): the filter is asked for each prefix they share until a page is not full. An account whose own username
-        still fills a page and is not on it is not granted (fewer readers, never more). A full page with a synced account
-        whose username is not known (``unnamed``), or no username at all to split on, is unread: the first page alone
-        would leave out viewers past it."""
+        still fills a page and is not on it is not granted (fewer readers, never more); so is a synced account whose
+        username is not known, unless a page read lists it. A full page with no username at all to split on is unread: the first
+        page alone would leave out viewers past it. Any split page that cannot be read makes the whole read unread."""
         status, first = await self._viewers_page(issue_key, None)
         if first is None or len(first) < VIEWER_PAGE:
             return status, first
-        if unnamed or not usernames:
-            self.logger.warning(f"Issue {issue_key}: {VIEWER_PAGE} or more users may browse it and the synced accounts' "
-                                "usernames are not all known, so who among them may is not read")
+        if not usernames:
+            self.logger.warning(f"Issue {issue_key}: {VIEWER_PAGE} or more users may browse it and no synced username is "
+                                "known to split them by, so who may is not read")
             return status, None
         found = {str(u.get("name") or "").lower(): u for u in first}
         missed: list[str] = []
@@ -3941,9 +3939,9 @@ class JiraDataCenterConnector(BaseConnector):
         async def split(prefix: str, names: list[str]) -> int:
             status, rows = await self._viewers_page(issue_key, prefix)
             if rows is None:
-                return status
-            listed = {str(u.get("name") or "").lower(): u for u in rows}
-            found.update((n, listed[n]) for n in names if n in listed)
+                return status if status != HttpStatusCode.OK.value else 0  # a 200 that is not a page of users is no answer
+            # Everyone a page lists may browse it, those this split does not ask about too (an account with no known name).
+            found.update((str(u.get("name") or "").lower(), u) for u in rows)
             rest = [n for n in names if n not in found]
             if len(rows) < VIEWER_PAGE:
                 return HttpStatusCode.OK.value
@@ -3974,9 +3972,10 @@ class JiraDataCenterConnector(BaseConnector):
         record.access_rule = AccessRule.RESTRICTED
         directory = self._grant_directory(users)
         accounts = {u.source_user_id for u in directory.values() if u.source_user_id}
-        named = {name: key for name, key in self._dc_name_to_source_id.items() if key in accounts}
         # A reindex in a process that has not read the user list knows no username: it can only read a page that is not full.
-        status, viewers = await self._issue_viewers(issue_key, list(named), unnamed=bool(accounts - set(named.values())))
+        # An account whose username is not known (a list cut short, the search fallback) is granted only if a page lists it.
+        status, viewers = await self._issue_viewers(
+            issue_key, [name for name, key in self._dc_name_to_source_id.items() if key in accounts])
         try:
             listed = [a for viewer in viewers or [] if (a := self._synced_account(viewer, directory)) is not None]
         except TypeError:
