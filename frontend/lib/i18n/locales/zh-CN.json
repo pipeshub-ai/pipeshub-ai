@@ -6386,10 +6386,6 @@
     "invalidType": "不支持该文件类型。",
     "fileTooLarge": "每个文件不能超过 5 MB。",
     "tooManyFiles": "最多只能附加 5 个文件。",
-    "smtpNotConfigured": "尚未配置 SMTP",
-    "smtpNotConfiguredAdmin": "请先配置 SMTP，然后再发送反馈。",
-    "smtpConfigureAction": "配置 SMTP",
-    "smtpNotConfiguredMember": "请让管理员先配置 SMTP，然后再试。",
     "filesTotalTooLarge": "文件总大小不能超过 8 MB。"
   }
 }

@@ -379,16 +379,6 @@ describe('Contact support and Send feedback routes', () => {
       return form;
     };
 
-    it('reports whether email is set up', async () => {
-      expect(
-        (await request('GET', '/feedback/smtp-status')).body,
-      ).to.deep.equal({ configured: true });
-      getSmtpConfig.resolves(null);
-      expect(
-        (await request('GET', '/feedback/smtp-status')).body,
-      ).to.deep.equal({ configured: false });
-    });
-
     it('emails support with the files, then sends the person a copy with the same files', async () => {
       const { status, body } = await request(
         'POST',

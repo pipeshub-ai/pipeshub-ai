@@ -81468,8 +81468,9 @@ paths:
       summary: Send a support request
       description: |
         Emails the request to `SUPPORT_EMAIL` with a Reply-To of the requester, then sends the
-        requester a copy built only from what the form showed them. Attachments go with the email;
-        nothing is stored. The organization and user come from the token.
+        requester a copy built only from what the form showed them. Attachments go in one zip
+        (`support-<reference>.zip`) with the email; nothing is stored. Only an interactive user
+        session can send, not an OAuth or personal access token. The organization and user come from the token.
 
         The same `requestKey` sent again within an hour answers with the first result instead of
         sending a second email. Each user may send 5 requests an hour.
@@ -81560,42 +81561,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token or a personal access token rather than an interactive user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: More than 5 requests from this user in the last hour
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
-  /feedback/smtp-status:
-    get:
-      tags:
-        - Support
-      summary: Whether Send feedback can email
-      description: |
-        Whether SMTP is set up and turned on for this instance. The Send feedback form opens either
-        way; without SMTP it offers a ready-made email to send from the person's own email app.
-        Returns no secrets.
-      operationId: getFeedbackSmtpStatus
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: SMTP readiness
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - configured
-                properties:
-                  configured:
-                    type: boolean
-        '401':
-          description: Missing or invalid token
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
   /feedback:
     post:
       tags:
@@ -81603,7 +81580,9 @@ paths:
       summary: Send product feedback or a feature request
       description: |
         Emails the feedback to `SUPPORT_EMAIL` with a Reply-To of the sender. Once that email is
-        sent, the sender gets a copy with the same attachments. Nothing is stored. Each user may
+        sent, the sender gets a copy with the same zip. Attachments go in one zip
+        (`feedback-<reference>.zip`) and nothing is stored. Only an interactive user session can
+        send, not an OAuth or personal access token. Each user may
         send 5 an hour. `outcome` is `sent`, `pending`, `failed` or `no_smtp`, as for a support
         request.
       operationId: createFeedback
@@ -81662,6 +81641,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token or a personal access token rather than an interactive user session
           content:
             application/json:
               schema:

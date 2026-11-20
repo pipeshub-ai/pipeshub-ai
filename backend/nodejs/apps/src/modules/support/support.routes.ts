@@ -16,7 +16,6 @@ import {
 import {
   createFeedback,
   createSupportRequest,
-  getFeedbackSmtpStatus,
   getSupportContext,
 } from './support.controller';
 import { SupportService } from './support.service';
@@ -98,10 +97,6 @@ export function createSupportRouter(container: Container): Router {
 export function createFeedbackRouter(container: Container): Router {
   const router = Router();
   const { auth, logger, service } = setUp(container);
-
-  router.get('/smtp-status', auth, (req, res, next) =>
-    getFeedbackSmtpStatus(req, res, next, service),
-  );
 
   router.post(
     '/',
