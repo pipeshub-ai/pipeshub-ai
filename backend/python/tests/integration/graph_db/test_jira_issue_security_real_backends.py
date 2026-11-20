@@ -35,7 +35,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
-from app.models.entities import AppUser, RecordGroup, RecordGroupType
+from app.models.entities import AppUser, AppUserGroup, RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -662,6 +662,70 @@ async def test_a_reporter_who_browses_only_as_reporter_reads_their_issue_in_a_le
     await _write(world, [_issue("30", "PROJ-30", "Task", level=REPORTER_LEVEL, reporter="dave")])
     by_key = await _ticket_ids(world)
     assert not await _mismatches(world, {"PROJ-30": {"alice", "dave"}}, {"PROJ-30": by_key["PROJ-30"]})
+
+
+PICKER_FIELD, PICKER_LEVEL = "customfield_10050", "10105"
+
+
+async def _picker_group(world: dict[str, Any], members: list[str]) -> None:
+    """The group g-pick, with these members, in the graph and as the sync read it."""
+    users = {u.full_name: u for u in _users(world)}
+    group = AppUserGroup(app_name=Connectors.JIRA, connector_id=world["connector_id"], source_user_group_id="g-pick",
+                         name="pickers", org_id=world["org_id"])
+    await world["processor"].on_new_user_groups([(group, [users[n] for n in members])])
+    context = world["connector"]._issue_security[PROJECT_ID]
+    context.group_members, context.groups_complete = {"g-pick": [users[n] for n in members]}, True
+
+
+def _picked(issue_id: str, reporter: str) -> dict:
+    issue = _issue(issue_id, f"PROJ-{issue_id}", "Task", level=PICKER_LEVEL, reporter=reporter)
+    issue["fields"][PICKER_FIELD] = {"groupId": "g-pick", "name": "pickers"}
+    return issue
+
+
+async def test_a_reporter_in_the_group_a_group_picker_selects_reads_their_issue_alone(world: dict[str, Any]) -> None:
+    """Browse held by the reporter, and a level holding a group picker field ("Grant for a user in the group selected in the
+    specified custom field"). dave browses no project issue but his own: he reads PROJ-31 while he is in the group it
+    selects, as does carol (in it, browses the project); bob (browses, not in it) does not. On PROJ-32, reported by bob,
+    only carol reads. dave leaves the group, and the sync reads the level's issues again: he no longer reads PROJ-31."""
+    await _sync_project(world)
+    connector = world["connector"]
+    context = connector._issue_security[PROJECT_ID]
+    context.members_by_level[PICKER_LEVEL] = [{"type": "groupCustomField", "parameter": PICKER_FIELD, "value": PICKER_FIELD}]
+    context.browse_holders, context.level_readers = [{"type": "reporter"}], {}
+    await _picker_group(world, ["dave", "carol"])
+    await _write_levels(world, [PICKER_LEVEL])
+    await _write(world, [_picked("31", "dave"), _picked("32", "bob")])
+    by_key = await _ticket_ids(world)
+    picked = {k: by_key[k] for k in ("PROJ-31", "PROJ-32")}
+    assert not await _mismatches(world, {"PROJ-31": {"dave", "carol"}, "PROJ-32": {"carol"}}, picked)
+
+    await _picker_group(world, ["carol"])
+    connector._picker_groups_written, connector._picker_groups_used = {}, set()  # the next sync
+    await _write(world, [_picked("31", "dave"), _picked("32", "bob")], again=True)
+    assert not await _mismatches(world, {"PROJ-31": {"carol"}, "PROJ-32": {"carol"}}, picked)
+
+
+async def test_the_record_group_of_picked_groups_closes_at_once_when_its_level_stops_holding_the_picker(
+    world: dict[str, Any],
+) -> None:
+    """The level drops its group picker holder. Before any issue is read again, the sync writes the record group of g-pick
+    with no grant: carol, who read PROJ-32 through it, no longer does, though the issue was not written again."""
+    await _sync_project(world)
+    connector = world["connector"]
+    context = connector._issue_security[PROJECT_ID]
+    context.members_by_level[PICKER_LEVEL] = [{"type": "groupCustomField", "parameter": PICKER_FIELD, "value": PICKER_FIELD}]
+    context.browse_holders, context.level_readers = [{"type": "reporter"}], {}
+    await _picker_group(world, ["dave", "carol"])
+    await _write_levels(world, [PICKER_LEVEL])
+    await _write(world, [_picked("32", "bob")])
+    by_key = await _ticket_ids(world)
+    assert not await _mismatches(world, {"PROJ-32": {"carol"}}, {"PROJ-32": by_key["PROJ-32"]})
+
+    context.members_by_level[PICKER_LEVEL] = [_user_holder("alice")]
+    await connector._write_picker_group(PROJECT_ID, PROJECT_KEY, context, PICKER_LEVEL, ["g-pick"],
+                                        {u.source_user_id: u for u in _users(world)})
+    assert not await _mismatches(world, {"PROJ-32": set()}, {"PROJ-32": by_key["PROJ-32"]})
 
 
 async def test_a_reindex_after_a_level_is_cleared_opens_the_issue_and_its_sub_task_to_the_project(world: dict[str, Any]) -> None:
