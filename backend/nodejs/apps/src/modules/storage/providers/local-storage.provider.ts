@@ -790,21 +790,27 @@ class LocalStorageAdapter implements StorageServiceInterface {
       }
     };
     const state = { timedOut: false };
+    const release = async (): Promise<void> => {
+      if (await stillHeld()) await fs.rm(lockPath, { force: true });
+    };
     try {
-      // The deadline covers the whole section. A section that does not finish in it fails the call; its lock is then left
-      // for the lease to expire, not removed, because the work it guards may still be running and a taker must not enter
-      // beside it.
+      // The deadline covers the whole section. A section that does not finish in it fails the call, but its lock is kept
+      // while the work it guards may still be running (a taker must not enter beside it) and is released when that work
+      // settles, so a section that ends just after the deadline does not hold the key for the whole lease.
+      const running = body(stillHeld);
       return await withDeadline(
-        body(stillHeld),
+        running,
         this.callDeadlineMs,
         'local key section',
       ).catch((error: unknown) => {
+        if ((error as { name?: string }).name === 'TimeoutError') {
+          void running.then(release, release).catch(() => undefined);
+        }
         state.timedOut = (error as { name?: string }).name === 'TimeoutError';
         throw error;
       });
     } finally {
-      if (!state.timedOut && (await stillHeld()))
-        await fs.rm(lockPath, { force: true });
+      if (!state.timedOut) await release();
     }
   }
 

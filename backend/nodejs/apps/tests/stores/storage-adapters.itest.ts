@@ -729,7 +729,7 @@ describe('Storage adapters against a real storage server', function () {
         if (listings === 1) await put(k, '{"refreshed":true}');       // the refresh's own write lands after the listing
         return page;
       };
-      await purgePaidResultsOlderThan(adapter as never, root, cutoff, Error as never);
+      await purgePaidResultsOlderThan(adapter as never, root, cutoff);
       // The object was listed older than the cutoff and replaced before the delete: it is not the object listed.
       expect(await exists(k), 'the replacement was purged').to.equal(true);
       expect((await etagOf(k)) !== undefined).to.equal(true);
@@ -750,7 +750,7 @@ describe('Storage adapters against a real storage server', function () {
         return page;
       };
       // The inserted key is newer than the cutoff would allow only if the cutoff were earlier; here it is older, so it goes too.
-      await purgePaidResultsOlderThan(adapter as never, root, cutoff, Error as never, 2);
+      await purgePaidResultsOlderThan(adapter as never, root, cutoff, 2);
       for (const k of keys) expect(await exists(k), `${k} survived the purge`).to.equal(false);
     });
 

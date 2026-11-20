@@ -662,7 +662,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
       if (response.Contents) {
         allObjects.push(...response.Contents);
       }
-      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+      continuationToken = response.IsTruncated
+        ? response.NextContinuationToken
+        : undefined;
     } while (continuationToken);
     return allObjects;
   }
@@ -835,12 +837,16 @@ class AmazonS3Adapter implements StorageServiceInterface {
     // asked again afterwards. Callers arriving meanwhile share the attempt in flight.
     const known = CONDITIONAL_MEMO.get(memoKey);
     if (known !== undefined && known.until > Date.now()) return known.answer;
-    const holder: { answer: Promise<ConditionalCapabilities>; until: number } = {
-      answer: Promise.resolve({ conditionalDelete: false, bump: false }),
-      until: Number.POSITIVE_INFINITY,
-    };
+    const holder: { answer: Promise<ConditionalCapabilities>; until: number } =
+      {
+        answer: Promise.resolve({ conditionalDelete: false, bump: false }),
+        until: Number.POSITIVE_INFINITY,
+      };
     holder.answer = this.resolveConditionalSupport().then((resolved) => {
-      holder.until = resolved.ttlMs === Number.POSITIVE_INFINITY ? resolved.ttlMs : Date.now() + resolved.ttlMs;
+      holder.until =
+        resolved.ttlMs === Number.POSITIVE_INFINITY
+          ? resolved.ttlMs
+          : Date.now() + resolved.ttlMs;
       return resolved.capabilities;
     });
     CONDITIONAL_MEMO.set(memoKey, holder);
@@ -851,7 +857,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     capabilities: ConditionalCapabilities;
     ttlMs: number;
   }> {
-    let answer: ConditionalCapabilities | null = null;
+    let answer: ConditionalCapabilities | null;
     for (let attempt = 0; ; attempt += 1) {
       answer = await this.probeConditionalSupport();
       if (answer !== null) break;
@@ -1071,7 +1077,8 @@ class AmazonS3Adapter implements StorageServiceInterface {
       const httpStatus = status(error);
       const errorCode = (error as { code?: string }).code ?? '';
       // A denial is logged wherever it happens, the sentinel upload included: it is the operator's one signal that the
-      // probe prefix must be allowed, and it is not remembered, so it is asked (and logged) again on the next call.
+      // probe prefix must be allowed. The answer is kept for a window as "not supported" (see below), so it is logged once
+      // per window, not on every call.
       if (httpStatus === 403 || errorCode === 'AccessDenied') {
         // A fixed policy, not a blip: "not supported" for a while, so the sweep and the purge keep working on their safe
         // path instead of waiting on a probe that will keep being denied. Logged once per window (the answer is kept).
@@ -1127,7 +1134,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
   async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
     try {
       // List all objects with this prefix (across all pages) then delete them in batches
-      const prefix = storagePath.endsWith('/') ? storagePath : `${storagePath}/`;
+      const prefix = storagePath.endsWith('/')
+        ? storagePath
+        : `${storagePath}/`;
       const allObjects = await this._listAllObjects(prefix);
 
       // Batch delete in chunks of 1000 (S3 DeleteObjects API limit)
@@ -1141,17 +1150,22 @@ class AmazonS3Adapter implements StorageServiceInterface {
           .promise();
         // DeleteObjects resolves even when individual keys fail (e.g. AccessDenied).
         if (result.Errors && result.Errors.length > 0) {
-          throw new StorageUploadError('Failed to delete some objects from S3', {
-            originalError: result.Errors.slice(0, 10)
-              .map((e) => `${e.Key}: ${e.Code} ${e.Message ?? ''}`.trim())
-              .join('; '),
-          });
+          throw new StorageUploadError(
+            'Failed to delete some objects from S3',
+            {
+              originalError: result.Errors.slice(0, 10)
+                .map((e) => `${e.Key}: ${e.Code} ${e.Message ?? ''}`.trim())
+                .join('; '),
+            },
+          );
         }
       }
 
       // Also try to delete the exact key in case storagePath itself is a file
       try {
-        await this.s3.deleteObject({ Bucket: this.bucketName, Key: storagePath }).promise();
+        await this.s3
+          .deleteObject({ Bucket: this.bucketName, Key: storagePath })
+          .promise();
       } catch {
         // ignore; the key may not exist as a standalone object
       }
@@ -1173,10 +1187,17 @@ class AmazonS3Adapter implements StorageServiceInterface {
     try {
       const copySource = this.encodeCopySource(sourcePath);
       await this.s3
-        .copyObject({ Bucket: this.bucketName, CopySource: copySource, Key: destinationPath })
+        .copyObject({
+          Bucket: this.bucketName,
+          CopySource: copySource,
+          Key: destinationPath,
+        })
         .promise();
       const destUrl = this.getS3Url(destinationPath);
-      this.logger.info('S3 copy successful', { src: sourcePath, dst: destinationPath });
+      this.logger.info('S3 copy successful', {
+        src: sourcePath,
+        dst: destinationPath,
+      });
       return { statusCode: 200, data: destUrl };
     } catch (error) {
       if (error instanceof StorageError) throw error;
@@ -1197,7 +1218,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
     destinationPrefix: string,
   ): Promise<StorageServiceResponse<void>> {
     try {
-      const srcPrefix = sourcePrefix.endsWith('/') ? sourcePrefix : `${sourcePrefix}/`;
+      const srcPrefix = sourcePrefix.endsWith('/')
+        ? sourcePrefix
+        : `${sourcePrefix}/`;
       const dstPrefix = destinationPrefix.endsWith('/')
         ? destinationPrefix
         : `${destinationPrefix}/`;
@@ -1216,7 +1239,10 @@ class AmazonS3Adapter implements StorageServiceInterface {
           .promise();
       }
 
-      this.logger.info('S3 tree copy successful', { src: sourcePrefix, dst: destinationPrefix });
+      this.logger.info('S3 tree copy successful', {
+        src: sourcePrefix,
+        dst: destinationPrefix,
+      });
       return { statusCode: 200, data: undefined };
     } catch (error) {
       if (error instanceof StorageError) throw error;
@@ -1233,11 +1259,20 @@ class AmazonS3Adapter implements StorageServiceInterface {
     try {
       const copySource = this.encodeCopySource(sourcePath);
       await this.s3
-        .copyObject({ Bucket: this.bucketName, CopySource: copySource, Key: destinationPath })
+        .copyObject({
+          Bucket: this.bucketName,
+          CopySource: copySource,
+          Key: destinationPath,
+        })
         .promise();
-      await this.s3.deleteObject({ Bucket: this.bucketName, Key: sourcePath }).promise();
+      await this.s3
+        .deleteObject({ Bucket: this.bucketName, Key: sourcePath })
+        .promise();
       const destUrl = this.getS3Url(destinationPath);
-      this.logger.info('S3 rename successful', { src: sourcePath, dst: destinationPath });
+      this.logger.info('S3 rename successful', {
+        src: sourcePath,
+        dst: destinationPath,
+      });
       return { statusCode: 200, data: destUrl };
     } catch (error) {
       if (error instanceof StorageError) throw error;
@@ -1254,7 +1289,10 @@ class AmazonS3Adapter implements StorageServiceInterface {
     try {
       await this.copyTree(sourcePrefix, destinationPrefix);
       await this.deleteTree(sourcePrefix);
-      this.logger.info('S3 tree rename successful', { src: sourcePrefix, dst: destinationPrefix });
+      this.logger.info('S3 tree rename successful', {
+        src: sourcePrefix,
+        dst: destinationPrefix,
+      });
       return { statusCode: 200, data: undefined };
     } catch (error) {
       if (error instanceof StorageError) throw error;

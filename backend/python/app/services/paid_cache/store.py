@@ -333,8 +333,8 @@ class NodePaidResultStore:
         """Deletes each path only while it is still the version named, through a route of its own. Returns the paths kept
         because the object changed. Raises ``GuardUnsupported`` when the storage cannot delete by version (it said so, or
         it is a replica of an earlier release that has no such route, which would otherwise ignore the guard): nothing was
-        deleted then, and the caller takes its own fallback. A storage that could not tell yet answers 503, which raises
-        as a transient failure for the caller to retry."""
+        deleted then, and the caller takes its own fallback. A store whose probe was denied or could not tell answers
+        ``unsupported`` too, so a 503 here is a real outage, which raises as a transient failure for the caller to retry."""
         route = Routes.STORAGE_PAID_RESULTS_DELETE_IF_MATCH.value.format(recordId=record_id)
         pairs = list(items.items())
         changed: list[str] = []

@@ -182,6 +182,24 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(fs.existsSync(path.join((a as any).mountPath, key(1))), 'the object was deleted').to.equal(true)
     })
 
+    it('a locked section that ends just after its deadline releases its lock then, not at the end of the lease', async () => {
+      const a = adapter()
+      a.callDeadlineMs = 40
+      await a.writeObject(key(1), Buffer.from('one'))
+      const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+      const real = (a as any).etagAtPath.bind(a)
+      sinon.stub(a as any, 'etagAtPath').callsFake(async (p: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 120))      // past the deadline, but it does finish
+        return real(p)
+      })
+      let outcome: unknown = 'resolved'
+      try { await a.deleteObjectsIfMatch([{ key: key(1), etag: 'x' }]) } catch (e) { outcome = e }
+      expect(outcome).to.be.instanceOf(Error)
+      expect(fs.readdirSync(dir).some((f) => f.endsWith('.lock')), 'released while the section still ran').to.equal(true)
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      expect(fs.readdirSync(dir).some((f) => f.endsWith('.lock')), 'the lock outlived the section that held it').to.equal(false)
+    })
+
     it('the reclaim guard is exclusive: while another contender holds it, a dead owner\'s lock is left alone', async () => {
       const a = adapter()
       await a.writeObject(key(1), Buffer.from('one'))

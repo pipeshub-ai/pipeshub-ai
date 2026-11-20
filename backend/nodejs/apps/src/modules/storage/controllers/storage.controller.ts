@@ -1526,7 +1526,8 @@ export class StorageController {
   /**
    * Deletes each path only while it is still the version named (its listed ETag). The answer says which were kept
    * (`changed`). A store that confirmed it cannot delete by version answers 200 with `unsupported: true` and deletes
-   * nothing (the caller then takes its own fallback); one that could not tell answers 503 (the caller retries). A request
+   * nothing (the caller then takes its own fallback); one whose probe was denied or could not tell reads as "not supported" for a while and answers the same (never 503).
+   * A request
    * that names versions is never turned into a plain delete.
    */
   async deletePaidResultsIfMatch(

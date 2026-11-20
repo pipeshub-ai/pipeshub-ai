@@ -99,6 +99,30 @@ describe('purgePaidResultsOlderThan', () => {
     expect(s.objects.size).to.equal(0)
   })
 
+  it('a full page whose key range gains an insert between the two listings still purges every old object', async () => {
+    for (const conditional of [false, true]) {
+      const s = fakeAdapter({ conditional })
+      for (const n of [3, 4, 5, 6]) s.objects.set(key(n), { lastModifiedMs: 1000, etag: `old${n}` })
+      // After the first page ([3, 4]) is listed, a key that sorts before it is stored: the second listing of the same
+      // range now holds [1, 3] and the old key 4 is no longer on it.
+      s.hooks.afterListing = (n) => {
+        if (n === 1) s.objects.set(key(1), { lastModifiedMs: BEFORE + 5, etag: 'new1' })
+      }
+      await purgePaidResultsOlderThan(s.adapter, ROOT, BEFORE, 2)
+      expect([...s.objects.keys()].sort(), `conditional=${conditional}`).to.deep.equal([key(1)])
+    }
+  })
+
+  it('a full page whose key range loses a key between the two listings still purges every old object', async () => {
+    const s = fakeAdapter({ conditional: false })
+    for (const n of [1, 2, 3, 4]) s.objects.set(key(n), { lastModifiedMs: 1000, etag: `old${n}` })
+    s.hooks.afterListing = (n) => {
+      if (n === 1) s.objects.delete(key(1))
+    }
+    await purgePaidResultsOlderThan(s.adapter, ROOT, BEFORE, 2)
+    expect(s.objects.size).to.equal(0)
+  })
+
   it('never removes the refresh marker, and removes what is older than the cutoff when nothing moved', async () => {
     const s = fakeAdapter({ conditional: false })
     s.objects.set(key(1), { lastModifiedMs: 1000, etag: 'e1' })
