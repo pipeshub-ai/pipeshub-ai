@@ -49,7 +49,20 @@ The `graph` schema (the PostgreSQL graph store, `DATA_STORE=postgres`) is create
 Direct PostgreSQL address only: the runner takes a session advisory lock, then checks in pg_locks that the
 session really holds it, and refuses (exit 2) when it does not, which is what happens behind a pooler.
 Exit codes: 0 done, 1 a migration failed, 2 configuration, 3 lock wait timed out
-(`PG_MIGRATE_LOCK_TIMEOUT_S`, default 600), 4 `kernel.rls_violations` not empty. Downgrade is development
+(`PG_MIGRATE_LOCK_TIMEOUT_S`, default 600; a waiting run polls the lock instead of waiting in a statement, so it holds no snapshot that a running
+`CREATE INDEX CONCURRENTLY` would wait for), 4 `kernel.rls_violations` not empty.
+
+An upgrade of an installed database runs in this order: the lock, then the **online index step**, then one transaction (revisions, epochs, checks). The online step builds the `ONLINE_INDEXES` of every pending revision (a revision `<branch>_<NNNN>` is pending
+while the branch's epoch is below NNNN) on its own autocommit session as the owner role: `ON ONLY` the parent, `CREATE INDEX CONCURRENTLY` per leaf
+that holds rows (a plain build on an empty leaf), then `ATTACH`, one leaf at a time; writers and readers keep working. The session has no
+`statement_timeout` and no `lock_timeout` for the concurrent build (its lock admits readers and writers; it waits for older transactions); the
+statements that take a lock writers wait for (the `ON ONLY` parent, a plain build, `ATTACH`) give up after 2 s and are retried.
+`PG_INDEX_BUILD_MEMORY_MB` sets that session's `maintenance_work_mem` (a whole number of megabytes; unset keeps the server's; the budget of the whole
+build, its parallel workers included, so keep it under the server's memory and, for parallel builds, under its shared memory size). Each index is
+logged when it starts and ends. A stopped run (killed, a lost connection) leaves an invalid index: the next run of this build drops and rebuilds it
+(`kernel.rls_violations` refuses an invalid index, so no run reports success with one). If the step or the transaction fails, the indexes the step
+built are dropped again, so the build the database was on still finds the surface it expects; a run killed before that leaves them, and going back
+to the earlier build then needs them dropped by hand (the earlier build names them as `50 surface: unexpected`), or roll forward. Downgrade is development
 only (`PG_MIGRATE_ALLOW_DOWNGRADE=1 python -m db.migrate downgrade <rev>`).
 
 ## Moving the key-value store from Redis (`python -m app.scripts.kv_redis_to_postgres`)
@@ -77,6 +90,16 @@ The placement worker never builds indexes on live leaves (it holds the migrate l
 ## Writing a revision
 Expand then contract; never rename; backfills are jobs, not revisions. Index builds on existing tables go
 through `lib/ddl.py` (`ensure_index`, `ensure_partitioned_index`), partitions through `add_partition`.
+**Indexes on tables that may hold rows** are never built or dropped inside the upgrade's transaction: a plain `CREATE INDEX` keeps the table's
+writers, and a `DROP INDEX` every reader, waiting until the commit (on `graph.nodes`, every organisation's). A revision lists such an index as data,
+`ONLINE_INDEXES = [{"table": ..., "name": ..., "cols": ..., "where": ..., "using": ...}]` (the keyword arguments of `ensure_partitioned_index`), and
+its `upgrade()` still calls `ensure_partitioned_index(op.get_bind(), **ix, blocking=True)` for each: after the online step that call finds the index
+valid and issues nothing on the table; on a new install it builds it on empty leaves. An index on a column the same revision adds cannot be built
+ahead (`kg_0019`, `platform_data_0005` build theirs in the transaction). On a database several revisions behind, an index whose column, function
+or operator class an earlier pending revision adds fails at its first statement, before anything is built: the step logs it and leaves it to its
+revision's transaction, as before the step existed. A changed definition is a new name (`CREATE INDEX IF NOT EXISTS` does not
+compare definitions; the surface check does, by hash). The old index is dropped by a later contract revision, never inside the upgrade's transaction. Revisions released before the online step (up to `released_heads.json`) built theirs in the transaction and are
+not changed: a database that ran them keeps what they built.
 **Rollback safety.** After `helm rollback`, an older build accepts a newer schema whenever every `min_code_epoch` is within its code epoch, so a revision must say whether older code still works. `python -m db.lint` fails a revision that does any of the following unless its `.py` sets `min_code_epoch = N` (an integer above 0: older code must not run) or a module-level `older_code_compatible = "<why older code still works>"` (at least four words). A comment or `min_code_epoch = 0` does not count. Statements are matched after comments and whitespace are normalised, so layout does not matter; the SQL checked is the `.sql` file (statements inside `DO` bodies included, `IF ... THEN` and `PERFORM` stripped) plus, from `upgrade()` and every module function it calls (not `downgrade()`), the string constants passed to `execute`, `exec_driver_sql` (also through an alias or `getattr`), `text` and `ensure_index`, and Alembic's schema calls (`create_check_constraint`, `create_foreign_key`, `create_unique_constraint`, `create_primary_key`, `drop_constraint`, `alter_column`, `add_column`, `drop_column`, `drop_table`, `rename_table`, `create_index`, `drop_index`), which map to the matching SQL rule. An argument built at run time needs the mark or waiver. DROP / RENAME / SET SCHEMA / ALTER ... TYPE / DROP VIEW (and TYPE, SEQUENCE, DOMAIN, ROLE, OWNED, EXTENSION) / TRUNCATE / ALTER ROLE ... NOLOGIN need the epoch mark (a view dropped and re-created in the same file is exempt); a waiver does not clear them. The rest accept either, and apply to a table or function the file did not create (a `CREATE TABLE IF NOT EXISTS` of a table any module's revision creates counts as existing):
 - `ADD COLUMN ... NOT NULL` without a default (`DEFAULT NULL` is none), `SET NOT NULL` or `DROP DEFAULT` (older inserts fail);
 - a new CHECK, FOREIGN KEY, UNIQUE, PRIMARY KEY or EXCLUDE constraint, `NOT VALID` included (it still checks new writes), or a column added with an inline CHECK / REFERENCES; `ALTER DOMAIN`;
