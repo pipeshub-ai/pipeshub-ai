@@ -10257,3 +10257,41 @@ class TestHasRepliesOnBurstRecords:
         assert recs[0][0].has_replies is True
         recs, _ = await c._process_single({"ts": "21.0", "user": "U1", "text": "quiet"}, self._ctx())
         assert recs[0][0].has_replies is False
+
+
+class TestTheTokenOwnersLink:
+    """The user who configured the connector reads what the token's Slack account reads (``authenticatedAs``). A
+    user list cut short leaves that account out of the email cache: that is not evidence the account hides its
+    email, so the link is only removed when Slack itself says the account has none."""
+
+    @staticmethod
+    def _connector(info: Any) -> Any:
+        c = _make_connector()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.auth_test = AsyncMock(return_value=MagicMock(success=True, data={"user_id": "U1"}))
+        ds.users_info = AsyncMock(side_effect=info) if isinstance(info, Exception) else AsyncMock(return_value=info)
+        c._fresh_datasource = AsyncMock(return_value=ds)
+        c.register_authenticated_source_user = AsyncMock()
+        return c
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("info", "expected"), [
+        (MagicMock(success=True, data={"user": {"id": "U1", "profile": {"email": "owner@acme.com"}}}), ("owner@acme.com", "U1")),
+        (MagicMock(success=True, data={"user": {"id": "U1", "profile": {}}}), (None, "U1")),
+        (MagicMock(success=True, data={"user": {"id": "U1", "deleted": True, "profile": {"email": "owner@acme.com"}}}), (None, "U1")),
+        (MagicMock(success=False, error="ratelimited"), (None, None)),
+        (ConnectionError("Slack unavailable"), (None, None)),
+    ], ids=["email_read", "email_hidden", "account_deleted", "read_refused", "read_failed"])
+    async def test_an_owner_missing_from_the_user_list_is_read_directly(self, info: Any, expected: tuple) -> None:
+        c = self._connector(info)
+        await c._register_authenticated_identity()
+        c.register_authenticated_source_user.assert_awaited_once_with(*expected)
+
+    @pytest.mark.asyncio
+    async def test_an_owner_in_the_user_list_is_not_read_again(self) -> None:
+        c = self._connector(MagicMock(success=True, data={}))
+        c.user_id_to_email_cache = {"U1": "owner@acme.com"}
+        await c._register_authenticated_identity()
+        c.register_authenticated_source_user.assert_awaited_once_with("owner@acme.com", "U1")
+        (await c._fresh_datasource()).users_info.assert_not_awaited()

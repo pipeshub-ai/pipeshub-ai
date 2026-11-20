@@ -1434,9 +1434,24 @@ class SlackConnector(BaseConnector):
                 self.logger.warning(f"Could not remove the user-token link of connector {self.connector_id}: {exc}")
             return
         user_id = data.get("user_id")
-        await self.register_authenticated_source_user(
-            self.user_id_to_email_cache.get(user_id) if user_id else None, user_id,
-        )
+        email = self.user_id_to_email_cache.get(user_id) if user_id else None
+        if user_id and not email:
+            # Not in this sync's user list (a page may have failed): read the token's own account. users.info
+            # needs the users:read.email scope for the email, as users.list does ("The `users:read.email` OAuth
+            # scope is now required to access the `email` field", https://docs.slack.dev/reference/methods/users.info).
+            # A read that fails tells nothing, so the link is left as it is.
+            try:
+                await self.rate_limiter.acquire(Tier.T4)
+                info = await (await self._fresh_datasource()).users_info(user=user_id)
+            except Exception as exc:
+                self.logger.debug(f"users.info({user_id}) failed: {exc}")
+                info = None
+            if not info or not info.success:
+                user_id = None
+            else:
+                account = (info.data or {}).get("user") or {}
+                email = None if account.get("deleted") else ((account.get("profile") or {}).get("email") or "").strip() or None
+        await self.register_authenticated_source_user(email, user_id)
 
     async def _authenticator_grant(self) -> Permission | None:
         """READ for the user who authenticated this connector, on every channel the token

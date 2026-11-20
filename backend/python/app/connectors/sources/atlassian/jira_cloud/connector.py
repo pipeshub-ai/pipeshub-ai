@@ -725,9 +725,9 @@ class JiraConnector(BaseConnector):
         if not data:
             return
 
+        # Id and email from the same answer: an email this answer hides is hidden, not one left from an earlier read.
         email = data.get("emailAddress")
-        if email:
-            self._authenticated_jira_email = email.strip()
+        self._authenticated_jira_email = email.strip() if isinstance(email, str) and email.strip() else None
         self._authenticated_jira_account_id = data.get("accountId")
 
         tz_name = data.get("timeZone")
