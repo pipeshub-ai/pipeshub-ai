@@ -172,15 +172,21 @@ def license_frank(jira: AtlassianApiStub) -> None:
 
 
 def readers(db: JiraRecordsDb, external_id: str) -> set[tuple[str, str]]:
-    """Who the connector granted the issue to: (kind, email or id)."""
+    """Who the connector granted the issue to: (kind, email or id). A leveled issue's own grants and those of its
+    level's record group, which holds the holders that name the same people on every issue. A RESTRICTED record
+    needs a grant of its own, so the group's grants alone admit no one to it."""
+    record = db.records.get(external_id)
+    group = getattr(record, "access_group_external_id", None) if getattr(record, "access_rule", None) != AccessRule.RESTRICTED else None
     return {
         (str(p.entity_type.value if hasattr(p.entity_type, "value") else p.entity_type), p.email or p.external_id)
-        for p in db.record_permissions.get(external_id, [])
+        for p in [*db.record_permissions.get(external_id, []), *(db.record_group_permissions.get(group, []) if group else [])]
     }
 
 
 def hidden_from_project(record: TicketRecord) -> bool:
-    return record.access_rule == AccessRule.RESTRICTED
+    """Read only by its own grants on top of the project, or through its level's record group (RESTRICTED under the
+    project), never by the project alone."""
+    return record.access_rule == AccessRule.RESTRICTED or bool(record.access_group_external_id)
 
 
 def store_open(connector: JiraDataCenterConnector, db: JiraRecordsDb, store: FakeCheckpointStore, *issues: dict) -> None:
@@ -718,9 +724,11 @@ class TestHierarchy:
         await sync(connector, jql_search, recent=[open_again])
         assert db.records["6"].parent_external_record_id == "5"
 
-    async def test_an_epic_changed_with_no_level_before_or_after_does_not_read_its_stories_again(
+    async def test_an_epic_changed_with_no_level_before_or_after_reads_its_stories_again_and_they_stay(
         self, jira, db, store, jql_search,
     ) -> None:
+        """A leveled issue on its level's group is stored STRICT or OPEN, as one with no level is, so whether a changed
+        epic had a level is not known: its stories are read again, and stay filed under it."""
         stub_site(jira, jql_search)
         serve_scheme(jira, {SECRET: [ALICE]})
         jira.on("GET", f"{API}/issue/ENG-5", {"id": "5", "key": "ENG-5"})
@@ -735,8 +743,9 @@ class TestHierarchy:
         batches = len(db.record_batches)
         await sync(connector, jql_search, recent=[commented])
 
-        assert not any("parent in" in q or "cf[" in q for q in jql_search.jql)
-        assert {r.external_record_id for b in db.record_batches[batches:] for r in b} == {"5"}
+        assert any("cf[" in q for q in jql_search.jql)
+        assert {r.external_record_id for b in db.record_batches[batches:] for r in b} <= {"5", "6"}
+        assert db.records["6"].parent_external_record_id == "5" and not hidden_from_project(db.records["6"])
 
         leveled = sec_issue("5", "ENG-5", kind="Epic", level=SECRET, updated=ts(3))
         jql_search.put(leveled)
@@ -1176,8 +1185,8 @@ class TestWithdrawnAccounts:
         jql_search.put(*changed)
         await sync(connector, jql_search, recent=changed)
         assert connector._user_read_unfinished is True and db.withdrawn_users == []
-        assert ("USER", "carol@example.com") in readers(db, "2")
-        assert json.loads(store.values_for("project_ENG")["security_levels"]).get("*") == "retry"
+        # Both are user holders, held by their level's group: the group naming carol by username keeps its stored grants.
+        assert ("USER", "carol@example.com") in readers(db, "2") and ("USER", "carol@example.com") in readers(db, "3")
 
         jira.on("GET", f"{API}/user/list", full_list)
         await sync(connector, jql_search, recent=[])
@@ -1232,7 +1241,8 @@ class TestWithdrawnAccounts:
                                            org_id="org-1", email="", full_name="Frank", is_active=True))
         jql_search.fail_plain_from = 1
         await sync(connector, jql_search, recent=[])
-        assert ("USER", "frank-key") not in readers(db, "2"), "a failed re-read grants nothing"
+        # A user holder: the level's group, written before the walk, holds him whatever the issue's re-read.
+        assert ("USER", "frank-key") in readers(db, "2")
         assert json.loads(store.values_for("people_reread")["accounts"]) == ["frank-key"]
 
         jql_search.fail_plain_from = None
@@ -1363,7 +1373,9 @@ class TestWithdrawnAccounts:
 
         connector._extract_issue_data_with_parent = fail_once
         await sync(connector, jql_search, recent=[])
-        assert failures and ("USER", "frank-key") not in readers(db, "2")
+        # frank is a user holder: the level's group, written before the walk, holds him whatever the issue's read.
+        assert failures and ("USER", "frank-key") in readers(db, "2")
+        assert "2" not in json.loads(store.values_for("project_ENG").get("given_up_issues") or "{}"), "tried again"
         await sync(connector, jql_search, recent=[])
         assert ("USER", "frank-key") in readers(db, "2")
 

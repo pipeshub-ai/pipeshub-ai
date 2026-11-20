@@ -344,7 +344,7 @@ class _BatchLookups:
 
 #: Connectors whose records may take their access from a record group of their own (see `Record.access_group_external_id`): a write that
 #: names none keeps the stored one.
-ACCESS_GROUP_CONNECTORS = frozenset({Connectors.JIRA})
+ACCESS_GROUP_CONNECTORS = frozenset({Connectors.JIRA, Connectors.JIRA_DATA_CENTER})
 
 
 class AccessGroupMissing(RuntimeError):
