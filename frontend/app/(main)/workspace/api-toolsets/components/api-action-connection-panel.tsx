@@ -21,7 +21,7 @@ import {
 } from '../toolset-form';
 import type { ApiToolset, ApiToolsetTestResult } from '../types';
 import { ApiOperationsChecklist } from './api-operations-checklist';
-import { LabeledTextField } from './labeled-controls';
+import { LabeledSecretTextField } from './labeled-controls';
 import { PanelSection } from './panel-section';
 
 interface ApiActionConnectionPanelProps {
@@ -188,10 +188,9 @@ export function ApiActionConnectionPanel({ toolset, isAdmin, onOpenChange, onCha
           {canSave
             ? fields.map((field, index) => (
                 <FormField key={field} label={t(`workspace.apiToolsets.connect.fields.${field}`)} required>
-                  <LabeledTextField
+                  <LabeledSecretTextField
                     size="2"
-                    type={isSecretField(field) ? 'password' : 'text'}
-                    autoComplete="off"
+                    masked={isSecretField(field)}
                     autoFocus={index === 0 && !toolset.isConnected}
                     placeholder={toolset.isConnected ? t('workspace.apiToolsets.connect.replaceHint') : undefined}
                     value={values[field] ?? ''}
