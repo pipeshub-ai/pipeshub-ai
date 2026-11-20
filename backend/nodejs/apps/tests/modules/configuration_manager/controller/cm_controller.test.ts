@@ -1643,13 +1643,20 @@ describe('ConfigurationManager Controller', () => {
   })
 
   describe('toggleMetricsCollection consent handling', () => {
+    // The event buffer is process-wide: each case starts with it empty, whatever earlier tests left in it.
+    beforeEach(() => {
+      eventBuffer.drain()
+    })
+
     afterEach(() => {
       sinon.restore()
       telemetryFlag.setCollectionConsent(true)
       eventBuffer.drain()
     })
 
-    it('sends nothing on opt-out, and discards what was gathered where recording waits for consent', async () => {
+    // Where recording waits for consent (`COLLECTION_NEEDS_CONSENT`), an opt-out drops what was gathered; where it does
+    // not, it ships it first, as the switch did before consent existed.
+    ;(COLLECTION_NEEDS_CONSENT ? it : it.skip)('where recording waits for consent, an opt-out sends nothing and drops what was gathered', async () => {
       const post = sinon.stub(axios, 'post').resolves({ data: {} })
       const discard = sinon.stub().callsFake(() => {
         metricsBackend.reset()
@@ -1666,13 +1673,57 @@ describe('ConfigurationManager Controller', () => {
         createMockRequest({ body: { enableMetricCollection: false } }), res, createMockNext())
 
       expect(post.called, 'opt-out must not send anything').to.be.false
-      expect(discard.callCount).to.equal(COLLECTION_NEEDS_CONSENT ? 1 : 0)
-      expect(eventBuffer.size()).to.equal(COLLECTION_NEEDS_CONSENT ? 0 : 1)
-      expect(telemetryFlag.isCollecting()).to.equal(!COLLECTION_NEEDS_CONSENT)
+      expect(discard.calledOnce).to.be.true
+      expect(eventBuffer.size()).to.equal(0)
+      expect(telemetryFlag.isCollecting()).to.be.false
       expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('records the consent gauge after an opt-in', async () => {
+    ;(COLLECTION_NEEDS_CONSENT ? it.skip : it)('where it does not, an opt-out ships what was gathered, its own gauge included, before the switch is saved', async () => {
+      metricsBackend.reset()
+      let shipped = ''
+      const flush = sinon.stub().callsFake(async () => {
+        shipped = await metricsBackend.serialize()
+      })
+      const discard = sinon.stub()
+      sinon.stub(TelemetryService, 'current').returns({ flush, discardCollected: discard } as never)
+      recordEvent('gathered_before')
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: true })),
+      })
+      const res = createMockResponse()
+
+      await toggleMetricsCollection(kvs)(
+        createMockRequest({ body: { enableMetricCollection: false } }), res, createMockNext())
+
+      expect(flush.calledOnce).to.be.true
+      sinon.assert.callOrder(flush, kvs.set)
+      expect(shipped).to.match(/^pipeshub_metric_collection_enabled\{service="node_api",org="org-1"\} 0$/m)
+      expect(discard.called).to.be.false
+      expect(eventBuffer.size(), 'what was gathered is shipped, not dropped').to.equal(1)
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    ;(COLLECTION_NEEDS_CONSENT ? it.skip : it)("where it does not, every toggle sets the caller's org gauge, off included, and no other series", async () => {
+      metricsBackend.reset()
+      sinon.stub(TelemetryService, 'current').returns({ flush: sinon.stub().resolves() } as never)
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: false })),
+      })
+      const toggle = (enableMetricCollection: boolean) =>
+        toggleMetricsCollection(kvs)(
+          createMockRequest({ body: { enableMetricCollection } }), createMockResponse(), createMockNext())
+
+      await toggle(true)
+      expect(await metricsBackend.serialize()).to.match(
+        /^pipeshub_metric_collection_enabled\{service="node_api",org="org-1"\} 1$/m)
+      await toggle(false)
+      const after = await metricsBackend.serialize()
+      expect(after).to.match(/^pipeshub_metric_collection_enabled\{service="node_api",org="org-1"\} 0$/m)
+      expect(after).to.not.match(/^pipeshub_metric_collection_enabled\{service="node_api",org="unknown"\}/m)
+    })
+
+    ;(COLLECTION_NEEDS_CONSENT ? it : it.skip)('where recording waits for consent, an opt-in records the one gauge series', async () => {
       const saved = process.env.TELEMETRY_COLLECTION_FLAG
       process.env.TELEMETRY_COLLECTION_FLAG = 'true'
       try {
@@ -1695,7 +1746,7 @@ describe('ConfigurationManager Controller', () => {
     })
   })
 
-  describe('getMetricsCollection telemetryEnabled', () => {
+  describe('getMetricsCollection where recording waits for consent', () => {
     afterEach(() => {
       sinon.restore()
     })
@@ -1715,29 +1766,19 @@ describe('ConfigurationManager Controller', () => {
       }
     }
 
-    it('reports telemetryEnabled true and the stored switch while the deployment flag is on', async () => {
+    ;(COLLECTION_NEEDS_CONSENT ? it : it.skip)('reports telemetryEnabled true and the stored switch while the deployment flag is on', async () => {
       const body = await read('true')
       expect(body.telemetryEnabled).to.equal(true)
       expect(body.enableMetricCollection).to.equal('true')
     })
 
-    it('documents telemetryEnabled in the published response schema', () => {
-      const spec = yaml.load(readFileSync(
-        join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'), 'utf8')) as any
-      const get = spec.paths['/configurationManager/metricsCollection'].get
-      expect(get.responses['200'].content['application/json'].schema.$ref)
-        .to.equal('#/components/schemas/MetricsCollectionConfig')
-      expect(spec.components.schemas.MetricsCollectionConfig.properties.telemetryEnabled.type)
-        .to.equal('boolean')
-    })
-
-    it('reports telemetryEnabled false and the switch off while the deployment flag is off', async () => {
+    ;(COLLECTION_NEEDS_CONSENT ? it : it.skip)('reports telemetryEnabled false and the switch off while the deployment flag is off', async () => {
       const body = await read('false')
       expect(body.telemetryEnabled).to.equal(false)
       expect(body.enableMetricCollection).to.equal('false')
     })
 
-    it('with nothing stored the body is the flag alone while telemetry is allowed, and the switch off too while it is not', async () => {
+    ;(COLLECTION_NEEDS_CONSENT ? it : it.skip)('with nothing stored the body is the flag alone while telemetry is allowed, and the switch off too while it is not', async () => {
       const saved = process.env.TELEMETRY_COLLECTION_FLAG
       try {
         for (const [flagValue, expected] of [
@@ -1755,12 +1796,47 @@ describe('ConfigurationManager Controller', () => {
         else process.env.TELEMETRY_COLLECTION_FLAG = saved
       }
     })
+  })
 
-    it('the published text says what the body is with nothing stored', () => {
+  describe('getMetricsCollection where recording does not wait for consent', () => {
+    afterEach(() => {
+      sinon.restore()
+    })
+
+    ;(COLLECTION_NEEDS_CONSENT ? it.skip : it)('returns the settings as stored, whatever the deployment flag', async () => {
+      const saved = process.env.TELEMETRY_COLLECTION_FLAG
+      const stored = { enableMetricCollection: 'true', pushIntervalMs: '60000' }
+      try {
+        for (const flagValue of ['true', 'false']) {
+          process.env.TELEMETRY_COLLECTION_FLAG = flagValue
+          const res = createMockResponse()
+          await getMetricsCollection(createMockKeyValueStore({ get: sinon.stub().resolves(JSON.stringify(stored)) }))(
+            createMockRequest(), res, createMockNext())
+          expect(res.json.firstCall.args[0], `flag=${flagValue}`).to.deep.equal(stored)
+        }
+      } finally {
+        if (saved === undefined) delete process.env.TELEMETRY_COLLECTION_FLAG
+        else process.env.TELEMETRY_COLLECTION_FLAG = saved
+      }
+    })
+
+    ;(COLLECTION_NEEDS_CONSENT ? it.skip : it)('returns {} with nothing stored', async () => {
+      const res = createMockResponse()
+      await getMetricsCollection(createMockKeyValueStore({ get: sinon.stub().resolves(null) }))(
+        createMockRequest(), res, createMockNext())
+      expect(res.json.firstCall.args[0]).to.deep.equal({})
+    })
+
+    // A build whose recording waits for consent documents `telemetryEnabled` in its own spec files.
+    it('the base spec documents the settings as stored: no telemetryEnabled, and {} with nothing stored', () => {
       const spec = yaml.load(readFileSync(
         join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'), 'utf8')) as any
-      const description = spec.paths['/configurationManager/metricsCollection'].get.description as string
-      expect(description).to.contain('"enableMetricCollection": "false"')
+      const get = spec.paths['/configurationManager/metricsCollection'].get
+      expect(get.responses['200'].content['application/json'].schema.$ref)
+        .to.equal('#/components/schemas/MetricsCollectionConfig')
+      expect(spec.components.schemas.MetricsCollectionConfig.properties).to.not.have.property('telemetryEnabled')
+      expect(get.responses['200'].content['application/json'].example).to.not.have.property('telemetryEnabled')
+      expect(get.description).to.match(/`\{\}` is\s+returned when nothing has been stored/)
     })
   })
 
@@ -1791,7 +1867,9 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.calledWith({ enableMetricCollection: true, telemetryEnabled: true })).to.be.true
+      expect(res.json.calledWith(COLLECTION_NEEDS_CONSENT
+        ? { enableMetricCollection: true, telemetryEnabled: true }
+        : { enableMetricCollection: true })).to.be.true
     })
   })
 

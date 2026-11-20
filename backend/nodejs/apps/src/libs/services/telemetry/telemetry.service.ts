@@ -7,7 +7,10 @@ import { KeyValueStoreService } from '../keyValueStore.service';
 import { keyValues, SERVICE_NAME } from './constants';
 import { eventBuffer } from './event-buffer';
 import { isCollecting, setCollectionConsent } from './flag';
-import { METRICS_CONSENT_DEFAULT } from '../../../edition';
+import {
+  COLLECTION_NEEDS_CONSENT,
+  METRICS_CONSENT_DEFAULT,
+} from '../../../edition';
 import {
   HEADER_REQUEST_ID,
   newSystemRoot,
@@ -129,13 +132,17 @@ export class TelemetryService implements ITelemetryService {
         ),
       );
       setCollectionConsent(this.enableMetricCollection);
-      if (this.enableMetricCollection) {
-        // After the consent: the write is dropped while consent is off. Set here as well as
-        // on opt-in, so a restarted process reports it too.
-        setMetricCollectionEnabled('', true);
-      } else if (!isCollecting()) {
-        // Switched off: what was gathered before must never be sent later.
-        this.discardCollected();
+      // Where recording does not wait for consent, the toggle writes each org's gauge and an opt-out ships what
+      // was gathered; a reload only starts or stops the push.
+      if (COLLECTION_NEEDS_CONSENT) {
+        if (this.enableMetricCollection) {
+          // After the consent: the write is dropped while consent is off. Set here as well as
+          // on opt-in, so a restarted process reports it too.
+          setMetricCollectionEnabled('', true);
+        } else if (!isCollecting()) {
+          // Switched off: what was gathered before must never be sent later.
+          this.discardCollected();
+        }
       }
 
       this.logConfig();
@@ -489,6 +496,18 @@ export class TelemetryService implements ITelemetryService {
   /** The running singleton, or undefined if telemetry hasn't started yet. */
   public static current(): TelemetryService | undefined {
     return TelemetryService.instance;
+  }
+
+  /**
+   * Push metrics and events to the collector immediately, outside the interval.
+   * Used to ship a consent opt-out before the flag flips off and stops the loop.
+   */
+  public async flush(): Promise<void> {
+    if (!this.isServerUrlValid()) {
+      return;
+    }
+    await this.pushMetricsToServer();
+    await this.shipEventsToServer();
   }
 
   /**

@@ -271,6 +271,65 @@ describe('TelemetryService', () => {
     });
   });
 
+  // Where recording waits for consent, the stored config above switches it off: each test switches it on again.
+  describe('flush', () => {
+    it('should do nothing when the server URL is invalid', async () => {
+      const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+      setCollectionConsent(true);
+
+      (svc as any).metricsServerUrl = '';
+      recordEvent('opt_out');
+      await svc.flush();
+
+      expect(postStub.called).to.be.false;
+    });
+
+    it('should ship buffered events to the events endpoint', async () => {
+      const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+      setCollectionConsent(true);
+
+      recordEvent('consent_changed', { enabled: false });
+      await svc.flush();
+
+      const eventsCall = postStub
+        .getCalls()
+        .find((c) => String(c.args[0]).includes('collect-events'));
+      expect(eventsCall, 'expected a POST to collect-events').to.exist;
+      const payload = eventsCall!.args[1] as any;
+      expect(payload.instanceId).to.equal('install-1234');
+      expect(payload.events).to.have.length(1);
+      expect(payload.events[0].event).to.equal('consent_changed');
+    });
+
+    it('should not ship when there are no buffered events', async () => {
+      const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+      setCollectionConsent(true);
+
+      await svc.flush();
+
+      const eventsCall = postStub
+        .getCalls()
+        .find((c) => String(c.args[0]).includes('collect-events'));
+      expect(eventsCall).to.be.undefined;
+    });
+
+    it('should survive a collector error without throwing', async () => {
+      sandbox.stub(axios, 'post').rejects(new Error('ECONNREFUSED'));
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+      setCollectionConsent(true);
+
+      recordEvent('login');
+      await svc.flush(); // must not throw
+    });
+  });
+
   describe('discardCollected', () => {
     it('sends nothing and empties the metric and event buffers', async () => {
       const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
@@ -355,6 +414,47 @@ describe('TelemetryService', () => {
 
       expect(signal?.aborted).to.be.true;
       await shipping; // settles without throwing
+    });
+  });
+
+  describe('a reload, by whether recording waits for consent', () => {
+    const GAUGE = /^pipeshub_metric_collection_enabled\{/m;
+
+    (COLLECTION_NEEDS_CONSENT ? it : it.skip)('where it does, a reload with collection on writes the one gauge series, and one with it off drops what was gathered', async () => {
+      const kv = mockKvStore();
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+      sandbox.stub(svc as any, 'startOrStopMetricCollection').resolves();
+      metricsBackend.reset();
+
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'true' }));
+      await (svc as any).initializeMetricsCollection();
+      expect(await metricsBackend.serialize()).to.match(
+        /^pipeshub_metric_collection_enabled\{service="node_api",org="unknown"\} 1$/m,
+      );
+
+      recordEvent('gathered_before');
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'false' }));
+      await (svc as any).initializeMetricsCollection();
+      expect(eventBuffer.size()).to.equal(0);
+    });
+
+    (COLLECTION_NEEDS_CONSENT ? it.skip : it)('where it does not, a reload writes no gauge and keeps what was gathered', async () => {
+      const kv = mockKvStore();
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+      sandbox.stub(svc as any, 'startOrStopMetricCollection').resolves();
+      metricsBackend.reset();
+
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'true' }));
+      await (svc as any).initializeMetricsCollection();
+      expect(await metricsBackend.serialize()).to.not.match(GAUGE);
+
+      recordEvent('gathered_before');
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'false' }));
+      await (svc as any).initializeMetricsCollection();
+      expect(eventBuffer.size()).to.equal(1);
+      expect(await metricsBackend.serialize()).to.not.match(GAUGE);
     });
   });
 
