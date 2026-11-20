@@ -12,6 +12,10 @@ export const telemetryOffMessage = 'Telemetry disabled';
 
 export const isTelemetryEnabled = (): boolean => false;
 
+export const isCollecting = (): boolean => false;
+
+export const setCollectionConsent = (_given: boolean): void => {};
+
 export const recordEvent = (
   _event: string,
   _props?: Record<string, unknown>,

@@ -105,3 +105,9 @@ export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
 export function checkStartup(): void {
   return;
 }
+
+// The admin's Data Collection switch before an admin has set it.
+export const METRICS_CONSENT_DEFAULT = true;
+
+/** Whether recording waits for the admin's Data Collection switch as well as the flag. */
+export const COLLECTION_NEEDS_CONSENT: boolean = false;

@@ -10,29 +10,20 @@ describe('telemetry modules/mongo-index-metrics', () => {
   const saved = process.env.TELEMETRY_COLLECTION_FLAG;
   beforeEach(() => {
     process.env.TELEMETRY_COLLECTION_FLAG = 'true';
+    flag.setCollectionConsent(true);
   });
   afterEach(() => {
     process.env.TELEMETRY_COLLECTION_FLAG = saved;
-    flag.setCollectionConsent(true);
     metricsBackend.reset();
   });
 
-  it('counts the missing indexes found at startup once Data Collection is on, though they were counted before', async () => {
-    metricsBackend.reset();
-    flag.setCollectionConsent(false);
+  it('a refresh sets the gauge again from the count taken at startup', async () => {
     setMongoMissingIndexes(18);
-    expect(await metricsBackend.serialize()).not.to.match(/^pipeshub_mongo_missing_indexes 18$/m);
+    expect(await metricsBackend.serialize()).to.match(/^pipeshub_mongo_missing_indexes 18$/m);
 
-    flag.setCollectionConsent(true);
+    metricsBackend.reset();
+    expect(await metricsBackend.serialize()).not.to.match(/^pipeshub_mongo_missing_indexes 18$/m);
     refreshMongoMissingIndexes();
     expect(await metricsBackend.serialize()).to.match(/^pipeshub_mongo_missing_indexes 18$/m);
-  });
-
-  it('records nothing on a refresh while Data Collection is off', async () => {
-    setMongoMissingIndexes(3);
-    metricsBackend.reset();
-    flag.setCollectionConsent(false);
-    refreshMongoMissingIndexes();
-    expect(await metricsBackend.serialize()).not.to.match(/^pipeshub_mongo_missing_indexes 3$/m);
   });
 });

@@ -14,7 +14,12 @@ export {
   normalizeOrgId,
   signupSource,
 } from './identity';
-export { isTelemetryEnabled, telemetryOffMessage } from './flag';
+export {
+  isCollecting,
+  isTelemetryEnabled,
+  setCollectionConsent,
+  telemetryOffMessage,
+} from './flag';
 export { metricsBackend } from './metrics-backend';
 export { recordServiceActivity } from './modules/activity-metrics';
 export { setMetricCollectionEnabled } from './modules/collection-metrics';
