@@ -1885,6 +1885,8 @@ class TestRankingIsBounded:
             """A pattern whose match runs out of time, every time. The file is not JSON, so the real pattern would
             only see empty text and never reach the timeout path."""
 
+            pattern, flags = "x", 0  # not a case-insensitive literal, so scoring runs the regex, not str.count
+
             def finditer(self, text: str, **kwargs: object) -> object:
                 raise TimeoutError("regex match timed out")
 
