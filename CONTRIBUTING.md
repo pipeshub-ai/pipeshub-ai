@@ -294,7 +294,15 @@ Signing takes a minute. The CLA Assistant bot comments on your pull request with
 If the `license/cla` check is still failing after you signed:
 
 - Select **recheck** in the bot's comment; that re-runs the check.
-- Make sure the email in your commits is linked to your GitHub account ([GitHub's guide](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/adding-an-email-address-to-your-github-account)). Commits made with an unlinked email can't be matched to your signature. Fix the email with `git config user.email`, then amend or rebase your commits and push again.
+- Make sure the email in your commits is linked to your GitHub account ([GitHub's guide](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/adding-an-email-address-to-your-github-account)). Commits made with an unlinked email can't be matched to your signature. To fix your own commits on the branch:
+
+  ```bash
+  git config user.email "you@example.com"   # an email linked to your GitHub account
+  # Rewrite each of your commits with the new author email (upstream/main is the branch your pull request targets)
+  git rebase --exec "git commit --amend --no-edit --reset-author" upstream/main
+  git log --format="%h %ae %s" upstream/main..HEAD   # check every commit shows the new email
+  git push --force-with-lease
+  ```
 
 ## Code Style Guidelines
 

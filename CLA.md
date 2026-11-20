@@ -1,3 +1,5 @@
+<!-- Maintainers: contributors sign the copy in the Gist linked on cla-assistant.io. Keep it identical to this file; changing the Gist asks every contributor to sign again. -->
+
 # PipesHub Contributor License Agreement
 
 Thank you for your interest in contributing to PipesHub. This Contributor License Agreement ("Agreement") explains the terms under which you contribute to projects owned or managed by Pipeshub Inc., a Delaware corporation ("PipesHub", "we", "us").
@@ -18,10 +20,9 @@ You sign once, and the Agreement covers all of your past and future Contribution
 
 ## 2. Copyright License
 
-You grant PipesHub, and recipients of software distributed by PipesHub, a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to:
+You grant PipesHub, and recipients of software distributed by PipesHub, a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to reproduce, prepare derivative works of, publicly display, publicly perform, sublicense and distribute Your Contributions and derivative works of them.
 
-- reproduce, prepare derivative works of, publicly display, publicly perform, sublicense and distribute Your Contributions and derivative works of them; and
-- license or relicense Your Contributions, alone or as part of the Project, **under any license terms PipesHub chooses**, including open source licenses, source-available licenses and proprietary or commercial licenses.
+You also grant PipesHub, on the same terms, the right to license or relicense Your Contributions, alone or as part of the Project, **under any license terms PipesHub chooses**, including open source licenses, source-available licenses and proprietary or commercial licenses.
 
 ## 3. Patent License
 
