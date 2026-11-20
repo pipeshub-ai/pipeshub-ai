@@ -102,6 +102,7 @@ export type ConnectorType =
   | 'docusign'
   | 'okta'
   | 'hubspot'
+  | 'smartlead'
   | 'zapier'
   | 'trello'
   | 'cloudflare'
@@ -218,6 +219,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'docusign': { svg: svg('docusign'), fallback: 'draw' },
   'okta': { svg: svg('okta'), fallback: 'badge' },
   'hubspot': { svg: svg('hubspot'), fallback: 'hub' },
+  'smartlead': { svg: svg('smartlead'), fallback: 'forward_to_inbox' },
   'zapier': { svg: svg('zapier'), fallback: 'bolt' },
   'trello': { svg: svg('trello'), fallback: 'view_kanban' },
   'cloudflare': { svg: svg('cloudflare'), fallback: 'cloud' },
@@ -298,6 +300,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   ['vercel', 'vercel'],
   ['docusign', 'docusign'], ['okta', 'okta'],
   ['hubspot', 'hubspot'],
+  ['smartlead', 'smartlead'],
   ['zapier', 'zapier'],
   ['trello', 'trello'],
   ['cloudflare', 'cloudflare'],

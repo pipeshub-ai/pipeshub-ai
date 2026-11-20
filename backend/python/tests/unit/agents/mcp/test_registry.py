@@ -78,6 +78,7 @@ class TestMCPRegistry:
         assert "microsoft_learn" in type_ids
         assert "atlassian_rovo" in type_ids
         assert "linear" in type_ids
+        assert "smartlead" in type_ids
         assert "notion" in type_ids
         assert "monday" in type_ids
         assert "airtable" in type_ids

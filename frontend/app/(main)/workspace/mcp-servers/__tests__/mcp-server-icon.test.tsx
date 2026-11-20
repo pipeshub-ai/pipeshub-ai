@@ -85,6 +85,11 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="context7" name="Context7" />)).toBe('context7 icon');
   });
 
+  it("shows Smartlead's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="smartlead" name="Smartlead" />)).toBe('smartlead icon');
+    expect(logo(<McpServerIcon typeId={null} name="Smartlead" />)).toBe('smartlead icon');
+  });
+
   it("shows Zoom's catalog logo", () => {
     expect(logo(<McpServerIcon typeId="zoom" name="Zoom" />)).toBe('zoom icon');
   });
