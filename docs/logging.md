@@ -580,6 +580,8 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
 | `middleware.failed` | `log_failure`, no error text | `middleware`, `context` (the hook context's type); a fail-closed pipeline also denies with `deny_reason=middleware_error` |
 | `orchestrator.dispatch.end` | INFO; `orchestrator.dispatch.failed` `log_failure` (falls back to LLM dispatch) | `steps`, `outcome` |
 | `turn_scope.check_failed`, `prefetch.failed` (no error text), `agent_turn.cleanup_failed` (`step`) | `log_failure` | the turn carries on |
+| `repo_instructions.resolve_failed` | `log_failure`, no error text; a timeout is `timeout` | the repo-instructions refresh failed or timed out and is retried on the next refresh, at most 3 times per run |
+| `repo_instructions.fetch_failed` | `log_failure`, no error text; content that is unavailable is `unavailable` (WARNING), at most 3 times per file per run | `record_id` |
 
 - An approval answer is logged once whatever happens next: on the decided path the line is written first in `_settle`'s `finally`,
   before the outcome is kept and before the card's row is shown, so Stop or a client disconnect while the approved call runs is

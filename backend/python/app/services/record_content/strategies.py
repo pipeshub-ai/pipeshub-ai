@@ -35,6 +35,7 @@ from app.services.artifact_registry.versioning import resolve_storage_version
 from app.utils.jwt import mint_service_token
 
 from .models import (
+    RecordAccessDeniedError,
     RecordContentUnavailableError,
     RecordTooLargeError,
     ResolvedRecordContent,
@@ -214,7 +215,6 @@ class ConnectorBackedContentStrategy:
                         f"Connector content not found for record {record_id}"
                     )
                 if resp.status == 403:
-                    from .models import RecordAccessDeniedError
                     raise RecordAccessDeniedError(
                         f"Connector content endpoint denied access to record {record_id}"
                     )
@@ -252,7 +252,7 @@ class ConnectorBackedContentStrategy:
                 return await _do_fetch(session)
             async with aiohttp.ClientSession() as http:
                 return await _do_fetch(http)
-        except (RecordContentUnavailableError, RecordTooLargeError):
+        except (RecordAccessDeniedError, RecordContentUnavailableError, RecordTooLargeError):
             raise
         except Exception as exc:
             raise RecordContentUnavailableError(
