@@ -321,6 +321,7 @@ from app.services.graph_db.vector_membership_queries import (
     can_use_membership_cleanup,
 )
 from app.utils import error_class
+from app.utils.db_query_log import expecting
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed, folder_in_trash
 
@@ -3452,7 +3453,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         arango_doc = {k: v for k, v in document.items() if k != "id"}
         arango_doc["_key"] = document["id"]
         try:
-            await self._stage_aql("INSERT @doc INTO @@collection RETURN NEW._key", {"doc": arango_doc})
+            # An existing key is the expected answer of a claim, so the client logs it at DEBUG, not as a WARNING failure.
+            with expecting(ARANGO_UNIQUE_CONSTRAINT_VIOLATED):
+                await self._stage_aql("INSERT @doc INTO @@collection RETURN NEW._key", {"doc": arango_doc})
         except ArangoQueryError as exc:
             if exc.error_num in (ARANGO_UNIQUE_CONSTRAINT_VIOLATED, ARANGO_CONFLICT):
                 return False
