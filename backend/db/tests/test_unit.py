@@ -340,6 +340,22 @@ def test_lint_create_if_not_exists_of_another_modules_table(tmp_path, monkeypatc
     assert lint.lint_file(f) == []
 
 
+@pytest.mark.parametrize("mark,flagged", [
+    ("", True),
+    ("min_code_epoch = 0\n", True),                                    # no mark, as for every other rule
+    ('older_code_compatible = "unused"\n', True),                      # a reason of fewer than four words is none
+    ('older_code_compatible = "no plan of any release reads these"\n', False),
+    ("min_code_epoch = 1\n", False),
+])
+def test_lint_a_revision_that_retires_indexes_says_whether_older_code_needs_them(tmp_path, monkeypatch, mark, flagged):
+    """ONLINE_DROPS is dropped by db.migrate, not by SQL the lint reads, so the revision itself must say min_code_epoch or why older code still works."""
+    monkeypatch.setattr(lint, "version_locations", lambda: [str(tmp_path)])
+    (tmp_path / "0002_retire.py").write_text(mark + 'ONLINE_DROPS = ["a.ix"]\n')
+    assert bool(lint.retiring_violations()) is flagged
+    if flagged:
+        assert "set min_code_epoch (older code plans with them) or older_code_compatible" in lint.retiring_violations()[0]
+
+
 @pytest.mark.parametrize("raw,want", [("", None), (" ", None), ("512", "512MB"), ("0", 2), ("-1", 2), ("1.5", 2), ("1GB", 2), ("9999999", 2)])
 def test_the_index_build_memory_is_a_whole_number_of_megabytes(monkeypatch, raw, want):
     monkeypatch.setenv("PG_INDEX_BUILD_MEMORY_MB", raw)

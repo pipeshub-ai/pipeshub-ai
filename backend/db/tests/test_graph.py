@@ -1578,6 +1578,7 @@ def test_the_address_and_site_lookups_read_their_keys_where_the_plain_statements
 # ---- indexes built and dropped outside the upgrade's transaction (db.migrate's online step) ------------------------------------------------
 ONLINE = ("nodes_record_ticket_url", "nodes_record_pending_vrid", "nodes_record_weburl", "nodes_record_ticket_site", "nodes_block_record_seek",
           "nodes_block_name_seek", "nodes_codefile_path_seek")
+RETIRED = ("nodes_block_record", "nodes_block_name")
 _DDL = re.compile(r"^(CREATE (UNIQUE )?INDEX|DROP INDEX|ALTER INDEX|REINDEX)\b", re.I)
 
 
@@ -1613,8 +1614,8 @@ def _left_of(c, indexes) -> list[str]:
 
 def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_drops_none(db, monkeypatch, capsys):
     """From graph_0013 on a populated graph: every index of graph_0014..0018 is built before the upgrade's transaction, concurrently on the leaf
-    that holds rows; the transaction itself runs no index statement at all (one there would keep the writers of graph.nodes waiting until the
-    commit)."""
+    that holds rows; the indexes graph_0019 retires go after the commit; the transaction itself runs no index statement at all (one there would
+    keep the writers, or for a drop every reader, of graph.nodes waiting until the commit)."""
     from sqlalchemy import Engine, event
 
     from db import migrate
@@ -1627,7 +1628,7 @@ def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_dro
     assert r.returncode == 0, r.stdout + r.stderr
     with connect(cluster, name) as c:
         leaf = _populate(c).split(".")[1]
-        assert not any(_exists(c, i) for i in ONLINE)
+        assert not any(_exists(c, i) for i in ONLINE) and all(_exists(c, i) for i in RETIRED)
     seen: list[tuple[bool, str]] = []
 
     def spy(conn, _cursor, statement, *_):
@@ -1646,9 +1647,12 @@ def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_dro
     for index in ONLINE:
         assert any(re.match(rf"CREATE INDEX CONCURRENTLY {leaf}_\w*_{index} ON graph\.{leaf} ", s) for s in online), (index, online)
         assert f"index graph.{index}: built in" in out
+    for index in RETIRED:
+        assert f"DROP INDEX IF EXISTS graph.{index}" in online
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in ONLINE)
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == 18
+        assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (19, 0)
 
 
 def test_an_online_build_a_stopped_run_left_invalid_is_rebuilt(db):
@@ -1700,12 +1704,47 @@ def test_the_indexes_built_for_an_upgrade_that_did_not_commit_are_dropped(db, tm
     for index in ONLINE:
         assert f"index graph.{index}: built in" in r.stdout and f"index graph.{index}: dropped (the upgrade did not commit)" in r.stdout
     with connect(cluster, name) as c:
-        assert not any(_exists(c, i) for i in ONLINE)
+        assert not any(_exists(c, i) for i in ONLINE) and all(_whole_and_valid(c, i) for i in RETIRED)
         assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == 13
         assert _left_of(c, ONLINE) == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout + r.stderr
 
+
+def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_done_by_the_next_run(db):
+    """graph_0019 retires two graph_0001 indexes: a new install ends without them, a downgrade brings them back as graph_0001 made them, and an
+    upgrade whose drop waits on a reader still commits (exit 0, a warning); the next run drops them. No min_code_epoch: nothing reads them, so a
+    rollback to an earlier build keeps working."""
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    with connect(cluster, name) as c:
+        assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
+    r = run_migrate(url, "downgrade", "graph_0018", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with connect(cluster, name) as c:
+        assert all(_whole_and_valid(c, i) for i in RETIRED)
+        _populate(c, 200)
+    with connect(cluster, name) as holder:
+        holder.execute("BEGIN")
+        holder.execute("SELECT count(*) FROM graph.nodes")          # a reader's lock, held: a DROP INDEX on graph.nodes waits for it
+        r = run_migrate(url, timeout=180)
+        holder.execute("ROLLBACK")
+    assert r.returncode == 0, r.stdout + r.stderr
+    for index in RETIRED:
+        assert f"WARNING index graph.{index} was not dropped" in r.stdout, r.stdout
+    with connect(cluster, name) as c:
+        assert all(_exists(c, i) for i in RETIRED)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (19, 0)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for index in RETIRED:
+        assert f"index graph.{index}: dropped (retired by a revision)" in r.stdout
+    with connect(cluster, name) as c:
+        assert not any(_exists(c, i) for i in RETIRED)
+    r = run_migrate(url)                                                # the surface without them is the expected one
+    assert r.returncode == 0 and "dropped" not in r.stdout, r.stdout + r.stderr
 
 def test_a_build_that_failed_half_way_down_the_tree_is_dropped_whole(db):
     """graph.nodes is LIST-partitioned with a HASH-partitioned default (nodes_def), so a build makes an intermediate partitioned index,

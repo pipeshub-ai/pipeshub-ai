@@ -7,6 +7,7 @@ Exit codes: 0 done | 1 a migration failed | 2 bad configuration | 3 lock wait ti
 4 post-run catalog check found violations.
 """
 import contextlib
+import functools
 import os
 import sys
 import time
@@ -228,6 +229,12 @@ def drop_online(c: Connection, qname: str) -> None:
             c.exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS {q}")
 
 
+def _retiring(cfg: Config, conn: psycopg.Connection) -> frozenset[str]:
+    """``ONLINE_DROPS`` of every revision of this tree: indexes a revision retires. They are dropped after the upgrade commits, never
+    inside it, and a run that could not drop one drops it the next time."""
+    return frozenset(q for m in _modules(cfg, conn, pending=False) for q in getattr(m, "ONLINE_DROPS", ()))
+
+
 def _drop_all(engine: Engine, names: list[str] | frozenset[str], why: str, hint: str) -> None:
     """Drop each of these indexes that exists. A failure is logged with ``hint``: it never fails a run that committed, nor hides the error
     of one that did not."""
@@ -248,9 +255,10 @@ def _has_revisions(conn: psycopg.Connection) -> bool:
     return conn.execute("SELECT EXISTS (SELECT 1 FROM kernel.alembic_version)").fetchone()[0]
 
 
-def _report(conn: psycopg.Connection) -> None:
+def _report(conn: psycopg.Connection, retiring: frozenset[str] = frozenset()) -> None:
     """The epochs and the catalog and surface checks. On an installed database they run inside the upgrade's transaction (see
-    env.py): a violation raises before COMMIT, so nothing the run applied stays. On an empty one they run after the revisions."""
+    env.py): a violation raises before COMMIT, so nothing the run applied stays. On an empty one they run after the revisions.
+    ``retiring``: indexes a revision retires; they are dropped after the commit, so until then their lines are not unexpected."""
     for branch, epoch, min_code in conn.execute("SELECT branch, epoch, min_code_epoch FROM kernel.schema_epoch ORDER BY 1"):
         log(f"epoch {branch}={epoch} min_code={min_code}")
     rows: list[tuple[str, str]] = []
@@ -271,7 +279,8 @@ def _report(conn: psycopg.Connection) -> None:
             if conn.execute("SELECT to_regclass('kernel.surface_skips') IS NOT NULL").fetchone()[0]:
                 conn.execute("INSERT INTO kernel.surface_skips (files) VALUES (%s)", (os.pathsep.join(extra),))
         else:                                                           # deny by default: the whole security surface is compared
-            rows += surface.violations(conn, extra)
+            rows += [r for r in surface.violations(conn, extra)
+                     if not (r[0] == "50 surface: unexpected" and r[1].startswith("index ") and r[1].split(" ")[1] in retiring)]
         if conn.execute("SELECT to_regclass('kernel.surface_skips') IS NOT NULL").fetchone()[0]:
             n, last = conn.execute("SELECT count(*), max(skipped_at) FROM kernel.surface_skips").fetchone()
             if n:
@@ -335,7 +344,8 @@ def run(argv: list[str]) -> None:
             engine = _online(url, memory)
             try:
                 if _path["existing_install"]:
-                    cfg.attributes["verify"] = _report
+                    retiring = _retiring(cfg, conn)
+                    cfg.attributes["verify"] = functools.partial(_report, retiring=retiring)
                     started: list[str] = []
                     try:
                         with engine.connect() as c:
@@ -349,7 +359,9 @@ def run(argv: list[str]) -> None:
                         raise
                 else:           # an empty database has nothing to protect, and all revisions in one transaction hold ~6,600 locks
                     _upgrade_with_retries(cfg, "heads")
-                    _report(conn)
+                    retiring = _retiring(cfg, conn)
+                    _report(conn, retiring)
+                _drop_all(engine, retiring, "retired by a revision", "the next run drops it")
             finally:
                 engine.dispose()
             if kv_mode:
