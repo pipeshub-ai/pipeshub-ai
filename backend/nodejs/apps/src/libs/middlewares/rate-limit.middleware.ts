@@ -170,7 +170,9 @@ export function slackEventsRateLimitPerMinute(): number {
 
 export interface KeyedRateLimiterOptions {
   prefix: string;
+  // Per counting window: one minute unless `windowMs` says otherwise.
   maxRequestsPerMinute: number;
+  windowMs?: number;
   message: string;
   countOnlyFailures?: boolean;
   // With `countOnlyFailures`: which responses count (default: any status of 400 or more).
@@ -194,6 +196,7 @@ export function createKeyedRateLimiter(
   const {
     prefix,
     maxRequestsPerMinute,
+    windowMs = 60 * 1000,
     message,
     countOnlyFailures = false,
     isFailure,
@@ -212,7 +215,7 @@ export function createKeyedRateLimiter(
   };
 
   const config: Partial<Options> = {
-    windowMs: 60 * 1000,
+    windowMs,
     max: maxRequestsPerMinute,
     standardHeaders: true,
     legacyHeaders: false,

@@ -32,4 +32,7 @@ export enum EmailTemplateType {
   DomainLimitReached = 'domainLimitReached',
   JoinRequestNotify = 'joinRequestNotify',
   JoinRequestDecision = 'joinRequestDecision',
+  SupportRequest = 'supportRequest',
+  FeedbackReceived = 'feedbackReceived',
+  FeedbackCopy = 'feedbackCopy',
 }
