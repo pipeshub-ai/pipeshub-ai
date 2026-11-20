@@ -30,7 +30,7 @@ const assistant = (id: string, text: string) => ({
   metadata: { custom: { messageId: id } },
 });
 
-describe('buildMessagePairs: an answer still running on the server after a reload (DF-146)', () => {
+describe('buildMessagePairs: an answer still running on the server after a reload', () => {
   const reloaded = [user('u1', 'First question'), assistant('a1', 'First answer.'), user('u2', 'Asked just before the reload')];
 
   it('shows the newest question as a live answer, not a bare question', () => {

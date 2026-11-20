@@ -763,8 +763,8 @@ const readerSessionOf = (
 /**
  * Rows as the reader may see them (`readerView`): an answer is shown whole only to readers who can open everything
  * its label names, its text alone to those it was shared with, and to nobody else; another person's steps never.
- * The answers no label decided alone (an asker's own, and those from before labels) also pass main's per-record
- * view, each with its whole turn, as the room's feed judges them: a labelled answer is judged by its label, which
+ * The answers no label decided alone (an asker's own, and those from before labels) also pass the per-record view,
+ * each with its whole turn: a labelled answer is judged by its label, which
  * names the chat's uploads it used, and those open for the chat's members (the chat's own file rule). Every chat is
  * read this way, shared or not: whether a chat is shared is no reason to show a reader more. Rows of several chats
  * (the archives) are judged chat by chat.
@@ -874,7 +874,7 @@ const redactPageForViewer = async <M extends object>(
   // The harness's citation check could not be made: another person's answers are unconfirmed.
   checkFailed = false,
 ): Promise<M[]> => {
-  // The reader check sees the page's first and last turns whole, as the feed's whole read does: a card goes with its
+  // The reader check sees the page's first and last turns whole, as it sees a whole chat: a card goes with its
   // turn's answer, and an answer with its turn's question, wherever the page's edge falls.
   const edges = await turnEdgesOf(
     conversation,
@@ -895,8 +895,8 @@ const redactPageForViewer = async <M extends object>(
       ...(conversation.initiator !== undefined && {
         ownerId: conversation.initiator,
       }),
-      // As the room's feed judges rows: main's per-record view for the answers no label decided alone, each with its
-      // turn; the rest as their label and the reader check have them.
+      // The per-record view for the answers no label decided alone, each with its turn; the rest as their label and
+      // the reader check have them.
       perRecordFor: unlabelledAnswers,
       perRecordView: async <R extends object>(list: R[], known: Readable) =>
         pickFrom(
@@ -2983,8 +2983,8 @@ async function regenerateAnswersInternal(
               content: turnQuery,
               ...(editedAttachments && { attachments: editedAttachments }),
             },
-      // Main's filter first (it reads what each answer names), then only what the reader check lets reach the
-      // asker's model, sealed with each row's version.
+      // The history filter first (it reads what each answer names), then only what the reader check lets reach
+      // the asker's model, sealed with each row's version.
       history: await includableRows(
         {
           userId: String(userId),

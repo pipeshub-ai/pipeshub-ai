@@ -4,7 +4,7 @@
  * pieces, the server's numbered copy arriving as the stream goes on, then the final one. After every event the shown
  * text is read as the reader reads it (a numbered citation is a chip, a whole link its label), and every word shown must
  * be the final text's word at that place (the last one may still be growing), with no bracket the final does not show.
- * The streams are QA round 8's link probe fixtures, numbered by the server's own labelling rules.
+ * The streams are link probe fixtures, numbered by the server's own labelling rules.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { createAGUIEventHandler } from '../agui-event-handler';

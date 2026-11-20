@@ -1324,7 +1324,7 @@ describe('Application', () => {
       expect(mockLogger.warn.calledWithMatch('Stopped answers still running after the drain', { stopped: 1, drainMs: 30 })).to.be.true;
     });
 
-    it('waits at most 8 s for a schedule-repair pass, however long the drain (F14: Helm drains 240 s of a 300 s grace)', async () => {
+    it('waits at most 8 s for a schedule-repair pass, however long the drain (Helm drains 240 s of a 300 s grace)', async () => {
       (app as any).notificationContainer = new Container();
       process.env.SHUTDOWN_DRAIN_MS = '240000';
       (app as any).scheduleRepairPass = new Promise<void>(() => undefined);

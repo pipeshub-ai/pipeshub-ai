@@ -14,8 +14,8 @@ export function setMongoMissingIndexes(count: number): void {
 }
 
 /**
- * Sets the gauge again from the startup count. That count is taken before the admin's Data Collection switch is
- * read, while nothing is recorded, and a gauge set then would stay at 0 for good.
+ * Sets the gauge again from the startup count. That count may be taken before the telemetry service has read whether
+ * anything may be recorded, and a gauge set while nothing was recorded would stay at 0 for good.
  */
 export function refreshMongoMissingIndexes(): void {
   if (counted !== null) missingIndexes.set({}, counted);

@@ -134,7 +134,7 @@ describe('ChatSearch dialog', () => {
       expect(call[2]).toMatchObject({ suppressErrorToast: true });
     }
   });
-  it('typing while the first list loads shows loading, not No results and not an error toast (DF-336)', async () => {
+  it('typing while the first list loads shows loading, not No results and not an error toast', async () => {
     // The API client rejects an aborted request with a processed error, not an AbortError.
     api.fetchConversations.mockImplementation(
       (_page: number, _limit: number, opts: { signal: AbortSignal; search?: string }) =>

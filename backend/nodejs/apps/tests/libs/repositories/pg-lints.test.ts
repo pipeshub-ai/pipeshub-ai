@@ -131,6 +131,15 @@ export function unfencedMongoWrites(text: string): string[] {
   return found
 }
 
+// A read the fence need not wrap, such as a read-only admin command, is marked on the line above with its reason.
+const FENCE_EXEMPT = /\/\/\s*store-fence-exempt:\s*\S/
+
+/** `unfencedMongoWrites` less the calls marked `// store-fence-exempt: <why>` on the line above. */
+export function unmarkedMongoWrites(text: string): string[] {
+  const lines = text.split('\n')
+  return unfencedMongoWrites(text).filter((m) => !FENCE_EXEMPT.test(lines[Number(/^line (\d+)/.exec(m)?.[1]) - 2] ?? ''))
+}
+
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((f) => {
     const p = join(dir, f)
@@ -183,6 +192,14 @@ describe('unit-of-work source lints', () => {
       expect(unfencedMongoWrites('await col.updateOne({}, {}); await col.aggregate([{ $match: {} }])')).to.deep.equal([])
     })
 
+    it('lets a call marked with its reason on the line above through, and nothing else', () => {
+      const marked = 'const a = 1\n// store-fence-exempt: hello only reads the topology\nawait db.admin().command({ hello: 1 })'
+      expect(unmarkedMongoWrites(marked)).to.deep.equal([])
+      expect(unmarkedMongoWrites('// store-fence-exempt:\nawait db.admin().command({ hello: 1 })')).to.have.length(1)
+      expect(unmarkedMongoWrites('// store-fence-exempt: a read\n\nawait db.admin().command({ hello: 1 })')).to.have.length(1)
+      expect(unmarkedMongoWrites('await db.admin().command({ hello: 1 }) // store-fence-exempt: a read')).to.have.length(1)
+    })
+
     it('finds SELECT * and selectAll() on chat messages only', () => {
       expect(selectStarOnChatMessages('const q = "SELECT * FROM conversation.chat_messages WHERE id = $1"')).to.have.length(1)
       expect(selectStarOnChatMessages('const q = `select m.* from conversation.chat_messages m`')).to.have.length(1)
@@ -215,7 +232,7 @@ describe('unit-of-work source lints', () => {
       const clockReads = (f: string, m: string) => f === 'libs/repositories/document/mongo.ts' && /: admin\.command$/.test(m)
       const clock = files.flatMap(([f, t]) => unfencedMongoWrites(t).filter((m) => clockReads(f, m)))
       expect(clock).to.have.length(2)
-      expect(files.filter(([f]) => !own.has(f) && !migrator.has(f)).flatMap(([f, t]) => unfencedMongoWrites(t).filter((m) => !clockReads(f, m)).map((m) => `${f} ${m}`))).to.deep.equal([])
+      expect(files.filter(([f]) => !own.has(f) && !migrator.has(f)).flatMap(([f, t]) => unmarkedMongoWrites(t).filter((m) => !clockReads(f, m)).map((m) => `${f} ${m}`))).to.deep.equal([])
     })
     it('has no SELECT * on chat messages', () => {
       expect(files.flatMap(([f, t]) => selectStarOnChatMessages(t).map((m) => `${f} ${m}`))).to.deep.equal([])
