@@ -428,6 +428,40 @@ class TestGetSites:
         assert body["error"] == "boom"
 
 
+class TestGetSitesShortPage:
+    @pytest.mark.asyncio
+    async def test_short_page_with_more_results_keeps_paginating(self) -> None:
+        # 10 hits consumed but only 7 unique sites kept after dedupe
+        sp = _build_sharepoint({
+            "list_sites_with_search_api": AsyncMock(
+                return_value=_mock_response(data={
+                    "sites": [{"id": f"s{i}"} for i in range(7)],
+                    "raw_count": 10,
+                    "more_results_available": True,
+                })
+            )
+        })
+        body = _ok_tuple(await sp.get_sites(top=10, skip=20))
+        assert body["has_more"] is True
+        assert body["next_skip"] == 30
+        assert "skip=30" in body["pagination_hint"]
+
+    @pytest.mark.asyncio
+    async def test_full_page_but_no_more_results_stops(self) -> None:
+        sp = _build_sharepoint({
+            "list_sites_with_search_api": AsyncMock(
+                return_value=_mock_response(data={
+                    "sites": [{"id": "s1"}, {"id": "s2"}],
+                    "raw_count": 2,
+                    "more_results_available": False,
+                })
+            )
+        })
+        body = _ok_tuple(await sp.get_sites(top=2))
+        assert body["has_more"] is False
+        assert body["pagination_hint"] == "All available results returned"
+
+
 class TestGetSite:
     @pytest.mark.asyncio
     async def test_success_returns_site_dict(self):
@@ -603,6 +637,23 @@ class TestSearchPages:
 # ===========================================================================
 # @tool methods — drives & files
 # ===========================================================================
+
+class TestSearchPagesShortPage:
+    @pytest.mark.asyncio
+    async def test_skipped_hits_do_not_end_pagination(self) -> None:
+        sp = _build_sharepoint({
+            "search_pages_with_search_api": AsyncMock(
+                return_value=_mock_response(data={
+                    "pages": [{"page_id": "p1"}],
+                    "raw_count": 10,
+                    "more_results_available": True,
+                })
+            )
+        })
+        body = _ok_tuple(await sp.search_pages(query="x", top=10))
+        assert body["has_more"] is True
+        assert body["next_skip"] == 10
+
 
 class TestListDrives:
     @pytest.mark.asyncio
