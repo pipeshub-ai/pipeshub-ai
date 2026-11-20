@@ -360,7 +360,8 @@ run_script "$MIGRATE" --online
 check_eq "exits 0" "$RC" 0
 check_eq "the key file is mode 0400" "$(mode_of "$MONGO_DATA/rs.key")" 400
 key="$(cat "$MONGO_DATA/rs.key" 2>/dev/null)"
-check_not "the key is long enough to mean something" "x${key:0:40}x" "xx"
+# by length: a random base64 key can itself begin or end its first 40 characters with an x
+check_eq "the key is long enough to mean something" "$(( ${#key} >= 40 ))" 1
 no_secret_shown "the key never appears in the output or a command line" "${key:0:40}"
 run_script "$MIGRATE" --online
 check_eq "a second run keeps the same key" "$(cat "$MONGO_DATA/rs.key")" "$key"
