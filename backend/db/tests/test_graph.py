@@ -535,7 +535,7 @@ def test_the_virtual_record_lookup_probes_its_index_per_id_however_many_ids_a_ca
         c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'virtualRecordId', 'v' || (i %% 9000)) "
                   "FROM generate_series(1, 12000) i", (A, A))
         _big_leaf(c, A)
-        many = [f"v{i}" for i in range(0, 9000, 45)] + ["v1", "nope"]          # 200 ids, one repeated, one held by no record
+        many = [f"v{i}" for i in range(0, 9000, 45)] + ["v45", "nope"]         # 200 ids, then one of them again and one held by no record
         for ids in (many, ["v7"], [f"v{i}" for i in range(1000)]):
             plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT node_id FROM graph.records_by_virtual_id(%s::text[])", (ids,))
             for i in (0, 6):
