@@ -29,6 +29,7 @@ import pytest
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordRelations,
@@ -41,6 +42,7 @@ from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.services.event_service import EventService
 from app.models.entities import (
     AppUserGroup,
+    FileRecord,
     MessageRecord,
     RecordGroup,
     RecordGroupType,
@@ -49,6 +51,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -789,3 +792,134 @@ async def test_an_unsure_member_list_keeps_access_through_whichever_copy_holds_t
     assert newer in await _department_grant(sync)
     assert await sync.can_read(sync.alice, "m1")
     assert await sync.can_read(sync.bob, "m1")
+
+
+# --- a web site: pages under URL-path folders, each inheriting from the record above it ---
+
+SITE = "https://docs.test/"
+
+
+def _site_group(sync: _Sync) -> tuple[RecordGroup, list[Permission]]:
+    group = RecordGroup(
+        org_id=sync.org_id,
+        name="docs.test",
+        external_group_id=SITE,
+        connector_name=Connectors.WEB,
+        connector_id=sync.connector_id,
+        group_type=RecordGroupType.WEB,
+        source_created_at=sync.now,
+        source_updated_at=sync.now,
+    )
+    return group, [sync.grant(sync.alice)]
+
+
+def _web_record(sync: _Sync, path: str, *, parent: str | None, internal: bool, record_id: str | None = None) -> FileRecord:
+    """What the web connector writes for a page, or (internal) for the folder of a URL path."""
+    return FileRecord(
+        id=record_id or str(uuid.uuid4()),
+        org_id=sync.org_id,
+        record_name=f"docs.test{path}",
+        record_type=RecordType.FILE,
+        record_group_type=RecordGroupType.WEB,
+        external_record_id=SITE.rstrip("/") + path,
+        external_record_group_id=SITE,
+        external_revision_id=None if internal else "rev-1",
+        version=0,
+        origin=OriginTypes.CONNECTOR,
+        connector_name=Connectors.WEB,
+        connector_id=sync.connector_id,
+        created_at=sync.now,
+        updated_at=sync.now,
+        source_created_at=sync.now,
+        source_updated_at=sync.now,
+        weburl=SITE.rstrip("/") + path,
+        is_file=True,
+        path=path,
+        mime_type=MimeTypes.HTML.value,
+        is_internal=internal,
+        parent_external_record_id=SITE.rstrip("/") + parent if parent else None,
+        parent_record_type=RecordType.FILE if parent else None,
+        indexing_status=ProgressStatus.NOT_STARTED.value if internal else ProgressStatus.COMPLETED.value,
+    )
+
+
+async def _browse(sync: _Sync, user_key: str, external_id: str) -> tuple[bool, set[str]]:
+    """Whether the user can open the record in the knowledge hub, and the records it sits under there.
+
+    The hub descends PARENT_CHILD edges. On Neo4j its own parent lookup must agree. ArangoDB's
+    ``get_knowledge_hub_parent_node`` returns no parent for any connector record (its parent id is a
+    subquery's array), a separate bug, so it is not asked there.
+    """
+    record = await sync.graph.get_record_by_external_id(sync.connector_id, external_id)
+    assert record is not None, external_id
+    opened = await sync.graph.get_knowledge_hub_node_access(record.id, user_key, sync.org_id, [])
+    edges = await sync.graph.get_edges_to_node(f"{RECORDS}/{record.id}", CollectionNames.NODE_RELATIONS.value) or []
+    parents = {
+        str(edge.get("from_id") or edge.get("_from") or "").rsplit("/", 1)[-1]
+        for edge in edges
+        if edge.get("relationshipType") == RecordRelations.PARENT_CHILD.value
+    }
+    if isinstance(sync.graph, Neo4jProvider):
+        hub_parent = await sync.graph.get_knowledge_hub_parent_node(record.id, [])
+        assert {(hub_parent or {}).get("id")} == parents or not parents, (hub_parent, parents)
+    return opened is not None, parents
+
+
+async def _can_search(sync: _Sync, user_key: str, external_id: str) -> bool:
+    record = await sync.graph.get_record_by_external_id(sync.connector_id, external_id)
+    result = await sync.graph.check_access(user_key, sync.org_id, node_ids=[record.id])
+    return record.id in result.node_ids
+
+
+@pytest.mark.parametrize("parent_is_a_page", [False, True], ids=["under-a-folder", "under-a-page"])
+async def test_a_web_full_sync_restores_access_to_an_unchanged_page_an_earlier_full_sync_cut_off(
+    sync: _Sync, parent_is_a_page: bool,
+) -> None:
+    """PR #6129, against the real processor and store.
+
+    An older build's full sync wrote the unchanged page (a permissions update) but not the record above
+    it: a URL-path folder, or a parent page the site answered 304 for. The unlink at the end took that
+    record's links and the page's links to it, and the page became unreadable. A full sync of the fixed
+    connector writes the record above again and attaches the pages stored under it, which must give the
+    page back to search and to the knowledge hub, under that record.
+    """
+    page_path, parent_path = "/guides/install.html", "/guides/"
+    parent = _web_record(sync, parent_path, parent=None, internal=not parent_is_a_page)
+    page = _web_record(sync, page_path, parent=parent_path, internal=False)
+    await sync.processor.on_new_record_groups([_site_group(sync)])
+    await sync.processor.on_new_records([(parent, []), (page, [])])
+    parent_id = (await sync.graph.get_record_by_external_id(sync.connector_id, parent.external_record_id)).id
+    page_id = (await sync.graph.get_record_by_external_id(sync.connector_id, page.external_record_id)).id
+    assert await _can_search(sync, sync.alice, page.external_record_id)
+    assert await _browse(sync, sync.alice, page.external_record_id) == (True, {parent_id})
+
+    async def old_build(s: _Sync) -> None:
+        await s.processor.on_new_record_groups([_site_group(s)])
+        # The connector passes the stored id of a page it already holds.
+        await s.processor.on_updated_record_permissions(
+            _web_record(s, page_path, parent=parent_path, internal=False, record_id=page_id), []
+        )
+
+    task, _lease = await sync.full_sync(old_build)
+    await asyncio.wait_for(task, timeout=60)
+    assert not await _can_search(sync, sync.alice, page.external_record_id), "the reported damage"
+
+    async def fixed_build(s: _Sync) -> None:
+        await s.processor.on_new_record_groups([_site_group(s)])
+        above = _web_record(s, parent_path, parent=None, internal=not parent_is_a_page, record_id=parent_id)
+        if parent_is_a_page:
+            await s.processor.on_updated_record_permissions(above, [])
+        else:
+            await s.processor.on_new_records([(above, [])])
+        # The connector passes the stored id of a page it already holds.
+        await s.processor.on_updated_record_permissions(
+            _web_record(s, page_path, parent=parent_path, internal=False, record_id=page_id), []
+        )
+        await s.processor.on_records_attached_to_parent(parent_id, [page_id])
+
+    task, _lease = await sync.full_sync(fixed_build)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await _can_search(sync, sync.alice, page.external_record_id)
+    assert await _browse(sync, sync.alice, page.external_record_id) == (True, {parent_id})
+    assert not await _can_search(sync, sync.bob, page.external_record_id), "no wider than before"

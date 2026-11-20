@@ -3688,10 +3688,12 @@ class WebConnector(BaseConnector):
     async def _children_under(self, external_id: str) -> list[Record] | None:
         """The records stored under ``external_id``, whether they name it with or without its trailing slash.
 
-        None when either could not be read.
+        None when any could not be read.
         """
         children: dict[str, Record] = {}
-        for parent_ref in dict.fromkeys([external_id, self._ensure_trailing_slash(external_id)]):
+        for parent_ref in dict.fromkeys(
+            [external_id, external_id.rstrip("/"), self._ensure_trailing_slash(external_id)]
+        ):
             stored = await self._children_of(parent_ref)
             if stored is None:
                 return None
@@ -3717,9 +3719,8 @@ class WebConnector(BaseConnector):
         """
         try:
             await self._ensure_parent_records_exist(removed_external_id)
-            folder = await self.data_entities_processor.get_record_by_external_id(
-                connector_id=self.connector_id, external_record_id=removed_external_id,
-            )
+            # Under either id: a pending entry keeps the one it was stored under when it failed.
+            folder = await self._stored_ancestor(self._ensure_trailing_slash(removed_external_id))
             if folder is None:
                 raise RuntimeError("no folder was written")
             await self.data_entities_processor.on_records_attached_to_parent(folder.id, [c.id for c in children])

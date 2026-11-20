@@ -341,6 +341,60 @@ async def test_a_relink_left_to_the_next_sync_finds_pages_that_name_the_folder_w
     assert next(iter(checkpoints.sync_points.values()))["relinkPending"] == []
 
 
+async def test_a_relink_left_to_the_next_sync_finds_pages_that_name_the_folder_without_a_trailing_slash(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reverse of the case above: the folder is stored with the slash, an older page names it without."""
+    connector = await _damaged_by_an_earlier_full_sync(site, db, checkpoints, make_connector)
+    db.records[INSTALL].parent_external_record_id = SETUP.rstrip("/")
+    attach = db.on_records_attached_to_parent
+
+    async def failing(*_: object, **__: object) -> None:
+        raise RuntimeError("records database unavailable")
+
+    monkeypatch.setattr(db, "on_records_attached_to_parent", failing)
+    await connector.run_sync()
+    db.end_full_sync()
+    assert next(iter(checkpoints.sync_points.values()))["relinkPending"] == [SETUP]
+
+    monkeypatch.setattr(db, "on_records_attached_to_parent", attach)
+    await connector.run_sync()  # incremental
+
+    assert db.parent_of.get(db.records[INSTALL].id) == db.records[SETUP].id
+    assert next(iter(checkpoints.sync_points.values()))["relinkPending"] == []
+
+
+async def test_a_relink_left_to_the_next_sync_finds_the_folder_rewritten_under_its_trailing_slash_since(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The relink failed under the folder's old id; by the next sync it is stored under the slashed one."""
+    connector = await _damaged_by_an_earlier_full_sync(site, db, checkpoints, make_connector)
+    legacy = SETUP.rstrip("/")
+    folder = db.records.pop(SETUP)
+    folder.external_record_id = legacy
+    db.records[legacy] = folder
+    attach = db.on_records_attached_to_parent
+
+    async def failing(*_: object, **__: object) -> None:
+        raise RuntimeError("records database unavailable")
+
+    monkeypatch.setattr(db, "on_records_attached_to_parent", failing)
+    await connector.run_sync()
+    db.end_full_sync()
+    assert next(iter(checkpoints.sync_points.values()))["relinkPending"] == [legacy]
+
+    db.records.pop(legacy)
+    folder.external_record_id = SETUP
+    db.records[SETUP] = folder
+    monkeypatch.setattr(db, "on_records_attached_to_parent", attach)
+    await connector.run_sync()  # incremental
+
+    assert db.parent_of.get(db.records[INSTALL].id) == folder.id
+    assert next(iter(checkpoints.sync_points.values()))["relinkPending"] == []
+
+
 MANUAL = "http://site.test/guides/setup/manual.pdf"
 
 
