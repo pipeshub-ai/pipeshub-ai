@@ -566,11 +566,9 @@ class MessageErrorClassifier:
         try:
             from botocore.exceptions import (
                 ClientError,
+                ConnectionError as BotoConnectionError,
                 EndpointConnectionError,
                 NoCredentialsError,
-            )
-            from botocore.exceptions import (
-                ConnectionError as BotoConnectionError,
             )
 
             # Credential errors are terminal (config issue)

@@ -500,6 +500,18 @@ class TestKilledWorkerIsRetriedOnce:
         assert raised.value.retrying_worker_death is False
         assert str(raised.value) == PARSE_WORKER_OUT_OF_MEMORY
 
+    async def test_a_worker_that_closes_its_pipes_and_is_then_killed_reads_as_a_kill(
+        self, governor: MagicMock, record_deaths: None
+    ) -> None:
+        # The pipes close first, so the lane sees the end of the reply before the process has gone: the status is
+        # waited for, not polled, or this kill would read as unknown and be failed for good.
+        job = "import os, signal, time\nos.closerange(3, 4096)\ntime.sleep(0.3)\nsignal.raise_signal(signal.SIGKILL)"
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(exec, job, label="late-kill.pdf", size=5_000_000)
+
+        assert raised.value.retrying_worker_death is True
+        assert str(raised.value) == PARSE_WORKER_KILLED_RETRYING
+
     async def test_a_worker_that_ran_out_of_time_keeps_its_behaviour(
         self, governor: MagicMock, record_deaths: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
