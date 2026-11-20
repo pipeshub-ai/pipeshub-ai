@@ -16,6 +16,7 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -388,6 +389,12 @@ class FakeZammadPeople:
         # False: answers /roles as if expand were not asked (permission_ids only), as an old Zammad might.
         self.honours_expand = True
         self.calls: list[tuple[str, dict[str, str]]] = []
+        # The token's own user, and whether the token may list everyone (ticket.agent or admin.user)
+        # or, per UserPolicy::Scope, only its own record.
+        self.me = 1
+        self.lists_everyone = True
+        # user id -> HTTP status answered instead of GET /users/{id}
+        self.user_read_status: dict[int, int] = {}
 
     def add_user(self, user_id: int, groups: tuple[int, ...] = (1,), roles: tuple[int, ...] = (AGENT_ROLE_ID,),
                  access: tuple[str, ...] = ("full",), *, active: bool = True) -> None:
@@ -420,14 +427,21 @@ class FakeZammadPeople:
         if path in self.path_status:
             return FakeHttpResponse(self.path_status[path], {"error": "not now"})
         if path == "/api/v1/users/me":
-            return FakeHttpResponse(200, {"id": 1, "email": "admin@example.com"})
+            return FakeHttpResponse(200, self.users.get(self.me) or {"id": self.me, "email": "admin@example.com"})
         if path == "/api/v1/users":
             if page in self.users_page_unanswered:
                 raise ConnectionError("connection reset by peer")
             if page in self.users_page_status:
                 return FakeHttpResponse(self.users_page_status[page], {"error": "not now"})
-            rows = [self.users[uid] for uid in sorted(self.users)]
+            rows = [self.users[uid] for uid in sorted(self.users) if self.lists_everyone or uid == self.me]
             return FakeHttpResponse(200, rows[(page - 1) * per_page:page * per_page])
+        if user_id := re.fullmatch(r"/api/v1/users/(\d+)", path):
+            uid = int(user_id.group(1))
+            if uid in self.user_read_status:
+                return FakeHttpResponse(self.user_read_status[uid], {"error": "not now"})
+            if uid not in self.users:
+                return FakeHttpResponse(404, {"error": f"Couldn't find User with 'id'={uid}"})
+            return FakeHttpResponse(200, self.users[uid])
         if path == "/api/v1/groups":
             rows = [dict(self.groups[gid]) for gid in sorted(self.groups)]
             return FakeHttpResponse(200, rows[(page - 1) * per_page:page * per_page])
@@ -458,9 +472,25 @@ class FakeDirectory:
         self.record_groups: dict[str, Any] = {}
         self.group_writes = 0
         self.role_writes = 0
+        # source user id -> email: the user-app links a written user gets and a withdrawal removes
+        self.links: dict[str, str] = {}
+        self.withdrawals: list[tuple[set[str], bool]] = []
+        self.fail_link_read = False
 
     async def on_new_app_users(self, users: list[Any]) -> None:
-        return None
+        for user in users:
+            self.links[user.source_user_id] = user.email.lower()
+
+    async def get_app_user_links(self, connector_id: str) -> list[SimpleNamespace]:
+        if self.fail_link_read:
+            raise RuntimeError("graph unavailable")
+        return [SimpleNamespace(id=f"user-{sid}", source_user_id=sid) for sid in sorted(self.links)]
+
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any], *, drop_grants: bool = False) -> None:
+        ids = {u.source_user_id for u in users}
+        self.withdrawals.append((ids, drop_grants))
+        for sid in ids:
+            self.links.pop(sid, None)
 
     async def on_new_user_groups(self, user_groups: list[tuple[Any, list[Any]]]) -> None:
         self.group_writes += 1
