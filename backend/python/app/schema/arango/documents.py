@@ -390,6 +390,12 @@ record_schema = {
             "failedAt": {"type": ["number", "null"]},
             "indexingAttempts": {"type": ["integer", "null"], "minimum": 0},
             "pageCount": {"type": ["integer", "null"], "minimum": 1},
+            # The hex md5 of the bytes that were last fully indexed (internal; never returned by the API). Written only
+            # when an index completes from those bytes, so unlike md5Checksum a connector sync never overwrites it.
+            "indexedMd5": {"type": ["string", "null"]},
+            # The taxonomy entities a record linked to, kept (internal; never returned by the API) only while taking its
+            # index back is unfinished, so a retry can still clean up the entity points that nothing else reaches.
+            "pendingTaxonomyRefs": {"type": ["array", "null"], "items": {"type": "object"}},
             # A record whose source rate-limited its content fetch: when it may
             # be sent again, and when this run of waits began (see
             # app/modules/indexing/rate_limit_deferral.py).
@@ -510,7 +516,7 @@ record_schema = {
 # Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
 # collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
 # tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
-RECORD_SCHEMA_GENERATION = 3
+RECORD_SCHEMA_GENERATION = 4
 record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
 
 

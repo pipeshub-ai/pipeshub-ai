@@ -22,6 +22,7 @@ from app.services.graph_db.arango.record_schema_guard import (
 PINNED = {
     2: "53cf2c2c1dd02fc6616e59bc8d67814a25887b4debf7f26399178514fa03b829",
     3: "f3f0ab23062f1b5875c4788e74cfd6da94c6a617e8195eb4a69918890ff962b6",  # + pendingVirtualRecordId
+    4: "5a2d4b8434255a9f10cb1afae84d3fedd0566f96614e35f7d791da4991b5ebf8",  # + the page-limit fields
 }
 
 

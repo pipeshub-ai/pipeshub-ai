@@ -23,6 +23,8 @@ export const INTERNAL_RECORD_FIELDS: ReadonlySet<string> = new Set([
   'failedAt',
   'indexingAttempts',
   'pageCount',
+  'indexedMd5',
+  'pendingTaxonomyRefs',
   'duplicateReconcilePending',
   'duplicateReconcileAttempts',
   'extractionDeferred',

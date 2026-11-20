@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
@@ -41,7 +42,7 @@ from app.exceptions.indexing_exceptions import (
     RecordDeletedError,
 )
 from app.models.entities import Record
-from app.modules.indexing import keep_old_copy, replay_set
+from app.modules.indexing import indexed_bytes, keep_old_copy, replay_set
 from app.modules.indexing.connector_off_events import (
     SAME_BYTES_SKIP_RETRY_DELAY_S,
     SameBytesSkipPending,
@@ -61,6 +62,15 @@ from app.modules.indexing.embed_resume import (
     end_attempt,
     marker_of,
     may_resume,
+)
+from app.modules.indexing.page_limit import (
+    Keep,
+    LongDocument,
+    Proceed,
+    Refuse,
+    apply_keep,
+    apply_refuse,
+    check_page_limit,
 )
 from app.modules.indexing.parse_now_marker import (
     current_run,
@@ -86,7 +96,7 @@ from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_fil
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.file_prep import bound_text, needs_preparing, prepare_file
-from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
+from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf, inspect_untrusted_pdf
 from app.modules.parsers.worker_verdict import worker_gave_up_on
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
@@ -140,7 +150,12 @@ from app.utils.error_class import log_failure
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import note, stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file
+from app.utils.user_errors import (
+    MAX_INDEXED_PDF_PAGES,
+    PDF_PAGE_LIMIT_NOTE,
+    RETRY_SCHEDULED,
+    binary_text_file,
+)
 
 # The readers that take a file's bytes as text, which the .log/.cfg size cap applies to.
 _TEXT_ROUTES = frozenset({Route.TXT, Route.MD, Route.MDX, Route.CODE})
@@ -175,6 +190,20 @@ def _is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
 
 # Storage cleanups of abandoned virtual record ids still running in the background.
 _ABANDONED_VRID_CLEANUPS: set[asyncio.Task] = set()
+
+@dataclass
+class PageLimitGate:
+    """What the page-limit gate of an event hands back (see ``EventProcessor._gate_page_limit``)."""
+
+    settled: bool = False
+    """The record was kept or refused: the event ends."""
+    md5: str | None = None
+    """The md5 taken of the PDF's bytes, reused by the duplicate check."""
+    skip_over_limit_twins: bool = False
+    """The page count is not known, so a twin over the limit is not reused."""
+    late_check: Callable[[InspectedPdf], Awaitable[bool]] | None = None
+    """Run after the whole-file inspection when the early count could not decide; True when it refused the file."""
+
 
 class EventProcessor:
     def __init__(
@@ -542,12 +571,20 @@ class EventProcessor:
         event_type: str | None = None,
         prev_virtual_record_id: str | None = None,
         content_rev: str | None = None,
+        after_inspection: Callable[[InspectedPdf], Awaitable[bool]] | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
         existing PDF pipeline would pick for a native PDF.
+
+        ``after_inspection`` receives the inspected PDF and returns True when it refused the file (the page limit).
         """
         self.logger.debug("Checking if PDF needs OCR processing")
         inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
+        if after_inspection is not None and await after_inspection(inspected):
+            # The check refused the file: it has written the status and taken back the index.
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+            return
         # The count of the bytes that are parsed (the pdfium rewrite when the file was repaired), written once per revision.
         await self._write_page_count(record_id, content_rev, inspected.page_count)
         # Every parser below reads the bytes that passed inspection.
@@ -1292,6 +1329,161 @@ class EventProcessor:
             return False
         return self._resolve_write_collection(duplicate_doc) == current_collection
 
+    async def _gate_page_limit(
+        self,
+        *,
+        record: Mapping[str, Any],
+        doc: dict[str, Any],
+        record_id: str,
+        org_id: str | None,
+        file_content: Any,  # noqa: ANN401 - the event's content: bytes for a file, text for some record types
+        content_rev: str | None,
+        record_type: str | None,
+        mime_type: str | None,
+        event_data: dict[str, Any],
+        dispatch: Any,  # noqa: ANN401 - the file dispatch (route) of the event, None when it has none
+        store_only: bool,
+        embed_marker: Any,  # noqa: ANN401 - the embed-resume marker of the run, if any
+    ) -> PageLimitGate:
+        """The page limit of one event, the only place the event handler applies it (the first of two checks).
+
+        A PDF over the limit is kept or refused here, before dedup, resume and the IN_PROGRESS write: the returned gate is
+        ``settled`` and the caller ends the event. Otherwise the gate carries what the rest of the event needs: the md5 taken
+        of the bytes, whether a twin of unknown size may be reused, and, when the pages could not be counted yet, the check
+        that runs after the whole-file inspection (``late_check``). Anything that is not a PDF passes untouched.
+        """
+        if not (
+            not store_only
+            and dispatch is not None
+            and dispatch.route is Route.PDF
+            and isinstance(file_content, (bytes, bytearray))
+            and file_content
+        ):
+            return PageLimitGate()
+        content = bytes(file_content)
+        # This frame can outlive the call (a logged traceback keeps its callers' frames): it holds no reference to the
+        # event's own buffer, which the handler drops when parsing completes.
+        del file_content
+        md5 = await offload_if_large(self._hash_for_dedup, content, record_type, mime_type)
+        long_doc = LongDocument(
+            record_id=record_id,
+            snapshot=record,
+            org_id=org_id or "",
+            content=content,
+            content_rev=content_rev,
+            md5=md5,
+            force_reindex=bool(event_data.get("forceReindex")),
+            host=self,
+        )
+        decision = await check_page_limit(long_doc)
+        del content
+        if isinstance(decision, (Keep, Refuse)):
+            if isinstance(decision, Keep):
+                await apply_keep(long_doc, decision)
+            else:
+                await apply_refuse(long_doc, decision)
+            if embed_marker:
+                await self._discard_embed_marker(doc, embed_marker, org_id)
+            await notify_record_indexed(
+                connector_name=doc.get("connectorName"),
+                connector_id=doc.get("connectorId"),
+                external_record_group_id=doc.get("externalGroupId"),
+                org_id=org_id,
+            )
+            return PageLimitGate(settled=True)
+        long_doc.keep_eligible = decision.keep_eligible
+        long_doc.content = None  # the late check reads the inspected file, and the bytes are not kept for the whole event
+        indexed_bytes.remember(md5)
+        # The page count of a file that goes on to be parsed is written by the parse (``_write_page_count``,
+        # ``_persist_parsing_completed``), tied to the revision it was taken from: not here.
+        if decision.clear_note:
+            self._require_persisted(
+                await self.update_record_fields(doc, {"indexingNote": None}),
+                "Failed to clear the page-limit note of record",
+                doc,
+            )
+        gate = PageLimitGate(md5=md5, skip_over_limit_twins=decision.pages is None and not decision.keep_eligible)
+        if decision.pages is None:
+
+            async def late_check(inspected: InspectedPdf) -> bool:
+                late = LongDocument(
+                    record_id=record_id,
+                    snapshot=record,
+                    org_id=long_doc.org_id,
+                    content=None,
+                    content_rev=content_rev,
+                    md5=md5,
+                    force_reindex=long_doc.force_reindex,
+                    inspected=inspected,
+                    keep_eligible=long_doc.keep_eligible,
+                    host=self,
+                )
+                late_decision = await check_page_limit(late)
+                if isinstance(late_decision, Refuse):
+                    await apply_refuse(late, late_decision)
+                    return True
+                if isinstance(late_decision, Keep):
+                    # The file is over the limit and its index stays, as at the early site: nothing is parsed. By now the
+                    # run has marked the record IN_PROGRESS (status, parse status, start time, revision), so those are put
+                    # back to what the event found, and the early rules are applied to that original record.
+                    self._require_persisted(
+                        await self.update_record_fields(
+                            doc,
+                            {
+                                "indexingStatus": record.get("indexingStatus"),
+                                "parsingStatus": record.get("parsingStatus"),
+                                "processingStartedAt": record.get("processingStartedAt"),
+                                "contentRev": record.get("contentRev"),
+                                "reason": record.get("reason"),
+                            },
+                        ),
+                        "Failed to put back the record kept at the page limit",
+                        doc,
+                    )
+                    kept = LongDocument(
+                        record_id=record_id,
+                        snapshot=record,
+                        org_id=long_doc.org_id,
+                        content=None,
+                        content_rev=content_rev,
+                        md5=md5,
+                        force_reindex=long_doc.force_reindex,
+                        host=self,
+                    )
+                    await apply_keep(kept, late_decision)
+                    if embed_marker:
+                        await self._discard_embed_marker(doc, embed_marker, org_id)
+                    await notify_record_indexed(
+                        connector_name=doc.get("connectorName"),
+                        connector_id=doc.get("connectorId"),
+                        external_record_group_id=doc.get("externalGroupId"),
+                        org_id=org_id,
+                    )
+                    return True
+                late_fields: dict[str, Any] = {}
+                if isinstance(late_decision, Proceed) and late_decision.clear_note:
+                    late_fields["indexingNote"] = None
+                if late_fields:
+                    self._require_persisted(
+                        await self.update_record_fields(doc, late_fields),
+                        "Failed to persist the page-limit note of record",
+                        doc,
+                    )
+                return False
+
+            gate.late_check = late_check
+        return gate
+
+    async def vrid_has_stored_content(self, org_id: str, virtual_record_id: str) -> bool:
+        return await self._vrid_has_stored_content(org_id, virtual_record_id)
+
+    async def vrid_has_points(self, org_id: str, virtual_record_id: str) -> bool:
+        """Whether this org still holds vector points of the virtual record. Raises when the store cannot answer."""
+        pipeline = getattr(self.processor, "indexing_pipeline", None)
+        if pipeline is None:
+            return True
+        return org_id in await pipeline.orgs_holding_points(virtual_record_id)
+
     async def _vrid_has_stored_content(self, org_id: str, virtual_record_id: str) -> bool:
         blob_storage = getattr(
             getattr(self.processor, "sink_orchestrator", None), "blob_storage", None
@@ -1313,6 +1505,8 @@ class EventProcessor:
         content_rev: str | None = None,
         scans_for_secrets: bool = False,
         force_index: bool = False,
+        md5: str | None = None,
+        skip_over_limit_twins: bool = False,
     ) -> DedupDecision:
         """Check for duplicate records by MD5 hash and decide whether to skip indexing.
 
@@ -1335,6 +1529,9 @@ class EventProcessor:
         ``force_index`` (a user's Force reindex) never attaches to a twin or waits for one: nothing of the twin's
         identity is copied onto the record, which is indexed itself (a shared VRID it already holds is rebuilt, as
         for a twin whose stored content is gone).
+
+        ``md5`` is the hash the caller already took of these bytes (the page-limit check hashes a PDF first); it is
+        used as is instead of hashing again.
         """
         # Calculate MD5 from content
         existing_md5_checksum = doc.get("md5Checksum")
@@ -1352,7 +1549,7 @@ class EventProcessor:
             # both synchronous and both scale with document size, on the one
             # worker loop every in-flight record shares. Offloaded together as
             # a unit so a large document costs one thread hop, not two.
-            md5_checksum = await offload_if_large(
+            md5_checksum = md5 or await offload_if_large(
                 self._hash_for_dedup, content, record_type, mime_type
             )
             if existing_md5_checksum != md5_checksum:
@@ -1376,6 +1573,13 @@ class EventProcessor:
         )
 
         duplicate_records = [r for r in duplicate_records if r is not None]
+        if skip_over_limit_twins:
+            # The page count of this file is not known, so a twin that has more pages than may be indexed is not a copy to
+            # reuse: one with a recorded count over the limit, or one the start-up audit noted (it records no count).
+            duplicate_records = [
+                r for r in duplicate_records
+                if (r.get("pageCount") or 0) <= MAX_INDEXED_PDF_PAGES and r.get("indexingNote") != PDF_PAGE_LIMIT_NOTE
+            ]
 
         if not duplicate_records:
             self.logger.debug(
@@ -1782,6 +1986,7 @@ class EventProcessor:
         ``INDEXING_COMPLETE``. A run that failed never gets there and keeps its open manifest.
         """
         before = current_paid_run()
+        indexed_bytes.clear()
         inner = self._dispatch_event(event_data)
         try:
             async for event in inner:
@@ -1797,6 +2002,7 @@ class EventProcessor:
                 await abandon_run(scope, self.config_service, self.logger)
             raise
         finally:
+            indexed_bytes.clear()
             await inner.aclose()
 
     async def _dispatch_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
@@ -1989,13 +2195,28 @@ class EventProcessor:
 
                 before_reusing_status = _project_duplicate_code
 
+            # The page limit decides before dedup, resume and the IN_PROGRESS write, from the record as it was read.
+            page_gate = await self._gate_page_limit(
+                record=record, doc=doc, record_id=record_id, org_id=org_id, file_content=file_content,
+                content_rev=content_rev, record_type=record_type, mime_type=mime_type, event_data=event_data,
+                dispatch=dispatch, store_only=store_only, embed_marker=embed_marker,
+            )
+            if page_gate.settled:
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
+            early_md5 = page_gate.md5
+            skip_over_limit_twins = page_gate.skip_over_limit_twins
+            late_page_limit = page_gate.late_check
+
             rebuild_shared_vrid = False
             # Calculate MD5 hash and check for duplicates for ALL record types
             # A store-only run stands on its own: attaching to a finished twin would copy that
             # record's statuses onto one whose statuses must stay as they are.
             dedup_decision = DedupDecision() if store_only else await self._check_duplicate_by_md5(
                 file_content, doc, before_reusing_status=before_reusing_status,
-                content_rev=content_rev, scans_for_secrets=scans_for_secrets,
+                content_rev=content_rev, scans_for_secrets=scans_for_secrets, md5=early_md5,
+                skip_over_limit_twins=skip_over_limit_twins,
                 # A user's Force reindex re-parses and re-embeds: it is never settled by a twin, and a twin's
                 # identity is never copied onto it before the decision is made.
                 force_index=refresh_requested(event_data),
@@ -2600,6 +2821,7 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                     content_rev=content_rev,
+                    after_inspection=late_page_limit,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None
