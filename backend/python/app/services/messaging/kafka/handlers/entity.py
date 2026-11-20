@@ -582,17 +582,22 @@ class EntityEventService(BaseEventService):
                     return True
                 # A reindex sees this pass as it sees a sync (`unless_synced_since`), since the pass writes access too: it moves a
                 # stand-in group's grants onto the user it stood for, which a reindex that read the source earlier would take back.
-                # So a pass whose start time is not recorded does not run, and the time moves again once it ends.
-                # shortcut: a reindex in another process that both begins and writes while the pass runs is not seen; close it
-                # with a store-wide running mark if user-link passes ever run beside reindexes in separate processes.
+                # The start moves the start time (seen by a reindex that began before) and sets the mark a reindex that begins
+                # meanwhile treats as a running sync; only the end write clears it. A pass whose start is not recorded does not run.
+                # shortcut: two passes of one connector in separate processes share the mark, and the first to end clears it for
+                # both; key the mark by pass if user-add events for one connector are ever handled in parallel across processes.
                 note_sync_started(connector_id)
-                stamp = {"id": connector_id, ConnectorStateKeys.LAST_SYNC_STARTED_AT: get_epoch_timestamp_in_ms()}
-                await self.graph_provider.batch_upsert_nodes([stamp], CollectionNames.APPS.value)
+                started = get_epoch_timestamp_in_ms()
+                await self.graph_provider.batch_upsert_nodes([{
+                    "id": connector_id, ConnectorStateKeys.LAST_SYNC_STARTED_AT: started, ConnectorStateKeys.USER_LINK_STARTED_AT: started,
+                }], CollectionNames.APPS.value)
                 try:
                     await connector.link_new_users()
                 finally:
-                    stamp[ConnectorStateKeys.LAST_SYNC_STARTED_AT] = get_epoch_timestamp_in_ms()
-                    await self.graph_provider.batch_upsert_nodes([stamp], CollectionNames.APPS.value)
+                    await self.graph_provider.batch_upsert_nodes([{
+                        "id": connector_id, ConnectorStateKeys.LAST_SYNC_STARTED_AT: max(get_epoch_timestamp_in_ms(), started),
+                        ConnectorStateKeys.USER_LINK_STARTED_AT: None,
+                    }], CollectionNames.APPS.value)
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.step_failed", e, step="link_users")
         return True

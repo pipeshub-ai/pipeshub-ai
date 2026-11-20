@@ -265,6 +265,62 @@ async def test_a_user_link_pass_in_another_process_during_a_reindex_keeps_the_gr
     assert await world.readers() == {world.users["alice"], world.users["bob"]}
 
 
+async def test_a_reindex_that_began_during_a_user_link_pass_whose_end_was_not_recorded_keeps_the_moved_grant(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pass's end write fails, so the start and end times stay as the reindex read them; the reindex must still not write."""
+    group = AppUserGroup(
+        app_name=Connectors.CONFLUENCE, connector_id=world.conn, source_user_group_id=f"acct-{world.run}",
+        name=f"[Pseudo-User] acct-{world.run}", org_id=world.org,
+    )
+    await world.processor.on_new_user_groups([(group, [])])
+    stand_in = Permission(external_id=group.source_user_group_id, type=PermissionType.READ, entity_type=EntityType.GROUP)
+    await world.processor.on_new_records([(world.record(), [*world.grants("alice"), stand_in])], replace_permissions=True)
+
+    # As from another process: the reindex sees neither the pass's sync lock nor its count of started syncs.
+    monkeypatch.setattr(connector_service, "syncs_started", lambda _connector_id: 0)
+    monkeypatch.setattr(connector_service, "connector_sync_lock", lambda _connector_id: asyncio.Lock())
+    pass_started, reindex_read = asyncio.Event(), asyncio.Event()
+    stamps: list[dict] = []
+
+    async def upsert(nodes: list[dict], collection: str) -> None:
+        stamps.append(nodes[0])
+        if len(stamps) > 1:
+            raise RuntimeError("the store refused the end of the pass")
+        await world.graph.batch_upsert_nodes(nodes, collection)
+
+    async def link_new_users() -> None:
+        pass_started.set()
+        await reindex_read.wait()
+        await world.processor.migrate_group_to_user_by_external_id(group.source_user_group_id, world.users["bob"], world.conn)
+
+    linking = SimpleNamespace(
+        app_container=SimpleNamespace(connectors_map={world.conn: SimpleNamespace(link_new_users=link_new_users)}),
+        graph_provider=SimpleNamespace(get_document=world.graph.get_document, batch_upsert_nodes=upsert), logger=logger,
+    )
+
+    async def link_elsewhere() -> bool:
+        with for_org(world.org, job="test"):
+            return await EntityEventService._link_connector(linking, world.conn)
+
+    link_pass = asyncio.create_task(link_elsewhere(), context=contextvars.Context())
+    await pass_started.wait()
+
+    class Connector:
+        data_entities_processor = SimpleNamespace(reindex_existing_records=AsyncMock())  # the superseded batch is re-queued as stored
+
+        async def reindex_records(self, records: list) -> None:
+            read = [*world.grants("alice"), stand_in]  # read while the pass runs, before it moved the grant
+            reindex_read.set()
+            assert await link_pass
+            assert len(stamps) == 2      # the end write was tried, and failed
+            await world.processor.on_new_records([(world.record(), read)], replace_permissions=True)
+
+    await world.reindex(Connector())
+
+    assert await world.readers() == {world.users["alice"], world.users["bob"]}
+
+
 async def test_without_a_sync_the_reindex_writes_what_it_read(world: _World) -> None:
     await world.write("alice")
 

@@ -64,6 +64,27 @@ async def test_a_sync_running_when_the_reindex_began_refuses_every_write(app: di
     assert stamp.tripped
 
 
+async def test_a_user_link_pass_in_progress_when_the_reindex_began_refuses_every_write() -> None:
+    """Its end stamp may never land (a failed write, a crash): what the reindex read must not match the store afterwards."""
+    in_progress = {**IDLE, "lastSyncStartedAtTimestamp": 9, "userLinkStartedAtTimestamp": 9}
+    processor, tx, _ = _processor(unchanged=True)
+    async with unless_synced_since(AsyncMock(get_document=AsyncMock(return_value=in_progress)), "c9") as stamp:
+        with pytest.raises(ReindexSuperseded):
+            await _write(processor)
+    tx.lock_app_if_unchanged.assert_not_awaited()
+    assert stamp.tripped and stamp.expected is None
+
+
+async def test_a_user_link_mark_a_later_sync_start_overtook_is_not_a_pass_in_progress() -> None:
+    """A pass that never wrote its end leaves its mark; the next sync's start time puts it behind, and reindexes write again."""
+    overtaken = {**IDLE, "userLinkStartedAtTimestamp": 4}
+    processor, tx, _ = _processor(unchanged=True)
+    async with unless_synced_since(AsyncMock(get_document=AsyncMock(return_value=overtaken)), "c10") as stamp:
+        await _write(processor)
+    tx.lock_app_if_unchanged.assert_awaited_once_with("c10", STAMP)
+    assert not stamp.tripped
+
+
 async def test_a_sync_started_since_or_running_in_this_process_refuses_the_write() -> None:
     processor, _, _ = _processor(unchanged=False)
     async with unless_synced_since(AsyncMock(get_document=AsyncMock(return_value=IDLE)), "c2") as stamp:

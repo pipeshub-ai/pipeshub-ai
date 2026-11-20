@@ -1930,13 +1930,17 @@ class TestUserAddedConnectorLink:
         events: list[str] = []
         c = _connector(link=AsyncMock(side_effect=lambda: events.append("link")))
         svc = _link_service({"c1": c})
+        written: list[dict] = []
         svc.graph_provider.batch_upsert_nodes = AsyncMock(
-            side_effect=lambda nodes, collection: events.append(f"{collection}: {sorted(nodes[0])}"),
+            side_effect=lambda nodes, collection: (events.append(collection), written.append(dict(nodes[0]))),
         )
         before = syncs_started("c1")
         assert await svc._link_connector("c1") is True
-        stamp = f"{CollectionNames.APPS.value}: ['id', 'lastSyncStartedAtTimestamp']"
-        assert events == [stamp, "link", stamp]
+        assert events == [CollectionNames.APPS.value, "link", CollectionNames.APPS.value]
+        start, end = written
+        # The mark says a pass is running; only the end write clears it, so a reindex never matches a pass that did not end.
+        assert start["userLinkStartedAtTimestamp"] == start["lastSyncStartedAtTimestamp"]
+        assert end["userLinkStartedAtTimestamp"] is None and end["lastSyncStartedAtTimestamp"] >= start["lastSyncStartedAtTimestamp"]
         assert syncs_started("c1") == before + 1      # a reindex in this process sees it even when the store refuses both writes
 
     @pytest.mark.asyncio

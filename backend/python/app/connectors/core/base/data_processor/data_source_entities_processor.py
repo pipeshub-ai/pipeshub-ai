@@ -205,10 +205,14 @@ async def unless_synced_since(graph_provider: IGraphDBProvider, connector_id: st
     started_here = syncs_started(connector_id)
     # A failed read is an error, not a sign that a sync ran.
     app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+    # A user-link pass marks its start and clears the mark with its end write; a mark left by a pass whose end was never
+    # written (a refused write, a crash) stops counting once a later sync's start time passes it.
+    link_mark = app.get(ConnectorStateKeys.USER_LINK_STARTED_AT) if app else None
     running = (
         not app
         or connector_sync_lock(connector_id).locked()
         or app.get("status") in (AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value)
+        or (link_mark is not None and link_mark >= (app.get(ConnectorStateKeys.LAST_SYNC_STARTED_AT) or 0))
     )
     # Not the status: a sync queued for a slot has not read the source, and its start moves the start time.
     stamp = SyncStamp(connector_id, None if running else {
