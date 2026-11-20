@@ -26,6 +26,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access_settled,
     browse_issue_holders,
     unreadable_reason,
+    user_grant_key,
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import (
@@ -868,6 +869,132 @@ class TestReindexAppliesTheLevel:
         (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
         assert {p.external_id for p in grants} == {"group-1"}
         assert c._scheme_members["10002"][1]["10102"][0]["value"] == "removed-group"  # sync cache untouched
+
+
+TWO_LEVELS = {"id": 10002, "name": "PROJ issue security scheme",
+              "levels": [{"id": "10102", "name": "Leadership"}, {"id": "10103", "name": "Everyone"}]}
+BIG_GROUP = 10_000  # members of group-big; Jira returns at most 50 per page of /group/member
+
+
+class TestAReindexReadsOnlyTheGroupsItsIssuesNeed:
+    """A level's group members matter to a reindex only through ``_reads_alone``: for the level of the issue being written,
+    and only when Browse names people on each issue. Every other read is cost with no effect on access."""
+
+    @staticmethod
+    def _reindex(issue: dict, browse: list | None) -> tuple[JiraConnector, list[str], dict]:
+        """Level 10102 holds group-1 (the reporter acc-1 alone); 10103 holds group-big, whose 10,000 members include
+        acc-1. Returns the connector, the group of every /group/member page it asks for, and the project's checkpoint."""
+        values = [{"issueSecurityLevelId": "10102", "holder": {"type": "group", "value": "group-1"}},
+                  {"issueSecurityLevelId": "10103", "holder": {"type": "group", "value": "group-big"}}]
+        sizes = {"group-1": 1, "group-big": BIG_GROUP}
+        pages: list[str] = []
+
+        async def users_from_group(*, groupId: str, startAt: int, maxResults: int, **_: object) -> MagicMock:
+            pages.append(groupId)
+            end = min(sizes[groupId], startAt + maxResults)
+            return _resp(200, {"isLast": end >= sizes[groupId], "values": [
+                {"accountId": "acc-1" if i == 0 else f"{groupId}-{i}"} for i in range(startAt, end)]})
+
+        c = _connector()
+        c.indexing_filters = MagicMock()
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(return_value=_resp(200, issue))
+        ds.get_project_issue_security_scheme = AsyncMock(return_value=_resp(200, TWO_LEVELS))
+        ds.get_security_level_members = AsyncMock(return_value=_resp(200, {"isLast": True, "values": values}))
+        ds.get_users_from_group = users_from_group
+        c.data_source = ds
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._call_with_retry = lambda call, **_: call(ds)
+        c._read_browse_issue_holders = AsyncMock(return_value=browse)
+        return c, pages, TestTheRetryListKeepsWhatAReindexAdds._store(c, [])
+
+    @pytest.mark.asyncio
+    async def test_a_level_no_reindexed_issue_has_is_not_read(self) -> None:
+        """The issue is in 10102: the 10,000 members of 10103's group are not read (200 pages before)."""
+        c, pages, _ = self._reindex(TestReindexAppliesTheLevel.LEVELED, [{"type": "reporter"}])
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert pages == ["group-1"]
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+
+    @pytest.mark.asyncio
+    async def test_the_level_of_the_issue_is_read_in_full_and_once_per_reindex(self) -> None:
+        """An issue in the big group's level: its reporter is a member, so it reads the issue alone. A second issue of that
+        level in the same reindex reads no page again."""
+        issue = _issue({"id": "10103", "name": "Everyone"}, updated="2025-01-01T00:00:00.000+0000")
+        c, pages, _ = self._reindex(issue, [{"type": "reporter"}])
+        cache: dict = {}
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]}, cache)
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        await c._check_and_fetch_updated_issue(_stored_ticket(id="rid-2"), {"acc-1": _users()[0]}, cache)
+        assert pages == ["group-big"] * (BIG_GROUP // 50)
+
+    @pytest.mark.asyncio
+    async def test_a_later_issue_in_another_level_reads_that_level_then(self) -> None:
+        """The project's context is shared by the reindex's issues: a level first met on the second issue is read for it."""
+        c, pages, _ = self._reindex(TestReindexAppliesTheLevel.LEVELED, [{"type": "reporter"}])
+        cache: dict = {}
+        await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]}, cache)
+        c.data_source.get_issue = AsyncMock(return_value=_resp(
+            200, _issue({"id": "10103", "name": "Everyone"}, updated="2025-01-01T00:00:00.000+0000", issue_id="1002")))
+        record, perms = await c._check_and_fetch_updated_issue(
+            _stored_ticket(id="rid-2", external_record_id="1002"), {"acc-1": _users()[0]}, cache)
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert pages == ["group-1"] + ["group-big"] * (BIG_GROUP // 50)
+
+    @pytest.mark.asyncio
+    async def test_a_group_past_the_cap_grants_nobody_alone_and_queues_the_issue(self) -> None:
+        """Unread is never read as "not a member" nor as "a member": the reporter gets no grant and the next sync decides."""
+        c, pages, point = self._reindex(TestReindexAppliesTheLevel.LEVELED, [{"type": "reporter"}])
+        cache: dict = {}
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.REINDEX_GROUP_READS", 1):
+            await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]}, cache)
+            c.data_source.get_issue = AsyncMock(return_value=_resp(
+                200, _issue({"id": "10103", "name": "Everyone"}, updated="2025-01-01T00:00:00.000+0000", issue_id="1002")))
+            record, perms = await c._check_and_fetch_updated_issue(
+                _stored_ticket(id="rid-2", external_record_id="1002"), {"acc-1": _users()[0]}, cache)
+        assert pages == ["group-1"]
+        assert (record.access_rule, perms, record.source_updated_at) == (AccessRule.STRICT, [], 1)
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1002"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("browse", [[], None])
+    async def test_no_group_is_read_when_browse_names_no_one_on_each_issue(self, browse: list | None) -> None:
+        """With no per-issue Browse holder (or none read), no level member can read an issue alone, so nothing is read; the
+        record is written as it would be with every group read (``test_level_readers_change_nothing_without_browse_holders``)."""
+        issue = _issue({"id": "10103", "name": "Everyone"}, updated="2025-01-01T00:00:00.000+0000")
+        c, pages, _ = self._reindex(issue, browse)
+        out = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert pages == []
+        if browse == []:
+            record, perms = out
+            assert (record.access_rule, record.access_group_external_id, perms) == (AccessRule.STRICT, "level:p-1:10103", [])
+
+
+@pytest.mark.parametrize("browse", [[], None])
+@pytest.mark.parametrize("subtask", [False, True])
+@pytest.mark.parametrize("readers", [
+    None, {}, {"10102": None}, {"10102": frozenset()},
+    {"10102": frozenset({user_grant_key("rep@x.com", "acc-1"), user_grant_key("asg@x.com", "acc-2")})},
+    {"10102": frozenset({("*", "*")})},
+])
+def test_level_readers_change_nothing_without_browse_holders(browse: list | None, subtask: bool, readers: dict | None) -> None:
+    """The proof behind the skip: with no per-issue Browse holder, an issue's access and the level digests the sync saves are
+    the same whatever the level readers hold (unread, empty, its reporter and assignee, or anyone). So not reading them
+    neither adds nor drops a reader."""
+    def build(level_readers: dict | None, holders: list | None = browse) -> tuple:
+        context = _present()
+        context.browse_holders, context.level_readers = holders, level_readers
+        record = _stored_ticket()
+        fields = _issue({"id": "10102", "name": "Leadership"})["fields"]
+        perms, skipped, settled = apply_issue_access_settled(
+            record, fields, is_subtask=subtask, project_key="PROJ", context=context,
+            user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
+        return (record.access_rule, record.access_group_external_id, record.rewrite_permissions,
+                sorted((str(p.entity_type), p.email or p.external_id) for p in perms), skipped, settled,
+                context.level_fingerprints(split=True))
+    assert build(readers) == build(None)
+    if readers and readers["10102"]:  # the control: once Browse names the reporter, these readers do change the issue
+        assert build(readers, [{"type": "reporter"}]) != build({"10102": frozenset()}, [{"type": "reporter"}])
 
 
 class TestSubtasksFollowTheirParent:

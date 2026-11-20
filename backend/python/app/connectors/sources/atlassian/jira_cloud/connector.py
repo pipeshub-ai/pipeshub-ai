@@ -5214,39 +5214,43 @@ class JiraConnector(BaseConnector):
                 for key, groups in self._level_roles.items()}
 
     async def _reindex_level_readers(
-        self, security: IssueSecurityContext, project_key: str, synced: dict[str, AppUser],
-    ) -> dict[str, frozenset[tuple[str, str]] | None]:
-        """``_level_readers`` for a reindex, from members read now: the sync's are as old as the last sync, and a person Jira
-        removed since must not read an issue alone through them. The groups the levels name are read again, at most
-        ``REINDEX_GROUP_READS`` per project, from the accounts a sync would hold (``_member_directory``). A role or a project
-        lead, one not read in full, or one past the cap is unknown: its level grants no one alone (``LEVEL_MEMBERS_UNREAD``),
-        and the issue waits for the next sync. The sync's member maps are left as they are."""
+        self, security: IssueSecurityContext, project_key: str, synced: dict[str, AppUser], level_id: str | None,
+    ) -> None:
+        """Add the readers of ``level_id`` (``_level_readers``) to ``security`` for a reindex, from members read now: the
+        sync's are as old as the last sync, and a person Jira removed since must not read an issue alone through them.
+
+        Only the level of the issue being reindexed, and only while Browse names people on each issue: level readers are read
+        by nothing else (``_reads_alone``, which returns at once without such holders), so any other read changes no access.
+        The groups the level names are read again, at most ``REINDEX_GROUP_READS`` per project, each once per reindex, from
+        the accounts a sync would hold (``_member_directory``). A role or a project lead, one not read in full, or one past
+        the cap is unknown: its level grants no one alone (``LEVEL_MEMBERS_UNREAD``), and the issue waits for the next sync.
+        The sync's member maps are left as they are."""
+        if not security.browse_holders or level_id not in security.members_by_level:
+            return
+        if security.level_readers is None:
+            security.level_readers = {}
+        if level_id in security.level_readers:
+            return
+        grants, skipped = level_group_grants(
+            self._by_group_id(security.members_by_level[level_id]), project_key=project_key,
+            user_by_id=self._grant_directory(synced), app_roles_mapping=self._level_roles_by_id())
+        if set(skipped) - {HOLDER_USER}:
+            security.level_readers[level_id] = None
+            return
         users = {**{u.source_user_id: u for u in self._listed_without_email() if u.source_user_id}, **synced}
-        groups: dict[str, list[AppUser]] = {}
-        tried: set[str] = set()
-        out: dict[str, frozenset[tuple[str, str]] | None] = {}
-        for level_id, holders in security.members_by_level.items():
-            grants, skipped = level_group_grants(
-                self._by_group_id(holders), project_key=project_key, user_by_id=self._grant_directory(synced),
-                app_roles_mapping=self._level_roles_by_id())
-            if set(skipped) - {HOLDER_USER}:
-                out[level_id] = None
+        groups = security.reindex_groups
+        for grant in grants:
+            group_id = str(grant.external_id)
+            if (grant.entity_type != EntityType.GROUP or group_id in groups or len(groups) >= REINDEX_GROUP_READS
+                    or group_id.startswith(_UNRESOLVED_GROUP)):
                 continue
-            for grant in grants:
-                group_id = str(grant.external_id)
-                if (grant.entity_type != EntityType.GROUP or group_id in tried or len(tried) >= REINDEX_GROUP_READS
-                        or group_id.startswith(_UNRESOLVED_GROUP)):
-                    continue
-                tried.add(group_id)
-                try:
-                    ids, ok = await self._fetch_group_members(group_id, group_id, note=False)
-                except Exception as e:
-                    self.logger.warning(f"Could not read the members of group {group_id} for a reindex: {e}")
-                    ok = False
-                if ok:
-                    groups[group_id] = [users[i] for i in ids if i in users]
-            out[level_id] = level_readers(grants, groups, {})
-        return out
+            try:
+                ids, ok = await self._fetch_group_members(group_id, group_id, note=False)
+            except Exception as e:
+                self.logger.warning(f"Could not read the members of group {group_id} for a reindex: {e}")
+                ok = False
+            groups[group_id] = [users[i] for i in ids if i in users] if ok else None
+        security.level_readers[level_id] = level_readers(grants, groups, {})
 
     def _plan_level_reread(
         self, security: IssueSecurityContext, stored: dict[str, str] | None, *, is_new_project: bool,
@@ -8478,10 +8482,10 @@ class JiraConnector(BaseConnector):
                     await self._load_issue_security(project_ref, cached=False),
                     project_ref, fresh=True,
                 )
-                security.level_readers = await self._reindex_level_readers(
-                    security, project.get("key") or project_ref, synced_user_by_account_id or {})
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
+            await self._reindex_level_readers(
+                security, project.get("key") or project_ref, synced_user_by_account_id or {}, read_security_level(fields)[1])
 
             # The epic's level may have changed since the last sync read it.
             await self._learn_parent_levels([issue], refresh=True, security=security)
