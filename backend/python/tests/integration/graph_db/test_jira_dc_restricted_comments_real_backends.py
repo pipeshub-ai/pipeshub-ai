@@ -149,6 +149,9 @@ async def test_deleting_an_issue_deletes_its_comment_records(world: dict[str, An
     ds = MagicMock()
     ds.get_issue_v2 = AsyncMock(return_value=MagicMock(status=404))
     world["connector"]._get_fresh_datasource = AsyncMock(return_value=ds)
+    # The audit log names the issue by key; this world's issues have no web address to look a key up by.
+    stored = await world["processor"].get_record_by_external_id(connector_id=world["connector_id"], external_record_id="1")
+    world["processor"].get_record_by_issue_key = AsyncMock(return_value=stored)
 
     await world["connector"]._handle_deleted_issue("PROJ-1")
 
