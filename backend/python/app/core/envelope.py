@@ -357,7 +357,7 @@ async def _open_envelope(
             raise EnvelopeRejected("stale", event_type=event_type[:64], record_id=_record_id_of(payload), age_seconds=age)
         _log_loud(f"stale:{topic}", "validly signed envelope older than %ss topic=%s: accepted in shadow mode", max_age_seconds(), topic)
     if -age > MAX_FUTURE_SKEW_SECONDS:
-        raise EnvelopeRejected("future", event_type=event_type[:64], age_seconds=age)
+        raise EnvelopeRejected("future", event_type=event_type[:64], record_id=_record_id_of(payload), age_seconds=age)
     try:
         body = decode_json(payload)
     except json.JSONDecodeError as e:

@@ -291,6 +291,16 @@ async def test_a_dropped_stale_control_message_names_its_event_type_and_record(m
     assert "reason=stale" in dropped.value.describe() and "age_seconds=9" in dropped.value.describe()
 
 
+async def test_a_dropped_future_message_names_its_event_type_and_record() -> None:
+    future = _msg({"orgId": "org_b", "recordId": "rec-early"}, issued_at=int(time.time()) + 3600, event_type="purgePaidResults")
+    counter = envelope.REJECTED._metric.labels(TOPIC, "future", "purgePaidResults")
+    before = counter._value.get()
+    with pytest.raises(EnvelopeRejected) as dropped:
+        await _open(future)
+    assert dropped.value.facts() == {"event_type": "purgePaidResults", "record_id": "rec-early"}
+    assert counter._value.get() == before + 1
+
+
 async def test_a_rejection_before_the_signature_verified_never_names_an_event_type(monkeypatch) -> None:
     """The event type of a message that failed verification is the sender's claim: it is not a metric label or a log field."""
     forged = _msg(issued_at=int(time.time()) - 901, event_type="purgePaidResults")
