@@ -70,12 +70,16 @@ class _Manager:
         self.raise_at = raise_at
         self.exc = exc
         self.calls = 0
+        self.destroyed: list[str] = []
 
     async def unless_stopped(self, fn: object, *, tool: str) -> tuple[str, object]:
         self.calls += 1
         if self.calls == self.raise_at:
             raise self.exc
         return "sbx-1", object()
+
+    async def destroy(self, sandbox_type: object, sandbox_id: str) -> None:
+        self.destroyed.append(sandbox_id)
 
 
 @pytest.fixture(autouse=True)
@@ -98,10 +102,12 @@ class TestInstallPackagesRefusals:
         assert out.end_fields == {"reason": "stopped", "error_class": "cancelled"}
 
     async def test_a_slot_refusal_does_not_suggest_reuse(self) -> None:
-        out = await InstallPackagesTool(_Manager(2, SandboxLimitExceeded("all 2 code sandboxes on this server are busy (2/2)"))).execute(
+        manager = _Manager(2, SandboxLimitExceeded("all 2 code sandboxes on this server are busy (2/2)"))
+        out = await InstallPackagesTool(manager).execute(
             packages=["x"], language="python",
         )
         assert out.success is False
+        assert manager.destroyed == ["sbx-1"]  # created for this call, never run on
         assert out.error == (
             "all 2 code sandboxes on this server are busy (2/2). This is a temporary capacity "
             "limit, not a problem with your code. Every call needs a free slot while it runs, "

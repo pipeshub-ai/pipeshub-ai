@@ -729,3 +729,73 @@ class TestStopInterruptsSandboxCalls:
         assert all(r.error.startswith("Stopped by the user") for r in results)
         assert all(b.cleaned_up for b in backends)
         assert gov.snapshot()["total"] == 0
+
+
+class TestDeniedSlotDropsAFreshSandbox:
+    """A sandbox a call created but could not run on (no free slot) is torn
+    down: its id is never returned, so nothing could reuse it."""
+
+    @staticmethod
+    def _full_manager() -> tuple:
+        from app.agent_loop_lib.sandbox.governor import (
+            GovernorLimits,
+            SandboxResourceGovernor,
+        )
+
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
+        backends: list = []
+
+        def make() -> object:
+            backends.append(_BlockingBackend())
+            return backends[-1]
+
+        manager = SandboxManager(governor=gov, slot_wait_s=0)
+        manager.register_backend_factory(SandboxType.CODING, make)
+        return manager, gov, backends
+
+    async def _hold_the_only_slot(self, manager: SandboxManager, backends: list) -> asyncio.Future:
+        """A fresh sandbox running until cancelled: it holds the governor's one slot."""
+        before = len(backends)
+        busy = asyncio.ensure_future(CodingSandboxTool(manager).execute(code="while True: pass", language="python"))
+        for _ in range(200):
+            if len(backends) > before and backends[before].started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        return busy
+
+    async def test_run_code(self) -> None:
+        manager, gov, backends = self._full_manager()
+        busy = await self._hold_the_only_slot(manager, backends)
+
+        result = await CodingSandboxTool(manager).execute(code="print(1)", language="python")
+
+        assert result.success is False
+        assert manager.active_count(SandboxType.CODING) == 1
+        assert backends[1].last_request is None
+        busy.cancel()
+        await asyncio.gather(busy, return_exceptions=True)
+        assert gov.snapshot()["total"] == 0
+
+    async def test_install_packages(self) -> None:
+        manager, gov, backends = self._full_manager()
+        busy = await self._hold_the_only_slot(manager, backends)
+
+        result = await InstallPackagesTool(manager).execute(packages=["pandas"], language="python")
+
+        assert result.success is False
+        assert manager.active_count(SandboxType.CODING) == 1
+        busy.cancel()
+        await asyncio.gather(busy, return_exceptions=True)
+
+    async def test_a_reused_sandbox_is_kept(self) -> None:
+        manager, gov, backends = self._full_manager()
+        tool = CodingSandboxTool(manager)
+        sandbox_id, _ = await manager.get_or_create(SandboxType.CODING, None)
+        busy = await self._hold_the_only_slot(manager, backends)
+
+        result = await tool.execute(code="print(1)", language="python", sandbox_id=sandbox_id)
+
+        assert result.success is False
+        assert manager.get(SandboxType.CODING, sandbox_id) is not None
+        busy.cancel()
+        await asyncio.gather(busy, return_exceptions=True)

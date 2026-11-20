@@ -639,6 +639,7 @@ class CodingSandboxTool(Tool):
             result = await self._manager.unless_stopped(_run, tool=self.name)
         except SandboxLimitExceeded as e:
             _logger.warning("CodingSandboxTool.execute: no free slot: %s", e)
+            await _drop_unused_sandbox(self._manager, resolved_id, is_fresh_sandbox)
             return ToolOutput(success=False, error=sandbox_limit_guidance(e, reuse_helps=False))
         except SandboxCallStopped:
             _log_run_finished(
@@ -798,6 +799,7 @@ class InstallPackagesTool(Tool):
         try:
             result = await self._manager.unless_stopped(_install, tool=self.name)
         except SandboxLimitExceeded as e:
+            await _drop_unused_sandbox(self._manager, resolved_id, is_fresh_sandbox)
             return ToolOutput(success=False, error=sandbox_limit_guidance(e, reuse_helps=False))
         except SandboxCallStopped:
             return stopped_output(started=ran)
@@ -805,6 +807,14 @@ class InstallPackagesTool(Tool):
         if uploaded_inputs:
             data["input_files"] = sorted(uploaded_inputs)
         return ToolOutput(success=True, data=data)
+
+
+async def _drop_unused_sandbox(manager: SandboxManager, sandbox_id: str, fresh: bool) -> None:
+    """Tear down a sandbox this call created but could not run on (no free
+    slot). Its id is not returned to the model, so nothing could reuse it,
+    and it would hold one of this request's sandboxes until the request ends."""
+    if fresh:
+        await manager.destroy(SandboxType.CODING, sandbox_id)
 
 
 class ReadSandboxFileTool(Tool):
