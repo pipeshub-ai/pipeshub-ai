@@ -133,7 +133,7 @@ describe('the row writer keeps the closure of each answer it stores', () => {
     expect(said[0]?.args[1]).to.include({ call: 'put', error: 'store down' })
   })
 
-  it('with no store wired (another edition, PostgreSQL) a write reads and keeps nothing more', async () => {
+  it('with no store wired (the default, or PostgreSQL) a write reads and keeps nothing more', async () => {
     resetVisibility()
     sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq: 1, rev: 1 } as never)
     sinon.stub(ChatSessionMessage, 'insertMany').resolves([{ _id: new mongoose.Types.ObjectId() }] as never)

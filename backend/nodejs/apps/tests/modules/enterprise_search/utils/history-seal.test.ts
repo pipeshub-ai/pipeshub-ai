@@ -46,7 +46,7 @@ describe('the seal on the history sent to the AI backend', () => {
       expect(sent).to.deep.equal({ role: 'bot_response', content: '', _withheld: true })
     })
 
-    it("main's filter's hidden answer is withheld too", () => {
+    it("the history filter's hidden answer is withheld too", () => {
       const [sent] = formatPreviousConversations([
         { _id: BOB_ANSWER, labelVer: 'v-bob', messageType: 'bot_response', content: '', answerHidden: { redacted: true, reason: 'no_longer_accessible' } },
       ] as never)

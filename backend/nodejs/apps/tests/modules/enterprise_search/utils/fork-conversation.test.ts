@@ -115,6 +115,23 @@ describe('copySessionUpToMessage', () => {
     expect(forked.every((m) => String(m.sessionId) === String(result.conversation._id))).to.equal(true)
   })
 
+  it('leaves behind another person’s answer from before labels that the forker reads through the view the chat had then', async () => {
+    // That view is for the chat it was shared in; a fork takes no copy of it.
+    const store = new InMemoryChatStore()
+    store.install()
+    const orgId = oid()
+    const owner = oid()
+    const reader = oid()
+    const source = store.addSession({ orgId, userId: owner, initiator: owner, title: 'Room', sessionType: 'chat', isShared: true, sharedWith: [{ userId: reader, accessLevel: 'read' }] })
+    store.addMessage(source, { messageType: 'user_query', content: 'What does the board say?', authorUserId: owner })
+    const theirs = store.addMessage(source, { messageType: 'bot_response', content: 'The board says 42.', requestedBy: owner })
+
+    const result = await copySessionUpToMessage(source, String(theirs._id), String(reader), String(orgId), { sessionType: 'chat' })
+
+    const forked = store.messagesOf(result.conversation._id).map((m) => m.content)
+    expect(forked).to.deep.equal(['What does the board say?'])
+  })
+
   it("a copied answer keeps its label, bound to the copy's own version and text", async () => {
     const store = new InMemoryChatStore()
     store.install()

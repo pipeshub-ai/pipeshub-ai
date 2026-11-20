@@ -1,4 +1,6 @@
+import mongoose, { ClientSession } from 'mongoose';
 import {
+  ConflictError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -10,25 +12,45 @@ import { FOREIGN_TURN_STUB } from '../../agent-harness/domain/session-audience';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import type {
   ChatSessionDto,
+  MessageDto,
   MessageRow,
   NewMessage,
   SessionScope,
 } from '../../../libs/repositories/conversation/types';
 import type { ConversationRepository } from '../../../libs/repositories/conversation';
-import { sessionOf } from '../../../libs/repositories/mongo';
+import { MongoTx, sessionOf } from '../../../libs/repositories/mongo';
 import type { Tx } from '../../../libs/repositories/uow';
-import type { IMessage, IMessagePart } from '../types/conversation.interfaces';
+import { ChatSession } from '../schema/chat.session.schema';
+import {
+  ChatSessionMessage,
+  NOT_REMOVED,
+} from '../schema/chat.session.message.schema';
+import {
+  IChatSession,
+  IChatSessionDocument,
+  IMessage,
+  IMessagePart,
+} from '../types/conversation.interfaces';
 import {
   ArtifactCopier,
   ArtifactCopyMap,
   collectArtifactRefs,
   pointMessageAtCopies,
 } from './fork-artifacts';
+import { appendMessages } from './utils';
 import { detachCopiedRuns } from './copied-runs';
 import {
   harnessVersionOf,
   pinForkExecutor,
 } from '../../../libs/repositories/agent-harness/session-fields';
+
+import {
+  idOf as idOfValue,
+  rowAuthorOf,
+  visibleRows,
+  withoutQuote,
+  type ReaderRow,
+} from '../services/conversation/privacy/visibility';
 
 const logger = Logger.getInstance({ service: 'ForkConversation' });
 
@@ -49,6 +71,8 @@ const MESSAGE_COPY_OMIT = new Set([
   'authorUserId',
   // set by a store that projects per row; the copy is the caller's own
   'detailsHidden',
+  // A share is for the chat it was made in.
+  'consent',
 ]);
 
 export function buildForkTitle(
@@ -205,7 +229,7 @@ export interface ForkSessionFields {
 }
 
 export interface ForkChatSessionResult {
-  conversation: ChatSessionDto;
+  conversation: IChatSessionDocument;
   messageCount: number;
 }
 
@@ -214,21 +238,18 @@ export interface ForkChatSessionResult {
  * fork must not put a new chat into a project the caller lost access to.
  */
 export async function resolveForkProjectId(
-  source: ChatSessionDto,
+  source: { projectId?: { toString(): string } | null },
   orgId: string,
   userId: string,
 ): Promise<string | undefined> {
   if (!source.projectId) {
     return undefined;
   }
+  // A stored chat holds a driver id, a repository row a string.
+  const projectId = source.projectId.toString();
   try {
-    await ProjectService.assertAccess(
-      orgId,
-      userId,
-      source.projectId,
-      'viewer',
-    );
-    return source.projectId;
+    await ProjectService.assertAccess(orgId, userId, projectId, 'viewer');
+    return projectId;
   } catch (error) {
     if (error instanceof NotFoundError || error instanceof ForbiddenError) {
       return undefined;
@@ -270,25 +291,35 @@ export async function* messagesUpTo(
  */
 async function copyForkArtifacts(
   copyArtifacts: ArtifactCopier,
-  source: ChatSessionDto,
+  sourceId: mongoose.Types.ObjectId,
   lastSeq: number,
-  forkId: string,
+  forkId: mongoose.Types.ObjectId,
+  rowFilter: Record<string, unknown>,
 ): Promise<ArtifactCopyMap> {
+  const withMarkers = await ChatSessionMessage.find(
+    {
+      sessionId: sourceId,
+      seq: { $lte: lastSeq },
+      ...NOT_REMOVED,
+      ...rowFilter,
+      content: { $regex: '::artifact\\[' },
+    },
+    { content: 1, senderId: 1 },
+  ).lean();
   // Only the owner's own turns: a collaborator's artifacts are never copied (SS2).
-  const contents: string[] = [];
-  for await (const batch of messagesUpTo(source._id, source.orgId, lastSeq)) {
-    for (const { dto } of batch) {
-      if (senderOf(dto) === null && dto.content.includes('::artifact[')) {
-        contents.push(dto.content);
-      }
-    }
-  }
-  const refs = collectArtifactRefs(contents);
+  const refs = collectArtifactRefs(
+    withMarkers
+      .filter((row) => senderOf(row) === null)
+      .map((row) => {
+        const { content } = row as { content?: unknown };
+        return typeof content === 'string' ? content : '';
+      }),
+  );
   if (refs.length === 0) {
     return new ArtifactCopyMap([]);
   }
 
-  const outcome = await copyArtifacts(forkId, refs);
+  const outcome = await copyArtifacts(String(forkId), refs);
   const broken = outcome.failed.filter((f) => f.reason === 'error');
   if (broken.length > 0) {
     throw new InternalServerError(
@@ -363,35 +394,38 @@ async function withCopiedCitations(
 
 /** Artifacts copied for a fork before its chat is written. */
 export interface ForkArtifacts {
-  forkId: string;
+  forkId: mongoose.Types.ObjectId;
   copies: ArtifactCopyMap;
 }
 
 /**
  * Copies the artifacts a fork will show, filed under `forkId`, before the
- * fork's chat is written. Call it outside the unit of work: every version is
- * uploaded again, so it can outlive a database transaction, and a retried
- * unit would copy everything a second time.
+ * fork's chat is written. Call it outside any MongoDB transaction: every
+ * version is uploaded again, so it can outlive MongoDB's 60-second transaction
+ * limit, and `withTransaction` reruns its callback on a transient error, which
+ * would copy everything a second time.
  */
 export async function copyArtifactsForFork(
-  source: ChatSessionDto,
+  source: IChatSessionDocument,
   messageId: string,
-  forkId: string,
+  forkId: mongoose.Types.ObjectId,
   copyArtifacts: ArtifactCopier,
+  /** As `copySessionUpToMessage`'s: only the rows the fork will hold lend it artifacts. */
+  rowFilter: Record<string, unknown> = {},
 ): Promise<ForkArtifacts> {
-  const forkPoint = await getConversationRepository().findMessage(
-    source._id,
-    source.orgId,
-    messageId,
-  );
+  const forkPoint = await ChatSessionMessage.findOne(
+    { _id: messageId, sessionId: source._id, ...NOT_REMOVED, ...rowFilter },
+    { seq: 1 },
+  ).lean();
   if (!forkPoint) {
     throw new NotFoundError('Message not found');
   }
   const copies = await copyForkArtifacts(
     copyArtifacts,
-    source,
+    source._id,
     forkPoint.seq,
     forkId,
+    rowFilter,
   );
   return { forkId, copies };
 }
@@ -399,124 +433,167 @@ export async function copyArtifactsForFork(
 /**
  * Copy a chat session and every message up to `messageId` (inclusive) into a
  * new session owned by `userId`. The source is left unchanged. Share state is
- * not copied: the fork is private to the caller. The copy depends on nothing
+ * not copied — the fork is private to the caller. The copy depends on nothing
  * of the original's: its messages name none of the original's runs
  * (`copied`), its citations are its own documents, a collaborator's turn is a
- * stub, and a durable original gives a durable fork with a clean workspace. Messages are copied in
- * batches so a long thread is never held in memory whole. Without a
- * transaction (a store that cannot give one), a failed copy hides what it
- * already wrote.
+ * stub, and a durable original gives a durable fork with a clean workspace.
+ * Messages are copied in batches so a long thread is never held in memory
+ * whole. Without a
+ * transaction, a failed copy removes what it already wrote.
  *
  * With `artifacts` (from `copyArtifactsForFork`), the fork is created under
  * the id they were filed under and its messages point at them, so editing in
  * one chat never changes the other.
  */
 export async function copySessionUpToMessage(
-  source: ChatSessionDto,
+  source: IChatSessionDocument,
   messageId: string,
   userId: string,
   orgId: string,
   fields: ForkSessionFields,
-  tx?: Tx | null,
+  mongoSession?: ClientSession | null,
   artifacts?: ForkArtifacts,
-  repo: ConversationRepository = getConversationRepository(),
+  /** Narrows the rows copied, for a source whose readers do not all see every row. */
+  rowFilter: Record<string, unknown> = {},
 ): Promise<ForkChatSessionResult> {
-  const unit = tx ?? undefined;
-  const forkPoint = await repo.findMessage(source._id, orgId, messageId, unit);
+  const sourceId = source._id;
+  const sessionOption = mongoSession ? { session: mongoSession } : undefined;
+  const forkPoint = await ChatSessionMessage.findOne(
+    { _id: messageId, sessionId: sourceId, ...NOT_REMOVED, ...rowFilter },
+    undefined,
+    sessionOption,
+  ).lean();
+
   if (!forkPoint) {
     throw new NotFoundError('Message not found');
   }
 
   // Counted before the session exists because its metadata is written once, at
   // creation, and the "forked from here" line is placed by this count.
-  let copiedCount = 0;
-  for await (const batch of messagesUpTo(
-    source._id,
-    orgId,
-    forkPoint.seq,
-    unit,
-    repo,
-  )) {
-    copiedCount += batch.length;
+  const copiedCount = await ChatSessionMessage.countDocuments({
+    sessionId: sourceId,
+    seq: { $lte: forkPoint.seq },
+    ...NOT_REMOVED,
+    ...rowFilter,
+  }).session(mongoSession ?? null);
+
+  const sessionFields: Partial<IChatSession> = {
+    orgId: new mongoose.Types.ObjectId(orgId),
+    userId: new mongoose.Types.ObjectId(userId),
+    initiator: new mongoose.Types.ObjectId(userId),
+    title: await forkTitleFor(
+      {
+        _id: String(sourceId),
+        title: source.title,
+        agentKey: source.agentKey,
+      },
+      userId,
+      orgId,
+    ),
+    lastActivityAt: Date.now(),
+    status: CONVERSATION_STATUS.COMPLETE,
+    modelInfo: source.modelInfo,
+    sessionType: fields.sessionType,
+    isShared: false,
+    isDeleted: false,
+    isArchived: false,
+    metadata: new Map<string, unknown>([
+      ['forkedFromConversationId', String(sourceId)],
+      ['forkedFromMessageId', messageId],
+      ['forkedMessageCount', copiedCount],
+    ]),
+  };
+
+  if (fields.sessionType === 'agent') {
+    sessionFields.agentKey = fields.agentKey ?? source.agentKey;
+    sessionFields.conversationSource = 'agent_chat';
   }
 
-  const conversation = await repo.createSession(
-    {
-      ...(artifacts && { id: artifacts.forkId }),
-      orgId,
-      userId,
-      initiator: userId,
-      title: await forkTitleFor(source, userId, orgId, repo),
-      lastActivityAt: Date.now(),
-      status: CONVERSATION_STATUS.COMPLETE,
-      modelInfo: source.modelInfo,
-      sessionType: fields.sessionType,
-      ...(fields.sessionType === 'agent' && {
-        agentKey: fields.agentKey ?? source.agentKey,
-        conversationSource: 'agent_chat' as const,
-      }),
-      ...(fields.projectId && {
-        projectId: fields.projectId,
-        projectVisibility: 'private' as const,
-      }),
-      metadata: {
-        forkedFromConversationId: source._id,
-        forkedFromMessageId: messageId,
-        forkedMessageCount: copiedCount,
-      },
-    },
-    unit,
-  );
+  if (fields.projectId) {
+    sessionFields.projectId = new mongoose.Types.ObjectId(fields.projectId);
+    sessionFields.projectVisibility = 'private';
+  }
+
+  const conversation = (await new ChatSession({
+    ...sessionFields,
+    ...(artifacts && { _id: artifacts.forkId }),
+  }).save(sessionOption)) as IChatSessionDocument;
+  const forkId = conversation._id;
+  const unit = new MongoTx(mongoSession ?? undefined);
   // The fork keeps the original's executor; its first durable run imports the copied messages.
   await pinForkExecutor(
-    conversation._id,
+    String(forkId),
     orgId,
-    await harnessVersionOf(source._id, source.orgId, unit),
+    await harnessVersionOf(String(sourceId), String(source.orgId), unit),
     unit,
   );
   const copies = artifacts?.copies ?? new ArtifactCopyMap([]);
 
   let messageCount = 0;
   try {
-    for await (const batch of messagesUpTo(
-      source._id,
-      orgId,
-      forkPoint.seq,
-      unit,
-      repo,
-    )) {
-      const copied = batch.map((row) =>
-        pointMessageAtCopies(
-          withExpiredApprovals(
-            stubCollaboratorTurn(
-              detachCopiedRuns(
-                stripMessageForCopy(
-                  row.dto as unknown as Record<string, unknown>,
-                ),
-              ),
-              userId,
-            ),
-          ),
-          copies,
-        ),
-      );
-      await repo.appendMessages(
-        conversation._id,
+    let nextSeq = 0;
+    for (;;) {
+      const batch = await ChatSessionMessage.find(
+        {
+          sessionId: sourceId,
+          seq: { $gte: nextSeq, $lte: forkPoint.seq },
+          ...NOT_REMOVED,
+          ...rowFilter,
+        },
+        undefined,
+        sessionOption,
+      )
+        // Each copy keeps its answer's label; the append binds it to the copy's own version and text.
+        .select('+provenance +labelHistory')
+        .sort({ seq: 1 })
+        .limit(FORK_COPY_BATCH_SIZE)
+        .lean();
+      if (batch.length === 0) {
+        break;
+      }
+      const kept = await forkerMaySee(
+        source,
+        String(forkId),
+        batch,
+        userId,
         orgId,
-        (await withCopiedCitations(
-          copied,
-          orgId,
-          unit,
-          repo,
-        )) as unknown as NewMessage[],
-        unit,
       );
-      messageCount += batch.length;
+      if (kept.length > 0) {
+        const copied = kept.map((row) =>
+          pointMessageAtCopies(
+            withExpiredApprovals(
+              stubCollaboratorTurn(
+                detachCopiedRuns(
+                  stripMessageForCopy(
+                    row as unknown as Record<string, unknown>,
+                  ),
+                ),
+                userId,
+              ),
+            ),
+            copies,
+          ),
+        );
+        await appendMessages(
+          forkId,
+          conversation.orgId,
+          await withCopiedCitations(
+            copied,
+            orgId,
+            unit,
+            getConversationRepository(),
+          ),
+          mongoSession,
+        );
+      }
+      messageCount += kept.length;
+      nextSeq = (batch[batch.length - 1] as { seq: number }).seq + 1;
     }
   } catch (error) {
-    // Without a transaction (no replica set) nothing rolls back: remove the half-copied fork.
-    if (!sessionOf(unit)) {
-      await repo.discardSession(conversation._id, orgId);
+    if (!mongoSession) {
+      // row-writer-exempt: the fork never existed to any reader, so its rows go without a trace.
+      await ChatSessionMessage.deleteMany({ sessionId: forkId });
+      await ChatSession.deleteOne({ _id: forkId });
     }
     throw error;
   }
@@ -627,6 +704,53 @@ export async function resolveForks(
     });
     return [];
   }
+}
+
+/**
+ * The rows of a batch the forker may take into a chat of their own: what they may see whole now. An
+ * answer they see only because it was shared with them, or not at all, and a shared copy, stay behind: a share is for
+ * the chat it was made in. So does an answer that reached them only through such a share (one built on a shared
+ * answer's text): the rows are judged as the fork will read them, so the fork holds no answer that would only hide
+ * there. So does another person's answer from before labels that they read through the view they had of the chat then:
+ * that view is for the chat it was shared in. Another person's question keeps its words but not an
+ * answer it quotes.
+ */
+/** Another person's rows a fork leaves behind when they come from before labels: an answer, an error and a card. */
+const LEFT_BEHIND_BEFORE_LABELS = new Set([
+  'bot_response',
+  'error',
+  'tool_call',
+]);
+
+async function forkerMaySee<R extends object>(
+  source: IChatSessionDocument,
+  forkId: string,
+  batch: R[],
+  userId: string,
+  orgId: string,
+): Promise<R[]> {
+  const verdicts = await visibleRows(
+    { userId, orgId, member: true },
+    source,
+    batch,
+    { member: true, fresh: true, chatsRead: [forkId] },
+  );
+  const ownerId = idOfValue(source.initiator) ?? idOfValue(source.userId) ?? '';
+  return batch.flatMap((row) => {
+    const r = row as unknown as ReaderRow;
+    const judged = verdicts.get(String(r._id));
+    const mine = rowAuthorOf(r, ownerId) === idOfValue(userId);
+    if (
+      judged?.verdict !== 'visible' ||
+      (!mine &&
+        judged.basis === 'before_labels' &&
+        LEFT_BEHIND_BEFORE_LABELS.has(String(r.messageType))) ||
+      r.messageType === 'shared_answer'
+    ) {
+      return [];
+    }
+    return [mine ? row : withoutQuote(row)];
+  });
 }
 
 const copyOf = (row: MessageRow): NewMessage =>
@@ -749,6 +873,52 @@ export async function copyBranchTurnArtifacts(
  * that thread. Truncating before appending makes a repeat after a failure
  * land in the same state.
  */
+/** Whether a row is the chat owner's: its question's or note's author, or whoever asked for it; a row with neither is the owner's. */
+const isOwnersRow = (row: MessageDto, ownerId: string): boolean => {
+  const { authorUserId, requestedBy } = row as MessageDto & {
+    authorUserId?: { toString(): string } | null;
+    requestedBy?: { toString(): string } | null;
+  };
+  const by =
+    row.messageType === 'user_query' || row.messageType === 'note'
+      ? authorUserId
+      : requestedBy;
+  return (by?.toString() ?? ownerId) === ownerId;
+};
+
+const SOMEONE_ELSES_TURN =
+  'Someone else has written in this chat since the compared question, so the other answer cannot replace it';
+
+/** Whether any row of `target` from position `keep` on is someone other than its owner's. */
+export async function othersWroteFrom(
+  target: ChatSessionDto,
+  keep: number,
+  repo: ConversationRepository = getConversationRepository(),
+): Promise<boolean> {
+  for (let skip = keep; ; skip += FORK_COPY_BATCH_SIZE) {
+    const rows = await repo.listMessages(target._id, {
+      orgId: target.orgId,
+      skip,
+      limit: FORK_COPY_BATCH_SIZE,
+    });
+    if (rows.some((r) => !isOwnersRow(r.dto, target.userId))) {
+      return true;
+    }
+    if (rows.length < FORK_COPY_BATCH_SIZE) return false;
+  }
+}
+
+/** Refuses a choice that would replace someone else's rows: a Compare branch only ever replaces its owner's. */
+export async function assertOnlyOwnersRowsFrom(
+  target: ChatSessionDto,
+  keep: number,
+  repo: ConversationRepository = getConversationRepository(),
+): Promise<void> {
+  if (await othersWroteFrom(target, keep, repo)) {
+    throw new ConflictError(SOMEONE_ELSES_TURN);
+  }
+}
+
 export async function replaceTurnWithBranch(
   target: ChatSessionDto,
   branch: ChatSessionDto,
@@ -766,6 +936,10 @@ export async function replaceTurnWithBranch(
       { orgId, skip, limit: FORK_COPY_BATCH_SIZE },
       unit,
     );
+    // Read again in the transaction: a row someone wrote since the caller's check is never deleted.
+    if (rows.some((r) => !isOwnersRow(r.dto, target.userId))) {
+      throw new ConflictError(SOMEONE_ELSES_TURN);
+    }
     stale.push(...rows.map((r) => r.dto._id));
     if (rows.length < FORK_COPY_BATCH_SIZE) break;
   }

@@ -305,7 +305,7 @@ describe('closures kept beside the rows', () => {
       return { own }
     }
 
-    it("read as Bob's fork will read it (N7), his room answer built on Dana's shared one hides from him; read in the room it shows", async () => {
+    it("read as Bob's fork will read it, his room answer built on Dana's shared one hides from him; read in the room it shows", async () => {
       const w = world({ [DANA]: everything, [BOB]: (id) => id !== 'rec-r' })
       const { own } = await sharedThenBuiltOn(w)
       const kept = w.kept.counts.kept

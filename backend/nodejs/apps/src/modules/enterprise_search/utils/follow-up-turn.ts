@@ -208,8 +208,8 @@ const SENDER_CHECK_TIMEOUT_MS = 5000;
 /**
  * Stored rows as the model may be told them by the person who sent the turn: only the rows the reader check lets
  * reach their model (`includableRows`: their own answers while they can still see them, another person's only as
- * text when they replied to it or it restricts nobody), each sealed with its row and version, then main's filter
- * (`historyForModel`), so an answer that used a record they can no longer read goes with no text. Without
+ * text when they replied to it or it restricts nobody), each sealed with its row and version, then the history
+ * filter (`historyForModel`), so an answer that used a record they can no longer read goes with no text. Without
  * `deps.appConfig` the access check cannot run, and such an answer goes too.
  */
 export const historyForSender = async <M extends IMessage>(
@@ -222,8 +222,8 @@ export const historyForSender = async <M extends IMessage>(
   const orgId = String(turn.conversation.orgId);
   const known = newReadable();
   const agentKey = (turn.conversation as { agentKey?: unknown }).agentKey;
-  // Main's filter reads what each answer names (its citations, files and filters) before the seal cuts another
-  // person's answer to its text; the two share one access request.
+  // The history filter reads what each answer names (its citations, files and filters) before the seal cuts
+  // another person's answer to its text; the two share one access request.
   const filtered = await historyForModel(
     deps.appConfig as AppConfig,
     viewerOf(senderId, orgId),
