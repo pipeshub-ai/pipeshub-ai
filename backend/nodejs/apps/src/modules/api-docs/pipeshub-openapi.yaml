@@ -81996,7 +81996,8 @@ paths:
       description: |
         Emails the request to `SUPPORT_EMAIL` with a Reply-To of the requester, then sends the
         requester a copy built only from what the form showed them. Attachments go in one zip
-        (`support-<reference>.zip`) with the email; nothing is stored. Only an interactive user
+        (`support-<reference>.zip`) with the email, and the copy carries the same zip; nothing is
+        stored. Only an interactive user
         session can send, not an OAuth or personal access token. The organization and user come from the token.
 
         The same `requestKey` sent again within an hour answers with the first result instead of
