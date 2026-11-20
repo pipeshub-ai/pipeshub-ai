@@ -166,6 +166,28 @@ async def test_a_stamp_that_reaches_another_connector_asks_for_its_lock_before_i
     assert (await held_stamps(p, org))["x1"][0] == ("g1", "f2")
 
 
+async def test_a_restamp_cursor_older_code_wrote_in_the_records_goes_over_them_again_from_the_first(pg_db) -> None:
+    """A queued restamp job keeps its cursor across a restart. Older code paged the records in the database's collation, where '-z' sorts after 'M' and in byte order before it:
+    its 'records/M' must not go on after 'M' in byte order (it would never restamp '-z' and 'B'). This code's cursor names the byte order and goes on after it."""
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("-z", "B", "M", "q")], "records")
+    await drain_org(pg_db, org)
+
+    async def compiled(cursor: str) -> set:
+        async def go(tx) -> set:
+            st = StampStats()
+            await stamp_app(tx, org, "app1", cursor, 100, st, dry=True)
+            return {k[1] for k in st.keys if k[0] == "records"}
+        with ctx(org):
+            return await pg_db.run(go)
+    assert {"-z", "B", "M", "q", "fold", "f1", "f2"} <= await compiled("records/M")
+    after = await compiled("records:c/M")
+    assert {"q", "fold", "f1", "f2"} <= after and not after & {"-z", "B", "M"}
+
+
 async def test_a_page_of_the_whole_connector_restamp_that_reaches_another_connector_asks_for_its_lock_and_the_restamp_takes_it(pg_db, monkeypatch) -> None:
     from app.services.graph_db.postgres.kg import backfill as backfill_mod
 
