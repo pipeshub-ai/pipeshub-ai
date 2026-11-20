@@ -3787,7 +3787,8 @@
           "shared": "Gemeinsame Zugangsdaten für alle",
           "sharedHint": "Sie fügen sie einmal unten hinzu. Alle handeln mit deren Zugriff."
         },
-        "advanced": "Erweitert"
+        "advanced": "Erweitert",
+        "nameTaken": "Ein anderer Server hat bereits diesen Namen. Wählen Sie einen anderen."
       },
       "configPanel": {
         "editTitle": "MCP-Server bearbeiten",

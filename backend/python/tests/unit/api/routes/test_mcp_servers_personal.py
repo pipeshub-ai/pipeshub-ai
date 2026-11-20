@@ -178,7 +178,7 @@ class TestCreate:
     async def test_an_admin_creates_org_instances_by_default_and_personal_on_request(self) -> None:
         store = FakeConfigService()
         org = await create_instance(_as(store, "admin-1"), _payload())
-        own = await create_instance(_as(store, "admin-1"), _payload(scope="personal"))
+        own = await create_instance(_as(store, "admin-1"), _payload(name="mine too", scope="personal"))
 
         assert org["scope"] == "org" and ORG_PATH.format(org["_id"]) in store.data
         assert own["scope"] == "personal" and USER_PATH.format("admin-1", own["_id"]) in store.data
@@ -216,6 +216,60 @@ class TestCreate:
         assert await _status(create_instance(_as(store, "u-alice"), _payload(url="http://100.64.0.9/mcp"))) == 400
         # An administrator's org instance may sit on the private network.
         assert (await create_instance(_as(store, "admin-1"), private))["scope"] == "org"
+
+
+class TestUniqueNames:
+    """No two servers in one list share a name, whatever their type; case and spacing don't count."""
+
+    async def _detail(self, coro: Any) -> tuple[int, str]:  # noqa: ANN401
+        with pytest.raises(HTTPException) as exc:
+            await coro
+        return exc.value.status_code, str(exc.value.detail)
+
+    async def test_an_org_server_cannot_take_an_org_servers_name(self) -> None:
+        store = _store()
+        status, detail = await self._detail(create_instance(_as(store, "admin-1"), _payload(name="  ORG-inst ")))
+
+        assert status == 409
+        assert detail == 'An MCP server named "ORG-inst" already exists. Choose another name.'
+        assert len(await mcp_service.load_org_instances(store, "org-1")) == 1
+
+    async def test_the_type_does_not_matter(self) -> None:
+        store = _store()
+        payload = _payload(name="Org-Inst", type_id="jira")
+        with patch.object(mcp_servers, "_validate_instance_config"), patch.object(mcp_servers, "_refuse_replaced_template"):
+            assert await _status(create_instance(_as(store, "admin-1"), payload)) == 409
+
+    async def test_a_personal_server_cannot_take_an_org_or_own_servers_name(self) -> None:
+        store = _store()
+        assert await _status(create_instance(_as(store, "u-alice"), _payload(name="org-inst"))) == 409
+        assert await _status(create_instance(_as(store, "u-alice"), _payload(name="Alice-Own"))) == 409
+
+    async def test_someone_elses_personal_server_does_not_block_a_name(self) -> None:
+        store = _store()
+        mine = await create_instance(_as(store, "u-alice"), _payload(name="bob-own"))
+        org = await create_instance(_as(store, "admin-1"), _payload(name="alice-own"))
+
+        assert mine["name"] == "bob-own" and org["name"] == "alice-own"
+
+    async def test_renaming_onto_a_taken_name_is_refused(self) -> None:
+        store = _store()
+        assert await _status(update_instance(_as(store, "u-alice"), "alice-own", _payload(name="ORG-INST"))) == 409
+        assert store.data[USER_PATH.format("u-alice", "alice-own")]["name"] == "alice-own"
+
+    async def test_a_server_that_already_shares_its_name_can_still_be_edited(self) -> None:
+        store = _store()
+        store.data[ORG_PATH.format("twin")] = {**_record("twin"), "name": "org-inst"}
+
+        updated = await update_instance(_as(store, "admin-1"), "twin", _payload(name="org-inst", description="kept"))
+
+        assert updated["description"] == "kept"
+
+    async def test_changing_only_the_case_of_its_own_name_is_allowed(self) -> None:
+        store = _store()
+        updated = await update_instance(_as(store, "u-alice"), "alice-own", _payload(name="Alice Own"))
+
+        assert updated["name"] == "Alice Own"
 
 
 class TestOwnerOnlyAccess:

@@ -3924,7 +3924,8 @@
           "shared": "所有人共用一个凭据",
           "sharedHint": "你在下方添加一次。所有人都以它的权限操作。"
         },
-        "advanced": "高级"
+        "advanced": "高级",
+        "nameTaken": "已有其他服务器使用这个名称。请换一个。"
       },
       "configPanel": {
         "editTitle": "编辑 MCP 服务器",

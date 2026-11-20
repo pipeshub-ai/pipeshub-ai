@@ -3778,7 +3778,8 @@
           "shared": "One shared credential for everyone",
           "sharedHint": "You add it once, below. Everyone acts with its access."
         },
-        "advanced": "Advanced"
+        "advanced": "Advanced",
+        "nameTaken": "Another server already has this name. Choose a different one."
       },
       "configPanel": {
         "editTitle": "Edit MCP server",

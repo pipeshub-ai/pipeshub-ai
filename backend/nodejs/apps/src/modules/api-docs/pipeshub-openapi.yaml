@@ -65424,7 +65424,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: The caller already has the maximum number of personal servers
+          description: |
+            The caller already has the maximum number of personal servers, or another server in the
+            same list already has this name (compared without case or extra spaces, whatever the type).
+            An organization server is checked against the organization's servers; a personal server
+            against those and the caller's own.
           content:
             application/json:
               schema:
@@ -65576,6 +65580,14 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The new name is already used by another server in the same list (compared without case or
+            extra spaces, whatever the type). Keeping the current name never conflicts.
           content:
             application/json:
               schema:
