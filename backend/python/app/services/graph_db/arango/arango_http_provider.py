@@ -101,6 +101,7 @@ from app.modules.indexing.record_diagnostics import WriteKind, aql_parts
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.schema.arango.documents import (
+    APP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
     agent_schema,
     agent_skill_candidates_schema,
@@ -1232,7 +1233,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not all([arango_url, arango_user, arango_password, arango_db]):
                 raise ValueError("Missing required ArangoDB configuration values")
 
-            await self._stop_record_guard()  # a second connect() replaces the client; its guard's poller would otherwise run on
+            await self._stop_schema_guards()  # a second connect() replaces the client; its guards' pollers would otherwise run on
             # Create HTTP client
             self.http_client = ArangoHTTPClient(
                 base_url=arango_url,
@@ -1247,6 +1248,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise Exception("Failed to connect to ArangoDB")
             self.http_client.record_guard = RecordSchemaGuard(
                 self.http_client, self.logger, schema=record_schema, generation=RECORD_SCHEMA_GENERATION,
+            )
+            self.http_client.apps_guard = RecordSchemaGuard(
+                self.http_client, self.logger, schema=app_schema, generation=APP_SCHEMA_GENERATION,
+                collection=CollectionNames.APPS.value,
             )
 
             # Ensure database exists
@@ -1267,15 +1272,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to connect to ArangoDB via HTTP: {str(e)}")
-            await self._stop_record_guard()
+            await self._stop_schema_guards()
             self.http_client = None
             return False
 
-    async def _stop_record_guard(self) -> None:
-        """Cancel the poll of the current client's records-schema guard (it holds the client, so it would keep polling after a disconnect)."""
-        guard = self.http_client.record_guard if self.http_client else None
-        if guard is not None:
-            await guard.stop()
+    async def _stop_schema_guards(self) -> None:
+        """Cancel the polls of the current client's schema guards (they hold the client, so they would keep polling after a disconnect)."""
+        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
+            if guard is not None:
+                await guard.stop()
 
     async def disconnect(self) -> bool:
         """
@@ -1286,7 +1291,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             self.logger.info("🚀 Disconnecting from ArangoDB via HTTP API")
-            await self._stop_record_guard()
+            await self._stop_schema_guards()
             if self.http_client:
                 await self.http_client.disconnect()
             self.http_client = None
@@ -1297,20 +1302,24 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return False
 
     async def _apply_schema(self, name: str, schema: dict[str, Any]) -> bool:
-        """Apply ``schema`` to a collection. The records schema is applied only while the live generation is
+        """Apply ``schema`` to a collection. The records and apps schemas are applied only while the live generation is
         lower than this process's, through the guard's lock and last-look checks. That narrows, but cannot close, the window in which an
         older start puts its schema over a newer one (a schema change is not transactional with the lock); the newer process's poll
         repairs it, eventually (see ``record_schema_guard``)."""
         client = self.http_client
-        if client is not None and name == CollectionNames.RECORDS.value and client.record_guard is not None:
+        guard = None
+        if client is not None and name == CollectionNames.RECORDS.value:
             guard = client.record_guard
+        elif client is not None and name == CollectionNames.APPS.value:
+            guard = client.apps_guard
+        if guard is not None:
             # The guard's locked recheck decides from reads that can be out of date by the time the schema is written; the schema
             # update itself is not fenced, so a paused older start can still overwrite a newer schema, and the newer process's
             # later checks and writes repair it. An unreadable live schema is not written over (this attempt of the start fails).
             try:
                 await guard.ensure_wide("startup")
             except Exception as error:
-                self.logger.warning("could not apply the records schema: %s", error)
+                self.logger.warning("could not apply the %s schema: %s", name, error)
                 return False
             return await guard.is_wide()
         return await client.update_collection_schema(name, schema)
@@ -1321,10 +1330,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return bool(guard and await guard.ensure_wide(trigger))
 
     def start_record_schema_poll(self, interval: float = 10.0) -> None:
-        """Check the live records schema every ``interval`` seconds on the running loop and widen it when it is
+        """Check the live records and apps schemas every ``interval`` seconds on the running loop and widen each when it is
         narrower than this process's."""
-        if self.http_client and self.http_client.record_guard:
-            self.http_client.record_guard.start(interval)
+        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
+            if guard is not None:
+                guard.start(interval)
 
     async def ensure_schema(self) -> bool:
         """
