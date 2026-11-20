@@ -11,6 +11,8 @@ import {
   StorageServiceResponse,
   Document,
   ObjectPage,
+  ConditionalCapabilities,
+  ConditionalDeleteResult,
 } from '../types/storage.service.types';
 import {
   StorageError,
@@ -24,6 +26,23 @@ import {
 } from '../../../libs/errors/storage.errors';
 import { LocalStorageConfig } from '../config/storage.config';
 import { localEtagOf, type ObjectStat } from '../utils/storage-fingerprint';
+
+/**
+ * A key's lock lease. A holder that stalls longer (event-loop stall, SIGSTOP) loses it to a taker, which is why the
+ * holder checks its token just before the unlink or rename that ends its operation.
+ */
+const KEY_LOCK_LEASE_MS = 5 * 60 * 1000;
+const KEY_LOCK_WAIT_MS = 15_000;
+const KEY_LOCK_POLL_MS = 10;
+
+/**
+ * File-system types (`statfs.type`) on which the lock file, the descriptor `fstat` and the rename-over are coherent
+ * for every process that can reach the mount: ext4, xfs, btrfs, zfs, tmpfs, overlayfs. Anything else (NFS, CIFS,
+ * FUSE, Ceph, Lustre, 9p, virtiofs...) reads as shared and honours no conditional operation.
+ */
+const LOCAL_FS_TYPES = new Set<number>([
+  0xef53, 0x58465342, 0x9123683e, 0x2fc12fc1, 0x01021994, 0x794c7630,
+]);
 
 // Local filesystems cap one name at 255 bytes; object stores do not, so their
 // keys keep the full name. Names that fit are kept byte for byte.
@@ -573,7 +592,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (located === null) {
         throw new StorageNotFoundError('Local folder not found');
       }
-      await this.writeFileAtomically(located.target, data);
+      await this.withKeyLock(located.target, () =>
+        this.writeFileAtomically(located.target, data),
+      );
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to write object to local storage', {
@@ -600,9 +621,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (located === null) {
         throw new StorageNotFoundError('Local folder not found');
       }
-      return await this.writeFileAtomically(located.target, data, {
-        ifAbsent: true,
-      });
+      return await this.withKeyLock(located.target, () =>
+        this.writeFileAtomically(located.target, data, { ifAbsent: true }),
+      );
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to write object to local storage', {
@@ -641,12 +662,17 @@ class LocalStorageAdapter implements StorageServiceInterface {
       candidates.push({ key, full });
     }
     candidates.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-    const listed: { key: string; size: number; lastModifiedMs: number }[] = [];
+    const listed: {
+      key: string;
+      size: number;
+      lastModifiedMs: number;
+      etag: string;
+    }[] = [];
     for (const { key, full } of candidates) {
       if (listed.length > options.limit) break;
       let stat;
       try {
-        stat = await fs.lstat(full);
+        stat = await fs.lstat(full, { bigint: true });
       } catch (error) {
         // Gone since the directory was read: skip it. Any other failure stops the listing, so a sweep never
         // works from a reference set with a manifest silently missing.
@@ -656,8 +682,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (!stat.isFile()) continue;
       listed.push({
         key,
-        size: stat.size,
-        lastModifiedMs: Math.floor(stat.mtimeMs),
+        size: Number(stat.size),
+        lastModifiedMs: Number(stat.mtimeNs / BigInt(1_000_000)),
+        etag: localEtagOf(stat),
       });
     }
     const objects = listed.slice(0, options.limit);
@@ -674,6 +701,185 @@ class LocalStorageAdapter implements StorageServiceInterface {
         force: true,
       });
       await this.pruneEmptyAncestors(relative);
+    }
+  }
+
+  /**
+   * Takes the key's lock, runs `body`, releases. The lock is a file `.<sha1>.lock` beside the key (a dot name: never
+   * listed), created with `wx` so exactly one creator wins; a lock older than the lease is taken over by renaming
+   * it to a unique name first (only one renamer succeeds), then creating anew. `body` receives `stillHeld()`, which
+   * it calls just before the step that ends the operation: false when the lease was taken over meanwhile.
+   */
+  private async withKeyLock<T>(
+    fullPath: string,
+    body: (stillHeld: () => Promise<boolean>) => Promise<T>,
+  ): Promise<T> {
+    const lockPath = path.join(
+      path.dirname(fullPath),
+      `.${createHash('sha1').update(path.basename(fullPath)).digest('hex')}.lock`,
+    );
+    const token = randomUUID();
+    const deadline = Date.now() + KEY_LOCK_WAIT_MS;
+    for (;;) {
+      try {
+        // `wx`: exactly one creator wins. (Not `writeFile`: this provider writes bytes in one place only.)
+        const lock = await fs.open(lockPath, 'wx', 0o600);
+        try {
+          await lock.write(token);
+        } finally {
+          await lock.close();
+        }
+        break;
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code !== 'EEXIST') throw error;
+        try {
+          const st = await fs.stat(lockPath);
+          if (Date.now() - st.mtimeMs > KEY_LOCK_LEASE_MS) {
+            const stale = path.join(
+              path.dirname(lockPath),
+              `${path.basename(lockPath)}.stale-${randomUUID()}`,
+            );
+            try {
+              await fs.rename(lockPath, stale);
+              await fs.rm(stale, { force: true });
+            } catch {
+              // another taker won the rename
+            }
+            continue;
+          }
+        } catch (statError) {
+          if ((statError as { code?: string }).code === 'ENOENT') continue;
+          throw statError;
+        }
+        if (Date.now() > deadline) {
+          throw new StorageUploadError(
+            'The object is locked by another writer; try again',
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, KEY_LOCK_POLL_MS));
+      }
+    }
+    const stillHeld = async (): Promise<boolean> => {
+      try {
+        return (await fs.readFile(lockPath, 'utf8')) === token;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      return await body(stillHeld);
+    } finally {
+      if (await stillHeld()) await fs.rm(lockPath, { force: true });
+    }
+  }
+
+  /** The synthetic ETag of the file at `fullPath` through a freshly opened descriptor, or null when absent. */
+  private async etagAtPath(fullPath: string): Promise<string | null> {
+    let handle: FileHandle;
+    try {
+      handle = await fs.open(
+        fullPath,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+      );
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'ENOENT') return null;
+      if (code === 'ELOOP') return null;
+      throw error;
+    }
+    try {
+      const st = await handle.stat({ bigint: true });
+      return st.isFile() ? localEtagOf(st) : null;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private localCapabilityMemo: Promise<ConditionalCapabilities> | undefined;
+
+  /** Conditional operations are honoured only on a file system this provider can name as coherent (see above). */
+  conditionalCapabilities(): Promise<ConditionalCapabilities> {
+    this.localCapabilityMemo ??= (async () => {
+      try {
+        await this.ensureReady();
+        const info = await fs.statfs(this.mountPath);
+        const local = LOCAL_FS_TYPES.has(info.type);
+        if (!local) {
+          this.logger.warn(
+            'The storage mount is not a recognised local file system; conditional paid-result operations are off',
+            { fsType: info.type },
+          );
+        }
+        return { conditionalDelete: local, bump: local };
+      } catch {
+        return { conditionalDelete: false, bump: false };
+      }
+    })();
+    return this.localCapabilityMemo;
+  }
+
+  /**
+   * Deletes each file only if its ETag (dev, inode, size, mtime) is still the listed one, under the key's lock so a
+   * bump or a write cannot interleave; the live file never moves, so no reader sees a gap.
+   */
+  async deleteObjectsIfMatch(
+    items: { key: string; etag: string }[],
+  ): Promise<ConditionalDeleteResult> {
+    const changed: string[] = [];
+    for (const { key, etag } of items) {
+      const relative = this.sanitizePath(key);
+      const full = this.assertInsideMount(path.join(this.mountPath, relative));
+      let removed: boolean;
+      try {
+        removed = await this.withKeyLock(full, async (stillHeld) => {
+          const current = await this.etagAtPath(full);
+          if (current === null) return false;
+          if (current !== etag) {
+            changed.push(key);
+            return false;
+          }
+          if (!(await stillHeld())) {
+            changed.push(key);
+            return false;
+          }
+          await fs.rm(full, { force: true });
+          return true;
+        });
+      } catch (error) {
+        if ((error as { code?: string }).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (removed) await this.pruneEmptyAncestors(relative);
+    }
+    return { changed };
+  }
+
+  /** Replaces the file only if its ETag is `etag` (a bump), through a temp file renamed over the key. */
+  async writeObjectIfMatch(
+    storageKey: string,
+    data: Buffer,
+    etag: string,
+  ): Promise<'written' | 'gone' | 'changed'> {
+    try {
+      const fullPath = this.objectPathInMount(storageKey);
+      await this.ensureReady();
+      const located = await this.locateInsideRealMount(fullPath);
+      if (located === null) return 'gone';
+      return await this.withKeyLock(located.target, async (stillHeld) => {
+        const current = await this.etagAtPath(located.target);
+        if (current === null) return 'gone';
+        if (current !== etag) return 'changed';
+        if (!(await stillHeld())) return 'changed';
+        await this.writeFileAtomically(located.target, data);
+        return 'written';
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') return 'gone';
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to write object to local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
     }
   }
 

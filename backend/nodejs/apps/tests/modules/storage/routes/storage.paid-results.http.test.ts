@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import fs from 'fs'
+import fsp from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import http from 'http'
@@ -59,7 +60,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
   }
 
   const presign = (
-    files: Array<{ path: string; mode: 'put' | 'get' | 'replace' | 'refresh' }>,
+    files: Array<{ path: string; mode: 'put' | 'get' | 'replace' | 'refresh' | 'bump'; etag?: string }>,
     recordId = REC,
     org = ORG_A,
     extra: Record<string, unknown> = {},
@@ -178,7 +179,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       await store(page('a'), 'A')
       await store(page('a'), 'B', REC, ORG_B)
       const del = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')] })
-      expect(del).to.deep.equal({ status: 200, body: { deleted: 1 } })
+      expect(del).to.deep.equal({ status: 200, body: { deleted: 1, changed: [] } })
       expect(filesOnDisk()).to.deep.equal([onDisk(ORG_B, REC, page('a'))])
     })
 
@@ -227,13 +228,19 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect(cut.status).to.equal(200)
       const cutoff = (cut.body as { cutoff: number }).cutoff
       expect(cutoff).to.be.a('number').and.to.be.within(Date.now() - 5000, Date.now() + 1000)
-      expect(filesOnDisk()).to.have.length(5)
+      expect(filesOnDisk()).to.have.length(6) // five results and the refresh marker
       await new Promise((resolve) => setTimeout(resolve, 30))
       await store(page('c'), 'stored after the cutoff')
       expect((await call('DELETE', `/internal/paid-results/${REC}?before=${cutoff}`)).status).to.equal(200)
       expect((await call('DELETE', `/internal/paid-results/${REC}?before=${cutoff}`)).status).to.equal(200)
+      // The refresh marker the cutoff route wrote is not a result: a cutoff purge leaves it.
       expect(filesOnDisk()).to.deep.equal(
-        [onDisk(ORG_A, REC, page('c')), onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
+        [
+          onDisk(ORG_A, REC, page('c')),
+          onDisk(ORG_A, REC, 'refreshed/marker.json'),
+          onDisk(ORG_A, REC_2, page('a')),
+          onDisk(ORG_B, REC, page('a')),
+        ].sort(),
       )
     })
 
@@ -340,7 +347,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect(b.status).to.equal(200)
       expect(filesOnDisk()).to.deep.equal(
         [onDisk(ORG_A, REC, page('a')), onDisk(ORG_A, REC, page('b')), onDisk(ORG_A, REC, 'manifests/rev1/parse.json'),
-          onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
+          onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a')), onDisk(ORG_B, REC, 'refreshed/marker.json')].sort(),
       )
     })
 
@@ -600,6 +607,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     it('lists only keys under the record\'s root even when the adapter returns others (defence in depth)', async () => {
       const root = `${ORG_A}/PipesHub/paid-results/${REC}`
       sinon.stub(StorageController.prototype as any, 'initializeStorageAdapter').resolves({
+        conditionalCapabilities: async () => ({ conditionalDelete: false, bump: false }),
         listObjects: async () => ({
           objects: [
             { key: `${root}/${page('a')}`, size: 1, lastModifiedMs: 5 },
@@ -648,14 +656,17 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     })
 
     it('an empty record lists as an empty page', async () => {
-      expect(await call('GET', `/internal/paid-results/${REC}`)).to.deep.equal({ status: 200, body: { objects: [] } })
+      expect(await call('GET', `/internal/paid-results/${REC}`)).to.deep.equal({
+        status: 200,
+        body: { objects: [], capabilities: ['conditionalDelete', 'bump'] },
+      })
     })
 
     it('a batch delete removes exactly the named objects and counts a missing one as done', async () => {
       await store(page('a'), '1')
       await store(page('b'), '2')
       const del = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a'), page('c')] })
-      expect(del).to.deep.equal({ status: 200, body: { deleted: 2 } })
+      expect(del).to.deep.equal({ status: 200, body: { deleted: 2, changed: [] } })
       expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC, page('b'))])
     })
 
@@ -664,6 +675,155 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect((await call('POST', `/internal/paid-results/${REC}/delete`, { paths: mk(1001) })).status).to.equal(400)
       expect((await call('POST', `/internal/paid-results/${REC}/delete`, { paths: ['../x'] })).status).to.equal(400)
       expect((await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [] })).status).to.equal(400)
+    })
+  })
+
+  describe('conditional delete, version bump and the refresh marker', () => {
+    const list = async (): Promise<{ path: string; etag?: string }[]> =>
+      ((await call('GET', `/internal/paid-results/${REC}`)).body.objects as { path: string; etag?: string }[])
+
+    const bump = async (filePath: string, etag: string, content: string): Promise<number> => {
+      const p = await presign([{ path: filePath, mode: 'bump', etag }])
+      expect(p.status, JSON.stringify(p.body)).to.equal(200)
+      const f = p.body.files[0]
+      const res = await fetch(f.url, { method: 'PUT', headers: f.headers, body: Buffer.from(content) })
+      await res.text()
+      return res.status
+    }
+
+    it('names what the store honours in the listing and the presign reply, and lists an etag per object', async () => {
+      await store(page('a'), 'x')
+      const listed = await call('GET', `/internal/paid-results/${REC}`)
+      expect(listed.body.capabilities).to.deep.equal(['conditionalDelete', 'bump'])
+      expect(listed.body.objects[0].etag).to.be.a('string').and.not.equal('')
+      const signed = await presign([{ path: page('a'), mode: 'get' }])
+      expect(signed.body.capabilities).to.deep.equal(['conditionalDelete', 'bump'])
+    })
+
+    it('a file system that is not a known local one honours nothing conditional, and says so', async () => {
+      sinon.stub(fsp, 'statfs').resolves({ type: 0x6969 } as never) // NFS
+      await store(page('a'), 'x')
+      const listed = await call('GET', `/internal/paid-results/${REC}`)
+      expect(listed.body.capabilities).to.deep.equal([])
+      const refused = await presign([{ path: page('a'), mode: 'bump', etag: 'abc' }])
+      expect(refused.status).to.equal(400)
+    })
+
+    it('deletes an object whose etag is the listed one and keeps one that changed, naming it in `changed`', async () => {
+      await store(page('a'), 'one')
+      await store(page('b'), 'two')
+      const [a, b] = await list()
+      const bumped = await bump(page('b'), b!.etag!, 'two, touched')
+      expect(bumped).to.equal(200)
+
+      const r = await call('POST', `/internal/paid-results/${REC}/delete`, {
+        paths: [page('a'), page('b')],
+        etags: { [page('a')]: a!.etag, [page('b')]: b!.etag },
+      })
+
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal({ deleted: 1, changed: [page('b')] })
+      expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC, page('b'))])
+      expect((await read(page('b'))).text).to.equal('two, touched')
+    })
+
+    it('a path without an etag is deleted unconditionally, a missing one is done, and etags for other paths are refused', async () => {
+      await store(page('a'), 'one')
+      const gone = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a'), page('b')], etags: { [page('b')]: 'x'.repeat(8) } })
+      expect(gone.status).to.equal(200)
+      expect(filesOnDisk()).to.deep.equal([])
+      const stray = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')], etags: { [page('c')]: 'x' } })
+      expect(stray.status).to.equal(400)
+    })
+
+    it('a bump replaces the bytes through a new file and changes the etag; the old etag no longer applies (412)', async () => {
+      await store(page('a'), 'one')
+      const before = (await list())[0]!
+      expect(await bump(page('a'), before.etag!, 'one, touched')).to.equal(200)
+      const after = (await list())[0]!
+      expect(after.etag).to.not.equal(before.etag)
+      expect(await bump(page('a'), before.etag!, 'again')).to.equal(412)
+      expect((await read(page('a'))).text).to.equal('one, touched')
+    })
+
+    it('a bump of a missing object answers 404 and creates nothing', async () => {
+      await store(page('a'), 'one')
+      const etag = (await list())[0]!.etag!
+      await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')] })
+      expect(await bump(page('a'), etag, 'x')).to.equal(404)
+      expect(filesOnDisk()).to.deep.equal([])
+    })
+
+    it('bump is signed for a result object with an etag only, and the local route applies the same rule', async () => {
+      expect((await presign([{ path: page('a'), mode: 'bump' }])).status).to.equal(400)
+      expect((await presign([{ path: 'manifests/rev1/parse.json', mode: 'bump', etag: 'abc' }])).status).to.equal(400)
+      const res = await fetch(`${baseUrl}/internal/paid-results/${REC}/files/manifests/rev1/parse.json?bump=1&ifMatch=abc`, {
+        method: 'PUT',
+        headers: { authorization: `Bearer ${token(ORG_A)}`, 'content-type': 'application/octet-stream' },
+        body: Buffer.from('x'),
+      })
+      expect(res.status).to.equal(400)
+      await res.text()
+    })
+
+    it('a GET of a result carries its etag and write time, the inputs of a bump', async () => {
+      await store(page('a'), 'one')
+      const f = (await presign([{ path: page('a'), mode: 'get' }])).body.files[0]
+      const res = await fetch(f.url, { headers: f.headers })
+      await res.text()
+      expect(res.headers.get('etag')).to.equal(`"${(await list())[0]!.etag}"`)
+      expect(Date.parse(res.headers.get('last-modified')!)).to.be.within(Date.now() - 10_000, Date.now() + 1000)
+    })
+
+    it('the purge cutoff writes the refresh marker first; it is readable, never listed, never written through a URL, and survives a cutoff purge', async () => {
+      await store(page('a'), 'one')
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      expect(cut.status).to.equal(200)
+      const marker = await read('refreshed/marker.json')
+      expect(marker.status).to.equal(200)
+      expect(JSON.stringify((await call('GET', `/internal/paid-results/${REC}`)).body)).to.not.include('refreshed')
+      expect((await presign([{ path: 'refreshed/marker.json', mode: 'put' }])).status).to.equal(400)
+      expect((await presign([{ path: 'refreshed/marker.json', mode: 'replace' }])).status).to.equal(400)
+      const forged = await fetch(`${baseUrl}/internal/paid-results/${REC}/files/refreshed/marker.json`, {
+        method: 'PUT',
+        headers: { authorization: `Bearer ${token(ORG_A)}`, 'content-type': 'application/octet-stream' },
+        body: Buffer.from('x'),
+      })
+      expect(forged.status).to.equal(400)
+      await forged.text()
+      await call('DELETE', `/internal/paid-results/${REC}?before=${(cut.body as { cutoff: number }).cutoff + 1000}`)
+      expect((await read('refreshed/marker.json')).status).to.equal(200)
+      expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC, 'refreshed/marker.json')])
+    })
+
+    it('a whole-record purge removes the marker with everything else', async () => {
+      await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      await call('DELETE', `/internal/paid-results/${REC}`)
+      expect(filesOnDisk()).to.deep.equal([])
+    })
+
+    it('a cutoff purge does not delete an object a reuse re-wrote after the purge listed it', async () => {
+      await store(page('a'), 'one')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      const etag = (await list())[0]!.etag!
+      // The object is bumped between the purge's listing and its delete: the purge keeps it.
+      const adapterProto = (await import('../../../../src/modules/storage/providers/local-storage.provider')).default.prototype as any
+      const original = adapterProto.deleteObjectsIfMatch
+      sinon.stub(adapterProto, 'deleteObjectsIfMatch').callsFake(async function (this: unknown, items: unknown) {
+        expect(await bump(page('a'), etag, 'one, touched')).to.equal(200)
+        return original.call(this, items)
+      })
+      await call('DELETE', `/internal/paid-results/${REC}?before=${(cut.body as { cutoff: number }).cutoff + 1000}`)
+      expect((await read(page('a'))).text).to.equal('one, touched')
+    })
+
+    it('leaves no lock file behind and lists none', async () => {
+      await store(page('a'), 'one')
+      const etag = (await list())[0]!.etag!
+      await bump(page('a'), etag, 'x')
+      await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')], etags: { [page('a')]: (await list())[0]!.etag } })
+      expect(filesOnDisk().filter((f) => f.endsWith('.lock'))).to.deep.equal([])
     })
   })
 })

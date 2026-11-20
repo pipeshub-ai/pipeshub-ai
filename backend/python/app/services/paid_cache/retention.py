@@ -9,6 +9,10 @@ older manifests. Never deleted, whatever the manifests say:
   open manifest);
 * the objects of a revision whose run failed (open manifest only), until two newer revisions have completed.
 
+An object goes only while it is still the version the sweep listed: the delete names each object's ETag, and the
+store keeps one that changed (a run that reused it re-wrote it, see ``bump.py``). A storage service that lists no
+ETag deletes as before, after a second listing that drops every object whose version or write time moved.
+
 With no completed revision to read, nothing is deleted: the sweep cannot tell what is still wanted.
 """
 
@@ -20,11 +24,18 @@ from typing import Any
 
 from app.services.paid_cache.cache import ResultStore
 from app.services.paid_cache.run import OPEN_PROTECTS_MS
+from app.telemetry.backend import METRICS_BACKEND
 
 #: Completed revisions whose objects are kept (the newest and one before it).
 KEEP_REVISIONS = 2
 GRACE_MS = 3600 * 1000
 _MANIFESTS = "manifests/"
+
+SWEEP_CHANGED = METRICS_BACKEND.counter(
+    "pipeshub_paid_sweep_changed_total",
+    "Objects a retention sweep left in place because they changed after it listed them",
+    [],
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +43,8 @@ class SweepResult:
     deleted: int
     kept: int
     skipped_reason: str | None = None
+    #: Of ``kept``, the objects the store refused to delete because they changed since the listing.
+    changed: int = 0
 
 
 def _split(path: str) -> tuple[str, str, bool] | None:
@@ -138,13 +151,38 @@ async def sweep_record(
     files, doomed = await snapshot()
     if doomed is None:
         return SweepResult(0, len(files), "no completed revision")
+    etags: dict[str, str] = {}
     if doomed:
         # A run that reused one of these objects after the listing above has noted it in its manifest by now: the
-        # manifests are read again and only what both reads leave unprotected is deleted.
-        _, again = await snapshot()
+        # manifests are read again and only what both reads leave unprotected is deleted. An object whose version or
+        # write time moved between the two listings was re-written by a reuse: it stays.
+        first = {f.path: (f.etag, f.last_modified_ms) for f in files}
+        second_files, again = await snapshot()
+        second = {f.path: f for f in second_files}
         still_unprotected = set(again or ())
-        doomed = [path for path in doomed if path in still_unprotected]
+        doomed = [
+            path for path in doomed
+            if path in still_unprotected and path in second and first.get(path) == (second[path].etag, second[path].last_modified_ms)
+        ]
+        # Each delete names the version of the listing it is made from (what a bump changes).
+        etags = {path: second[path].etag for path in doomed if second[path].etag}
+        if doomed and not (etags and getattr(store, "supports_conditional_delete", True)):
+            # No version to name (a store that honours no conditional delete, or an earlier storage service): the
+            # window is what lies between the last look and the delete, so look once more right before it.
+            latest = {f.path: f for f in await store.list_files(org_id, record_id)}
+            doomed = [
+                path for path in doomed
+                if path in latest and latest[path].last_modified_ms == second[path].last_modified_ms
+            ]
+    changed: list[str] = []
     if doomed:
-        await store.delete_files(org_id, record_id, doomed)
-    log.debug("Paid-result sweep of record %s: %d deleted, %d kept", record_id, len(doomed), len(files) - len(doomed))
-    return SweepResult(len(doomed), len(files) - len(doomed))
+        result = await (store.delete_files(org_id, record_id, doomed, etags) if etags else store.delete_files(org_id, record_id, doomed))
+        changed = list(result) if isinstance(result, list) else []
+    if changed:
+        SWEEP_CHANGED.inc(value=float(len(changed)))
+    deleted = len(doomed) - len(changed)
+    log.debug(
+        "Paid-result sweep of record %s: %d deleted, %d changed since listed, %d kept",
+        record_id, deleted, len(changed), len(files) - deleted,
+    )
+    return SweepResult(deleted, len(files) - deleted, changed=len(changed))

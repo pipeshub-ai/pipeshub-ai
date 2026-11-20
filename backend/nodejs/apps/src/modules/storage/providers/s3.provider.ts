@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import {
   createS3Service as buildS3Service,
   type S3Service,
@@ -9,6 +10,8 @@ import {
   StorageServiceResponse,
   Document,
   ObjectPage,
+  ConditionalCapabilities,
+  ConditionalDeleteResult,
   SignObjectUrlOptions,
   SignedObjectUrl,
 } from '../types/storage.service.types';
@@ -25,12 +28,25 @@ import {
 } from '../../../libs/errors/storage.errors';
 import { Logger } from '../../../libs/services/logger.service';
 import { encodeRFC5987 } from '../utils/utils';
-import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
+import {
+  normalizeEtag,
+  quoteEtag,
+  type ObjectStat,
+} from '../utils/storage-fingerprint';
 import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../utils/s3-credentials.util';
 import { escapeRegExp } from '../../../utils/escape-regexp';
+
+/** A folder outside every record's, where the conditional-write probe puts its random sentinels. */
+const PROBE_FOLDER = 'paid-results-conditional-probe';
+
+/** Per (endpoint, bucket): the probe's answer, shared by concurrent callers; `null` = inconclusive, never kept. */
+const CONDITIONAL_MEMO = new Map<
+  string,
+  Promise<ConditionalCapabilities | null>
+>();
 
 /**
  * Implementation of StorageServiceInterface for Amazon S3
@@ -507,6 +523,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
           // Signed into the URL: S3 applies a conditional header only when it is a signed one, and the
           // uploader must then send the same value.
           ...(options.ifAbsent === true && { IfNoneMatch: '*' }),
+          ...(options.ifMatch !== undefined && {
+            IfMatch: quoteEtag(options.ifMatch),
+          }),
           Expires: options.expiresInSeconds,
         });
         return {
@@ -514,6 +533,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
           headers: {
             'Content-Type': contentType,
             ...(options.ifAbsent === true && { 'If-None-Match': '*' }),
+            ...(options.ifMatch !== undefined && {
+              'If-Match': quoteEtag(options.ifMatch),
+            }),
           },
         };
       }
@@ -661,6 +683,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
           key: o.Key as string,
           size: o.Size ?? 0,
           lastModifiedMs: o.LastModified?.getTime() ?? 0,
+          ...(o.ETag !== undefined && { etag: normalizeEtag(o.ETag) }),
         })),
         ...(response.IsTruncated &&
           response.NextContinuationToken && {
@@ -726,6 +749,206 @@ class AmazonS3Adapter implements StorageServiceInterface {
       throw new StorageUploadError('Failed to delete objects from S3', {
         originalError: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  }
+
+  /**
+   * `DeleteObjects` with a per-object `ETag`: the store removes an object only if its ETag still matches. An object
+   * that changed answers `PreconditionFailed` (or `ConditionalRequestConflict` while a write of it is in flight) and
+   * stays; one already gone (`NoSuchKey`) is a success. Any other per-key error rejects.
+   */
+  async deleteObjectsIfMatch(
+    items: { key: string; etag: string }[],
+  ): Promise<ConditionalDeleteResult> {
+    const changed: string[] = [];
+    try {
+      for (let i = 0; i < items.length; i += 1000) {
+        const batch = items.slice(i, i + 1000);
+        const result = await this.s3
+          .deleteObjects({
+            Bucket: this.bucketName,
+            Delete: {
+              Objects: batch.map(({ key, etag }) => ({
+                Key: key,
+                ETag: quoteEtag(etag),
+              })),
+              Quiet: true,
+            },
+          })
+          .promise();
+        const failures: string[] = [];
+        for (const e of result.Errors ?? []) {
+          if (
+            e.Code === 'PreconditionFailed' ||
+            e.Code === 'ConditionalRequestConflict'
+          ) {
+            if (e.Key !== undefined) changed.push(e.Key);
+          } else if (e.Code !== 'NoSuchKey' && e.Code !== 'NotFound') {
+            failures.push(`${e.Key}: ${e.Code} ${e.Message ?? ''}`.trim());
+          }
+        }
+        if (failures.length > 0) {
+          throw new StorageUploadError(
+            'Failed to delete some objects from S3',
+            { originalError: failures.slice(0, 10).join('; ') },
+          );
+        }
+      }
+      return { changed };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to delete objects from S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * What this bucket honours, asked of the store itself once per (endpoint, bucket) and process. Only a definitive
+   * answer is remembered; a timeout or a 5xx is not (this call falls back, the next asks again). See
+   * `probeConditionalSupport`.
+   */
+  async conditionalCapabilities(): Promise<ConditionalCapabilities> {
+    const memoKey = `${process.env.AWS_ENDPOINT_URL_S3 ?? ''}|${this.bucketName}`;
+    const known = CONDITIONAL_MEMO.get(memoKey);
+    if (known !== undefined) {
+      const answer = await known;
+      if (answer !== null) return answer;
+      CONDITIONAL_MEMO.delete(memoKey);
+    }
+    const asked = this.probeConditionalSupport();
+    CONDITIONAL_MEMO.set(memoKey, asked);
+    const answer = await asked;
+    if (answer === null) {
+      // Transient: not remembered.
+      if (CONDITIONAL_MEMO.get(memoKey) === asked)
+        CONDITIONAL_MEMO.delete(memoKey);
+      return { conditionalDelete: false, bump: false };
+    }
+    if (!answer.conditionalDelete || !answer.bump) {
+      this.logger.warn(
+        'The object store does not honour conditional paid-result writes; falling back to unconditional sweeps',
+        { conditionalDelete: answer.conditionalDelete, bump: answer.bump },
+      );
+    }
+    return answer;
+  }
+
+  /**
+   * Probe, on a random sentinel outside every record folder: (1) a delete with a wrong ETag must answer
+   * precondition-failed and leave the object; (2) the right ETag must delete it, and a conditional delete of a
+   * missing key is gone either way; (3) a PUT `If-Match` the right ETag with other bytes must succeed and change the
+   * listed ETag, one with a wrong ETag must be refused. `null` = the probe was inconclusive (transient failure).
+   */
+  private async probeConditionalSupport(): Promise<ConditionalCapabilities | null> {
+    const key = `${PROBE_FOLDER}/${randomUUID()}.json`;
+    const status = (error: unknown): number | undefined =>
+      (error as { $metadata?: { httpStatusCode?: number } }).$metadata
+        ?.httpStatusCode ?? (error as { statusCode?: number }).statusCode;
+    const exists = async (): Promise<string | null> => {
+      try {
+        const head = await this.s3
+          .headObject({ Bucket: this.bucketName, Key: key })
+          .promise();
+        return normalizeEtag(head.ETag);
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (
+          code === 'NotFound' ||
+          code === 'NoSuchKey' ||
+          status(error) === 404
+        )
+          return null;
+        throw error;
+      }
+    };
+    const delOnce = async (etag: string): Promise<string> => {
+      const result = await this.s3
+        .deleteObjects({
+          Bucket: this.bucketName,
+          Delete: {
+            Objects: [{ Key: key, ETag: quoteEtag(etag) }],
+            Quiet: true,
+          },
+        })
+        .promise();
+      return result.Errors?.[0]?.Code ?? 'OK';
+    };
+    const putIfMatch = async (etag: string, body: string): Promise<number> => {
+      const signed = await this.signObjectUrl(key, {
+        method: 'PUT',
+        contentType: 'application/json',
+        expiresInSeconds: 60,
+        ifMatch: etag,
+      });
+      const response = await fetch(signed.url, {
+        method: 'PUT',
+        headers: signed.headers,
+        body,
+      });
+      await response.arrayBuffer();
+      return response.status;
+    };
+    try {
+      await this.s3
+        .upload({
+          Bucket: this.bucketName,
+          Key: key,
+          Body: Buffer.from('{"probe":1}'),
+          ContentType: 'application/json',
+        })
+        .promise();
+      const e1 = await exists();
+      if (e1 === null) return null;
+      // (3) first, so a store that ignores the delete condition (and removes the sentinel in step 1) cannot hide that
+      // it honours the write condition: PUT If-Match, wrong ETag refused, right one replaces and the ETag moves.
+      const putWrong = await putIfMatch('0'.repeat(32), '{"probe":2}');
+      const putRight = await putIfMatch(e1, '{"probe":3}');
+      const e2 = await exists();
+      const bump =
+        putWrong === 412 &&
+        putRight >= 200 &&
+        putRight < 300 &&
+        e2 !== null &&
+        e2 !== e1;
+      const current = e2 ?? e1;
+      // (1) wrong ETag: refused, object kept.
+      const wrong = await delOnce('0'.repeat(32));
+      const keptAfterWrong = (await exists()) !== null;
+      const deleteRefuses =
+        keptAfterWrong &&
+        (wrong === 'PreconditionFailed' ||
+          wrong === 'ConditionalRequestConflict');
+      if (!keptAfterWrong) {
+        // The store deleted on a wrong ETag: it ignores the condition. Nothing more to learn about deletes.
+        return { conditionalDelete: false, bump };
+      }
+      // (2) the current ETag deletes; the missing key then answers gone (OK or NoSuchKey).
+      const right = await delOnce(current);
+      const goneAfterRight = (await exists()) === null;
+      const missing = await delOnce(current);
+      const missingOk =
+        missing === 'OK' || missing === 'NoSuchKey' || missing === 'NotFound';
+      return {
+        conditionalDelete:
+          deleteRefuses && right === 'OK' && goneAfterRight && missingOk,
+        bump,
+      };
+    } catch (error) {
+      const code = status(error);
+      // A store that answers the conditional form with a refusal of its own (501, 400, 403) said no, definitively.
+      if (code === 501 || code === 400 || code === 403) {
+        return { conditionalDelete: false, bump: false };
+      }
+      return null;
+    } finally {
+      await this.s3
+        .deleteObjects({
+          Bucket: this.bucketName,
+          Delete: { Objects: [{ Key: key }], Quiet: true },
+        })
+        .promise()
+        .catch(() => undefined);
     }
   }
 

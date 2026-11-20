@@ -79,9 +79,14 @@ import {
   paidResultsOrgRoot,
   RECORD_ID,
   isPaidResultManifestPath,
+  isPaidResultMarkerPath,
   isPaidResultObjectPath,
+  ETAG_VALUE,
+  REFRESH_MARKER_FOLDER,
+  REFRESH_MARKER_PATH,
   paidResultsRecordRoot,
 } from '../utils/paid-results';
+import { localEtagOf } from '../utils/storage-fingerprint';
 import { UploadDocumentService } from './storage.upload.service';
 import { withWriteWindow } from './storage.write-window';
 import { readDocumentWithFingerprint } from './storage.fingerprint';
@@ -1213,7 +1218,8 @@ export class StorageController {
         recordId: string;
         files: {
           path: string;
-          mode: 'put' | 'get' | 'replace' | 'refresh';
+          mode: 'put' | 'get' | 'replace' | 'refresh' | 'bump';
+          etag?: string;
         }[];
       };
       const root = paidResultsRecordRoot(orgId, recordId);
@@ -1222,8 +1228,17 @@ export class StorageController {
         throw new BadRequestError(`Invalid storage type: ${storageType}`);
       }
       const adapter = await this.remoteArtifactAdapter(req, storageType);
+      const capabilities = await this.paidResultCapabilities(req, adapter);
+      if (
+        files.some((f) => f.mode === 'bump') &&
+        !capabilities.includes('bump')
+      ) {
+        throw new BadRequestError(
+          'This store does not support a conditional bump',
+        );
+      }
       const signed = await Promise.all(
-        files.map(async ({ path: filePath, mode }) => {
+        files.map(async ({ path: filePath, mode, etag }) => {
           const method = mode === 'get' ? 'GET' : 'PUT';
           if (adapter === null) {
             const storageEndpoint = await storedServiceEndpoint(
@@ -1235,7 +1250,7 @@ export class StorageController {
               path: filePath,
               mode,
               method,
-              url: `${storageEndpoint}/api/v1/document/internal/paid-results/${recordId}/files/${filePath}${mode === 'replace' ? '?replace=1' : mode === 'refresh' ? '?refresh=1' : ''}`,
+              url: `${storageEndpoint}/api/v1/document/internal/paid-results/${recordId}/files/${filePath}${mode === 'replace' ? '?replace=1' : mode === 'refresh' ? '?refresh=1' : mode === 'bump' ? `?bump=1&ifMatch=${encodeURIComponent(etag ?? '')}` : ''}`,
               headers: {
                 Authorization:
                   req.verifiedToken !== undefined
@@ -1256,6 +1271,7 @@ export class StorageController {
               contentType: mode === 'get' ? undefined : 'application/json',
               expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
               ifAbsent: mode === 'put',
+              ...(mode === 'bump' && etag !== undefined && { ifMatch: etag }),
             })),
           };
         }),
@@ -1263,11 +1279,28 @@ export class StorageController {
       res.status(HTTP_STATUS.OK).json({
         recordId,
         expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
+        capabilities,
         files: signed,
       });
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * What the paid-result routes can rely on, named in replies so a client never infers support from a status code:
+   * `conditionalDelete` (a delete by listed ETag), `bump` (a PUT conditional on the ETag).
+   */
+  private async paidResultCapabilities(
+    req: AuthenticatedServiceRequest,
+    remote?: StorageServiceAdapter | null,
+  ): Promise<string[]> {
+    const adapter = remote ?? (await this.initializeStorageAdapter(req));
+    const caps = await adapter.conditionalCapabilities();
+    return [
+      ...(caps.conditionalDelete ? ['conditionalDelete'] : []),
+      ...(caps.bump ? ['bump'] : []),
+    ];
   }
 
   /** Local storage's stand-in for a signed conditional PUT: the first writer wins. */
@@ -1299,8 +1332,12 @@ export class StorageController {
       let written = true;
       const replace = req.query.replace === '1';
       const refresh = req.query.refresh === '1';
-      // The same rule the signed modes have: `replace` rewrites a manifest, `refresh` one result object.
+      const bump = req.query.bump === '1';
+      // The same rule the signed modes have: `replace` rewrites a manifest, `refresh` one result object, `bump` one
+      // result object while its ETag is the one named. The marker is never written through a URL.
       if (
+        isPaidResultMarkerPath(filePath) ||
+        (bump && (replace || refresh || !isPaidResultObjectPath(filePath))) ||
         (replace && refresh) ||
         (replace && !isPaidResultManifestPath(filePath)) ||
         (refresh && !isPaidResultObjectPath(filePath))
@@ -1308,7 +1345,25 @@ export class StorageController {
         throw new BadRequestError('This mode does not apply to this path');
       }
       try {
-        if (replace || refresh) {
+        if (bump) {
+          const ifMatch: unknown = req.query.ifMatch;
+          if (typeof ifMatch !== 'string' || !ETAG_VALUE.test(ifMatch)) {
+            throw new BadRequestError('ifMatch must be one ETag');
+          }
+          const outcome = await adapter.writeObjectIfMatch(
+            storageKey,
+            body,
+            ifMatch,
+          );
+          if (outcome === 'gone') {
+            res.status(HTTP_STATUS.NOT_FOUND).json({ error: 'File not found' });
+            return;
+          }
+          if (outcome === 'changed') {
+            res.status(412).json({ error: 'The result changed' });
+            return;
+          }
+        } else if (replace || refresh) {
           await adapter.writeObject(storageKey, body);
         } else {
           written = await adapter.writeObjectIfAbsent(storageKey, body);
@@ -1359,6 +1414,18 @@ export class StorageController {
         res.status(HTTP_STATUS.NOT_FOUND).json({ error: 'File not found' });
         return;
       }
+      // The version and write time a client needs for a conditional bump, read from the descriptor being served.
+      try {
+        const st = await opened.handle.stat({ bigint: true });
+        res.set('ETag', `"${localEtagOf(st)}"`);
+        res.set(
+          'Last-Modified',
+          new Date(Number(st.mtimeNs / BigInt(1_000_000))).toUTCString(),
+        );
+      } catch (statError) {
+        void opened.handle.close();
+        throw statError;
+      }
       this.sendOpenedFile(req, res, next, opened, filePath);
     } catch (error) {
       next(error);
@@ -1395,6 +1462,7 @@ export class StorageController {
       const after = afterQuery;
       const root = paidResultsRecordRoot(orgId, recordParam);
       const adapter = await this.initializeStorageAdapter(req);
+      const capabilities = await this.paidResultCapabilities(req, adapter);
       const page = await adapter.listObjects(`${root}/${prefix ?? ''}`, {
         after,
         limit: PAID_RESULT_LIST_PAGE,
@@ -1405,13 +1473,16 @@ export class StorageController {
           .filter(
             (o) =>
               o.key.startsWith(`${root}/`) &&
-              !o.key.startsWith(`${root}/${PURGE_CUTOFF_FOLDER}/`),
+              !o.key.startsWith(`${root}/${PURGE_CUTOFF_FOLDER}/`) &&
+              !o.key.startsWith(`${root}/${REFRESH_MARKER_FOLDER}/`),
           )
           .map((o) => ({
             path: o.key.slice(root.length + 1),
             size: o.size,
             lastModifiedMs: o.lastModifiedMs,
+            ...(o.etag !== undefined && { etag: o.etag }),
           })),
+        capabilities,
         ...(page.next !== undefined && { next: page.next }),
       });
     } catch (error) {
@@ -1432,11 +1503,38 @@ export class StorageController {
       if (typeof recordParam !== 'string' || recordParam === '') {
         throw new BadRequestError('recordId must be a single value');
       }
-      const { paths } = req.body as { paths: string[] };
+      const { paths, etags } = req.body as {
+        paths: string[];
+        etags?: Record<string, string>;
+      };
       const root = paidResultsRecordRoot(orgId, recordParam);
       const adapter = await this.initializeStorageAdapter(req);
-      await adapter.deleteObjects(paths.map((p) => `${root}/${p}`));
-      res.status(HTTP_STATUS.OK).json({ deleted: paths.length });
+      // A path with a listed ETag goes only while that is still its version; the rest is the unconditional delete
+      // (a caller that listed no ETag, or a store that honours none).
+      const caps = await adapter.conditionalCapabilities();
+      const guarded: { key: string; etag: string; path: string }[] = [];
+      if (caps.conditionalDelete && etags !== undefined) {
+        for (const p of paths) {
+          const etag = etags[p];
+          if (etag !== undefined)
+            guarded.push({ key: `${root}/${p}`, etag, path: p });
+        }
+      }
+      const guardedSet = new Set(guarded.map((g) => g.path));
+      const plain = paths.filter((p) => !guardedSet.has(p));
+      if (plain.length > 0) {
+        await adapter.deleteObjects(plain.map((p) => `${root}/${p}`));
+      }
+      let changed: string[] = [];
+      if (guarded.length > 0) {
+        const result = await adapter.deleteObjectsIfMatch(
+          guarded.map(({ key, etag }) => ({ key, etag })),
+        );
+        changed = result.changed.map((k) => k.slice(root.length + 1));
+      }
+      res
+        .status(HTTP_STATUS.OK)
+        .json({ deleted: paths.length - changed.length, changed });
     } catch (error) {
       next(error);
     }
@@ -1576,18 +1674,31 @@ export class StorageController {
     before: number,
   ): Promise<void> {
     let after: string | undefined;
+    const conditional = (await adapter.conditionalCapabilities())
+      .conditionalDelete;
     for (;;) {
       const page = await adapter.listObjects(`${root}/`, {
         after,
         limit: PAID_RESULT_LIST_PAGE,
       });
-      const doomed = page.objects
-        .filter(
-          (o) => o.key.startsWith(`${root}/`) && o.lastModifiedMs < before,
-        )
-        .map((o) => o.key);
-      if (doomed.length > 0) {
-        await adapter.deleteObjects(doomed);
+      // The refresh marker outlives every cutoff purge: it is how a late bump or re-store knows a refresh began.
+      const doomedObjects = page.objects.filter(
+        (o) =>
+          o.key.startsWith(`${root}/`) &&
+          !o.key.startsWith(`${root}/${REFRESH_MARKER_FOLDER}/`) &&
+          o.lastModifiedMs < before,
+      );
+      const withEtag = doomedObjects.flatMap((o) =>
+        o.etag === undefined ? [] : [{ key: o.key, etag: o.etag }],
+      );
+      if (conditional && withEtag.length > 0) {
+        // An object overwritten since the listing (a refresh's own result) is not the one listed: it stays.
+        await adapter.deleteObjectsIfMatch(withEtag);
+        const rest = doomedObjects.filter((o) => o.etag === undefined);
+        if (rest.length > 0)
+          await adapter.deleteObjects(rest.map((o) => o.key));
+      } else if (doomedObjects.length > 0) {
+        await adapter.deleteObjects(doomedObjects.map((o) => o.key));
       }
       if (page.next === undefined) return;
       after = page.next;
@@ -1612,6 +1723,14 @@ export class StorageController {
       }
       const adapter = await this.initializeStorageAdapter(req);
       const root = paidResultsRecordRoot(orgId, recordParam);
+      // The refresh marker first: its own store timestamp is when this refresh began, and it is older than the
+      // cutoff taken below. A bump or re-store of an object that predates it must not carry that object past the purge.
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from(JSON.stringify({ startedMs: Date.now() })),
+        documentPath: `${root}/${REFRESH_MARKER_PATH}`,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
       // A folder of its own, so the lookup never depends on how many other sentinels a crash left beside it.
       const folder = `${root}/${PURGE_CUTOFF_FOLDER}/${randomUUID()}/`;
       const key = `${folder}stamp.json`;

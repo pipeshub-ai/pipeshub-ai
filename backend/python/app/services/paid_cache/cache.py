@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from time import time as wall_clock
@@ -22,6 +22,7 @@ from typing import Any, Generic, TypeVar
 
 from app.core.org_context import spawn_in_request
 from app.services.paid_cache import locks as lock_limits
+from app.services.paid_cache.bump import BUMP_AFTER_MS, BumpEntry, BumpQueue
 from app.services.paid_cache.keys import CacheKey, valid_record_id
 from app.services.paid_cache.locks import (
     DELETED_TTL_MS,
@@ -35,7 +36,12 @@ from app.services.paid_cache.locks import (
 )
 from app.services.paid_cache.orphan import STOPPED, RecordGone, current_guard
 from app.services.paid_cache.run import RunScope, current_run
-from app.services.paid_cache.store import PAID_RESULT_ROUTES, ListedFile
+from app.services.paid_cache.store import (
+    PAID_RESULT_ROUTES,
+    BumpOutcome,
+    ListedFile,
+    VersionedBytes,
+)
 from app.telemetry.backend import METRICS_BACKEND
 
 T = TypeVar("T")
@@ -119,7 +125,7 @@ class ResultStore:
     async def overwrite(self, org_id: str, record_id: str, path: str, data: bytes) -> None:
         """Overwrites one result object: a refresh run's, or one that was found unreadable."""
     async def list_files(self, org_id: str, record_id: str, prefix: str = "") -> list[ListedFile]: ...
-    async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None: ...
+    async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> Any: ...  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None: ...
     async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]: ...
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None: ...
@@ -196,8 +202,46 @@ class _FencedStore:
     async def list_files(self, org_id: str, record_id: str, prefix: str = "") -> list[ListedFile]:
         return await self._inner.list_files(org_id, record_id, prefix)
 
-    async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None:
-        await self._inner.delete_files(org_id, record_id, paths)
+    async def delete_files(
+        self, org_id: str, record_id: str, paths: list[str], etags: Mapping[str, str] | None = None,
+    ) -> list[str]:
+        """The paths the store kept because their version changed (empty from a store that cannot say)."""
+        result = await (
+            self._inner.delete_files(org_id, record_id, paths, etags) if etags
+            else self._inner.delete_files(org_id, record_id, paths)
+        )
+        return list(result) if isinstance(result, list) else []
+
+    async def fenced(self, org_id: str, record_id: str) -> bool:
+        """The record or its org is deleted: nothing more is written for it."""
+        return await self._fenced(org_id, record_id)
+
+    # -- bump support: a store without these (a test fake, a service of an earlier release) bumps nothing --------
+
+    @property
+    def supports_bump(self) -> bool:
+        return bool(getattr(self._inner, "supports_bump", False))
+
+    @property
+    def supports_conditional_delete(self) -> bool:
+        # A store that says nothing (a test fake) is taken to honour what it lists: it lists no ETag unless it does.
+        return bool(getattr(self._inner, "supports_conditional_delete", True))
+
+    async def presign(self, org_id: str, record_id: str, files: Sequence[Any]) -> Mapping[tuple[str, str], Any]:
+        return await self._inner.presign(org_id, record_id, files)  # type: ignore[attr-defined,no-any-return]
+
+    async def get_versioned(self, org_id: str, record_id: str, path: str) -> VersionedBytes | None:
+        versioned = getattr(self._inner, "get_versioned", None)
+        if versioned is None:
+            raw = await self._inner.get(org_id, record_id, path)
+            return None if raw is None else VersionedBytes(raw, None, None)
+        return await versioned(org_id, record_id, path)  # type: ignore[no-any-return]
+
+    async def refresh_marker_ms(self, org_id: str, record_id: str) -> int | None:
+        return await self._inner.refresh_marker_ms(org_id, record_id)  # type: ignore[attr-defined,no-any-return]
+
+    async def bump_to(self, entry: Any, data: bytes) -> tuple[BumpOutcome, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+        return await self._inner.bump_to(entry, data)  # type: ignore[attr-defined,no-any-return]
 
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         await self._inner.purge_record(org_id, record_id, before_ms=before_ms)
@@ -226,10 +270,36 @@ class PaidResultCache:
         #: Callers of one key on one event loop attach to the first one's computation. The indexing service runs
         #: more than one loop, and a future cannot be awaited from another loop, so the loop is part of the key.
         self._inflight: dict[tuple[int, str], asyncio.Future[Any]] = {}
+        self._bumps: BumpQueue | None = None
 
     @property
     def store(self) -> ResultStore:
         return self._store
+
+    @property
+    def bumps(self) -> BumpQueue:
+        """The queue of reuse bumps (``bump.py``), made on first use."""
+        if self._bumps is None:
+            self._bumps = BumpQueue(self._store, self.logger)  # type: ignore[arg-type]
+        return self._bumps
+
+    def _bump_after_hit(
+        self, key: CacheKey, path: str, hit: "VersionedBytes | None", scope: RunScope | None, *, noted: bool,
+        started: float,
+    ) -> None:
+        """Queues the version refresh of a reused object that could be swept (see ``bump.py``). Never raises."""
+        try:
+            if hit is None or not writes_enabled() or not getattr(self._store, "supports_bump", False):
+                return
+            if not hit.etag or hit.last_modified_ms is None:
+                return
+            age_ms = int(time.time() * 1000) - hit.last_modified_ms
+            if noted and age_ms < BUMP_AFTER_MS:
+                return
+            entry = BumpEntry(key.org_id, key.record_id, path, hit.data, hit.etag, hit.last_modified_ms, scope, started)
+            self.bumps.offer(entry)
+        except Exception as exc:
+            self.logger.debug("Paid-result bump not queued (%s)", type(exc).__name__)
 
     # -- public ---------------------------------------------------------------------------------
 
@@ -530,11 +600,14 @@ class PaidResultCache:
             refresh = False
         #: Bytes sit at the key that cannot be used: the next store replaces them.
         unusable = False
+        lead_started = time.monotonic()
+        hit: list[VersionedBytes] = []
         if not refresh:
-            found, value, unusable = await self._lookup(key, path, validate)
+            found, value, unusable = await self._lookup(key, path, validate, hit_out=hit)
             if found:
                 self._count(key, "hit")
-                await self._note(scope, key, path, stored=False)
+                noted = await self._note(scope, key, path, stored=False)
+                self._bump_after_hit(key, path, hit[0] if hit else None, scope, noted=noted, started=lead_started)
                 return value
         self._count(key, "miss")
         lock = await self._acquire(key)
@@ -553,10 +626,11 @@ class PaidResultCache:
                 return value
         try:
             if lock is not None and lock.token is not None and not refresh:
-                found, value, unusable = await self._lookup(key, path, validate, report=False)
+                found, value, unusable = await self._lookup(key, path, validate, report=False, hit_out=hit)
                 if found:
                     self._count(key, "hit")
-                    await self._note(scope, key, path, stored=False)
+                    noted = await self._note(scope, key, path, stored=False)
+                    self._bump_after_hit(key, path, hit[0] if hit else None, scope, noted=noted, started=lead_started)
                     return value
             held = lock if lock is not None and lock.token is not None else None
             started = time.monotonic()
@@ -628,19 +702,28 @@ class PaidResultCache:
 
     async def _lookup(
         self, key: CacheKey, path: str, validate: Callable[[Any], object] | None = None, *, report: bool = True,
+        hit_out: "list[VersionedBytes] | None" = None,
     ) -> tuple[bool, Any, bool]:
         """(found, value, unusable): ``unusable`` when bytes are stored that this release cannot read.
 
         ``report`` is False for the lookups after the first of one call, which would say the same thing again.
         """
+        got: VersionedBytes | None = None
         try:
-            raw = await self._store.get(key.org_id, key.record_id, path)
+            if hit_out is not None and getattr(self._store, "supports_bump", False):
+                # The version and write time travel with the bytes: what a bump of this hit needs.
+                got = await self._store.get_versioned(key.org_id, key.record_id, path)  # type: ignore[attr-defined]
+                raw = None if got is None else got.data
+            else:
+                raw = await self._store.get(key.org_id, key.record_id, path)
         except Exception as exc:
             self._storage_error(key, "read", exc)
             return False, None, False
         if raw is None:
             return False, None, False
         found, value = _decode(key, raw)
+        if found and got is not None and hit_out is not None:
+            hit_out.append(got)
         if found and validate is not None:
             try:
                 validate(value)
@@ -706,14 +789,18 @@ class PaidResultCache:
             if held is not None:
                 await _uninterrupted(_stop_and_release(held))
 
-    async def _note(self, scope: RunScope | None, key: CacheKey, path: str, *, stored: bool) -> None:
+    async def _note(self, scope: RunScope | None, key: CacheKey, path: str, *, stored: bool) -> bool:
+        """Notes the key in the run's manifest. False when the note could not be written (the manifest does not
+        protect the key then, so a reuse bumps it whatever its age)."""
         if scope is None or not writes_enabled():
-            return
+            return True
         scope.manifest_guard = self.manifest_lock
         try:
             await scope.note(self._store, path, opens=stored)
         except Exception as exc:
             self._storage_error(key, "manifest", exc)
+            return False
+        return not scope.past_deadline()
 
     async def _acquire(self, key: CacheKey) -> "_Held | None":
         """The lock on the key: held (token set), contended (token None), or None when no lock can be had."""

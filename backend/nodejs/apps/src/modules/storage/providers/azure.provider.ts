@@ -13,6 +13,8 @@ import {
   StorageServiceResponse,
   Document,
   ObjectPage,
+  ConditionalCapabilities,
+  ConditionalDeleteResult,
   SignObjectUrlOptions,
   SignedObjectUrl,
 } from '../types/storage.service.types';
@@ -29,7 +31,11 @@ import {
 } from '../../../libs/errors/storage.errors';
 import { AzureBlobStorageConfig } from '../config/storage.config';
 import { encodeRFC5987 } from '../utils/utils';
-import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
+import {
+  normalizeEtag,
+  quoteEtag,
+  type ObjectStat,
+} from '../utils/storage-fingerprint';
 
 /**
  * Containers (by URL) that a check in this process has seen to exist, and until when. The verification expires, so a
@@ -588,6 +594,11 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
             // Enforced by the service when the uploader sends it; a SAS with `create` alone is refused by Azurite
             // (403) even for a new blob, so the URL itself cannot be made once-only here.
             ...(options.ifAbsent === true && { 'If-None-Match': '*' }),
+            // Not signed (Azure signs no conditional header): enforced because the uploader sends the headers verbatim.
+            // A `bump` URL is, like a `refresh` one, an overwrite capability for the URL's lifetime.
+            ...(options.ifMatch !== undefined && {
+              'If-Match': quoteEtag(options.ifMatch),
+            }),
           },
         };
       }
@@ -627,6 +638,10 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
           key: b.name,
           size: b.properties.contentLength ?? 0,
           lastModifiedMs: b.properties.lastModified.getTime(),
+          // Typed required by the SDK; a stub or an older emulator may omit it.
+          ...((b.properties as { etag?: string }).etag !== undefined && {
+            etag: normalizeEtag(b.properties.etag),
+          }),
         })),
         ...(next !== undefined && next !== '' && { next }),
       };
@@ -657,6 +672,76 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
             .map((key) => container.getBlockBlobClient(key).deleteIfExists()),
         );
       }
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError(
+        'Failed to delete blobs in Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+    }
+  }
+
+  /** Azure honours `If-Match` on Delete Blob and on Put Blob (Azurite too): no probe needed. */
+  conditionalCapabilities(): Promise<ConditionalCapabilities> {
+    return Promise.resolve({ conditionalDelete: true, bump: true });
+  }
+
+  /**
+   * Deletes each blob only if its ETag is still the listed one (412 `ConditionNotMet`: changed, kept; 404: already
+   * gone). `allSettled`: one refusal never rejects the others' deletes.
+   */
+  async deleteObjectsIfMatch(
+    items: { key: string; etag: string }[],
+  ): Promise<ConditionalDeleteResult> {
+    const changed: string[] = [];
+    try {
+      await this.waitForContainer();
+      const container = this.containerClient;
+      const failures: string[] = [];
+      for (let i = 0; i < items.length; i += 16) {
+        const slice = items.slice(i, i + 16);
+        const settled = await Promise.allSettled(
+          slice.map(({ key, etag }) =>
+            container.getBlockBlobClient(key).deleteIfExists({
+              conditions: { ifMatch: quoteEtag(etag) },
+            }),
+          ),
+        );
+        // A refused condition (Azurite answers 412 for a blob that is gone, too) is told apart from a changed blob
+        // by one existence check: a missing blob is a success, not a change.
+        const refused: number[] = [];
+        settled.forEach((outcome, idx) => {
+          if (outcome.status === 'fulfilled') return;
+          const failedKey = slice[idx]?.key ?? '';
+          const status = (outcome.reason as { statusCode?: number }).statusCode;
+          if (status === 412 || status === 409) refused.push(idx);
+          else if (status !== 404) {
+            failures.push(
+              `${failedKey}: ${
+                outcome.reason instanceof Error
+                  ? outcome.reason.message
+                  : 'error'
+              }`,
+            );
+          }
+        });
+        for (const idx of refused) {
+          const refusedKey = slice[idx]?.key ?? '';
+          if (await container.getBlockBlobClient(refusedKey).exists()) {
+            changed.push(refusedKey);
+          }
+        }
+      }
+      if (failures.length > 0) {
+        throw new StorageUploadError(
+          'Failed to delete some blobs in Azure Blob Storage',
+          { originalError: failures.slice(0, 10).join('; ') },
+        );
+      }
+      return { changed };
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError(

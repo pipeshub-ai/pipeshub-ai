@@ -14,6 +14,8 @@ import {
   isPaidResultPath,
   isPaidResultManifestPath,
   isPaidResultObjectPath,
+  isPaidResultMarkerPath,
+  ETAG_VALUE,
   RECORD_ID,
 } from '../utils/paid-results';
 import { messageWhenPresent } from '../../../libs/utils/validation.utils';
@@ -409,6 +411,16 @@ const paidResultPathSchema = z
   .string()
   .refine(isPaidResultPath, 'Not a file the paid-result cache can hold');
 
+// Readable like a result; the signed-URL modes that write refuse it (see the mode check below).
+const paidResultReadablePathSchema = z
+  .string()
+  .refine(
+    (p) => isPaidResultPath(p) || isPaidResultMarkerPath(p),
+    'Not a file the paid-result cache can hold',
+  );
+
+const etagSchema = z.string().regex(ETAG_VALUE, 'Not an ETag');
+
 const uniqueItems = (items: string[]): boolean =>
   new Set(items).size === items.length;
 
@@ -421,10 +433,12 @@ export const PresignPaidResultsSchema = z.object({
       .array(
         z
           .object({
-            path: paidResultPathSchema,
+            path: paidResultReadablePathSchema,
             // `replace` is for a writer's own manifest, which it rewrites as it goes; `refresh` overwrites one
-            // result object (a refresh run's, or one found unreadable). `put` never overwrites.
-            mode: z.enum(['put', 'get', 'replace', 'refresh']),
+            // result object (a refresh run's, or one found unreadable); `bump` replaces one result object only
+            // while its ETag is `etag` (a reuse refreshing the version). `put` never overwrites.
+            mode: z.enum(['put', 'get', 'replace', 'refresh', 'bump']),
+            etag: etagSchema.optional(),
           })
           .refine(
             (f) =>
@@ -432,7 +446,11 @@ export const PresignPaidResultsSchema = z.object({
                 ? isPaidResultManifestPath(f.path)
                 : f.mode === 'refresh'
                   ? isPaidResultObjectPath(f.path)
-                  : true,
+                  : f.mode === 'bump'
+                    ? isPaidResultObjectPath(f.path) && f.etag !== undefined
+                    : f.mode === 'get'
+                      ? true
+                      : isPaidResultPath(f.path) && f.etag === undefined,
             { message: 'This mode does not apply to this path' },
           ),
       )
@@ -449,7 +467,7 @@ export const PaidResultFileParams = z.object({
   headers: Headers,
   params: z.object({
     recordId: paidResultRecordIdSchema,
-    0: paidResultPathSchema,
+    0: paidResultReadablePathSchema,
   }),
 });
 
@@ -471,14 +489,23 @@ export const ListPaidResultsSchema = z.object({
 export const DeletePaidResultsSchema = z.object({
   headers: Headers,
   params: z.object({ recordId: paidResultRecordIdSchema }),
-  body: z.object({
-    orgId: z.string().optional(),
-    paths: z
-      .array(paidResultPathSchema)
-      .min(1)
-      .max(PAID_RESULT_LIST_PAGE)
-      .refine(uniqueItems, { message: 'Each path may appear only once' }),
-  }),
+  body: z
+    .object({
+      orgId: z.string().optional(),
+      paths: z
+        .array(paidResultPathSchema)
+        .min(1)
+        .max(PAID_RESULT_LIST_PAGE)
+        .refine(uniqueItems, { message: 'Each path may appear only once' }),
+      // The ETag each path was listed with: an object that changed since is kept, not deleted.
+      etags: z.record(paidResultPathSchema, etagSchema).optional(),
+    })
+    .refine(
+      (b) =>
+        b.etags === undefined ||
+        Object.keys(b.etags).every((p) => b.paths.includes(p)),
+      { message: 'etags may name only the listed paths' },
+    ),
 });
 
 export const PurgeCutoffPaidResultsSchema = z.object({
