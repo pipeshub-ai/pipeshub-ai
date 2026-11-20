@@ -64,7 +64,8 @@ class FakeGraph:
                 self.record[name] = value
 
     async def update_node_fields_if_match(
-        self, key: str, collection: str, updates: dict[str, Any], expected: dict[str, Any], *_a: object, **_kw: object
+        self, key: str, collection: str, updates: dict[str, Any], expected: dict[str, Any], *_a: object,
+        unset: tuple = (), **_kw: object,
     ) -> bool:
         status_write = "indexingStatus" in updates
         if status_write:
@@ -77,6 +78,8 @@ class FakeGraph:
         if any(self.record.get(name) != value for name, value in expected.items()):
             return False
         self._merge(updates)
+        for name in unset:
+            self.record.pop(name, None)
         return True
 
     async def compare_and_set_indexing_status(self, ids: list[str], expected: str, new: str, *_a: object) -> list[str]:

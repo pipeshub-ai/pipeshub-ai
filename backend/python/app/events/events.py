@@ -1496,49 +1496,12 @@ class EventProcessor:
                     return True
                 if isinstance(late_decision, Keep):
                     # The count arrives after the run marked the record IN_PROGRESS (the parser's on the parsing-service
-                    # path, pdfium's on the parsed bytes in process), so what the event found is put back, and only while the record still carries the
-                    # revision this run wrote. A record that moved on is left to its writer.
-                    # A read that fails raises, so the event is retried: it is not a record that moved on.
-                    current = await self.graph_provider.get_document(
-                        record_id, CollectionNames.RECORDS.value, raise_on_error=True
-                    ) or {}
-                    still_ours = current.get("contentRev") == content_rev
-                    if not still_ours:
-                        pass  # the record moved on (or is gone): left to its writer, and so is any marker it holds
-                    elif current.get("virtualRecordId") != record.get("virtualRecordId"):
-                        # This run isolated the record under a new virtual record id and stripped it from the old one's
-                        # points before the count arrived: the copy it would be kept on is already gone. Refuse, and
-                        # un-index what the record holds now (nothing is indexed under the new id yet).
-                        pages = late_decision.pages
-                        await apply_refuse(
-                            LongDocument(
-                                record_id=record_id, snapshot=current, org_id=long_doc.org_id, content=None,
-                                content_rev=content_rev, md5=md5, force_reindex=long_doc.force_reindex, host=self,
-                            ),
-                            Refuse(
-                                status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                                reason=pdf_over_page_limit(pages), pages=pages,
-                            ),
-                        )
-                    elif await self.graph_provider.update_node_fields_if_match(
-                        record_id,
-                        CollectionNames.RECORDS.value,
-                        {
-                            "indexingStatus": record.get("indexingStatus"),
-                            "parsingStatus": record.get("parsingStatus"),
-                            "processingStartedAt": record.get("processingStartedAt"),
-                            "contentRev": record.get("contentRev"),
-                            "reason": record.get("reason"),
-                        },
-                        {"contentRev": content_rev, "virtualRecordId": record.get("virtualRecordId")},
-                    ):
-                        await apply_keep(
-                            LongDocument(
-                                record_id=record_id, snapshot=record, org_id=long_doc.org_id, content=None,
-                                content_rev=content_rev, md5=md5, force_reindex=long_doc.force_reindex, host=self,
-                            ),
-                            late_decision,
-                        )
+                    # path, pdfium's on the parsed bytes in process), so what the event found is put back, and only while the
+                    # record still carries the revision this run wrote. A record that moved on is left to its writer.
+                    still_ours = await self._put_back_kept_record(
+                        record=record, doc=doc, record_id=record_id, content_rev=content_rev, org_id=long_doc.org_id,
+                        keep=late_decision, md5=md5, force_reindex=long_doc.force_reindex, released_vrid=long_doc.released_vrid
+                    )
                     if embed_marker and still_ours:
                         await self._discard_embed_marker(doc, embed_marker, org_id)
                     await notify_record_indexed(
@@ -1558,6 +1521,74 @@ class EventProcessor:
 
             gate.late_check = late_check
         return gate
+
+    async def _put_back_kept_record(
+        self, *, record: Mapping[str, Any], doc: dict[str, Any], record_id: str, content_rev: str | None, org_id: str,
+        keep: Keep, md5: str | None, force_reindex: bool, released_vrid: str | None,
+    ) -> bool:
+        """Keep, after the run already wrote: put the record back on the copy the event found. True while the run owned it.
+
+        Three states of the record are met here. On the revision this run wrote with the virtual record id it read (the old
+        copy was kept untouched, a replacement pending under another id or not), it is put back, and a pending replacement is
+        dropped and released. Moved off its id (this run isolated it from a shared id and took it out of that id's points
+        before the count existed), it is put back on the old id and the old id's membership is rewritten with the record
+        holding it again, so it is searchable on the copy it was kept on; the id this run minted is released. On a newer
+        revision, or gone, it is left to its writer.
+        """
+        # A read that fails raises, so the event is retried: it is not a record that moved on.
+        current = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True) or {}
+        if current.get("contentRev") != content_rev:
+            return False
+        old_vrid = record.get("virtualRecordId")
+        moved_to = current.get("virtualRecordId")
+        pending = current.get(PENDING_VIRTUAL_RECORD_ID)
+        pipeline = self._indexing_pipeline()
+        moved = moved_to != old_vrid
+        if moved and (pipeline is None or not old_vrid):
+            # Nothing can put it back in the old copy's points: the copy is gone for this record, and a refusal says so.
+            pages = keep.pages
+            await apply_refuse(
+                LongDocument(
+                    record_id=record_id, snapshot=current, org_id=org_id, content=None, content_rev=content_rev, md5=md5,
+                    force_reindex=force_reindex, host=self, released_vrid=released_vrid,
+                ),
+                Refuse(
+                    status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, reason=pdf_over_page_limit(pages), pages=pages,
+                ),
+            )
+            return True
+        expected = {"contentRev": content_rev, "virtualRecordId": moved_to}
+        if pending:
+            expected[PENDING_VIRTUAL_RECORD_ID] = pending
+        put_back = {
+            "indexingStatus": record.get("indexingStatus"),
+            "parsingStatus": record.get("parsingStatus"),
+            "processingStartedAt": record.get("processingStartedAt"),
+            "contentRev": record.get("contentRev"),
+            "reason": record.get("reason"),
+            "virtualRecordId": old_vrid,
+        }
+        applied = await self.graph_provider.update_node_fields_if_match(
+            record_id, CollectionNames.RECORDS.value, put_back, expected,
+            unset=[PENDING_VIRTUAL_RECORD_ID] if pending else (),
+        )
+        if not applied:
+            return True
+        if moved:
+            # Raises when the store cannot do it, so the event is retried with the record already back on its old id.
+            await pipeline.rewrite_or_delete_vector_membership(old_vrid)
+        for released in {v for v in (moved_to if moved else None, pending) if v and v != old_vrid}:
+            self._spawn_abandoned_vrid_cleanup(org_id, released)
+            await self._rewrite_or_delete_vrid_vectors(released)
+        doc.pop(PENDING_VIRTUAL_RECORD_ID, None)
+        await apply_keep(
+            LongDocument(
+                record_id=record_id, snapshot=record, org_id=org_id, content=None, content_rev=content_rev, md5=md5,
+                force_reindex=force_reindex, host=self,
+            ),
+            keep,
+        )
+        return True
 
     async def vrid_has_stored_content(self, org_id: str, virtual_record_id: str) -> bool:
         return await self._vrid_has_stored_content(org_id, virtual_record_id)

@@ -429,17 +429,64 @@ def _service_world(record: dict, *, shared: bool) -> tuple[World, dict]:
 
 
 @pytest.mark.asyncio
-async def test_a_service_keep_after_the_run_left_the_shared_virtual_record_id_is_a_refusal() -> None:
-    """The run isolated the record under a new id and stripped it from the old one's points: it cannot be kept on the old."""
+async def test_a_service_keep_after_the_run_left_the_shared_virtual_record_id_goes_back_to_it() -> None:
+    """The run isolated the record under a new id and took it out of the old id's points: it is put back on the old id, whose
+    membership is rewritten with the record holding it again, and the id the run minted is released."""
     world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
     with patch("app.events.events.content_revision", return_value=REV):
         await world.run(UPDATE)
     record = world.graph.record
     assert seen["vrid_at_parse"] != VRID
+    assert not world.refused
+    assert record["virtualRecordId"] == VRID and record["indexingStatus"] == COMPLETED
+    assert record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
+    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with(VRID)
+    assert [c.args for c in world.rewrite.await_args_list][-1] == (seen["vrid_at_parse"],)
+    assert world.cleanup.call_args.args[1] == seen["vrid_at_parse"]
+    world.unindex.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_service_keep_that_cannot_rewrite_the_old_membership_fails_the_event_with_the_record_back_on_its_id() -> None:
+    world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
+    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=RuntimeError("store down"))
+    with patch("app.events.events.content_revision", return_value=REV), pytest.raises(RuntimeError):
+        await world.run(UPDATE)
+    assert world.graph.record["virtualRecordId"] == VRID
+    assert "indexingNote" not in world.graph.record
+
+
+@pytest.mark.asyncio
+async def test_a_service_keep_with_no_indexing_pipeline_to_restore_membership_is_a_refusal() -> None:
+    world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
+    world.processor.indexing_pipeline = None
+    with patch("app.events.events.content_revision", return_value=REV):
+        await world.run(UPDATE)
     assert world.refused
-    assert record["indexingStatus"] != COMPLETED and record.get("hasIndexedCopy") is not True
-    world.unindex.assert_awaited_once()
-    assert world.unindex.await_args.args[0]["virtualRecordId"] == seen["vrid_at_parse"], "what the record holds now is cleaned"
+    assert world.graph.record["indexingStatus"] != COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a_service_keep_in_keep_old_copy_mode_stays_on_the_old_copy_and_drops_the_pending_one() -> None:
+    """The record kept X and named a replacement Y as pending; the count says keep: X stays, Y is dropped and released."""
+    from app.services.graph_db.common.record_visibility import PENDING_VIRTUAL_RECORD_ID
+
+    world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=False)
+    original = world.ep._orchestrate_via_services
+
+    def with_pending(**kwargs: object):  # noqa: ANN202
+        world.graph.record[PENDING_VIRTUAL_RECORD_ID] = "v-pending"
+        return original(**kwargs)
+
+    world.stack.enter_context(patch.object(world.ep, "_orchestrate_via_services", side_effect=with_pending))
+    with patch("app.events.events.content_revision", return_value=REV):
+        await world.run(UPDATE)
+    record = world.graph.record
+    assert not world.refused
+    assert record["virtualRecordId"] == VRID and record["indexingStatus"] == COMPLETED
+    assert PENDING_VIRTUAL_RECORD_ID not in record
+    assert world.cleanup.call_args.args[1] == "v-pending"
+    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -566,9 +613,9 @@ async def test_the_put_back_applies_only_while_the_virtual_record_id_is_the_one_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shared", [False, True])
-async def test_a_routing_recount_over_the_limit_keeps_a_keep_eligible_record_or_refuses_it_once_moved(shared: bool) -> None:
+async def test_a_routing_recount_over_the_limit_keeps_a_keep_eligible_record_on_its_old_copy(shared: bool) -> None:
     """The early count and the gate's count are unavailable, the routing's count is 600: the record had an index, so it is put
-    back (unshared) rather than un-indexed; once the run moved it off a shared id, it is refused."""
+    back rather than un-indexed; once the run moved it off a shared id, it goes back to that id and its membership is rewritten."""
     world = World(searchable(indexingStatus="QUEUED"))
     world.inspected(None)
     if shared:
@@ -580,13 +627,12 @@ async def test_a_routing_recount_over_the_limit_keeps_a_keep_eligible_record_or_
             await world.run(UPDATE)
     record = world.graph.record
     assert not world.indexed
-    if shared:
-        assert world.refused and record["virtualRecordId"] != VRID
-    else:
-        assert not world.refused
-        assert record["indexingStatus"] == COMPLETED and record["virtualRecordId"] == VRID
-        assert record["contentRev"] == "other" and record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
-        world.unindex.assert_not_awaited()
+    assert not world.refused
+    assert record["indexingStatus"] == COMPLETED and record["virtualRecordId"] == VRID
+    assert record["contentRev"] == "other" and record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
+    world.unindex.assert_not_awaited()
+    restored = world.processor.indexing_pipeline.rewrite_or_delete_vector_membership
+    assert restored.await_count == (1 if shared else 0)
 
 
 # --- the late keep's re-read and marker ----------------------------------------------------------------------------------------
