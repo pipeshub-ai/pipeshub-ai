@@ -228,6 +228,17 @@ export class SupportService {
       zipName,
     );
     const issueRow = { label: 'Issue regarding', value: issue };
+    const attachmentRows =
+      input.files.length > 0
+        ? [
+            {
+              label: 'Attachments',
+              value: attached
+                ? `${String(input.files.length)} file(s) in ${zipName}`
+                : `${String(input.files.length)} file(s) could not be attached`,
+            },
+          ]
+        : [];
     const submitted = {
       reference,
       issue,
@@ -253,19 +264,7 @@ export class SupportService {
         ...submitted,
         forRequester: false,
         groups: toGroups({
-          Request: [
-            issueRow,
-            ...(input.files.length > 0
-              ? [
-                  {
-                    label: 'Attachments',
-                    value: attached
-                      ? `${String(input.files.length)} file(s) in ${zipName}`
-                      : `${String(input.files.length)} file(s) could not be attached`,
-                  },
-                ]
-              : []),
-          ],
+          Request: [issueRow, ...attachmentRows],
           // The workspace ID goes to support only, never on screen or in the person's copy.
           Account: [
             {
@@ -305,12 +304,12 @@ export class SupportService {
           ...submitted,
           forRequester: true,
           groups: toGroups({
-            Request: [issueRow],
+            Request: [issueRow, ...attachmentRows],
             Account: screenRows(requester),
             Environment: [{ label: 'Browser', value: browser }],
           }),
         },
-        attachments: [],
+        attachments,
         reference,
       });
     }

@@ -256,12 +256,16 @@ describe('Contact support and Send feedback routes', () => {
 
       expect(copy.sendEmailTo).to.deep.equal(['ada@acme.test']);
       expect(copy.replyTo).to.equal('help@pipeshub.test');
-      expect(copy.attachments).to.deep.equal([]);
+      expect(copy.attachments?.[0].filename).to.equal(zipName);
+      expect(
+        String(readZip(copy.attachments?.[0].content as Buffer)['shot.png']),
+      ).to.equal('png-bytes');
       const copyHtml = getEmailContent(
         copy.emailTemplateType,
         copy.templateData ?? {},
       );
       expect(copyHtml).to.include('Support request received');
+      expect(copyHtml).to.include(`1 file(s) in ${zipName}`);
       expect(copyHtml).not.to.include(ORG_ID);
     });
 
