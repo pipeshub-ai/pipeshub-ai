@@ -36,9 +36,10 @@ ${'a'.repeat(5000)}`;
   });
 
   it('keeps the link within the limit when the subject is very long', () => {
-    const { href } = buildMailto('help@example.test', '問'.repeat(220), message('It broke.'));
+    const { href, shortened } = buildMailto('help@example.test', '問'.repeat(220), message('It broke.'));
 
     expect(href.length).toBeLessThanOrEqual(MAILTO_URL_LIMIT);
+    expect(shortened).toBe(true);
   });
 
   it('trims what the person wrote and keeps the details support needs', () => {

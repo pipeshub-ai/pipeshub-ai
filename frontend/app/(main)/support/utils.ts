@@ -65,10 +65,12 @@ function encodeWithin(text: string, budget: number): string {
  */
 export function buildMailto(to: string, subject: string, body: string): { href: string; shortened: boolean } {
   const address = encodeWithin(to, Number.MAX_SAFE_INTEGER).replace(/%40/g, '@');
-  const head = `mailto:${address}?subject=${encodeWithin(subject, MAILTO_SUBJECT_BUDGET)}&body=`;
+  const subjectEncoded = encodeWithin(subject, MAILTO_SUBJECT_BUDGET);
+  const subjectCut = subjectEncoded.length < encodeWithin(subject, Number.MAX_SAFE_INTEGER).length;
+  const head = `mailto:${address}?subject=${subjectEncoded}&body=`;
   const budget = Math.max(0, MAILTO_URL_LIMIT - head.length);
   const whole = encodeWithin(body, Number.MAX_SAFE_INTEGER);
-  if (whole.length <= budget) return { href: head + whole, shortened: false };
+  if (whole.length <= budget) return { href: head + whole, shortened: subjectCut };
 
   // The generated details come last, so a separator the person typed in their own text is not mistaken for it.
   const cut = body.lastIndexOf(MAIL_DETAILS_SEPARATOR);
