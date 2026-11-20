@@ -303,8 +303,9 @@ class _QueryPlan:
     # the page because the access check denied too much of it: the caller
     # searches again with the record-id filter.
     narrow_shortfall: bool = False
-    # A provider answered some search of this request with less than its full search (``SearchResult.degraded``).
+    # A provider answered some search of this request with less than its full search (``SearchResult.degraded``), and the reasons it gave.
     degraded: bool = False
+    degraded_reasons: set[str] = field(default_factory=set)
     # The viewer's deferring scope filter (``ServingPlanner``): set only for the main container search, and cleared by the record-id path,
     # whose own filter is the enumerated ids.
     scope_filter: Any = None
@@ -317,8 +318,12 @@ class _QueryPlan:
             return SEARCH_INCOMPLETE_MESSAGE.format(
                 failed=len(self.failed_collections), total=self.collections_searched,
             )
-        # A store that stopped short (``degraded``) can answer with nothing at all: said in words, so no reader takes it for "nothing matched".
-        return SEARCH_DEGRADED_MESSAGE if self.degraded else None
+        # A store that stopped short can answer with nothing at all: said in words, so no reader takes it for "nothing matched". An answer that is complete
+        # though flagged (an exact read of a space whose bit index is off) says nothing.
+        reasons = self.degraded_reasons - _COMPLETE_DEGRADED_REASONS
+        if reasons & _OUT_OF_TIME_REASONS:
+            return SEARCH_DEGRADED_MESSAGE
+        return SEARCH_PARTIAL_MESSAGE if reasons else None
 
 # User-facing guidance when the graph/permissions yield no searchable corpus
 ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
@@ -362,11 +367,19 @@ SEARCH_INCOMPLETE_MESSAGE = (
     "{failed} of {total} parts of the search index could not be searched, so this "
     "search may have missed documents."
 )
-# The search index answered from less than its full search (it ran out of time or was too busy).
+# The search index answered from less than its full search: it ran out of time or was too busy (pgvector's ``timeout``, ``admission``, ``overload``) ...
 SEARCH_DEGRADED_MESSAGE = (
     "The search index could not finish this search in time, so this search may have "
     "missed documents."
 )
+# ... or part of it could not run in full for another reason (the word search failed or hit its row cap, the candidates could not be counted, or a reason
+# this service does not know).
+SEARCH_PARTIAL_MESSAGE = (
+    "Part of this search could not run in full, so this search may have missed documents."
+)
+_OUT_OF_TIME_REASONS = frozenset({"timeout", "admission", "overload"})
+# Flagged but complete: with the bit index off pgvector reads exactly (or the index with a deeper rerank), and misses nothing a full search finds.
+_COMPLETE_DEGRADED_REASONS = frozenset({"quantization"})
 
 # Every empty outcome of an entity-filtered search reads the same, whether nothing
 # matched or the matches are in records this user cannot read.
@@ -1684,6 +1697,7 @@ class RetrievalService:
             return [], {}
         # These hits can join the response, so a partial search behind them is the response's too.
         plan.degraded = plan.degraded or candidate_plan.degraded
+        plan.degraded_reasons |= candidate_plan.degraded_reasons
         kept = [
             hit for hit in hits
             if isinstance(hit, dict) and hit_record_id(hit) in accessible
@@ -2155,12 +2169,16 @@ class RetrievalService:
         best_surviving = -1
         best_degraded = False
         best_failed: list[str] = []
+        # A partial search is the kept attempt's, as its failed collections are: a re-query that stopped short must not mark the page it did not replace.
+        entry_partial = (plan.degraded, set(plan.degraded_reasons))
+        best_partial = entry_partial
         best_shadow: tuple[int, set[str], dict[str, str]] | None = None      # what the shadow comparison needs from the kept attempt
 
         for attempt in range(MAX_SEARCH_ATTEMPTS):
             # Per attempt, not per loop: a later attempt that fails verification
             # must not condemn an earlier one that succeeded.
             attempt_degraded = False
+            plan.degraded, plan.degraded_reasons = entry_partial[0], set(entry_partial[1])
             # Under the record cut each query is fetched at the fused depth and
             # left uncut: cut before verification, its reserve would go to
             # records this user cannot read and drop readable hits for good.
@@ -2195,6 +2213,7 @@ class RetrievalService:
                 if best_surviving < 0:
                     best_results, best_accessible, best_surviving = search_results, {}, 0
                     best_failed = plan.failed_collections
+                    best_partial = (plan.degraded, set(plan.degraded_reasons))
                 break
 
             try:
@@ -2235,6 +2254,7 @@ class RetrievalService:
                 )
                 best_degraded = attempt_degraded
                 best_failed = plan.failed_collections
+                best_partial = (plan.degraded, set(plan.degraded_reasons))
                 best_shadow = None if attempt_degraded else (asked, returned_vids, accessible)
 
             if attempt_degraded:
@@ -2276,6 +2296,7 @@ class RetrievalService:
             )
 
         plan.failed_collections = best_failed
+        plan.degraded, plan.degraded_reasons = best_partial
         if compare and best_shadow is not None and self._shadow is not None and plan.dense is not None and self.vector_db_service.supports_scope_filter:
             self._submit_shadow(queries, filter, best_shadow[0], org_id, user_id, user_key, scope_connector_ids, scopes, plan, best_shadow[1], best_shadow[2])
         # Over-fetching is a means, not a promise: drop the headroom this path
@@ -2391,7 +2412,7 @@ class RetrievalService:
         batches: list[list] = [[] for _ in queries]
         capped = [False] * len(queries)
         failed_collections = searched_collections = 0
-        degraded: list[bool] = []
+        degraded: list[str] = []
         if requests:
             per_collection, failed_collections = await self._lexical_fan_out(
                 await self._resolve_search_collections(org_id, user_id), requests, limit, degraded=degraded,
@@ -2468,7 +2489,7 @@ class RetrievalService:
 
     async def _lexical_fan_out(
         self, collections: list[str], requests: list[HybridSearchRequest], limit: int,
-        *, degraded: list[bool] | None = None,
+        *, degraded: list[str] | None = None,
     ) -> tuple[list[tuple[str, list[list]]], int]:
         """Each collection's own per-request results, and how many collections
         could not be searched. Raises when none could."""
@@ -2835,7 +2856,7 @@ class RetrievalService:
             if plan is not None:
                 plan.collections = collections
         failed_collections: list[str] = []
-        degraded: list[bool] = []
+        degraded: list[str] = []
         search_results = await self._fan_out_searches(
             collections, requests, fused_limit, failed=failed_collections, degraded=degraded,
         )
@@ -2844,6 +2865,7 @@ class RetrievalService:
             plan.collections_searched = len(collections)
         if degraded and plan is not None:
             plan.degraded = True
+            plan.degraded_reasons.update(degraded)
             SERVING_DEGRADED.inc("scopes" if requests and requests[0].scope_filter is not None and _SHADOW_SCOPE_FILTER.get() is None else "legacy")
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
@@ -2888,7 +2910,7 @@ class RetrievalService:
         limit: int,
         *,
         failed: list[str] | None = None,
-        degraded: list[bool] | None = None,
+        degraded: list[str] | None = None,
     ) -> list[list]:
         """Query every collection in parallel and reduce each query to one top-K.
 
@@ -2903,7 +2925,7 @@ class RetrievalService:
         is briefly unreachable. Each one it could not search is appended to
         ``failed``, so the caller can say the results are incomplete. A store that
         answered from a partial search (``degraded_notice``, by a note or by a marked hit)
-        appends to ``degraded``.
+        appends its reasons to ``degraded``.
         """
         if not collections:
             return [[] for _ in requests]
@@ -2951,8 +2973,8 @@ class RetrievalService:
                     )
 
         # Read before the merge trims: a store that found nothing, or whose hits fall below the cut, still counts.
-        if degraded is not None and degraded_notice.count() > noted_before:
-            degraded.append(True)
+        if degraded is not None:
+            degraded.extend(degraded_notice.since(noted_before))
 
         # Degrading when one collection is unreachable is the point of
         # return_exceptions; degrading when *every* one failed is not — that is

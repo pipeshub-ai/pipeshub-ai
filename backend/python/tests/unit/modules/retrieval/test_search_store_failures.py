@@ -20,7 +20,10 @@ from app.modules.retrieval.retrieval_service import (
     SEARCH_INDEX_UNREACHABLE_MESSAGE,
     RetrievalService,
 )
-from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from app.services.graph_db.interface.graph_db_provider import (
+    AccessCheck,
+    AccessibleContainers,
+)
 from app.services.vector_db.models import VectorDBCapabilities
 from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
 
@@ -345,3 +348,59 @@ async def test_a_complete_lexical_search_is_not_flagged(service, mock_vector_db_
     service._container_filter_enabled = AsyncMock(return_value=False)
 
     assert (await service.search_lexical(["rollback"], user_id="u1", org_id="o1")).degraded is False
+
+
+async def test_an_exact_answer_of_a_space_without_its_bit_index_says_nothing_was_missed(service, mock_vector_db_service) -> None:
+    """``quantization`` flags an answer read exactly (or from the index with a deeper rerank): nothing a full search finds is missing."""
+    point = _point()
+    point.degraded = "quantization"
+    mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[point]])
+
+    result = await _search(service)
+
+    assert result["searchDegraded"] is True
+    assert "searchIncomplete" not in result
+
+
+async def test_an_empty_answer_whose_word_search_hit_its_cap_says_part_of_it_did_not_run(service, mock_vector_db_service, tracked_request) -> None:
+    mock_vector_db_service.query_nearest_points = _partial_and_empty("partial")
+
+    result = await _search(service)
+
+    assert result["searchIncomplete"] == mod.SEARCH_PARTIAL_MESSAGE
+    assert result["message"].startswith(mod.SEARCH_PARTIAL_MESSAGE)
+
+
+@pytest.mark.parametrize(("reasons", "said"), [
+    (set(), None), ({"quantization"}, None), ({"timeout"}, "time"), ({"admission"}, "time"), ({"overload"}, "time"),
+    ({"partial"}, "part"), ({"error"}, "part"), ({"sizing"}, "part"), ({"a-reason-of-another-store"}, "part"), ({"quantization", "timeout"}, "time"),
+])
+def test_the_notice_is_true_for_the_reasons_the_stores_gave(reasons: set[str], said: str | None) -> None:
+    plan = mod._QueryPlan(degraded=bool(reasons), degraded_reasons=set(reasons))
+    assert plan.incomplete_notice() == {None: None, "time": mod.SEARCH_DEGRADED_MESSAGE, "part": mod.SEARCH_PARTIAL_MESSAGE}[said]
+
+
+async def test_a_requery_that_stopped_short_does_not_mark_the_attempt_that_was_kept(service, mock_graph_provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The partial search, like the failed collections, is the kept attempt's: a wider re-query that came back worse and stopped short is dropped with it."""
+    hits = [{"score": 0.9 - i / 10, "content": "c", "metadata": {"virtualRecordId": f"v{i}", "recordId": f"r{i}"}} for i in range(3)]
+    calls = []
+
+    async def search(*_a: object, plan: mod._QueryPlan, **_k: object) -> list[dict]:
+        calls.append(1)
+        if len(calls) == 1:
+            return hits
+        plan.degraded = True
+        plan.degraded_reasons.add("timeout")
+        return hits[:1]
+    service._execute_parallel_searches = search
+    monkeypatch.setattr(service, "_should_requery", lambda **_k: len(calls) == 1)
+    monkeypatch.setattr(mod, "narrow_access_fallback_enabled", lambda: False)
+    mock_graph_provider.check_access = AsyncMock(side_effect=lambda *a, virtual_record_ids, **k: AccessCheck(records_by_vrid={v: v for v in virtual_record_ids}))
+    plan = mod._QueryPlan()
+
+    kept, _, _ = await service._search_and_adjudicate(["q"], None, 3, "o1", "u1", AccessibleContainers(), allow_requery=True, scope_connector_ids=None, plan=plan,
+                                                     user_key="k", compare=False)
+
+    assert len(calls) == 2 and len(kept) == 3                         # the re-query ran and the first attempt was kept
+    assert plan.degraded is False and plan.degraded_reasons == set()
+    assert plan.incomplete_notice() is None

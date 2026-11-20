@@ -78,6 +78,11 @@ def count() -> int:
     return len(_seen.get() or ())
 
 
+def since(n: int) -> list[str]:
+    """The reasons noted after the first ``n`` (``count()`` read before a search): what that search's stores said."""
+    return list((_seen.get() or [])[n:])
+
+
 def was_degraded() -> bool:
     return bool(_seen.get())
 
