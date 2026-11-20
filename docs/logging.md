@@ -808,6 +808,42 @@ Refusals use the same tags as the auth events (`userRefusal` / `auditUserRefusal
 lists in `USER_AUDIT_REASONS`). Not audited: route-guard refusals (`userAdminCheck`, `userAdminOrSelfCheck`, …), validation 400s,
 display-picture changes, and system failures (the error middleware logs those once).
 
+## Org settings, team and service-account audit events (Node)
+
+The same mechanism and fields for changes to the org's own settings (`/api/v1/org`), to teams and to service accounts and their
+keys. Three more fields, each only on the lines it applies to:
+
+- `team_id`: the team, on team membership lines (the target is the user). The org's default All team is `all_<org id>`.
+- `key_id`: a service-account key's record id, never the key itself. It is the `id` that the mint answer and the key list show.
+- `scopes`: the scopes a key was issued with, sorted and comma-joined (`kb:read,semantic:write`).
+
+Team decisions are made by the team service (Python). Node writes the line from that service's answer: 2xx is a success, 403 is
+`not_owner`, 404 is `not_found` (the team, or the caller, is unknown to the team service), and 409 is `name_taken`.
+
+| Event | Outcome | `reason` | Notes |
+| --- | --- | --- | --- |
+| `org.update`, `org.delete` | `success` | | the org is `org_id`; an update that names no known field is still written |
+| `org.logo.update` | `success` | `set`, `removed` | |
+| `org.onboarding.update` | `success` | `configured`, `not_configured`, `skipped` | |
+| `team.create` | `success`, `failure` | success: `no_team_id` (the team service's answer named no team: no target and no member lines); failure: `name_taken` | `target` = the new team; one `team.member.add` per member listed (the creator, who joins as owner, is not) |
+| `team.update` | `success`, `failure` | failure: `not_owner`, `not_found`, `name_taken` | success only when the name or description was sent (an empty description counts); a refused PUT writes one `team.update` failure, whatever it asked for |
+| `team.delete` | `success`, `failure` | failure: `not_owner`, `not_found`, `protected_team` (the All team) | |
+| `team.member.add`, `team.member.remove`, `team.member.role.change` | `success` | | one line per user; written from the request after the team service accepted it, so an owner's own add and an owner-to-owner role change, which the team service skips, still get a line |
+| `service_account.create` | `success`, `failure` | success: `restore` (a deleted account brought back under its name); failure: `name_taken` | written at the write, so it is there even when the request then fails publishing the change |
+| `service_account.update` | `success`, `failure` | success: `profile`, `disable`, `enable`; failure: `restoring` (enable during a restore), `not_found` | one PATCH can write two lines (`profile` and `disable`; or `enable` and then a `not_found` failure when the account is deleted between the two writes, since the enable was already saved); enabling an enabled account still writes `enable` |
+| `service_account.delete` | `success`, `failure` | failure: `not_found` | the key revocations it causes are part of this line |
+| `service_account.token.create` | `success`, `failure` | failure: `account_disabled`, `scope_denied` (`agent:execute`), `token_limit`, `not_found` | `key_id` and `scopes` on success |
+| `service_account.token.revoke` | `success`, `failure` | failure: `not_found` | `key_id` on both |
+
+A key rotation is a `service_account.token.create` followed by a `service_account.token.revoke` of the old `key_id` on the same
+target: no endpoint changes a key's scopes after it is minted. `not_found` on a service account also covers an id from another
+org, so a probe across orgs is audited.
+
+Not audited: route-guard refusals (`userAdminCheck`, `requireScopes`), validation 400s (including an unknown scope and the team
+service's 400s: no name, the last owner, people who are gone), and system failures. **Known gap:** the team service's
+`update_team` is not atomic. It saves a rename and member removals before checks that can still answer 400 or 500, and those
+saved changes get no line here; the team service's own log has them.
+
 ## Upstream calls (Node)
 
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,

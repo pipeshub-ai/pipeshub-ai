@@ -3,7 +3,9 @@ import { AuthMethodType } from '../../modules/auth/types/auth-method';
 import {
   EVENT_NAME,
   isPipesHubId,
+  isTeamId,
   Logger,
+  SCOPE_LIST,
   shownIdentity,
   SNAKE_TOKEN,
 } from './logger.service';
@@ -18,6 +20,8 @@ export interface AuditFields {
   target?: string;
   /** The target is a user, so it is shown the way user ids are (a provider may hash or hide it). */
   targetIsUser?: boolean;
+  /** The target is a team, whose id may be the org's All team (`all_<org id>`). */
+  targetIsTeam?: boolean;
   /** The org, used only when the request has none yet (before sign-in). */
   org?: string;
   outcome: AuditOutcome;
@@ -27,6 +31,12 @@ export interface AuditFields {
   authMethod?: string;
   /** The group a membership line is about (shown as `group_id`); the target is the user. */
   group?: string;
+  /** The team a membership line is about (shown as `team_id`); the target is the user. */
+  team?: string;
+  /** The service-account key a line is about (shown as `key_id`): its record id, never the key. */
+  key?: string;
+  /** The scopes a key was issued with; anything that is not a scope name is shown as `other`. */
+  scopes?: readonly string[];
 }
 
 const INVALID_EVENT = 'audit.invalid_event';
@@ -36,8 +46,17 @@ const AUTH_METHODS: ReadonlySet<string> = new Set(
 const REFUSAL = Symbol('auditRefusal');
 
 /** A value that is not an id PipesHub issued is rejected, never cleaned: an email must not reach the line in any form. */
-const asId = (value: string | undefined): string | null | undefined =>
-  value === undefined ? undefined : isPipesHubId(value) ? value : null;
+const asId = (
+  value: string | undefined,
+  isId: (v: unknown) => v is string = isPipesHubId,
+): string | null | undefined =>
+  value === undefined ? undefined : isId(value) ? value : null;
+
+/** Sorted, without repeats; `other` when any entry is not a scope name. */
+const shownScopes = (scopes: readonly string[]): string => {
+  const joined = [...new Set(scopes)].sort().join(',');
+  return SCOPE_LIST.test(joined) ? joined : 'other';
+};
 
 /** A user id as the provider shows user ids; null when it hides them. */
 const shownUser = (userId: string | null | undefined): string | null =>
@@ -56,11 +75,17 @@ export function audit(event: string, fields: AuditFields): void {
     fields.actor === undefined
       ? getRequestContext()?.userId
       : asId(fields.actor);
-  const targetId = asId(fields.target);
+  const targetId = asId(
+    fields.target,
+    fields.targetIsTeam ? isTeamId : isPipesHubId,
+  );
   const org = asId(fields.org);
   const groupId = asId(fields.group);
-  const invalidId =
-    actorId === null || targetId === null || org === null || groupId === null;
+  const teamId = asId(fields.team, isTeamId);
+  const keyId = asId(fields.key);
+  const invalidId = [actorId, targetId, org, groupId, teamId, keyId].includes(
+    null,
+  );
   const reason = invalidId
     ? 'invalid_id'
     : fields.reason === undefined
@@ -75,6 +100,9 @@ export function audit(event: string, fields: AuditFields): void {
     actor: shownUser(actorId),
     target: fields.targetIsUser ? shownUser(targetId) : (targetId ?? null),
     ...(typeof groupId === 'string' && { group_id: groupId }),
+    ...(typeof teamId === 'string' && { team_id: teamId }),
+    ...(typeof keyId === 'string' && { key_id: keyId }),
+    ...(fields.scopes !== undefined && { scopes: shownScopes(fields.scopes) }),
     outcome: fields.outcome,
     reason,
     // The request body names the method, so only a known one is ever printed.
@@ -118,7 +146,13 @@ export function auditRefusal(
   error: unknown,
   who: Pick<
     AuditFields,
-    'actor' | 'org' | 'authMethod' | 'target' | 'targetIsUser'
+    | 'actor'
+    | 'org'
+    | 'authMethod'
+    | 'target'
+    | 'targetIsUser'
+    | 'targetIsTeam'
+    | 'key'
   >,
   allowed: readonly string[],
 ): void {
