@@ -3,6 +3,9 @@ oauth_apps_router = None
 knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
+# Routes mounted ahead of the shared query routers / beside the entity router.
+query_extension_router = None
+entity_extension_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
 # Organization-wide rules for toolset tools (the "Tool approvals" editor). Off: a toolset tool
 # starts from what it does to data, and the person in the chat answers its approval card.
@@ -25,6 +28,8 @@ mcp_runner_settings = None
 # a person may answer for the conversation or for good. None: no layer governs web search or page opening, and every
 # other layer's ask is answered once, as each card asks it.
 layer_ask_answers = None
+# A service account agent's own credentials: any editor of the agent sets them.
+agent_credentials_admin_only = False
 from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (

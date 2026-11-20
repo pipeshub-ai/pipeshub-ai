@@ -29,7 +29,6 @@ export { takeSignInRefusal } from '@/lib/auth/sign-in-refusal';
 export { SignInNotices } from '@/app/(public)/components/sign-in-notices';
 export { AgentBuilder } from '@/app/(main)/agents/agent-builder/agent-builder';
 export { CreateAgentDialog } from '@/app/(main)/agents/components/create-agent-dialog';
-export { AgentSidebarListRow } from '@/app/(main)/chat/sidebar/agent-sidebar-list-row';
 export { ChatSidebarFooter } from '@/app/(main)/chat/sidebar/footer';
 export { AgentChatHeader } from '@/app/(main)/chat/components/agent-chat-header';
 export { OAuthAppSelector } from '@/app/(main)/workspace/connectors/components/authenticate-tab/oauth-app-selector';
@@ -43,6 +42,7 @@ export { McpManageAccess } from '@/app/(main)/workspace/mcp-servers/team/compone
 export { useUserPermission } from '@/lib/hooks/use-user-permission';
 export { PermissionLockIcon } from '@/app/components/ui/permission-lock-icon';
 export { PermissionDeniedDialog, usePermissionDeniedDialog } from '@/app/components/ui/permission-denied-dialog';
+export { useAgentRowShare } from '@/app/(main)/chat/sidebar/agent-row-share';
 export { InheritedConfigNotice } from '@/app/(main)/workspace/components/inherited-config-notice';
 export { KbListView } from '@/app/(main)/knowledge-base/components/kb-list-view';
 export { KbGridView } from '@/app/(main)/knowledge-base/components/kb-grid-view';
@@ -136,3 +136,15 @@ export { useSkillsPageAction } from '@/app/(main)/workspace/skills/personal/comp
 // Why agents can't use an imported skill, in an edition's own words for its review states (OSS: the card's own)
 export { skillReviewNoticeKey } from '@/app/(main)/workspace/skills/personal/components/skills-page-extras';
 export type { SkillsPageAction } from '@/app/(main)/workspace/skills/personal/components/skills-page-extras';
+
+// Chat extension points
+export { defaultChatExtension as chatExtension, defaultChatSlots as chatSlots } from '@/app/(main)/chat/chat-extension';
+
+// Notification panel and socket
+export { defaultNotificationExtension as notificationExtension } from '@/app/(main)/notifications/notification-extension';
+
+// Profile page sections
+export { ProfileExtraSections } from '@/app/(main)/workspace/profile/components/profile-extra-sections';
+
+// Agent builder
+export { defaultAgentBuilderExtension as agentBuilderExtension } from '@/app/(main)/agents/agent-builder/agent-builder-extension';

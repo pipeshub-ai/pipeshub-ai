@@ -30,6 +30,15 @@ from app.services.messaging.lanes.assignment_policy import (
 from app.services.messaging.lanes.assignment_policy import (
     lane_pool_for_org as lane_pool_for_org,
 )
+# Chat and agent-loop hooks (see app.modules.agents.chat_extension).
+from app.modules.agents.chat_extension import default_chat_extension
+
+chat_extension = default_chat_extension
+
+
+def sa_forces_org_sharing() -> bool:
+    """Service-account agents are always shared with the whole org."""
+    return True
 
 # The edition's services, each imported when first read: a process that asks this module only for its harness hooks
 # (the sandbox broker's image check) loaded the Neo4j driver, pandas and the connectors' token services with them,
