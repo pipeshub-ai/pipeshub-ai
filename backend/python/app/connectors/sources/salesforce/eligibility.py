@@ -1,6 +1,16 @@
 """Which Salesforce users may read what PipesHub holds for them, beyond record sharing.
 
 - Frozen users (``UserLogin.IsFrozen``) keep ``IsActive = true`` but cannot sign in.
+- Only the users of ``READER_USER_TYPES`` are anyone's account (Object Reference, User,
+  UserType: https://resources.docs.salesforce.com/latest/latest/en-us/sfdc/pdf/object_reference.pdf).
+  A Guest is "an unauthenticated user without login credentials", and "All guest visitors to a
+  public site share the same guest user record" (Share Securely with Guest Users:
+  https://resources.docs.salesforce.com/latest/latest/en-us/sfdc/pdf/communities_secure_guest_users.pdf),
+  so what it reads is open to anyone and is no PipesHub user's access. A CsnOnly user's "access
+  to the application is limited to Chatter", and the connector holds no Chatter-only content.
+  External users (the portal and Experience Cloud types) are their holders' accounts, and
+  their record access is UserRecordAccess's ("a user's access to a set of records", for any
+  user). Any other value, or none, links nobody.
 - Product2 is not shared record by record: a user reads products when a permission set
   (a profile's included) grants Read on Product2, or View All Data. UserRecordAccess only
   covers objects on the Sharing Settings page, so it is not asked about products.
@@ -18,8 +28,18 @@ if TYPE_CHECKING:
 
 RowPages = Callable[[str], AsyncIterator[list[dict[str, Any]]]]
 
+READER_USER_TYPES = ("Standard", "PowerPartner", "PowerCustomerSuccess", "CustomerSuccess", "CspLitePortal")
+# Products: no record sharing, except for guests ("org-wide defaults set to Private for all objects,
+# including objects not listed on the Sharing Settings page", Share Securely with Guest Users). The
+# docs do not say how external users read them, so only internal users are product readers.
+PRODUCT_READER_USER_TYPES = ("Standard",)
+_READER_TYPES_SOQL = "(" + ", ".join(f"'{t}'" for t in READER_USER_TYPES) + ")"
+READERS_SOQL = f"SELECT Id, Email, UserType FROM User WHERE IsActive = true AND UserType IN {_READER_TYPES_SOQL}"
+
 FROZEN_USERS_SOQL = "SELECT UserId FROM UserLogin WHERE IsFrozen = true"
-INACTIVE_USERS_SOQL = "SELECT Id FROM User WHERE IsActive = false"
+INACTIVE_USERS_SOQL = (
+    f"SELECT Id FROM User WHERE IsActive = false OR UserType = null OR UserType NOT IN {_READER_TYPES_SOQL}"
+)
 PRODUCT_READERS_SOQL = (
     "SELECT AssigneeId FROM PermissionSetAssignment WHERE PermissionSetId IN "
     "(SELECT ParentId FROM ObjectPermissions WHERE SobjectType = 'Product2' AND PermissionsRead = true)"
@@ -37,6 +57,7 @@ class SalesforceEligibility:
         self._on_unreadable = on_unreadable  # told what could not be read
 
     async def inactive_user_ids(self) -> Optional[set[str]]:
+        """Users who cannot sign in, or whose type is not ``READER_USER_TYPES``."""
         return await self._ids(INACTIVE_USERS_SOQL, "Id", "inactive users")
 
     async def frozen_user_ids(self) -> Optional[set[str]]:
