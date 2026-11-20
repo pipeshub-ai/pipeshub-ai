@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -15,9 +15,11 @@ import pytest
 from app.services.base_client import ServiceCallError
 from app.services.docling.client import (
     DoclingClient,
+    DoclingNotServing,
     DoclingParseError,
     DoclingUnavailableError,
 )
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
@@ -270,3 +272,169 @@ async def test_the_docling_services_own_answers_map_to_the_rule(
     assert type(raised.value) is expected_type
     assert (raised.value.status_code, raised.value.reason) == (status, reason)
     assert len(requests) == expected_requests
+
+
+# Docling never received the file: the record waits for it (a hand-back, no attempt counted) instead of failing.
+def _assert_waits_for_docling(exc: BaseException) -> None:
+    assert isinstance(exc, DoclingNotServing)
+    assert isinstance(exc, DoclingUnavailableError), "the PdfPlumber fallback catches the base type"
+    assert isinstance(exc, RequeueWithoutAttempt)
+    assert exc.delay_s == DoclingNotServing.HANDBACK_DELAY_S == 60.0
+    assert exc.counts_toward_backstop and not exc.pauses_consumer
+    assert exc.give_up_label == "Docling stayed unavailable"
+    assert exc.log_level == logging.INFO
+    assert exc.reason == "unavailable"
+    assert isinstance(exc.__cause__, ServiceCallError)
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [_raise(httpx.ConnectError, "connection refused"), _raise(httpx.ConnectTimeout, "connect timed out")],
+    ids=["refused", "connect-timeout"],
+)
+async def test_a_docling_that_never_received_the_file_is_waited_for(handler: Handler) -> None:
+    requests: list[httpx.Request] = []
+
+    with pytest.raises(DoclingUnavailableError) as raised:
+        await _parse(_client(handler, requests))
+
+    _assert_waits_for_docling(raised.value)
+    assert len(requests) == 3
+    assert NAME not in str(raised.value)
+
+
+async def test_an_open_circuit_is_waited_for_without_a_request() -> None:
+    requests: list[httpx.Request] = []
+    client = _client(_answer(200, {"success": True, "parse_result": "{}"}), requests)
+    client.health_check = AsyncMock(return_value=False)  # type: ignore[method-assign]  # the probe never resolves a host
+    for _ in range(client.circuit_breaker.failure_threshold):
+        client.circuit_breaker.record_failure()
+
+    with pytest.raises(DoclingUnavailableError) as raised:
+        await _parse(client)
+
+    _assert_waits_for_docling(raised.value)
+    assert requests == []
+
+
+async def test_load_shed_with_retry_after_is_waited_for() -> None:
+    requests: list[httpx.Request] = []
+    client = DoclingClient(
+        service_url="http://docling.test", timeout=5.0, max_retries=3, retry_delay=0.0, backpressure_coordinator=MagicMock(),
+    )
+    client.max_backpressure_attempts = 0  # give up at the first 429 instead of waiting it out
+    client._make_client = lambda: httpx.AsyncClient(  # type: ignore[method-assign]
+        transport=httpx.MockTransport(lambda r: requests.append(r) or httpx.Response(429, headers={"Retry-After": "5"})),
+    )
+
+    with pytest.raises(DoclingUnavailableError) as raised:
+        await _parse(client)
+
+    _assert_waits_for_docling(raised.value)
+
+
+# One attempt of the call reached Docling, so the call counts, whatever the later attempts met: the file may be the cause.
+@pytest.mark.parametrize(
+    "first",
+    [
+        lambda r: httpx.Response(503, json={"detail": "down"}),
+        _raise(httpx.ReadTimeout, "read timed out"),
+    ],
+    ids=["503-then-refused", "read-timeout-then-refused"],
+)
+async def test_a_call_that_reached_docling_once_stays_counted(first: Handler) -> None:
+    requests: list[httpx.Request] = []
+    refused = _raise(httpx.ConnectError, "connection refused")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return (first if len(requests) == 1 else refused)(request)
+
+    with pytest.raises(DoclingUnavailableError) as raised:
+        await _parse(_client(handler, requests))
+
+    assert type(raised.value) is DoclingUnavailableError
+    assert not isinstance(raised.value, RequeueWithoutAttempt)
+    assert len(requests) == 3
+    assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        _raise(httpx.ReadError, "connection reset by peer"),
+        _raise(httpx.RemoteProtocolError, "Server disconnected without sending a response."),
+        _answer(500, {"detail": "Docling service not available"}),
+        _answer(503, {"detail": "down"}),
+        _raise(httpx.WriteError, "broken pipe while sending the file"),
+        _raise(httpx.WriteTimeout, "timed out sending the file"),
+        _answer(401, {"detail": "invalid token"}),
+    ],
+    ids=["dropped-read-error", "dropped-mid-answer", "500", "503", "partial-send", "send-timeout", "auth-refused"],
+)
+async def test_a_failure_docling_saw_or_refused_by_auth_is_not_waited_for(handler: Handler) -> None:
+    with pytest.raises(DoclingUnavailableError) as raised:
+        await _parse(_client(handler, []))
+
+    assert type(raised.value) is DoclingUnavailableError
+
+
+async def test_a_refusal_partway_through_a_batched_parse_is_waited_for() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if len(requests) == 1:
+            return httpx.Response(200, json={"success": True, "parse_result": "{}"})
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with patch("app.services.docling.client.DoclingDocument"), pytest.raises(DoclingUnavailableError) as raised:
+        await _parse(_client(handler, requests), page_count=5, batch_size=2)
+
+    _assert_waits_for_docling(raised.value)
+    assert len(requests) == 4  # batch 1 once, batch 2 three times, batch 3 never
+
+
+def _answers(*answers: httpx.Response) -> tuple[DoclingClient, list[httpx.Request]]:
+    """A client whose transport gives these answers in turn (the last one repeats)."""
+    requests: list[httpx.Request] = []
+    client = DoclingClient(
+        service_url="http://docling.test", timeout=5.0, max_retries=3, retry_delay=0.0, backpressure_coordinator=MagicMock(),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return answers[min(len(requests), len(answers)) - 1]
+
+    client._make_client = lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[method-assign]
+    return client, requests
+
+
+SHED = httpx.Response(429, headers={"Retry-After": "5"}, json={"detail": "busy"})
+
+
+async def test_load_shed_after_docling_answered_a_5xx_stays_counted() -> None:
+    """The 503 may have been Docling failing on this file; the 429 that follows does not make the call unseen."""
+    client, requests = _answers(httpx.Response(503, json={"detail": "down"}), SHED)
+    client.max_backpressure_attempts = 0  # give up at the first 429
+
+    with pytest.raises(DoclingUnavailableError) as raised:
+        await _parse(client)
+
+    assert type(raised.value) is DoclingUnavailableError
+    assert raised.value.__cause__.delivered is True
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("first_answered", [True, False], ids=["5xx-then-shed", "shed-from-the-first-answer"])
+async def test_load_shed_past_the_budget_keeps_whether_docling_saw_the_file(first_answered: bool) -> None:
+    """The budget branch of the retry loop, which raises before waiting out a Retry-After that cannot fit."""
+    from app.services.base_client import ServiceBackpressureError
+
+    answers = (httpx.Response(503, json={"detail": "down"}), SHED) if first_answered else (SHED,)
+    client, _ = _answers(*answers)
+
+    with pytest.raises(ServiceBackpressureError) as raised:
+        await client._request_with_retry(
+            "POST", "http://docling.test/parse-pdf", operation="parse_pdf", budget_seconds=1.5, read_timeout=1.0,
+        )
+
+    assert raised.value.delivered is first_answered
