@@ -58,6 +58,9 @@ if TYPE_CHECKING:
 
 #: Twins re-pointed at once.
 TWIN_CONCURRENCY = 8
+#: Writes of the undo of a move whose copy could not be shown whole, and the pause before the next one.
+UNDO_ATTEMPTS = 3
+UNDO_BACKOFF_SECONDS = 0.2
 _RECORDS = CollectionNames.RECORDS.value
 _MAPPING = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
@@ -92,13 +95,21 @@ class SwapCommitter:
         fence = leaving_vrid(graph, record.id, swap.old_vrid, self.logger) if scope_fields_enabled() else contextlib.nullcontext()
         async with fence:
             won = await graph.update_node_fields_if(
-                record.id, _RECORDS, {**fields, "virtualRecordId": swap.new_vrid}, conditions,
-                unset=[PENDING_VIRTUAL_RECORD_ID],
+                record.id, _RECORDS, {"virtualRecordId": swap.new_vrid}, conditions, unset=[PENDING_VIRTUAL_RECORD_ID],
             )
-        if won:
-            await self._confirm_after_commit(ctx, swap, fields)
+        if not won:
+            return await self._refused(swap)
+        await self._confirm_after_commit(ctx, swap)
+        # Only now is the record finished: until this write its status is the run's, so a failure anywhere above leaves the record an attempt
+        # in flight (the handler requeues it, or the stale sweep does) and never COMPLETED on a copy nobody has shown to be whole.
+        finished = await graph.update_node_fields_if(
+            record.id, _RECORDS, fields,
+            [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", ONE_OF, list(keep_old_copy.COMMITTABLE))],
+        )
+        if finished:
             return True
-        return await self._refused(swap)
+        doc = await graph.get_document(swap.record_id, _RECORDS, raise_on_error=True)
+        return doc is not None and is_live_record(doc)  # another writer finished the record: the copy it names is the one committed
 
     async def commit_document(self, doc: dict[str, Any], swap: keep_old_copy.SwapRun, fields: dict[str, Any]) -> bool:
         """The commit and what follows it for a run that ends without a parse of its own to hand over (an empty result), from the record's
@@ -115,21 +126,34 @@ class SwapCommitter:
             await self.finish(ctx, swap)  # type: ignore[arg-type]
         return committed
 
-    async def _confirm_after_commit(self, ctx: TransformContext, swap: keep_old_copy.SwapRun, fields: dict[str, Any]) -> None:
-        """The record names the copy now. When it is not whole in the store (a sweep, or anything else, took it between the read and the write), the move is undone while the old copy is still there, and the run is retried."""
+    async def _confirm_after_commit(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
+        """The record names the copy now. When it is not whole in the store (a sweep, or anything else, took it between the read and the
+        write) or cannot be shown to be (the read failed), the move is undone while the old copy is still there, and the run is retried.
+
+        If the undo cannot be written either, the record names a copy nobody has verified, and its status is still the run's (the status is
+        written only after this), so it is an attempt in flight: the failed attempt is requeued by the handler or, when the graph store is
+        down too, by the stale-record sweep, and the rerun replaces the copy. The old copy is kept for its grace (marked before the move)."""
         failure: Exception | None = None
         try:
             if await self._complete_set(ctx, swap):
                 return
-        except Exception as exc:  # the read itself failed (a store timeout): the copy cannot be shown to be whole, so the move is undone too
+        except Exception as exc:
             failure = exc
-        await self.o.graph_provider.update_node_fields_if(
-            swap.record_id, _RECORDS,
-            {"virtualRecordId": swap.old_vrid, PENDING_VIRTUAL_RECORD_ID: swap.new_vrid, "indexingStatus": ProgressStatus.IN_PROGRESS.value},
-            [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", EQ, fields.get("indexingStatus", ProgressStatus.COMPLETED.value))],
-        )
+        undone = False
+        for attempt in range(UNDO_ATTEMPTS):
+            try:
+                undone = await self.o.graph_provider.update_node_fields_if(
+                    swap.record_id, _RECORDS, {"virtualRecordId": swap.old_vrid, PENDING_VIRTUAL_RECORD_ID: swap.new_vrid},
+                    [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", ONE_OF, list(keep_old_copy.COMMITTABLE))],
+                )
+                break
+            except Exception as undo_exc:
+                self.logger.error("The move of record %s to its new copy could not be undone (attempt %d): %s", swap.record_id, attempt + 1, type(undo_exc).__name__)
+                await asyncio.sleep(UNDO_BACKOFF_SECONDS * (attempt + 1))
+        if not undone:
+            self.logger.error("Record %s names a copy that was not verified; its attempt is left in flight to be rerun", swap.record_id)
         if failure is not None:
-            raise failure  # the run is retried with the record on the old copy
+            raise failure  # the run is retried
         raise IndexingError(
             "The replacement copy was removed from the vector store while it was committed; the move is undone and the run is retried",
             details={"record_id": swap.record_id, "virtual_record_id": swap.new_vrid},

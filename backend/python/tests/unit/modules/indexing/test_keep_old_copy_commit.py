@@ -480,3 +480,38 @@ async def test_a_read_that_fails_after_the_commit_write_undoes_the_move_and_the_
     with pytest.raises(TimeoutError):
         await swap.commit(ctx_for("A", "Y", pointed=["b1"]), run(), {"indexingStatus": "COMPLETED"})
     assert g.records["A"]["virtualRecordId"] == "X" and g.records["A"]["pendingVirtualRecordId"] == "Y"
+
+
+@pytest.mark.asyncio
+async def test_when_the_read_and_the_undo_both_fail_the_record_is_an_attempt_in_flight_and_the_rerun_repairs_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The double failure: the record is never COMPLETED on a copy nobody has verified (its status is written only after the read), and the
+    rerun that the requeue (or the stale sweep) starts replaces the copy."""
+    monkeypatch.setattr("app.modules.transformers.swap_commit.UNDO_BACKOFF_SECONDS", 0)
+    g = FakeGraph({"A": rec("X", "IN_PROGRESS", pendingVirtualRecordId="Y", hasIndexedCopy=True)})
+    state = {"fail": True}
+
+    def view(vrid: str) -> list[str]:
+        if state["fail"] and vrid == "Y" and state.setdefault("reads", 0) is not None:
+            state["reads"] += 1
+            if state["reads"] == 2:  # the read after the write
+                raise TimeoutError("down")
+        return ["b1"]
+
+    real = g.update_node_fields_if
+
+    async def graph_down_for_the_undo(key: str, collection: str, updates: dict, conditions: list, *a: object, **k: object) -> bool:
+        if state["fail"] and updates.get("pendingVirtualRecordId") and updates.get("virtualRecordId") == "X":
+            raise TimeoutError("down")
+        return await real(key, collection, updates, conditions, *a, **k)
+
+    g.update_node_fields_if = graph_down_for_the_undo  # type: ignore[method-assign]
+    swap, _ = committer(g, view=view)
+    with pytest.raises(TimeoutError):
+        await swap.commit(ctx_for("A", "Y", pointed=["b1"]), run(), {"indexingStatus": "COMPLETED"})
+    doc = g.records["A"]
+    assert doc["virtualRecordId"] == "Y" and doc["indexingStatus"] == "IN_PROGRESS"  # an attempt in flight, not COMPLETED
+    # the rerun (the record is requeued, or found by the stale sweep): it replaces the unverified copy and finishes
+    state["fail"] = False
+    doc["pendingVirtualRecordId"] = "Y2"
+    assert await swap.commit(ctx_for("A", "Y2"), keep_old_copy.SwapRun("A", "o", "Y", "Y2"), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "Y2" and g.records["A"]["indexingStatus"] == "COMPLETED"

@@ -40,6 +40,11 @@ def _held(graph: FakeGraph, vrid: str) -> bool:
     return any(holds_vrid(d, vrid) for d in graph.records.values())
 
 
+@pytest.fixture(autouse=True)
+def _no_undo_pause(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.modules.transformers.swap_commit.UNDO_BACKOFF_SECONDS", 0)
+
+
 class World:
     def __init__(self, rng: random.Random, twin: bool) -> None:
         self.rng = rng
@@ -58,6 +63,17 @@ class World:
 
         self.swap, _ = committer(self.graph, view=view)
         self.swap._release_unheld = AsyncMock(side_effect=self._release)
+        real_update = self.graph.update_node_fields_if
+        self.unverified = False  # the record names a copy that was not verified and could not be undone: its attempt is in flight
+        self.faults = True
+
+        async def flaky(key: str, collection: str, updates: dict, conditions: list, *a: object, **k: object) -> bool:
+            # the write that undoes a move: it fails now and then, which with a failed read is the double failure
+            if self.faults and updates.get("pendingVirtualRecordId") and rng.random() < 0.5:
+                raise TimeoutError("the graph store did not answer")
+            return await real_update(key, collection, updates, conditions, *a, **k)
+
+        self.graph.update_node_fields_if = flaky  # type: ignore[method-assign]
         real_require = self.swap._require_points
 
         async def require_then_race(ctx: object, swap: object) -> None:
@@ -124,7 +140,10 @@ class World:
                     self.states.add((st["y"], self.served_rev))  # the stages of the new copy run after its commit
                 await self.swap._release_unheld("o", st["x"]) if not _held(g, st["x"]) else None
             except (SupersededRun, IndexingError, TimeoutError):
-                pass  # superseded, or the set is not whole (or was taken, or could not be read): the record keeps the copy it serves
+                # superseded, or the set is not whole (or was taken, or could not be read): the record keeps the copy it serves; when the undo
+                # failed as well the record names the new copy with its attempt still in flight (until the rerun)
+                if g.records["A"]["virtualRecordId"] == st["y"]:
+                    self.unverified = True
             self.runs.pop(run)
             if not self.runs and g.records["A"]["indexingStatus"] == "COMPLETED":
                 pass
@@ -152,7 +171,24 @@ class World:
             self.served_rev = doc["contentRev"]  # the path that finished it serves what the record now names
             self.states.add((doc["virtualRecordId"], self.served_rev))
 
+    async def recover(self) -> None:
+        """The rerun of an attempt that was left in flight (the handler's requeue, or the stale-record sweep)."""
+        self.faults = False
+        for _ in range(12):
+            if not self.unverified:
+                return
+            self.runs.pop("RECOVER", None)
+            await self.step("start", "RECOVER")
+            for _ in range(3):
+                await self.step("write", "RECOVER")
+            await self.step("commit", "RECOVER")
+            if self.graph.records["A"]["indexingStatus"] == "COMPLETED" and self.graph.records["A"].get("pendingVirtualRecordId") is None \
+                    and self.points.get(self.graph.records["A"]["virtualRecordId"]) == "complete":
+                self.unverified = False
+
     def serve(self) -> None:
+        if self.unverified:
+            return  # the graph store was down when the undo failed, so search (which needs it) fails closed until the rerun
         for key, doc in self.graph.records.items():
             if doc.get("hasIndexedCopy") and doc["indexingStatus"] not in ("EMPTY",):
                 assert self.points.get(doc["virtualRecordId"]) == "complete", (key, doc, self.points)
@@ -160,6 +196,8 @@ class World:
     def served_states(self) -> None:
         """The stage states of the copy a searchable record serves are never retained away."""
         doc = self.graph.records["A"]
+        if self.unverified:
+            return  # an attempt in flight on a copy that was never finished: it has no stage states until the rerun commits
         if doc.get("hasIndexedCopy"):
             assert (doc["virtualRecordId"], self.served_rev) in self.states, ("a served copy lost its stage states", doc, self.states)
 
@@ -188,6 +226,7 @@ async def _one(seed: int) -> None:
         w.served_states()
     # nothing is left running: the records end in a settled state and the sweep has run
     w.runs.clear()
+    await w.recover()
     for doc in w.graph.records.values():
         if doc["indexingStatus"] in ("IN_PROGRESS", "QUEUED", "NOT_STARTED"):
             doc["indexingStatus"] = "FAILED"
