@@ -169,6 +169,8 @@ export class SupportService {
       description: input.description,
       userName: requester.userName,
       attachmentCount: attached ? input.files.length : 0,
+      // Told to support and to the person, so a lost upload is not mistaken for feedback sent without files.
+      attachmentsFailed: input.files.length > 0 && !attached,
       submittedAt: formatUtcDateTime(new Date()),
     };
 
