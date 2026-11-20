@@ -652,6 +652,8 @@ class WebConnector(BaseConnector):
         self._landed_urls: set[str] = set()
         # Pages this sync kept, directly or through a redirect; visited_urls also holds pages fetched and dropped.
         self._kept_urls: set[str] = set()
+        # External ids of the folder records this sync wrote: each is written once per sync.
+        self._folders_written: set[str] = set()
         self.retry_urls: dict[str, RetryUrl] = {}
         # Stored pages that answered 404/410: deleted when the next sync gets the same answer.
         self._gone_last_sync: set[str] = set()
@@ -1073,6 +1075,7 @@ class WebConnector(BaseConnector):
             self.visited_urls.clear()
             self._landed_urls.clear()
             self._kept_urls.clear()
+            self._folders_written.clear()
             self._robots.clear()
             self._robots_sitemap_urls.clear()
             self._robots_skipped.clear()
@@ -3694,6 +3697,8 @@ class WebConnector(BaseConnector):
         becomes the page again (``write_as_new``), children and all.
         """
         try:
+            # The folder this sync may have written here was since replaced by the page, now deleted.
+            self._folders_written.discard(self._ensure_trailing_slash(removed_external_id))
             await self._ensure_parent_records_exist(removed_external_id)
             folder = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id, external_record_id=removed_external_id,
@@ -4058,27 +4063,15 @@ class WebConnector(BaseConnector):
         return urlunparse((parsed.scheme, parsed.netloc, parent_path, '', '', ''))
 
     async def _ensure_parent_records_exist(self, parent_url: Optional[str]) -> None:
-        """Ensure that every ancestor record up to (and including) *parent_url*
-        exists in the data store before the child record is upserted.
+        """Write the folder record of every ancestor of a page, up to and including *parent_url*.
 
-        Strategy
-        --------
-        1. Return immediately when *parent_url* is ``None``.
-        2. Walk up the URL hierarchy from *parent_url* to build an ordered
-           segment list::
+        A folder is written once per sync, whether or not it is already stored. A full sync
+        ends by unlinking every record it did not write, so a stored folder left unwritten
+        lost its links, and the pages under it lost the access they inherit through it.
+        Writing it again also restores links an earlier sync removed. An ancestor that is a
+        page of the site is left to the crawl, which writes it with its content.
 
-               [parent_url, grandparent_url, great-grandparent_url, ...]
-
-        3. Iterate through that list, checking the DB for each URL.
-           - If the record **already exists** → break (all ancestors above it
-             are assumed to exist too).
-           - If it **does not exist** → build a placeholder ``FileRecord`` and
-             append it to ``batch_parent_records``.
-        4. Reverse ``batch_parent_records`` so the highest ancestor comes first.
-        5. Upsert via ``on_new_records``.  Because the list is ordered
-           root-first, ``_process_record`` will always find a parent already
-           in the DB and will never need to create its own placeholder via
-           ``_handle_parent_record``.
+        The folders go to ``on_new_records`` root first, so each finds its parent stored.
         """
         if not parent_url:
             return
@@ -4091,12 +4084,15 @@ class WebConnector(BaseConnector):
                 segments.append(current)
                 current = self._get_parent_url(current)
 
-            # ── Step 2: walk segments, collect the ones that are missing ─────
+            # ── Step 2: walk segments, collect the folders not yet written this sync ─
             batch_parent_records: List[Tuple[FileRecord, List[Permission]]] = []
             timestamp = get_epoch_timestamp_in_ms()
 
             for segment_url in segments:
                 external_id = self._ensure_trailing_slash(segment_url)
+                if external_id in self._folders_written:
+                    # Written with every folder above it, in one batch.
+                    break
 
                 # Primary lookup
                 existing = await self.data_entities_processor.get_record_by_external_id(
@@ -4113,11 +4109,9 @@ class WebConnector(BaseConnector):
                             external_record_id=legacy_id,
                         )
 
-                if existing:
-                    # This ancestor (and everything above it) already exists → stop
-                    break
+                if existing and not existing.is_internal:
+                    continue
 
-                # Record is missing — build a placeholder
                 parsed = urlparse(segment_url)
                 prefix_path = parsed.path if parsed.path.endswith("/") else parsed.path + "/"
                 record_name = parsed.netloc + prefix_path
@@ -4125,12 +4119,14 @@ class WebConnector(BaseConnector):
                 segment_parent_url = self._get_parent_url(segment_url)
 
                 file_record = FileRecord(
-                    id=str(uuid.uuid4()),
+                    id=existing.id if existing else str(uuid.uuid4()),
                     org_id=self.data_entities_processor.org_id,
                     record_name=record_name,
                     record_type=RecordType.FILE,
                     record_group_type=RecordGroupType.WEB,
-                    external_record_id=external_id,
+                    # The stored id, which on an old record has no trailing slash: the write
+                    # finds the record by it, and another id would store a second folder.
+                    external_record_id=existing.external_record_id if existing else external_id,
                     external_record_group_id=self.url,
                     version=0,
                     origin=OriginTypes.CONNECTOR,
@@ -4164,6 +4160,10 @@ class WebConnector(BaseConnector):
             batch_parent_records.reverse()
 
             await self.data_entities_processor.on_new_records(batch_parent_records)
+            # Only once stored, so a failed write is tried again for the next page.
+            self._folders_written.update(
+                self._ensure_trailing_slash(record.external_record_id) for record, _ in batch_parent_records
+            )
 
         except Exception as e:
             self.logger.error(

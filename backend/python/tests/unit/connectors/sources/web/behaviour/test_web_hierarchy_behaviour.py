@@ -6,7 +6,14 @@ edges, and a record is linked to its parent only when it is written).
 """
 
 import pytest
-from web_behaviour_fakes import START_URL, FakeRecordsDb, FakeWeb, MakeConnector, Page
+from web_behaviour_fakes import (
+    START_URL,
+    FakeCheckpointStore,
+    FakeRecordsDb,
+    FakeWeb,
+    MakeConnector,
+    Page,
+)
 
 from app.connectors.sources.web.connector import WebConnector
 from app.models.entities import Record
@@ -39,9 +46,34 @@ class LinkingRecordsDb(FakeRecordsDb):
         return in_trash
 
 
+class FullSyncRecordsDb(LinkingRecordsDb):
+    """LinkingRecordsDb plus how a full sync ends: a record the run did not write loses its links,
+    those of its children included (``sync_runner._unlink_what_full_sync_missed``)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.written: set[str] = set()
+
+    def _store(self, record: Record) -> None:
+        super()._store(record)
+        self.written.add(record.id)
+
+    async def on_updated_record_permissions(self, record: Record, permissions: list) -> None:
+        """An unchanged page's permissions update writes its link to the parent again."""
+        await super().on_updated_record_permissions(record, permissions)
+        self.written.add(record.id)
+        parent = self.records.get(record.parent_external_record_id or "")
+        if parent is not None:
+            self.parent_of[record.id] = parent.id
+
+    def end_full_sync(self) -> None:
+        self.parent_of = {c: p for c, p in self.parent_of.items() if c in self.written and p in self.written}
+        self.written = set()
+
+
 @pytest.fixture
-def db() -> LinkingRecordsDb:
-    return LinkingRecordsDb()
+def db() -> FullSyncRecordsDb:
+    return FullSyncRecordsDb()
 
 
 def _site(site: FakeWeb) -> None:
@@ -130,3 +162,64 @@ async def test_children_a_removal_could_not_link_again_are_linked_on_the_next_sy
     monkeypatch.setattr(db, "on_records_attached_to_parent", attach)
     await connector.run_sync()  # the child is unchanged, so nothing else would write its link
     assert db.parent_of.get(db.records[CHILD].id) == db.records[DOCS].id
+
+
+GUIDES = "http://site.test/guides/"
+SETUP = "http://site.test/guides/setup/"
+INSTALL = "http://site.test/guides/setup/install.html"
+
+
+async def test_a_full_resync_keeps_pages_linked_under_folders_that_already_exist(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    """Neither folder is a page of the site, so only the connector writes it. One left unwritten
+    on a full sync is unlinked when the sync ends, which cuts the pages under it off from the
+    access they inherit through it."""
+    site.html(START_URL, "Home", "/guides/setup/install.html")
+    site.html(INSTALL, "Install", text="Install with pip")
+    connector = await make_connector()
+    await connector.run_sync()
+    db.mark_indexed()
+    db.end_full_sync()
+    assert db.records[SETUP].is_internal and db.records[GUIDES].is_internal
+
+    checkpoints.sync_points.clear()  # no sync point, so the next sync is a full one again
+    await connector.run_sync()
+    db.end_full_sync()
+
+    assert db.parent_of.get(db.records[INSTALL].id) == db.records[SETUP].id
+    assert db.parent_of.get(db.records[SETUP].id) == db.records[GUIDES].id
+
+
+async def test_a_folder_that_already_exists_is_written_once_per_sync(
+    site: FakeWeb, db: LinkingRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/guides/setup/install.html", "/guides/setup/upgrade.html")
+    site.html(INSTALL, "Install", text="Install with pip")
+    site.html("http://site.test/guides/setup/upgrade.html", "Upgrade", text="Upgrade with pip")
+    connector = await make_connector()
+    await connector.run_sync()
+    db.mark_indexed()
+    stored_id = db.records[SETUP].id
+    db.new_batches.clear()
+
+    checkpoints.sync_points.clear()
+    await connector.run_sync()
+
+    writes = [record for batch in db.new_batches for record in batch if record.external_record_id == SETUP]
+    assert len(writes) == 1, "one write per folder per sync, not one per page under it"
+    assert db.records[SETUP].id == stored_id
+
+
+async def test_a_page_that_is_also_a_parent_is_not_written_over_as_a_folder(
+    site: FakeWeb, db: LinkingRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    _site(site)
+    connector = await make_connector()
+    await connector.run_sync()
+    db.mark_indexed()
+
+    checkpoints.sync_points.clear()
+    await connector.run_sync()
+
+    assert DOCS in db.pages() and db.records[DOCS].record_name == "Docs"
