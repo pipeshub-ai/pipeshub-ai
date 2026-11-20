@@ -1462,6 +1462,13 @@ class DrupalWikiConnector(BaseConnector):
                     if had:
                         now[str(page_id)] = had
                     continue
+                if page_id not in listing.written_as and self._share_target_kept(page_id, opening, listing):
+                    self._fail(
+                        f"Kept the stored access of the shared Drupal Wiki page {page_id}: the members of a "
+                        "protected space it is shared into could not be read"
+                    )
+                    now[str(page_id)] = had
+                    continue
                 if written != listing.written_as.get(page_id, before_grants):
                     record = record or await self._stored_page(page_id)
                     if record is None:
@@ -1503,9 +1510,9 @@ class DrupalWikiConnector(BaseConnector):
         read (``_space_unknown``); such a share keeps the org grant the page holds only if it
         was one that gave it (remembered as ``open``), and never adds one. A protected space
         not listed in full adds its members only to a page that already holds grants of its
-        own; one whose members could not be read adds none this run. A space no longer synced
-        or gone loses them. Until every page of its home space is ``STRICT``, a page gets no
-        grants of its own.
+        own; a page shared into one whose members could not be read keeps its stored access
+        (``_share_target_kept``). A space no longer synced or gone loses them. Until every page
+        of its home space is ``STRICT``, a page gets no grants of its own.
         """
         had = listing.shares_before.get(str(page_id)) or {}
         listed = listing.shared.get(page_id, set()) - {home}
@@ -1538,6 +1545,20 @@ class DrupalWikiConnector(BaseConnector):
         if len(grants) == len({(g.entity_type.value, g.email or "", g.external_id or "") for g in self._space_grants.get(home, [])}):
             return shares, opening, None  # the shares add no reader: plain, inheriting its home space
         return shares, opening, list(grants.values())
+
+    def _share_target_kept(self, page_id: int, opening: set[int], listing: PageListing) -> bool:
+        """True for a page stored with grants of its own that the share memory says came from
+        protected spaces, while one it is shared into (remembered, or listed this run) had its
+        members unread this run: rewritten now, the page would lose that space's readers, and
+        a later run that reads the members but not that space's listing would not give them
+        back. A page the org reads through a listed open space needs nothing kept, and one whose
+        stored org grant came from an open space is decided as usual, so a stale org grant is
+        not kept."""
+        had = listing.shares_before.get(str(page_id)) or {}
+        if opening or had.get("open") or not had.get("grants") or page_id not in listing.stored_shared:
+            return False
+        shares = {_as_int(s) for s in had.get("spaces") or []} | listing.shared.get(page_id, set())
+        return bool(shares & self._spaces_kept)
 
     def _space_unknown(self, space: int | None) -> bool:
         """A protected space whose members this run could not read, or a space this run neither
@@ -1823,9 +1844,10 @@ class DrupalWikiConnector(BaseConnector):
             record.parent_record_type = RecordType.WEBPAGE
 
         home = _as_int(page.get("homeSpace"))
-        _, _, permissions = self._page_access(page_id, home, listing)
+        _, opening, permissions = self._page_access(page_id, home, listing)
         records: list[tuple[Record, list[Permission]]] = []
-        if permissions is None and self._share_unconfirmed(page_id, home, listing):
+        if (permissions is None and self._share_unconfirmed(page_id, home, listing)) or \
+                self._share_target_kept(page_id, opening, listing):
             # Written in the form it is stored in, its grants and inherit edge left as they are
             # (OPEN is also the record default, so it may read only through that edge); the
             # share pass decides it once the open spaces have been listed.
