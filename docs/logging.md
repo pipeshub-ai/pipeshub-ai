@@ -704,8 +704,14 @@ which every Postgres graph provider runs through) write one record per call that
   hides the text and leaves the class to `classify_error`), so `classify_error` returns its class and `log_failure` leaves `error_message` out and
   prints the stack as `Type: <message omitted>` for any chain, or exception group member, that holds it. This also hides the
   server's own text for our bugs (an ArangoDB 1501 "syntax error … near …" reads `code=1501 caller=…`): diagnose from `code`,
-  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible (the
-  Neo4j memory-limit hint).
+  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible when
+  they chain no stamped error (raised outside its `except`, as the Neo4j memory-limit hint is, or `from None`); an exception
+  raised `from` a stamped error, or while handling one, loses its message too, and keeps its type and frames. A
+  `logger.exception` or `exc_info=True` record of such a chain prints the same text-free stack, exception-group members
+  included: its `exc_info` is None and its `exc_text` holds the stack, and a filter reads the exception with
+  `error_class.record_exception(record)`. A message that embeds the error's text is not covered: `traceback.format_exc()`
+  (log with `exc_info=True` instead), `%s` of the error, and asyncio's "Task exception was never retrieved", whose message holds
+  the task's `repr` with the exception's text.
 - **Classes.** Only our bugs and our configuration are ERROR classes. Conflicts and lost races (ArangoDB 1200, 1210, 29, 1654,
   1655; Neo4j constraint, deadlock, entity lost to a delete; Postgres 23xxx, 40001, 40P01) are `conflict`; ArangoDB 18 and 1500,
   Neo4j transaction timeouts and Postgres 57014/55P03 are `timeout`; Postgres 22xxx, 54xxx, 23502 and 23514, and Neo4j data
@@ -722,8 +728,8 @@ record content. Like any `log_failure` line it is DEBUG when the same exception,
 higher, so at a WARNING threshold a handled failure can leave no event. The user is the bound `user_id`; the graph key is never
 logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. When the batch access read
 fails, `check_access` first logs a `check_access failed …` ERROR with only the counts and the error's class. The
-`PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause, which a
-traceback (`exc_info=True`, `logger.exception`) still prints.
+`PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause; its chain
+is always text-hidden, so an `exc_info` record of it prints each exception as `Type: <message omitted>`.
 
 | Event | What the search does next | Fields |
 | --- | --- | --- |

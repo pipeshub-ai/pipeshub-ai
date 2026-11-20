@@ -17,7 +17,9 @@ import json
 import logging
 import socket
 import sys
+import textwrap
 import traceback
+import weakref
 from collections.abc import Iterator
 
 from app.agent_loop_lib.core.exceptions import RunCancelled, TransportError
@@ -54,6 +56,13 @@ _STATUS_CLASS = {
 _MAX_ERROR_MESSAGE = 300
 _MAX_STACK = 8000
 _LOGGED_ATTR = "_pipeshub_logged"
+# A record's exception once a text-free stack replaced its exc_info. Kept off the record: a filter that rewrites its
+# attributes (litellm's on uvicorn.error stringifies every extra) or a handler that copies or pickles it never sees it.
+# shortcut: an entry never dies when its record is reachable from its own exception's traceback (a frame that holds the
+# record, such as a makeRecord local in the handling frame); no app/ path does that. Upgrade to a cycle-safe holder if one does.
+_HIDDEN_EXCEPTIONS: "weakref.WeakKeyDictionary[logging.LogRecord, BaseException]" = weakref.WeakKeyDictionary()
+_MAX_GROUP_WIDTH = 15  # traceback's own max_group_width and max_group_depth
+_MAX_GROUP_DEPTH = 10
 
 
 def level_for(error_class: str) -> int:
@@ -261,17 +270,40 @@ _CAUSE_SEPARATOR = "\nThe above exception was the direct cause of the following 
 _CONTEXT_SEPARATOR = "\nDuring handling of the above exception, another exception occurred:\n\n"
 
 
-def _stack_without_messages(exc: BaseException) -> str:
-    """The traceback with every exception line cut to its type (frames kept), oldest first as Python prints it."""
+def _stack_without_messages(exc: BaseException, seen: set[int] | None = None, depth: int = 0) -> str:
+    """The traceback with every exception line cut to its type (frames kept), oldest first as Python prints it, with each
+    exception group's members below it. One ``seen`` set across cause, context and member edges renders each exception once."""
+    seen = set() if seen is None else seen
+    links: list[BaseException] = []
+    for link in _chain(exc):
+        if id(link) in seen:
+            break
+        seen.add(id(link))
+        links.append(link)
     blocks: list[str] = []
-    links = list(_chain(exc))
     for older, newer in zip(reversed(links), [*reversed(links[:-1]), None]):
         frames = "".join(traceback.format_tb(older.__traceback__)) if older.__traceback__ else ""
         head = f"Traceback (most recent call last):\n{frames}" if frames else ""
         blocks.append(f"{head}{type(older).__qualname__}: <message omitted>\n")
+        if isinstance(older, BaseExceptionGroup):
+            blocks.append(_members_without_messages(older, seen, depth + 1))
         if newer is not None:
             blocks.append(_CAUSE_SEPARATOR if newer.__cause__ is older else _CONTEXT_SEPARATOR)
     return "".join(blocks)
+
+
+def _members_without_messages(group: BaseExceptionGroup, seen: set[int], depth: int) -> str:
+    """A group's members as Python numbers and indents them, within its width and depth caps."""
+    if depth > _MAX_GROUP_DEPTH:
+        return f"... (max_group_depth is {_MAX_GROUP_DEPTH})\n"
+    blocks: list[str] = []
+    for number, member in enumerate(group.exceptions[:_MAX_GROUP_WIDTH], 1):
+        if id(member) not in seen:
+            stack = _stack_without_messages(member, seen, depth)
+            blocks.append(f"+---------------- {number} ----------------\n{textwrap.indent(stack, '| ', lambda _: True)}")
+    if len(group.exceptions) > _MAX_GROUP_WIDTH:
+        blocks.append(f"+---------------- ... ----------------\n| and {len(group.exceptions) - _MAX_GROUP_WIDTH} more exceptions\n")
+    return "".join(blocks) + "+------------------------------------\n" if blocks else ""
 
 
 def _stack_text(exc: BaseException, *, with_messages: bool) -> str:
@@ -281,6 +313,37 @@ def _stack_text(exc: BaseException, *, with_messages: bool) -> str:
     else:
         text = _stack_without_messages(exc)
     return redact_secrets_in_text(URL_PATTERN.sub("[url]", text.rstrip("\n")))[-_MAX_STACK:]
+
+
+def record_exception(record: logging.LogRecord) -> BaseException | None:
+    """The exception a record was logged with, also when a text-free stack replaced its ``exc_info``
+    (:func:`hide_record_text`, :func:`log_failure`), for a filter that reads it (uvicorn's duplicate-line filter).
+    In-process only: the exception still holds the driver's text, so never format or serialize what this returns."""
+    if isinstance(record.exc_info, tuple) and record.exc_info[1] is not None:
+        return record.exc_info[1]
+    return _HIDDEN_EXCEPTIONS.get(record)
+
+
+def hide_record_text(record: logging.LogRecord) -> None:
+    """For a ``logger.exception`` or ``exc_info=True`` record whose chain hides its text (a stamped driver error, a
+    ``PermissionVerificationUnavailableError``): the stack :func:`log_failure` writes, as ``exc_text``, and no
+    ``exc_info``. Fails closed, as :func:`log_failure` does: a chain whose stamp cannot be read is treated as hidden (the
+    walk stops at the link that raised, before a stamped one further down), and a stack that cannot be built is the type
+    alone. Never raises."""
+    exc = record.exc_info[1] if isinstance(record.exc_info, tuple) else None
+    if exc is None:
+        return
+    try:
+        if not _hides_text(exc):
+            return
+    except Exception:
+        pass  # the stamp cannot be read: hide
+    try:
+        stack = _stack_text(exc, with_messages=False)
+    except Exception:
+        stack = f"{type(exc).__qualname__}: <stack omitted>"
+    record.exc_info, record.exc_text = None, stack
+    _HIDDEN_EXCEPTIONS[record] = exc
 
 
 def log_failure(
@@ -321,6 +384,8 @@ def log_failure(
         # Without error text, no exc_info: a handler or formatter that reads it would print the raw message.
         exc_info = (type(exc), exc, exc.__traceback__) if with_stack and include_error_text else None
         record = logger.makeRecord(logger.name, emitted, filename, lineno, event, (), exc_info, func, extra)
+        if with_stack and exc_info is None:  # only where exc_info was dropped: a stackless line must not keep the exception alive
+            _HIDDEN_EXCEPTIONS[record] = exc
         if with_stack:
             record.exc_text = _stack_text(exc, with_messages=include_error_text)  # the formatters print it instead of formatting exc_info unredacted
         logger.handle(record)
