@@ -1161,7 +1161,8 @@ STALE_PLAIN = """SELECT id FROM graph.nodes WHERE org_id = current_setting('app.
 UNHELD_PLAIN = """WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev, max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s
                     WHERE s.org_id = current_setting('app.org_id') AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(%s::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
                  SELECT g.v, g.rev FROM g WHERE g.newest < %s::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = current_setting('app.org_id') AND r.coll = 'records'
-                    AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev) ORDER BY g.v, g.rev"""
+                    AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED'
+                       AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true'))) ORDER BY g.v, g.rev"""
 
 
 UNHELD_NEW = """SELECT virtual_record_id, revision FROM graph.stage_states_unheld(%s::text[]) GROUP BY 1, 2 HAVING max(coalesce(updated_at_ms::numeric, 0)) < %s::bigint ORDER BY 1, 2"""      # the caller's grouping

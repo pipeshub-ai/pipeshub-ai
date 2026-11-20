@@ -11,6 +11,7 @@ from app.utils.oauth_errors import (
     is_permanent_grant_rejection,
     is_transient_status,
     oauth_error_code,
+    transient_error_class,
 )
 
 
@@ -90,3 +91,14 @@ def test_authorization_errors_map_to_a_class_that_is_never_error() -> None:
         cls = authorization_error_class(code)
         assert cls in ERROR_CLASSES and level_for(cls) < logging.ERROR
     assert level_for(authorization_error_class("access_denied")) == logging.INFO
+
+
+@pytest.mark.parametrize(("code", "error_class"), [
+    # Literals, not the sets: dropping a member must fail here.
+    ("fatal_error", "unavailable"), ("internal_error", "unavailable"), ("service_unavailable", "unavailable"),
+    ("request_timeout", "unavailable"), ("ratelimited", "rate_limited"), ("rate_limited", "rate_limited"),
+    ("server_error", "upstream_5xx"), ("temporarily_unavailable", "unavailable"), ("Service_Unavailable", "unavailable"),
+    ("invalid_grant", None), ("bad_verification_code", None), (None, None), ("", None),
+])
+def test_a_busy_or_down_provider_code_has_its_class_and_nothing_else_does(code: str | None, error_class: str | None) -> None:
+    assert transient_error_class(code) == error_class

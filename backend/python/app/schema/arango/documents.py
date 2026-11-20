@@ -475,6 +475,9 @@ record_schema = {
             "parseNowAt": {"type": ["number", "null"]},
             # The in-flight embedding marker (see app/modules/indexing/embed_resume.py): flat scalars, so
             # a partial write leaves the others alone on every graph provider. Null once the record is indexed.
+            # The virtual record the record is indexing a replacement copy into; it keeps serving `virtualRecordId` until the
+            # copy commits, and the field is removed (never null) by the commit and by every other end of the run.
+            "pendingVirtualRecordId": {"type": ["string", "null"]},
             "embedVrid": {"type": ["string", "null"]},
             "embedRev": {"type": ["string", "null"]},
             "embedKey": {"type": ["string", "null"]},
@@ -505,7 +508,7 @@ record_schema = {
 # Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
 # collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
 # tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
-RECORD_SCHEMA_GENERATION = 2
+RECORD_SCHEMA_GENERATION = 3
 record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
 
 

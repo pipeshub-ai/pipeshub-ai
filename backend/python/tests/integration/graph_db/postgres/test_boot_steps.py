@@ -134,7 +134,7 @@ async def test_named_entity_completion_works_each_orgs_job_in_that_org_with_no_o
         with org_ctx(w.org):
             await w.nodes("organizations", {"_key": w.org, "isActive": True})      # the system read of the jobs sweeps the organisations
     with org_ctx(a.org):
-        await a.nodes("records", {"_key": "ra", "recordName": "ra", "virtualRecordId": vrid})
+        await a.nodes("records", {"_key": "ra", "recordName": "ra", "virtualRecordId": vrid, "indexingStatus": "COMPLETED"})
         await a.p.schedule_named_entity_reextract(a.org, "ra")
     with org_ctx(b.org):
         await b.p.schedule_named_entity_reextract(b.org, "rb")       # its record is gone

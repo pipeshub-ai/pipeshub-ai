@@ -2,8 +2,8 @@
 from alembic import op
 from db.lib.ddl import ensure_partitioned_index
 
-revision = "graph_0015"
-down_revision = "graph_0014"
+revision = "graph_0017"
+down_revision = "graph_0016"
 branch_labels = None
 depends_on = None
 older_code_compatible = "adds indexes only; older code writes no source account and reads the same rows"
