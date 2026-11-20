@@ -27,7 +27,10 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 if TYPE_CHECKING:
-    from app.connectors.sources.slack.team.connector import ProcessingContext, SlackConnector
+    from app.connectors.sources.slack.team.connector import (
+        ProcessingContext,
+        SlackConnector,
+    )
 
 # ---------------------------------------------------------------------------
 # Helpers to build a minimal SlackConnector without real deps
