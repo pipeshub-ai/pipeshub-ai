@@ -788,12 +788,9 @@ class JiraConnector(BaseConnector):
 
     async def init(self) -> bool:
         """Initialize Jira client and DataSource from connector auth config."""
+        if self.scope == ConnectorScope.TEAM.value:
+            await self._withdraw_org_team_edge()
         try:
-            if self.scope == ConnectorScope.TEAM.value:
-                # Earlier releases let the org's All team through the gate for projects open to anyone; nobody without
-                # a Jira account reads them. Graph only and before Jira is reached, so an init that keeps failing
-                # cannot keep that edge.
-                await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
             client = await self._build_jira_client()
             rest_client = client.get_client()
             # Email + API token goes straight to the configured URL (OAuth goes to api.atlassian.com).
@@ -823,6 +820,16 @@ class JiraConnector(BaseConnector):
             # Raise so the router can forward the real failure reason to the FE
             # (return False only yields a generic "check credentials" message).
             raise ConnectorInitError(str(e)) from e
+
+    async def _withdraw_org_team_edge(self) -> None:
+        """Earlier releases let the org's All team through the gate for projects open to anyone; nobody without a Jira
+        account reads them. First in init and graph only, so an init that keeps failing cannot keep that edge; a failed
+        withdrawal is logged, not raised, so init still reports what Jira answered, and every sync withdraws it again."""
+        try:
+            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
+        except Exception as e:
+            self.logger.warning("Could not withdraw the org's All team from connector %s; the sync tries again: %s",
+                                self.connector_id, e)
 
     async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
         """Notify admin: account-level app reaches multiple sites — needs a new
@@ -1027,6 +1034,9 @@ class JiraConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Main sync flow: users → groups → projects/roles → issues → deletions."""
         try:
+            if self.scope == ConnectorScope.TEAM.value:
+                # Again here, raising: init only logs a failed withdrawal, so its error stays the one Jira caused.
+                await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
             # 1. Init is done by event_service / setup before run_sync is scheduled
             if not self.data_source:
                 init_error = RuntimeError(

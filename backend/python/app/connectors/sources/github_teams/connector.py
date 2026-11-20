@@ -273,10 +273,15 @@ class GitHubTeamsConnector(BaseConnector):
 
     async def init(self) -> bool:
         """Initialise the GitHub client, data source, and creator identity."""
+        # Earlier releases let the org's All team through the gate for public repos; nobody without a GitHub account
+        # reads them. First and graph only, so an init that keeps failing cannot keep that edge; a failure is logged,
+        # not raised, so init still reports what GitHub answered, and every sync withdraws it again.
         try:
-            # Earlier releases let the org's All team through the gate for public repos; nobody without a GitHub
-            # account reads them. Graph only and before GitHub is reached, so an init that keeps failing cannot keep it.
             await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
+        except Exception as e:
+            self.logger.warning("Could not withdraw the org's All team from connector %s; the sync tries again: %s",
+                                self.connector_id, e)
+        try:
             self.external_client = await GitHubClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
@@ -397,6 +402,8 @@ class GitHubTeamsConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
         try:
+            # Again here, raising: init only logs a failed withdrawal, so its error stays the one GitHub caused.
+            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()

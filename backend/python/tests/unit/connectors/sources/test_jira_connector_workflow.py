@@ -166,6 +166,20 @@ class TestJiraInit:
                 await connector.init()
         assert dep.withdraw_team_app_edge.await_args_list == ([call("conn-jira-1")] if withdrawn else [])
 
+    @pytest.mark.asyncio
+    async def test_a_withdrawal_that_fails_in_init_leaves_the_init_error_jiras(self) -> None:
+        """A store that cannot take the withdrawal yet is logged, not raised: init still reports what Jira answered,
+        and the sync withdraws the edge again, raising."""
+        connector, dep, *_ = _make_connector()
+        dep.withdraw_team_app_edge = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as mock_client_cls:
+            mock_client_cls.build_from_services = AsyncMock(side_effect=Exception("site unreachable"))
+            with pytest.raises(ConnectorInitError, match="site unreachable"):
+                await connector.init()
+        connector.data_source = MagicMock()
+        with pytest.raises(ConnectionError):
+            await connector.run_sync()
+
 
 # ===========================================================================
 # Get Fresh Datasource
@@ -638,7 +652,7 @@ class TestJiraFullSync:
     async def test_a_project_open_to_anyone_reaches_only_linked_jira_accounts(self) -> None:
         """Browse held by `anyone` is an ORG grant, which reaches only the accounts linked to the connector: people
         without an account in Jira read nothing through it, even on a site whose signed-out visitors read the project.
-        The sync never lets the org's All team through the gate (init withdraws an edge an earlier release left)."""
+        The sync never lets the org's All team through the gate, and withdraws an edge an earlier release left."""
         connector, dep, *_ = _make_connector()
         connector.data_source = MagicMock()
         # Earlier releases searched signed out and, when the search read the project, opened the gate to the org.
@@ -668,7 +682,7 @@ class TestJiraFullSync:
             connector.notify = AsyncMock()
             await connector.run_sync()
         dep.on_new_record_groups.assert_awaited_once_with([(project, [anyone])])
-        assert [name for name, *_ in dep.mock_calls if "team" in name] == []
+        assert [name for name, *_ in dep.mock_calls if "team" in name] == ["withdraw_team_app_edge"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("licensed", "linked"), [(set(), False), ({"a1"}, True), (None, True)],
