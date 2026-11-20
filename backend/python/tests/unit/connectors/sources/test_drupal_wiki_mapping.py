@@ -19,7 +19,10 @@ from app.connectors.sources.drupal_wiki.connector import (
 )
 from app.models.entities import RecordType
 from app.models.permission import EntityType, PermissionType
-from app.sources.external.drupal_wiki.graphql import DrupalWikiGraphQLError, DrupalWikiGraphQLRefusedError
+from app.sources.external.drupal_wiki.graphql import (
+    DrupalWikiGraphQLError,
+    DrupalWikiGraphQLRefusedError,
+)
 
 CONNECTOR_ID = "conn-1"
 ORG_ID = "org-1"
