@@ -455,7 +455,7 @@ async def test_a_check_reads_one_state_a_membership_swapped_after_the_gate_opens
     await w.member("u", "grp")
     gate, swapped = type(w.p)._gate, []
 
-    async def swapped_after_the_gate(self, tx, org, user_key):
+    async def swapped_after_the_gate(self, tx, org, user_key) -> tuple | None:
         out = await gate(self, tx, org, user_key)
 
         async def swap() -> None:
