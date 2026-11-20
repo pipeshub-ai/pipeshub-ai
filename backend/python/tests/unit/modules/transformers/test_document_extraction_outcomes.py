@@ -23,10 +23,10 @@ from app.modules.transformers.document_extraction import (
 )
 from app.services.llm_gateway.gateway import ProviderUnavailableError
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
+from tests.support.log_capture import assert_text_free, failure_line
 from tests.support.provider_errors import (
     MARK,
-    assert_text_free,
-    failure_line,
+    SENTINELS,
     httpx_error,
     openai_error,
     schema_mismatch,
@@ -431,8 +431,8 @@ async def test_a_failed_extraction_is_one_text_free_line_for_the_record(caplog, 
         await extraction.apply(MagicMock(record=record))
 
     assert record.semantic_metadata is None
-    assert failure_line(caplog.records, "document_extraction.failed", error_class, level)["record_id"] == "rec-1"
-    assert_text_free(caplog.records)
+    assert failure_line(caplog.records, "document_extraction.failed", error_class, level, *SENTINELS)["record_id"] == "rec-1"
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 @pytest.mark.asyncio
@@ -452,7 +452,7 @@ async def test_refused_images_are_noted_by_count_without_the_refusal(caplog) -> 
     assert note.levelno == logging.WARNING
     assert note.error_type == "ExtractionLLMError"
     assert "1 image" in note.getMessage()
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 @pytest.mark.asyncio
@@ -468,8 +468,8 @@ async def test_a_failed_fallback_summary_is_one_text_free_line(caplog, kind) -> 
             result = await extraction._code_fallback_summary(MagicMock(), "code")
 
     assert result is None
-    assert failure_line(caplog.records, "extraction.fallback_failed", "bad_request", logging.WARNING)["kind"] == kind
-    assert_text_free(caplog.records)
+    assert failure_line(caplog.records, "extraction.fallback_failed", "bad_request", logging.WARNING, *SENTINELS)["kind"] == kind
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 @pytest.mark.asyncio

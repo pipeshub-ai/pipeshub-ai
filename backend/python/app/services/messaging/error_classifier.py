@@ -443,6 +443,17 @@ class MessageErrorClassifier:
                 return MessageErrorType.TERMINAL
             cause = cause.__cause__
 
+        # 0f. A provider account that is out of credit answers 429 like a rate
+        # limit (OpenAI's insufficient_quota), but no redelivery refills it: the
+        # record fails with that reason instead of spending its retries.
+        try:
+            from app.utils.embedding_retry import is_quota_exhausted
+
+            if is_quota_exhausted(exc):
+                return MessageErrorType.TERMINAL
+        except ImportError:
+            pass
+
         # 1. Check for HTTP status code in exception
         status_code = extract_status_code(root_exc)
         if status_code is not None:

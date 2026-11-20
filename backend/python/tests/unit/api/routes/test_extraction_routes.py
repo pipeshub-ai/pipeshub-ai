@@ -23,13 +23,8 @@ from app.modules.transformers.document_extraction import (
     semantic_metadata_from_classification,
 )
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
-from tests.support.provider_errors import (
-    MARK,
-    assert_text_free,
-    failure_line,
-    openai_error,
-    with_cause,
-)
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import MARK, SENTINELS, openai_error, with_cause
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -792,6 +787,6 @@ def test_a_model_failure_is_one_text_free_line_with_the_org(caplog, error, error
     )
 
     assert response.status_code == 424
-    fields = failure_line(caplog.records, "document_classify.failed", error_class, level)
+    fields = failure_line(caplog.records, "document_classify.failed", error_class, level, *SENTINELS)
     assert fields["org_id"] == "org-123"
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)
