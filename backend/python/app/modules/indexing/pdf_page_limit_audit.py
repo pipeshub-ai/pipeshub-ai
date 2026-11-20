@@ -18,12 +18,15 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+import aiohttp
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.core.org_context import for_org, system
 from app.modules.indexing.connector_off_events import ConnectorState, connector_state
+from app.modules.transformers.blob_storage import TransientStorageError
 from app.utils.env_utils import env_bool
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import MAX_INDEXED_PDF_PAGES, PDF_PAGE_LIMIT_NOTE
@@ -40,6 +43,10 @@ if TYPE_CHECKING:
 
 FLAG_KEY = "/migrations/pdf_page_limit_audit"
 CURSOR_KEY = "/migrations/pdf_page_limit_audit_cursor"
+RERUNS_KEY = "/migrations/pdf_page_limit_audit_reruns"
+MAX_RERUNS = 3
+"""Passes that ended with records a storage failure kept it from reading before it is marked done anyway."""
+MAX_LOGGED_IDS = 20
 LEASE_KEY = "pipeshub:migrations:pdf_page_limit_audit"
 LEASE_TTL_SECONDS = 600
 BUDGET_SECONDS = 600.0
@@ -64,13 +71,20 @@ class AuditResult:
     compressed: int = 0
     noted: int = 0
     read_failed: int = 0
+    failed_ids: list[str] = field(default_factory=list)
 
     def line(self) -> str:
         return (
             f"At least {self.over_limit} indexed PDFs have more than {MAX_INDEXED_PDF_PAGES} pages; they stay indexed "
             f"until their content changes ({self.scanned} scanned, {self.not_checked} not checked, "
-            f"{self.compressed} large records not checked)"
+            f"{self.compressed} large records not checked, {self.read_failed} could not be read)"
         )
+
+
+def _is_transient(error: BaseException) -> bool:
+    """A failure a later start can expect to get past: a busy storage service, a timeout or a lost connection. A missing
+    object (404) or a request the service rejects is permanent: there is nothing to read, however often it is asked."""
+    return isinstance(error, (TransientStorageError, aiohttp.ClientConnectionError, asyncio.TimeoutError, ConnectionError))
 
 
 def _is_pdf(record: dict[str, Any]) -> bool:
@@ -117,10 +131,13 @@ async def _inspect(record: dict[str, Any], org_id: str, read_prefix: PrefixReade
         return False
     try:
         read = await read_prefix(vrid, org_id, SCAN_CAP_BYTES)
-    except Exception:
-        # A storage failure (not a record with nothing to read): the pass is not marked done while it stands.
+    except Exception as error:
         result.not_checked += 1
-        result.read_failed += 1
+        if _is_transient(error):
+            # The pass is not marked done while it stands (up to ``MAX_RERUNS`` passes).
+            result.read_failed += 1
+            if len(result.failed_ids) < MAX_LOGGED_IDS:
+                result.failed_ids.append(str(record.get("_key") or record.get("id") or vrid))
         return False
     if read is None:
         result.not_checked += 1
@@ -259,19 +276,30 @@ async def run_pdf_page_limit_audit(
                 break
             await save_cursor(str(app_id) + "￿", None)
         if complete and result.read_failed:
-            logger.warning(
-                "PDF page-limit audit: %d stored records could not be read; it is not marked done and runs again at the next start",
-                result.read_failed,
-            )
-            complete = False
-            try:
-                await config_service.delete_config(CURSOR_KEY)
-            except Exception:
-                logger.warning("PDF page-limit audit: its cursor was not removed", exc_info=True)
-            result.complete = False
-        else:
-            result.complete = complete
+            reruns = int((await config_service.get_config(RERUNS_KEY, use_cache=False, raise_on_error=True) or {}).get("count") or 0) + 1
+            if reruns >= MAX_RERUNS:
+                logger.warning(
+                    "PDF page-limit audit: %d stored records could not be read in %d passes (first records: %s); it is marked done "
+                    "without them", result.read_failed, reruns, ", ".join(result.failed_ids),
+                )
+            else:
+                logger.warning(
+                    "PDF page-limit audit: %d stored records could not be read (first records: %s); it is not marked done and "
+                    "runs again at the next start (pass %d of %d)",
+                    result.read_failed, ", ".join(result.failed_ids), reruns, MAX_RERUNS,
+                )
+                complete = False
+                await config_service.set_config(RERUNS_KEY, {"count": reruns})
+                try:
+                    await config_service.delete_config(CURSOR_KEY)
+                except Exception:
+                    logger.warning("PDF page-limit audit: its cursor was not removed", exc_info=True)
+        result.complete = complete
         if complete:
+            try:
+                await config_service.delete_config(RERUNS_KEY)
+            except Exception:
+                logger.warning("PDF page-limit audit: its pass count was not removed", exc_info=True)
             await config_service.set_config(FLAG_KEY, {"timestamp": get_epoch_timestamp_in_ms(), "over_limit": result.over_limit})
             try:
                 await config_service.delete_config(CURSOR_KEY)

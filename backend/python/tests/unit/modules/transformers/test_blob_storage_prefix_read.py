@@ -88,3 +88,27 @@ async def test_a_fresh_url_that_is_refused_is_not_retried() -> None:
     with patch("app.modules.transformers.blob_storage.get_shared_session", return_value=session), pytest.raises(aiohttp.ClientError):
         await blob.read_stored_prefix("v-1", "org-1", 4)
     blob._fetch_record_envelope.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_read_stops_at_the_cap_in_chunks_of_at_most_one_mebibyte_and_asks_for_that_range() -> None:
+    blob = _blob("s3")
+    blob._cached_signed_url = AsyncMock(return_value="https://old/x")
+    mib = 1 << 20
+    served = {"left": 5 * mib}
+    asked: list[int] = []
+
+    async def read(n: int) -> bytes:
+        asked.append(n)
+        take = min(n, served["left"])
+        served["left"] -= take
+        return b"x" * take
+
+    response = _Response(206, b"", {"Content-Range": f"bytes 0-{3 * mib - 1}/{5 * mib}"})
+    response.content.read = AsyncMock(side_effect=read)
+    session = _session({"https://old/x": response})
+    with patch("app.modules.transformers.blob_storage.get_shared_session", return_value=session):
+        body, total = await blob.read_stored_prefix("v-1", "org-1", 3 * mib)
+    assert len(body) == 3 * mib and total == 5 * mib
+    assert asked == [mib, mib, mib], "the read asks for at most a mebibyte at a time and never past the cap"
+    assert session.get.call_args.kwargs["headers"] == {"Range": f"bytes=0-{3 * mib - 1}"}

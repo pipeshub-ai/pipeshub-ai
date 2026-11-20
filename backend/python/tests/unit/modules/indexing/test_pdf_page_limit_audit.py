@@ -80,6 +80,12 @@ class Graph:
         return True
 
 
+def _transient() -> BaseException:
+    from app.modules.transformers.blob_storage import TransientStorageError
+
+    return TransientStorageError("status 503")
+
+
 def pdf(key: str, **fields: object) -> dict:
     return {
         "_key": key, "connectorId": "app-1", "indexingStatus": "COMPLETED", "extension": "pdf", "virtualRecordId": f"v-{key}",
@@ -227,7 +233,7 @@ async def test_the_log_line_states_the_counts(caplog: pytest.LogCaptureFixture) 
 @pytest.mark.asyncio
 async def test_a_failed_read_is_counted_not_fatal_but_the_pass_is_not_done() -> None:
     graph = Graph([pdf("a")])
-    result, *_ = await run(graph, AsyncMock(side_effect=RuntimeError("storage down")))
+    result, *_ = await run(graph, AsyncMock(side_effect=_transient()))
     assert result.not_checked == 1 and result.read_failed == 1 and not result.complete
 
 
@@ -290,7 +296,7 @@ async def test_the_lease_is_renewed_before_each_app_and_a_lost_one_stops_the_aud
 @pytest.mark.asyncio
 async def test_a_stored_record_that_could_not_be_read_keeps_the_audit_from_being_marked_done() -> None:
     graph = Graph([pdf("a"), pdf("b", pageCount=900)])
-    reader = AsyncMock(side_effect=RuntimeError("storage unavailable"))
+    reader = AsyncMock(side_effect=_transient())
     result, config, _ = await run(graph, reader)
     assert result.read_failed == 2 or result.read_failed == 1
     assert not result.complete and audit.FLAG_KEY not in config.data
@@ -312,3 +318,63 @@ async def test_a_failure_in_an_earlier_part_of_a_resumed_pass_still_holds_it_ope
     config.data[audit.CURSOR_KEY] = {"app": "app-1", "after": None, "read_failed": 3}
     result, config, _ = await run(graph, reader_of({}), config)
     assert not result.complete and audit.FLAG_KEY not in config.data
+
+
+def _error_reader(bodies: dict[str, bytes], errors: dict[str, BaseException]) -> AsyncMock:
+    async def read(vrid: str, org_id: str, max_bytes: int) -> tuple[bytes, int] | None:
+        if vrid in errors:
+            raise errors[vrid]
+        body = bodies.get(vrid)
+        return None if body is None else (body[:max_bytes], len(body))
+
+    return AsyncMock(side_effect=read)
+
+
+@pytest.mark.asyncio
+async def test_a_stored_object_that_is_gone_does_not_hold_the_audit_open() -> None:
+    from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
+
+    config = Config()
+    bodies = {f"v-{k}": pages_json(10) for k in ("a", "b")}
+    graph = Graph([pdf("a"), pdf("b"), pdf("gone")])
+    result, config, _ = await run(graph, _error_reader(bodies, {"v-gone": StorageDocumentNotFoundError("404")}), config=config)
+    assert result.read_failed == 0
+    assert result.complete and audit.FLAG_KEY in config.data
+
+
+@pytest.mark.asyncio
+async def test_a_request_the_storage_service_rejects_does_not_hold_the_audit_open() -> None:
+    from app.modules.transformers.blob_storage import StorageRequestRejectedError
+
+    graph = Graph([pdf("gone")])
+    result, config, _ = await run(graph, _error_reader({}, {"v-gone": StorageRequestRejectedError("rejected", 422)}))
+    assert result.read_failed == 0 and result.complete
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_or_lost_connection_is_a_transient_failure() -> None:
+    graph = Graph([pdf("a"), pdf("b")])
+    result, config, _ = await run(graph, _error_reader({}, {"v-a": TimeoutError(), "v-b": ConnectionResetError()}))
+    assert result.read_failed == 2 and not result.complete
+
+
+@pytest.mark.asyncio
+async def test_a_transient_failure_reruns_the_pass_a_bounded_number_of_starts_then_marks_it_done(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.modules.transformers.blob_storage import TransientStorageError
+
+    config = Config()
+    graph = Graph([pdf("a"), pdf("flaky")])
+    bodies = {"v-a": pages_json(10)}
+    outcomes = []
+    with caplog.at_level(logging.WARNING, logger="t"):
+        for _start in range(audit.MAX_RERUNS + 1):
+            result, config, _ = await run(graph, _error_reader(bodies, {"v-flaky": TransientStorageError("503")}), config=config)
+            outcomes.append((result.complete, audit.FLAG_KEY in config.data))
+            if audit.FLAG_KEY in config.data:
+                break
+    assert outcomes == [(False, False)] * (audit.MAX_RERUNS - 1) + [(True, True)]
+    assert audit.RERUNS_KEY not in config.data
+    assert any("flaky" in r.getMessage() for r in caplog.records), "the warning names the records it could not read"
+    assert "1 could not be read" in result.line()
