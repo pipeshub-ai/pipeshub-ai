@@ -346,6 +346,10 @@ class BaseDataStore(ABC):
         Returns how many were deleted."""
         raise NotImplementedError
 
+    async def get_user_granted_records(self, connector_id: str, user_id: str) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on (``id``, ``externalRecordId``, ``recordType``)."""
+        raise NotImplementedError
+
     @abstractmethod
     async def delete_user_group_by_id(self, group_id: str) -> None:
         pass

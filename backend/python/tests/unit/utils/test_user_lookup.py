@@ -24,6 +24,7 @@ from app.core.org_context import OrgContext, bind
 from app.utils import user_lookup
 from app.utils.user_lookup import (
     USER_NODE_ENSURE_PATH,
+    check_record_access_or_503,
     connectors_user_node_ensurer,
     get_caller_user,
     get_document_or_503,
@@ -262,6 +263,29 @@ class TestGetRecordOr503:
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(return_value=record)
         assert await get_record_or_503(graph, "rec-1") is record
+
+
+class TestCheckRecordAccessOr503:
+    async def test_a_failed_check_is_503(self) -> None:
+        graph = AsyncMock()
+        failure = ConnectionError("graph down")
+        graph.check_record_access_with_details = AsyncMock(side_effect=failure)
+        with pytest.raises(HTTPException) as exc:
+            await check_record_access_or_503(graph, "user-1", "org-1", "rec-1")
+        _assert_outage(exc.value)
+        assert exc.value.__cause__ is failure
+        graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+
+    async def test_no_access_is_none(self) -> None:
+        graph = AsyncMock()
+        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        assert await check_record_access_or_503(graph, "user-1", "org-1", "rec-1") is None
+
+    async def test_the_details_are_returned_as_read(self) -> None:
+        details = {"record": {"id": "rec-1"}}
+        graph = AsyncMock()
+        graph.check_record_access_with_details = AsyncMock(return_value=details)
+        assert await check_record_access_or_503(graph, "user-1", "org-1", "rec-1") is details
 
 
 def _team_request() -> MagicMock:

@@ -50,6 +50,7 @@ import {
   aguiRunErrorMetadata,
   frameAGUI,
   isAGUI,
+  readRunFrame,
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
@@ -2266,16 +2267,48 @@ export const handleRegenerationStreamData = (
         accumulator?.feedToolCallStart(dataLine);
       }
 
-      if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
-        // Mirrors the legacy `complete` branch below — `result` on
-        // Python's RUN_FINISHED IS the same completion_data shape
-        // `complete.data` carries today (see `AGUIFormatter.answer_final`).
-        try {
-          const parsed = JSON.parse(dataLine);
-          onCompleteData(parsed.result ?? parsed);
-        } catch {
-          logBadFrame('RUN_FINISHED', dataLine);
-          filteredChunk += event + '\n\n';
+      if (
+        agui &&
+        (eventType === AGUIEventType.RUN_FINISHED ||
+          eventType === AGUIEventType.RUN_ERROR)
+      ) {
+        const frame = readRunFrame(eventType, dataLine);
+        if (frame.kind === 'answer') {
+          // Not forwarded: Node sends its own RUN_FINISHED once the answer is saved.
+          onCompleteData(frame.result);
+        } else {
+          if (frame.kind === 'error') {
+            // A throw here must not escape the stream's 'data' handler.
+            try {
+              const errorData = frame.data;
+              onUpstreamError?.(errorData.code);
+              if (existingConversation && messageId) {
+                replaceMessageWithError(
+                  existingConversation,
+                  messageId,
+                  (typeof errorData.message === 'string' &&
+                    errorData.message) ||
+                    CHAT_ERROR_MESSAGES.failed,
+                  session,
+                  'streaming_error',
+                  typeof errorData.stack === 'string'
+                    ? errorData.stack
+                    : undefined,
+                ).catch((error: unknown) => {
+                  logger.error('Failed to replace message with error', {
+                    error,
+                  });
+                });
+              }
+            } catch {
+              logBadFrame(eventType, dataLine);
+            }
+          } else if (frame.kind === 'bad') {
+            logBadFrame(eventType, dataLine);
+          }
+          if (frame.kind !== 'bad') {
+            filteredChunk += event + '\n\n';
+          }
         }
       } else if (
         agui &&
@@ -2290,29 +2323,6 @@ export const handleRegenerationStreamData = (
           // Non-fatal: still forward the frame below.
         }
         filteredChunk += event + '\n\n';
-      } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
-        try {
-          const errorData = JSON.parse(dataLine);
-          onUpstreamError?.(errorData?.code);
-          if (existingConversation && messageId) {
-            const errorMessage =
-              errorData.message || CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'streaming_error',
-              errorData.stack,
-            ).catch((error: unknown) => {
-              logger.error('Failed to replace message with error', { error });
-            });
-          }
-          filteredChunk += event + '\n\n';
-        } catch {
-          logBadFrame('RUN_ERROR', dataLine);
-          filteredChunk += event + '\n\n';
-        }
       } else if (
         agui &&
         eventType === AGUIEventType.CUSTOM &&

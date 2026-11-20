@@ -10200,7 +10200,7 @@ class TestCheckRecordAccessWithDetails:
         ), patch.object(
             connected_provider, "get_document",
             new_callable=AsyncMock,
-            side_effect=lambda key, collection, txn=None: (
+            side_effect=lambda key, collection, txn=None, **_: (
                 {
                     "id": "r1",
                     "recordType": record_type,
@@ -12295,6 +12295,8 @@ class TestCheckRecordAccessWithDetailsExtended:
             return_value={"_key": "uk1", "userId": "u1"}
         )
         connected_provider._get_user_app_ids = AsyncMock(return_value=[])
+        connected_provider.get_document = AsyncMock(return_value={"_key": "r1", "recordType": "FILE"})
+        connected_provider.check_access = AsyncMock(return_value=AccessCheck())
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[None])
         result = await connected_provider.check_record_access_with_details(
             "u1", "org1", "r1"

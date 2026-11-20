@@ -310,6 +310,14 @@ class PermissionsMixin(PgBase):
               AND n.org_id = p.org_id AND n.coll = p.to_coll AND n.id = p.to_id AND n.doc->>'connectorId' = $3
             RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), user_id, connector_id), transaction, write=True) or 0
 
+    async def get_user_granted_records(self, connector_id: str, user_id: str, transaction: str | None = None) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on; grants held by a group, a team or the organization are not included."""
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_user_granted_records */ SELECT DISTINCT n.id, n.doc->>'externalRecordId' AS ext,
+            n.doc->>'recordType' AS rtype FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = 'records' AND n.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'records'
+              AND n.doc->>'connectorId' = $3""", current_org_id(), user_id, connector_id), transaction)
+        return [{"id": r["id"], "externalRecordId": r["ext"], "recordType": r["rtype"]} for r in rows]
+
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
         """Sets the role on each listed user's edge to the team (a user with no edge is skipped); the updated edges come back. A user named twice gets the last role."""
@@ -695,7 +703,7 @@ class PermissionsMixin(PgBase):
                   AND m.coll IN ('departments', 'categories', 'subcategories1', 'subcategories2', 'subcategories3', 'topics', 'languages')""", org, record_id)
             return best, meta
         best, meta = await self._q(go, transaction)
-        extra = await self.get_document(record_id, type_coll, transaction) if type_coll else None
+        extra = await self.get_document(record_id, type_coll, transaction, raise_on_error=True) if type_coll else None
         email, connector_name = (user or {}).get("email"), record.get("connectorName")
         if extra and extra.get("webUrl"):
             extra["webUrl"] = substitute_user_email(extra["webUrl"], email, connector_name)
@@ -708,7 +716,7 @@ class PermissionsMixin(PgBase):
                          "migrated": ed.get("migratedFrom") is not None}
             labels[m["mcoll"]].append(item)
         kb_info = None
-        app = await self.get_document(record.get("connectorId"), "apps", transaction) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
+        app = await self.get_document(record.get("connectorId"), "apps", transaction, raise_on_error=True) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
         if app and app.get("type") == _KB_TYPE and await self.get_user_kb_permission(app["id"], user_key, transaction=transaction):
             kb_info = {"id": app["id"], "name": app.get("name"), "orgId": org}
         role, source = best if best else ("READER", "CONNECTOR")      # a connector item carries no role; what the check admitted is read access

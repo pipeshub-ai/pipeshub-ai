@@ -131,6 +131,19 @@ async def get_record_or_503(graph_provider: IGraphDBProvider, record_id: str) ->
         raise _database_unreachable() from e
 
 
+async def check_record_access_or_503(
+    graph_provider: IGraphDBProvider, user_id: str, org_id: str, record_id: str
+) -> dict[str, Any] | None:
+    """The record's access details, or None when the user may not open it; a failed read is a 503.
+
+    Like its siblings it answers every exception with 503, a bug of ours included; the cause is kept for the request log.
+    """
+    try:
+        return await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
+    except Exception as e:
+        raise _database_unreachable() from e
+
+
 def _database_unreachable() -> HTTPException:
     return HTTPException(
         status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,

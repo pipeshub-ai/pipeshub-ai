@@ -101,6 +101,42 @@ describe('McpAccessPage', () => {
     expect(screen.getByText('pipeshub_search')).toBeTruthy();
   });
 
+  it('explains the entity tools PipesHub adds beside the package', async () => {
+    vi.mocked(McpAccessApi.getTools).mockResolvedValue([
+      { name: 'pipeshub_entities', title: 'Entities', writes: false },
+      { name: 'pipeshub_find_records', title: 'Find records', writes: false },
+    ]);
+    renderPage();
+    expect(await screen.findByText(strings.tools.descriptions.pipeshub_entities)).toBeTruthy();
+    expect(screen.getByText(strings.tools.descriptions.pipeshub_find_records)).toBeTruthy();
+  });
+
+  it('describes every tool the /mcp endpoint can list, in every language it ships', () => {
+    // The package's tools (pinned @pipeshub-ai/mcp), then the code-graph and entity tools
+    // this app registers (backend/nodejs/apps/src/modules/mcp). A tool missing here shows
+    // admins a bare name: add its description to every locale when the server adds a tool.
+    const served = [
+      'pipeshub_sources', 'pipeshub_search', 'pipeshub_get_record_content', 'pipeshub_download_record',
+      'pipeshub_directory', 'pipeshub_create_collection', 'pipeshub_upload', 'pipeshub_indexing_status',
+      'pipeshub_connect_source', 'pipeshub_add_web_source', 'pipeshub_chat', 'pipeshub_agents',
+      'pipeshub_show_citations', 'pipeshub_preview_record',
+      'pipeshub_code_repos', 'pipeshub_code_symbols', 'pipeshub_code_neighbours', 'pipeshub_code_read',
+      'pipeshub_code_path', 'pipeshub_code_search', 'pipeshub_code_semantic_search', 'pipeshub_code_outline',
+      'pipeshub_code_impact', 'pipeshub_code_impact_of_diff', 'pipeshub_code_history', 'pipeshub_code_entry_points',
+      'pipeshub_entities', 'pipeshub_find_records',
+    ];
+    const locales = import.meta.glob<{ workspace: { mcpAccess: { tools: { descriptions: Record<string, string> } } } }>(
+      '../../../../../lib/i18n/locales/*.json',
+      { eager: true, import: 'default' },
+    );
+    expect(Object.keys(locales).length).toBeGreaterThan(1);
+    for (const [file, catalogue] of Object.entries(locales)) {
+      const described = catalogue.workspace.mcpAccess.tools.descriptions;
+      const missing = served.filter((name) => !described[name]?.trim());
+      expect(missing, file).toEqual([]);
+    }
+  });
+
   it('shows a tool this build has no explanation for by its name alone', async () => {
     vi.mocked(McpAccessApi.getTools).mockResolvedValue([
       { name: 'pipeshub_future', title: 'pipeshub_future', writes: false },

@@ -7,6 +7,7 @@ import {
   ServiceAccountsService,
   UpdateServiceAccountInput,
 } from '../services/service-accounts.service';
+import { auditUserRefusal } from '../utils/user-audit';
 
 @injectable()
 export class ServiceAccountsController {
@@ -27,6 +28,7 @@ export class ServiceAccountsController {
       const account = await this.serviceAccounts.create(this.orgId(req), input);
       res.status(201).json(account);
     } catch (error) {
+      auditUserRefusal('service_account.create', error);
       next(error);
     }
   }
@@ -74,6 +76,7 @@ export class ServiceAccountsController {
       );
       res.json(account);
     } catch (error) {
+      auditUserRefusal('service_account.update', error, this.target(req));
       next(error);
     }
   }
@@ -90,8 +93,16 @@ export class ServiceAccountsController {
       );
       res.status(204).send();
     } catch (error) {
+      auditUserRefusal('service_account.delete', error, this.target(req));
       next(error);
     }
+  }
+
+  private target(req: AuthenticatedUserRequest): {
+    target: string;
+    targetIsUser: boolean;
+  } {
+    return { target: req.params.id as string, targetIsUser: true };
   }
 
   /**

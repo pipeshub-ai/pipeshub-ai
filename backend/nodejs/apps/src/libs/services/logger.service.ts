@@ -126,6 +126,9 @@ const EVENT_FIELD_KEYS = [
   'actor',
   'target',
   'group_id',
+  'team_id',
+  'key_id',
+  'scopes',
   'reason',
   'auth_method',
   'code',
@@ -180,6 +183,16 @@ const PIPESHUB_ID =
 export const isPipesHubId = (value: unknown): value is string =>
   typeof value === 'string' && PIPESHUB_ID.test(value);
 
+/** A team id: a PipesHub id, or the org's default All team (`all_<org id>`). */
+export const isTeamId = (value: unknown): value is string =>
+  isPipesHubId(value) ||
+  (typeof value === 'string' &&
+    value.startsWith('all_') &&
+    isPipesHubId(value.slice('all_'.length)));
+
+/** Comma-joined OAuth scope names (`kb:read,semantic:write`). */
+export const SCOPE_LIST = /^[a-z_]+(?::[a-z_]+)*(?:,[a-z_]+(?::[a-z_]+)*)*$/;
+
 const isText = (v: unknown): boolean => typeof v === 'string';
 const isIdValue = (v: unknown): boolean =>
   typeof v === 'string' || typeof v === 'number';
@@ -212,6 +225,10 @@ const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
   actor: matches(SHOWN_ID),
   target: matches(SHOWN_ID),
   group_id: isPipesHubId,
+  team_id: isTeamId,
+  // A service-account key's record id, never the key.
+  key_id: isPipesHubId,
+  scopes: matches(SCOPE_LIST),
   reason: matches(SNAKE_TOKEN),
   auth_method: matches(TYPE_NAME),
   // A chat stream's (`chat_stream.end`): the AI service's error code, and what it sent.
