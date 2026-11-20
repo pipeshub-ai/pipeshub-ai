@@ -298,10 +298,13 @@ If the `license/cla` check is still failing after you signed:
 
   ```bash
   git config user.email "you@example.com"   # an email linked to your GitHub account
-  # Rewrite each of your commits with the new author email (upstream/main is the branch your pull request targets)
-  git rebase --exec "git commit --amend --no-edit --reset-author" upstream/main
-  git log --format="%h %ae %s" upstream/main..HEAD   # check every commit shows the new email
-  git push --force-with-lease
+  git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/pipeshub-ai/pipeshub-ai.git
+  git fetch upstream
+  git log --merges --oneline upstream/main..HEAD   # if this prints anything, ask for help on the pull request instead
+  # Rewrite only the commits authored with your old email (replace old@example.com); other people's commits keep their author
+  git rebase --exec 'if [ "$(git log -1 --format=%ae)" = "old@example.com" ]; then git commit --amend --no-edit --reset-author; fi' upstream/main
+  git log --format="%h %ae %s" upstream/main..HEAD   # check your commits now show the new email
+  git push --force-with-lease origin HEAD
   ```
 
 ## Code Style Guidelines
