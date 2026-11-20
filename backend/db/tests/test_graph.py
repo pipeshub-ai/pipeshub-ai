@@ -495,6 +495,55 @@ def test_the_hot_lookups_keep_their_key_index_when_the_planner_expects_a_big_col
         assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, 'bz0', 1)")] == ["bz1"]
 
 
+def _analyzed(c, org: str, sql: str, params: tuple) -> str:
+    """The plans auto_explain logs, with actual row counts, for the statements one call runs under the connectors role."""
+    notes: list[str] = []
+    c.add_notice_handler(lambda d: notes.append(d.message_primary or ""))
+    with c.transaction():
+        c.execute("LOAD 'auto_explain'")
+        for s in ("log_min_duration = 0", "log_nested_statements = on", "log_analyze = on", "log_timing = off", "log_level = notice"):
+            c.execute(f"SET LOCAL auto_explain.{s}")
+        c.execute("SET LOCAL ROLE pipeshub_connectors")
+        c.execute("SELECT set_config('app.org_id', %s, true)", (org,))
+        c.execute(sql, params).fetchall()
+        c.execute("RESET ROLE")
+    return "\n".join(notes)
+
+
+def test_a_page_of_a_hot_lookup_reads_one_page_of_matches_from_its_cursor(rdb):
+    """A read of every match pages after the last id. With the matches of a key in id order inside its index (graph_0014), page k seeks past the cursor
+    and reads one page of index entries; before, each page read every match of the key and dropped those before the cursor (pages x matches)."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || lpad(i::text, 5, '0'), jsonb_build_object('orgId', %s::text, 'filePath', "
+                  "CASE WHEN i < 6000 THEN 'src/common.py' ELSE 'src/p' || i || '.py' END, 'repo', 'r' || (i %% 7)) FROM generate_series(0, 8999) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || lpad(i::text, 5, '0'), jsonb_build_object('orgId', %s::text, 'connectorId', 'c1', "
+                  "'nameFolded', CASE WHEN i < 6000 THEN 'init' ELSE 'n' || i END, 'recordId', CASE WHEN i < 6000 THEN 'big' ELSE 'r' || i END) "
+                  "FROM generate_series(0, 8999) i", (A, A))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        cases = [   # (call with the cursor last, its leading arguments, the plain filter of every match, the index)
+            ("graph.code_files_by_path(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("src/common.py",), "f", "nodes_codefile_path"),
+            ("graph.blocks_by_record(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("big",), "b", "nodes_block_record"),
+            ("graph.blocks_by_name(%s, %s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("c1", "init"), "b", "nodes_block_name"),
+        ]
+        for call, lead, prefix, index in cases:
+            plan = _analyzed(c, A, f"SELECT node_id FROM {call}", (*lead, json.dumps(A), f"{prefix}04999"))
+            scans = re.findall(rf"Index (?:Only )?Scan using \S*{index} on \S+ n[^\n]*rows=(\d+)", plan)
+            assert scans and all(int(r) <= 1000 for r in scans), (index, scans, plan)        # one page of entries, not the 6,000 matches
+            as_role(c, "pipeshub_connectors", A)
+            ids, after = [], ""
+            while True:
+                page = [r[0] for r in c.execute(f"SELECT node_id FROM {call}", (*lead, json.dumps(A), after))]
+                ids += page
+                if len(page) < 1000:
+                    break
+                after = page[-1]
+            assert ids == [f"{prefix}{i:05d}" for i in range(6000)], (index, len(ids))
+            c.execute("RESET ROLE")
+
+
 # ---- the knowledge graph's per-record lookups (graph_0006) ------------------------------------------------------------------------------
 def _seed_kg(c):
     """The same ids and keys in both orgs, awkward ones included: mixed-case and non-ASCII ids (byte order is not the database's order), repeated source keys and
