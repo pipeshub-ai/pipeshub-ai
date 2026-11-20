@@ -56,6 +56,28 @@ describe('ChatResponse hidden answer', () => {
     expect(screen.getByTestId('answer-hidden').textContent).toContain("We couldn't confirm your access. Try again.");
   });
 
+  it('a check that could not run offers Try again, which reads the chat again, and never Ask again', () => {
+    const original = useChatStore.getState().invalidateConversation;
+    const invalidateConversation = vi.fn();
+    useChatStore.setState({ activeSlotId: 'slot-1', slots: { 'slot-1': { isStreaming: false, convId: 'conv-1' } } as never, invalidateConversation });
+    try {
+      renderRow({ answerHidden: { redacted: true, reason: 'access_check_unavailable' } });
+
+      expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(invalidateConversation).toHaveBeenCalledWith('conv-1');
+      expect(streamMessageForSlot).not.toHaveBeenCalled();
+    } finally {
+      useChatStore.setState({ invalidateConversation: original });
+    }
+  });
+
+  it('Try again is offered to someone the chat was shared with too: it only reads', () => {
+    useChatStore.setState({ activeSlotId: 'slot-1', slots: { 'slot-1': { isStreaming: false, isOwner: false, convId: 'conv-1' } } as never });
+    renderRow({ answerHidden: { redacted: true, reason: 'access_check_unavailable' } });
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
   it('Ask again sends the same question as a new turn of this chat', () => {
     renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' } });
     fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));

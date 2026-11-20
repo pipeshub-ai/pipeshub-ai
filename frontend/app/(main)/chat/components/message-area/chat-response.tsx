@@ -408,6 +408,11 @@ export const ChatResponse = React.memo(function ChatResponse({
   const activeSlotId = scopedSlotId;
   // Read the slot-level activeExpandedMessageId so we can reset to 'answer'
   // when a different message becomes the expanded one.
+  // Reads the chat again, so the access check that could not run is asked again. Only a read: nothing is sent.
+  const retryAccess = useCallback(() => {
+    const convId = answerSlotId ? useChatStore.getState().slots[answerSlotId]?.convId : null;
+    if (convId) useChatStore.getState().invalidateConversation(convId);
+  }, [answerSlotId]);
   // Asks the same question again as a new turn of this answer's chat, answered with today's access.
   const askAgain = useCallback(() => {
     const slot = answerSlotId ? useChatStore.getState().slots[answerSlotId] : null;
@@ -1658,7 +1663,8 @@ export const ChatResponse = React.memo(function ChatResponse({
         )
       )}
 
-      {/* The answer is withheld (see `answerHidden`): say why, and offer to ask again with today's access. */}
+      {/* The answer is withheld (see `answerHidden`): say why. Lost access offers to ask again with today's access; a
+          check that could not run offers to try the check again, since asking again would meet the same failure. */}
       {!unanswered && answerHidden && (
         <Flex
           data-testid="answer-hidden"
@@ -1678,11 +1684,18 @@ export const ChatResponse = React.memo(function ChatResponse({
               ? t('chat.answerHidden.unconfirmed')
               : t('chat.answerHidden.lost')}
           </Text>
-          {isChatOwner && !columnMode && (
-            <Button size="1" variant="soft" onClick={askAgain}>
-              {t('chat.answerHidden.askAgain')}
-            </Button>
-          )}
+          {answerHidden.reason === 'access_check_unavailable'
+            ? !columnMode && (
+                <Button size="1" variant="soft" onClick={retryAccess}>
+                  {t('action.tryAgain')}
+                </Button>
+              )
+            : isChatOwner &&
+              !columnMode && (
+                <Button size="1" variant="soft" onClick={askAgain}>
+                  {t('chat.answerHidden.askAgain')}
+                </Button>
+              )}
         </Flex>
       )}
 
