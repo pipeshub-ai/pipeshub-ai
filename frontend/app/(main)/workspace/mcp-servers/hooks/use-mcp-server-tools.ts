@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isProcessedError } from '@/lib/api';
 import { McpServersApi } from '../api';
-import { mcpConnectionState, usesSharedCredential, type McpConnectionState } from '../connection-state';
+import { mcpConnectionState, type McpConnectionState } from '../connection-state';
 import type { McpToolsLoad } from '../team/components/mcp-tools-approvals-tab';
 import type { McpMyServerEntry } from '../types';
 
@@ -16,11 +16,14 @@ export function useMcpServerTools(instance: McpMyServerEntry | null, { isAdmin }
   // Bumped whenever the list is asked for again or the server changes: an older answer is dropped.
   const toolsRequest = useRef(0);
   const liveId = instance?._id;
+  const connectedAt = instance?.connectedAt;
+  const isAuthenticated = instance?.isAuthenticated;
 
+  // Another server, or a new sign-in on this one (maybe as someone else): the list is read again.
   useEffect(() => {
     toolsRequest.current += 1;
     setToolsLoad({ status: 'idle' });
-  }, [liveId]);
+  }, [liveId, connectedAt, isAuthenticated]);
 
   const loadTools = useCallback(
     async (cached: boolean) => {
@@ -46,15 +49,13 @@ export function useMcpServerTools(instance: McpMyServerEntry | null, { isAdmin }
 
   const connectionState: McpConnectionState = useMemo(() => {
     if (!instance) return 'ready';
-    if (toolsLoad.status === 'error' && toolsLoad.code === 'reauth' && instance.authMode === 'none') {
-      // The 409 says the server asks for a sign-in, which only its auth mode can give it. It is
-      // newer than the listing, so it wins over a listing that timed out or couldn't connect.
-      return mcpConnectionState({ ...instance, toolsErrorCode: 'unauthorized' }, { isAdmin });
-    }
     const base = mcpConnectionState(instance, { isAdmin });
-    if (base !== 'ready' || toolsLoad.status !== 'error') return base;
-    if (toolsLoad.code === 'reauth') return usesSharedCredential(instance) ? 'shared_credential_missing' : 'needs_reconnect';
-    return toolsLoad.code === 'unreachable' ? 'unreachable' : base;
+    if (toolsLoad.status !== 'error' || base === 'blocked') return base;
+    // The 409 is newer than the listing, so it wins over a listing that timed out or couldn't
+    // connect. Read as the listing's own "unauthorized", it also knows who can fix it: a member
+    // waits for an admin to replace a shared credential.
+    if (toolsLoad.code === 'reauth') return mcpConnectionState({ ...instance, toolsErrorCode: 'unauthorized' }, { isAdmin });
+    return toolsLoad.code === 'unreachable' && base === 'ready' ? 'unreachable' : base;
   }, [instance, isAdmin, toolsLoad]);
 
   const canListTools =
@@ -63,13 +64,6 @@ export function useMcpServerTools(instance: McpMyServerEntry | null, { isAdmin }
   useEffect(() => {
     if (canListTools && toolsLoad.status === 'idle') void loadTools(true);
   }, [canListTools, toolsLoad.status, loadTools]);
-
-  // A new sign-in makes a failed list worth reading again.
-  const connectedAt = instance?.connectedAt;
-  const isAuthenticated = instance?.isAuthenticated;
-  useEffect(() => {
-    setToolsLoad((prev) => (prev.status === 'error' ? { status: 'idle' } : prev));
-  }, [connectedAt, isAuthenticated]);
 
   return { toolsLoad, loadTools, connectionState };
 }

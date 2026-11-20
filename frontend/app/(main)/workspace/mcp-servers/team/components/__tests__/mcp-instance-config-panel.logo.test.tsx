@@ -129,9 +129,11 @@ const createCustom = { open: true, mode: 'create', editingInstance: null, prefil
 const editCustom = { open: true, mode: 'edit', editingInstance: custom, prefillTemplate: null } as PanelProps['state'];
 
 /** The logo sits under Advanced; open it whenever the panel shows it closed. */
+// Fails when Advanced is missing or won't open, so a check for an absent field there can't pass vacuously.
 function withAdvanced() {
-  const toggle = screen.queryByRole('button', { name: 'workspace.mcpServers.form.advanced' });
-  if (toggle?.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
+  const toggle = screen.getByRole('button', { name: 'workspace.mcpServers.form.advanced' });
+  if (toggle.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
 }
 
 const logoField = () => screen.queryByRole('group', { name: 'workspace.mcpServers.form.logo' });
@@ -344,7 +346,6 @@ describe('McpInstanceConfigPanel logo', () => {
       it('after the panel was closed and opened for it', async () => {
         await finishAfter((rerender) => {
           rerender(panel({ ...editCustom, open: false }));
-          withAdvanced();
           rerender(panel(editOther));
           withAdvanced();
         });
@@ -369,6 +370,19 @@ describe('McpInstanceConfigPanel logo', () => {
       fireEvent.click(screen.getByRole('button', { name: 'workspace.mcpServers.form.logoRemove' }));
 
       expect(saveButton().disabled).toBe(false);
+    });
+
+    it('keeps Advanced open while the picked logo is still being read', async () => {
+      picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>(() => {}));
+      render(panel(editCustom));
+      withAdvanced();
+      await waitFor(() => expect(preview()).toBe(SAVED));
+
+      await pickFile();
+      fireEvent.click(screen.getByRole('button', { name: 'workspace.mcpServers.form.advanced' }));
+
+      expect(logoField()).not.toBeNull();
+      expect(saveButton().disabled).toBe(true);
     });
   });
 });

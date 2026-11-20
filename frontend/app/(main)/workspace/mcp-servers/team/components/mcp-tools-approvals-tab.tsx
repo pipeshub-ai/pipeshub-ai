@@ -55,8 +55,8 @@ export function McpToolsApprovalsTab({
   const canListTools = state !== 'needs_connect' && state !== 'waiting_for_admin' && state !== 'shared_credential_missing';
   const listing = canListTools && (load.status === 'idle' || load.status === 'loading');
   // Without the list (no sign-in, or it failed) rules are still set by name.
-  const showRules = editor !== null && !listing && !editor.loading && !editor.loadError;
-  const showFooter = showRules;
+  const showRules = editor !== null && !listing && !editor.loading;
+  const showFooter = showRules && !editor.loadError;
 
   return (
     <Flex direction="column">
@@ -150,6 +150,8 @@ export function McpToolsApprovalsTab({
                   {t('workspace.mcpServers.toolRules.description.personal')}
                 </Text>
                 <McpToolRulesList editor={editor} toolsUnknown={load.status !== 'ready'} />
+                {/* Without their rules the tools are still worth seeing. */}
+                {editor.loadError && load.status === 'ready' && <McpToolList tools={ruleToolsFromInfo(load.tools)} />}
               </Flex>
             )
           )}

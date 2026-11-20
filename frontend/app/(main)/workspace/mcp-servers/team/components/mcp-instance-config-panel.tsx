@@ -564,10 +564,14 @@ export function McpInstanceConfigPanel({
   const credentialsPlaceholder = mode === 'edit' ? t('form.leaveBlankToKeep') : undefined;
 
   const showFooter = mode === 'create' || !isReadOnly;
-  const advancedOpen = showAdvanced || !connectTimeoutInput.valid || !callTimeoutInput.valid;
   // A provider that registers PipesHub by itself needs no OAuth client, so its fields wait under Advanced.
   const oauthClientOptional =
     authMode === 'oauth' && !oauthClientRequired && dcrSupported === true && !(mode === 'edit' && hasExistingOAuthClient);
+  // Held open while it holds what blocks Save (so the reason stays visible) or a logo still being
+  // read (closing it would unmount the field and drop the read).
+  const advancedHeldOpen =
+    !connectTimeoutInput.valid || !callTimeoutInput.valid || (oauthClientOptional && Boolean(oauthPairError)) || isReadingLogo;
+  const advancedOpen = showAdvanced || advancedHeldOpen;
 
   const credentialsBox = (
     <Flex
@@ -803,7 +807,11 @@ export function McpInstanceConfigPanel({
 
       {canUseAdminAuth && (
         <FormField label={t('workspace.mcpServers.form.whoSignsIn')} required>
-          <RadioGroup.Root value={useAdminAuth ? 'shared' : 'personal'} onValueChange={(v) => setUseAdminAuth(v === 'shared')}>
+          <RadioGroup.Root
+            value={useAdminAuth ? 'shared' : 'personal'}
+            onValueChange={(v) => setUseAdminAuth(v === 'shared')}
+            aria-label={t('workspace.mcpServers.form.whoSignsIn')}
+          >
             <Flex direction="column" gap="2">
               {(['personal', 'shared'] as const).map((choice) => {
                 const on = (choice === 'shared') === useAdminAuth;
@@ -844,8 +852,10 @@ export function McpInstanceConfigPanel({
       <Box>
         <button
           type="button"
+          className="touch-hit"
           aria-expanded={advancedOpen}
-          onClick={() => setShowAdvanced((v) => !v)}
+          // While held open a click can't close it, and it stays open once the reason is fixed.
+          onClick={() => setShowAdvanced(advancedHeldOpen || !advancedOpen)}
           style={{
             appearance: 'none',
             margin: 0,

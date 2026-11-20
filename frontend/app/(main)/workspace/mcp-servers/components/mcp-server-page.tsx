@@ -233,7 +233,14 @@ export function McpServerPage({
         </Flex>
         <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
           {onEdit && (
-            <Button size={isMobile ? '3' : '2'} variant="soft" color="gray" onClick={onEdit} style={{ cursor: 'pointer' }}>
+            <Button
+              size={isMobile ? '3' : '2'}
+              variant="soft"
+              color="gray"
+              onClick={onEdit}
+              aria-label={t('workspace.mcpServers.cta.edit')}
+              style={{ cursor: 'pointer' }}
+            >
               <MaterialIcon name="edit" size={16} color="var(--gray-11)" />
               {!isMobile && t('workspace.mcpServers.cta.edit')}
             </Button>

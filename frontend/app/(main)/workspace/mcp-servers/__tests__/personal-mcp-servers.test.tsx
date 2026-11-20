@@ -401,6 +401,7 @@ describe('McpInstanceConfigPanel scope', () => {
     choose('No authentication', 'API token');
 
     expect(screen.queryByText('Use shared admin authentication for all users')).toBeNull();
+    expect(screen.getByRole('radiogroup', { name: 'How people sign in' })).toBeTruthy();
     fireEvent.click(screen.getByText('One shared credential for everyone'));
     const [nameInput] = screen.getAllByRole('textbox');
     fireEvent.change(nameInput, { target: { value: 'Team' } });
@@ -428,8 +429,19 @@ describe('McpInstanceConfigPanel scope', () => {
     expect(screen.getAllByText('Add Remote One').length).toBeGreaterThan(0);
     await waitFor(() => expect(mcpApi.discoverOAuthMetadata).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByText('Client ID')).toBeNull());
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
+    const advanced = screen.getByRole('button', { name: /Advanced/ });
+    fireEvent.click(advanced);
     expect(screen.getByText('Client ID')).toBeTruthy();
+
+    // Half an OAuth client blocks Save, so Advanced stays open to say why.
+    const clientId = screen.getByPlaceholderText('Enter client ID');
+    fireEvent.change(clientId, { target: { value: 'abc' } });
+    fireEvent.click(advanced);
+    expect(screen.getByText('Enter both the client ID and client secret, or leave both blank.')).toBeTruthy();
+
+    fireEvent.change(clientId, { target: { value: '' } });
+    fireEvent.click(advanced);
+    expect(screen.queryByText('Client ID')).toBeNull();
   });
 
   it('keeps description and timeouts under Advanced, open when the server already uses them', () => {
@@ -596,6 +608,27 @@ describe('McpServerPage', () => {
       expect(screen.queryByText('Sign-in expired')).toBeNull();
     });
 
+    it('an expired sign-in wins over an older listing that only timed out', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(apiError(409, 'Reconnect needed'));
+      renderPage(entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, toolsErrorCode: 'timeout', toolsTimedOut: true }));
+
+      expect(await screen.findByText('Sign-in expired')).toBeTruthy();
+      expect(within(status()).getByText('Reconnect needed')).toBeTruthy();
+    });
+
+    it('reads the list again after a new sign-in, even when the last read worked', async () => {
+      mcpApi.getInstanceTools.mockResolvedValueOnce({ tools: [CREATE], syncedAt: Date.now() });
+      const instance = entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, connectedAt: 1 });
+      const { rerender } = render(<Theme>{pageElement(instance)}</Theme>);
+      expect(within(await screen.findByTestId('mcp-tool-list')).getByText('Create issue')).toBeTruthy();
+
+      mcpApi.getInstanceTools.mockResolvedValueOnce({ tools: [SEARCH], syncedAt: Date.now() });
+      rerender(<Theme>{pageElement({ ...instance, connectedAt: 2 })}</Theme>);
+
+      await waitFor(() => expect(within(screen.getByTestId('mcp-tool-list')).queryByText('Create issue')).toBeNull());
+      expect(mcpApi.getInstanceTools).toHaveBeenCalledTimes(2);
+    });
+
     it("never shows one server's list on another server's page", async () => {
       let answerA: (value: unknown) => void = () => {};
       mcpApi.getInstanceTools.mockImplementation((id: string) =>
@@ -705,6 +738,23 @@ describe('McpServerPage', () => {
       // A deleting name starts at Deny, so the rule needn't be stored.
       await waitFor(() => expect(mcpApi.updateMyToolRules).toHaveBeenCalledWith('inst-1', { tools: {} }));
       expect(mcpApi.getInstanceTools).not.toHaveBeenCalled();
+    });
+
+    it('leaves a refused shared credential to an admin', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(apiError(409, 'Reconnect needed'));
+      renderPage(entry({ createdBy: '', authMode: 'api_token', useAdminAuth: true, isAuthenticated: true }), personal);
+
+      expect(await within(status()).findByText('Waiting for admin')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /^(Connect|Reauthenticate)$/ })).toBeNull();
+    });
+
+    it("says when their rules couldn't load, without a save bar", async () => {
+      mcpApi.getMyToolRules.mockRejectedValueOnce(apiError(500, 'Rules are unavailable right now.'));
+      renderPage(entry({ createdBy: '' }), personal);
+
+      expect(await screen.findByText('Rules are unavailable right now.')).toBeTruthy();
+      expect(screen.queryByTestId('mcp-rules-footer')).toBeNull();
+      expect(within(await screen.findByTestId('mcp-tool-list')).getByText('Create issue')).toBeTruthy();
     });
 
     it('offers no Edit on a server someone else added', () => {
