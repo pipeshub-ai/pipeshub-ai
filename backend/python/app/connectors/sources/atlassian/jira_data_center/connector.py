@@ -266,7 +266,7 @@ def dc_rest_profile(version: tuple[int, ...] | None) -> DcRestProfile:
 
 
 class GroupMemberships(NamedTuple):
-    """Group id/name -> members for role resolution. None marks a group whose members are unknown.
+    """Group name -> members for role resolution. None marks a group whose members are unknown.
 
     ``cut_off`` when the group list stopped at the picker limit: a group missing from
     ``members`` may then exist past it, so its members are unknown too.
@@ -277,12 +277,15 @@ class GroupMemberships(NamedTuple):
 
 
 def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize a DC groups/picker row to ``{name, groupId}`` (name is the DC group key)."""
+    """Normalize a DC groups/picker row to ``{name, groupId}``, both the group's name. Data Center has no other group id:
+    GroupSuggestionBean holds ``name``, ``html`` and ``labels``, GET group/member takes "groupname: The group name", and
+    level and permission holders name a group by name (10.2, 10.7 and 11.3 specifications,
+    https://dac-static.atlassian.com/server/jira/platform/jira_software_dc_11003_swagger.v3.json). An id in a row would be a
+    second key space, in which one group's id can be another group's name."""
     name = raw.get("name")
     if not name:
         return None
-    gid = raw.get("groupId") or raw.get("id") or name
-    return {"name": str(name), "groupId": str(gid)}
+    return {"name": str(name), "groupId": str(name)}
 
 
 def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str, str]]:
@@ -2432,11 +2435,8 @@ class JiraDataCenterConnector(BaseConnector):
                     if role_key and app_roles_mapping and role_key in app_roles_mapping:
                         role_groups = app_roles_mapping[role_key]
                         for group_info in role_groups:
-                            # Match the convention in ``_normalize_jira_dc_group_row``:
-                            # use ``groupId`` when the server returned a distinct id,
-                            # otherwise fall back to ``name``. This keeps the Permission's
-                            # ``external_id`` aligned with ``AppUserGroup.source_user_group_id``
-                            # so ``on_new_record_groups`` can resolve the edge.
+                            # The group's name, as ``AppUserGroup.source_user_group_id``
+                            # (``_normalize_jira_dc_group_row``), so ``on_new_record_groups`` resolves the edge.
                             group_key_value = group_info.get("groupId") or group_info.get("name")
                             if group_key_value:
                                 group_key = f"group:{group_key_value}"
@@ -2650,7 +2650,7 @@ class JiraDataCenterConnector(BaseConnector):
             user_by_key = {user.source_user_id: user for user in jira_users if user.source_user_id}
 
             user_groups_batch = []
-            # Mapping: group_id -> members, group_name -> members (for role actor lookup)
+            # Group name -> members, for role actor lookup (``_normalize_jira_dc_group_row``: the name is the group's id)
             groups_members_map: dict[str, Optional[list[AppUser]]] = {}
 
             for group in groups:
@@ -2681,7 +2681,6 @@ class JiraDataCenterConnector(BaseConnector):
                             "Keeping the stored members of group %s: its member list could not be read",
                             group_name,
                         )
-                        groups_members_map[group_id] = None
                         groups_members_map[group_name] = None
                         continue
 
@@ -2703,8 +2702,6 @@ class JiraDataCenterConnector(BaseConnector):
                             skipped_members,
                         )
 
-                    # Store mapping by both group_id and group_name for flexible lookup
-                    groups_members_map[group_id] = app_users
                     groups_members_map[group_name] = app_users
 
                     # Add group to batch (with or without members)
@@ -2719,9 +2716,8 @@ class JiraDataCenterConnector(BaseConnector):
                     self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
                     # Unknown members, not no members: roles that include this group keep what is stored.
                     self._note_unread(None)
-                    for key in (group.get("groupId"), group.get("name")):
-                        if key:
-                            groups_members_map[key] = None
+                    if group.get("name"):
+                        groups_members_map[group["name"]] = None
                     continue
 
             if self._user_read_unfinished:
@@ -3071,31 +3067,26 @@ class JiraDataCenterConnector(BaseConnector):
                                     )
 
                             elif actor_type == "atlassian-group-role-actor":
-                                # Group actor - get group members from already-fetched groups
+                                # A group actor names its group by name (RoleActorBean: ``name``), the map's only key.
                                 group_name = actor.get("name") or actor.get("displayName")
-                                group_id = actor.get("groupId")
 
-                                # Try to find group members by group_id first, then by name
                                 group_members: Optional[list[AppUser]] = []
-                                if group_id and group_id in groups_members_map:
-                                    group_members = groups_members_map[group_id]
-                                elif group_name and group_name in groups_members_map:
+                                if group_name and group_name in groups_members_map:
                                     group_members = groups_members_map[group_name]
                                 elif groups_cut_off:
-                                    group_past_cap = group_name or group_id
+                                    group_past_cap = group_name
                                     break
                                 else:
                                     self.logger.debug(
-                                        f"  {project_key}/{role_name}: Group actor '{group_name}' "
-                                        f"(id: {group_id}) not found in synced groups"
+                                        f"  {project_key}/{role_name}: Group actor '{group_name}' not found in synced groups"
                                     )
 
                                 if group_members is None:
-                                    unreadable_group = group_name or group_id
+                                    unreadable_group = group_name
                                     break
 
                                 self.logger.debug(
-                                    f"  {project_key}/{role_name}: Group actor '{group_name}' (id: {group_id}) "
+                                    f"  {project_key}/{role_name}: Group actor '{group_name}' "
                                     f"found {len(group_members)} members"
                                 )
                                 # Add all group members directly to role members (USER->ROLE, not GROUP->ROLE)
