@@ -116,15 +116,16 @@ def test_controller_failover_resumes(ledger: Path, children: list) -> None:
     proc, pipe = start_controller(ctx, ledger, children)
     epoch, resumed = recv(pipe)
     assert epoch == 1 and resumed is None
-    time.sleep(TICK * 2.5)
     watcher = handle(ledger, "watch")
+    end = time.monotonic() + 10
+    while (watcher.controller()["state"] or {}).get("n", 0) < 2 and time.monotonic() < end:
+        time.sleep(0.01)
     before = watcher.controller()["state"]["n"]
     assert before >= 2
     os.kill(proc.pid, signal.SIGKILL)
     proc.join()
-    t = time.monotonic()
-    epoch2 = watcher.elect_controller(TICK)
-    assert epoch2 == 2 and time.monotonic() - t < TICK  # no waiting for the beat to age: the slot's lock died
+    beat_ms = watcher.controller()["beat_ms"]
+    assert watcher.elect_controller(TICK, now_ms=beat_ms) == 2  # its last beat is fresh at this clock: only its dead lock frees the slot
     state = watcher.controller()["state"]
     assert state["n"] >= before  # resumed, not restarted from nothing
 

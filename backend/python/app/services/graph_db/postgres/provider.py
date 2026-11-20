@@ -52,6 +52,7 @@ for _m in _MIXINS:
 
 class PostgresGraphProvider(*_MIXINS, PgBase, IGraphDBProvider):
     ENTITY_INDEX_PAGE_ORDER = "c"      # records page in byte order (the vetted connector page), not the database's default collation
+    kh_skip_rows = 1000      # a connector page's cost is its fixed part (state, access classes) more than its rows: read the rows before a numbered page in few reads
 
 
 _STUBBED: set[str] = set()

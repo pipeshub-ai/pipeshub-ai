@@ -26,6 +26,10 @@ export function castDate(value: unknown, field: string): Date | null {
  * A scheduled row with no `createdAt` takes its `visibleAt`.
  */
 export function prepareNotification(row: NewNotification): NewNotification {
+  // a notification has a type: MongoDB's schema requires a non-empty one, and PostgreSQL's NOT NULL alone would store an empty string
+  if (typeof row.type !== 'string' || row.type === '') {
+    throw new Error('notification type is required');
+  }
   const visibleAt = castDate(row.visibleAt, 'visibleAt');
   const createdAt = castDate(row.createdAt, 'createdAt');
   // both stores expire a row by createdAt, so one visible only after that would be dropped unseen

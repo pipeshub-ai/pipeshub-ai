@@ -34,7 +34,7 @@ MAX_CARRIED_HORIZON_S = 7 * 24 * 3600.0
 
 def repurge_event_payload(org_id: str, record_id: str, *, now: float | None = None) -> dict[str, Any]:
     """The first hop for a record: the org and record, when it was deleted, and when the hop is due."""
-    now = time.time() if now is None else now
+    now = now_s() if now is None else now
     return {
         "orgId": org_id, "recordId": record_id, "deletedAt": now, "hop": 1, "horizonS": repurge_horizon_s(),
         "_retry_not_before": now + REPURGE_HOP_S,
@@ -43,11 +43,20 @@ def repurge_event_payload(org_id: str, record_id: str, *, now: float | None = No
 
 def org_repurge_event_payload(org_id: str, *, now: float | None = None) -> dict[str, Any]:
     """The first hop for a whole org: no record, ``scope`` says so."""
-    now = time.time() if now is None else now
+    now = now_s() if now is None else now
     return {
         "orgId": org_id, "scope": ORG_SCOPE, "deletedAt": now, "hop": 1, "horizonS": repurge_horizon_s(),
         "_retry_not_before": now + REPURGE_HOP_S,
     }
+
+
+def now_s() -> float:
+    """The clock of every hop and window computation (one place, so a test can move it)."""
+    return time.time()
+
+
+#: Fields of a page hop of a coalesced chain (``repurge_window``) that every successor carries unchanged.
+BATCH_CARRIED = ("phase", "recordIds", "page", "window")
 
 
 def _finite_seconds(value: object) -> float:
@@ -68,7 +77,7 @@ def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None 
     ``repurge_horizon_s()`` has passed since the delete. ``deletedAt`` is never taken from the future. The org is
     the verified envelope's (``org_id``), never a field of the body.
     """
-    now = time.time() if now is None else now
+    now = now_s() if now is None else now
     deleted_at = payload.get("deletedAt")
     hop = payload.get("hop")
     if isinstance(deleted_at, bool) or not isinstance(deleted_at, int | float):
@@ -89,6 +98,7 @@ def next_hop_payload(org_id: str, payload: dict[str, Any], *, now: float | None 
         return None
     return {
         "orgId": org_id,
+        **{k: payload[k] for k in BATCH_CARRIED if k in payload},
         **({"recordId": payload["recordId"]} if payload.get("recordId") else {}),
         **({"scope": payload["scope"]} if payload.get("scope") else {}),
         "deletedAt": deleted_at,
@@ -119,11 +129,23 @@ def chain_enabled() -> bool:
     return (os.getenv(REPURGE_CHAIN_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-async def _publish(
+def hop_key(org_id: str, payload: dict[str, Any]) -> str:
+    """The message key of a hop: the record (one chain per record), or the window page of a coalesced chain."""
+    if payload.get("recordId"):
+        return str(payload["recordId"])
+    if payload.get("phase") == "hop":
+        return f"{org_id}:{payload.get('window')}:{payload.get('page')}"
+    return org_id
+
+
+async def publish_event(
     producer: Any, payload: dict[str, Any], key: str, loop: Any,  # noqa: ANN401 - the messaging producer and its owning loop
+    *, event_type: str | None = None,
 ) -> None:
+    """Publishes one re-purge event (``purgePaidResults`` unless ``event_type`` says otherwise). Raises when it cannot."""
     from app.services.messaging.kafka.topics import Topic
 
+    event_type = event_type or EventTypes.PURGE_PAID_RESULTS.value
 
     if producer is None:
         raise RuntimeError("No messaging producer configured; cannot schedule the paid-result re-purge")
@@ -131,11 +153,17 @@ async def _publish(
         loop,
         producer.send_event(
             topic=Topic.RECORD_EVENTS.value,
-            event_type=EventTypes.PURGE_PAID_RESULTS.value,
+            event_type=event_type,
             payload=payload,
             key=key,
         ),
     )
+
+
+async def _publish(
+    producer: Any, payload: dict[str, Any], key: str, loop: Any,  # noqa: ANN401 - the messaging producer and its owning loop
+) -> None:
+    await publish_event(producer, payload, key, loop)
 
 
 async def schedule_org_repurge(producer: Any, org_id: str, *, now: float | None = None, loop: Any = None) -> None:  # noqa: ANN401 - the messaging producer
@@ -162,5 +190,5 @@ async def schedule_next_hop(
     following = next_hop_payload(org_id, payload, now=now)
     if following is None:
         return False
-    await _publish(producer, following, str(following.get("recordId") or org_id), loop)
+    await _publish(producer, following, hop_key(org_id, following), loop)
     return True

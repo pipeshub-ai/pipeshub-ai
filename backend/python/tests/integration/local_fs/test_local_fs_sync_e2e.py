@@ -39,19 +39,6 @@ if TYPE_CHECKING:
 
 # --- Import shims (must run before importing local_fs.connector). Same
 # pattern as tests/unit/connectors/sources/local_fs/test_connector.py. ---
-if "app.containers.connector" not in sys.modules:
-    _stub_container = types.ModuleType("app.containers.connector")
-
-    class _ContainerMeta(type):
-        def __getattr__(cls, name) -> None:
-            return None
-
-    class _ConnectorAppContainer(metaclass=_ContainerMeta):
-        pass
-
-    _stub_container.ConnectorAppContainer = _ConnectorAppContainer
-    sys.modules["app.containers.connector"] = _stub_container
-
 try:
     # redis is a pinned dependency (pyproject: redis==5.2.1) and provides every
     # name stubbed below. Stub only when it is genuinely absent: installing the
@@ -94,10 +81,6 @@ except ImportError:
     _redis.asyncio = _redis_asyncio
     sys.modules["redis"] = _redis
 
-if "etcd3" not in sys.modules:
-    _etcd3 = types.ModuleType("etcd3")
-    _etcd3.client = type("client", (), {})
-    sys.modules["etcd3"] = _etcd3
 # --- end shims ---
 
 from app.config.constants.arangodb import CollectionNames, MimeTypes
