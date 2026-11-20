@@ -140,7 +140,7 @@ async def test_a_cap_reaches_the_gate() -> None:
 async def test_gate_timeout_shorter_than_warn_window_is_not_admitted() -> None:
     """The gate gives up inside the warn window: the caller must get False (429), not True."""
     ticks = iter(range(0, 10_000, 10))  # every clock read advances 10 s, so a 5 s timeout is already spent
-    registry = LimitRegistry(Limits(values={p: 1 for p in Pool}))
+    registry = LimitRegistry(Limits(values=dict.fromkeys(Pool, 1)))
     gate = AdmissionGate(Pool.HEAVY_PARSE, registry, clock=lambda: float(next(ticks)))
     assert await gate.acquire(cost=1)
 
