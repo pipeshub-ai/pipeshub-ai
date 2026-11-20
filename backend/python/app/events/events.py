@@ -665,6 +665,48 @@ class EventProcessor:
             mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
         )
 
+    @staticmethod
+    def _read_plan(
+        record_type: str | None,
+        mime_type: str,
+        extension: str | None,
+        file_path: str | None,
+        record_name: str,
+        gate_route: file_types.Dispatch | None,
+    ) -> tuple[file_types.Dispatch | None, str | None, bool]:
+        """``(dispatch, code_ext, reads_as_code_file)``: how a record is read, from its labels.
+
+        *gate_route* is the reader the record handler's gate accepted the file for; it is used only
+        where the labels name none, so a file the gate accepted is never refused here.
+        """
+        # A CODE_FILE's mime is not trustworthy: connectors that walk a git
+        # tree default it to text/plain for anything they do not recognise,
+        # and they do not always populate `extension`. Derive a separate
+        # extension for code dispatch and language detection — the original
+        # value must stay intact for reconciliation, tier, and generic dispatch.
+        code_ext = extension
+        if not code_ext or code_ext == "unknown":
+            fp_base = (file_path or "").rsplit("/", 1)[-1]
+            rn_base = record_name.rsplit("/", 1)[-1]
+            if "." in fp_base and fp_base.rsplit(".", 1)[-1]:
+                code_ext = fp_base.rsplit(".", 1)[-1].lower()
+            elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
+                code_ext = rn_base.rsplit(".", 1)[-1].lower()
+        reads_as_code_file = EventProcessor._reads_as_code_file(
+            record_type, mime_type, code_ext, record_name
+        )
+        dispatch = file_types.legacy_route(
+            mime_type, extension, code_extension=code_ext, reads_as_code_file=reads_as_code_file,
+            is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
+        )
+        if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:
+            # A docm, or a .log a repository stored as text/plain, is not source.
+            reads_as_code_file = False
+        if dispatch is None and gate_route is not None:
+            # What the gate accepted is read as it judged it, never refused here.
+            dispatch, reads_as_code_file = gate_route, gate_route.route is Route.CODE
+        return dispatch, code_ext, reads_as_code_file
+
     async def _dispatch_stages(
         self, record: Record, event_type: str | None, *, defer_classify: bool = False
     ) -> None:
@@ -1762,7 +1804,8 @@ class EventProcessor:
                 - signed_url: Signed URL to download the file
                 - connector_name: Name of the connector
                 - metadata_route: Route to get metadata
-                
+                - gateRoute: the reader the record handler's gate accepted the file for, if any
+
         Yields:
             Dict with 'event' key:
             - {'event': 'parsing_complete', 'data': {...}}
@@ -1792,6 +1835,8 @@ class EventProcessor:
                     "Event has no payload",
                     details={"event_type": event_type},
                 )
+            # The reader the record handler's gate accepted the file for, when it judged one.
+            gate_route = event_data.get("gateRoute")
             event_data = payload
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
@@ -1849,20 +1894,6 @@ class EventProcessor:
             origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
-            # A CODE_FILE's mime is not trustworthy: connectors that walk a git
-            # tree default it to text/plain for anything they do not recognise,
-            # and they do not always populate `extension`. Derive a separate
-            # extension for code dispatch and language detection — the original
-            # value must stay intact for reconciliation, tier, and generic dispatch.
-            code_ext = extension
-            if not code_ext or code_ext == "unknown":
-                file_path_raw = event_data.get("filePath") or ""
-                fp_base = file_path_raw.rsplit("/", 1)[-1]
-                rn_base = record_name.rsplit("/", 1)[-1]
-                if "." in fp_base and fp_base.rsplit(".", 1)[-1]:
-                    code_ext = fp_base.rsplit(".", 1)[-1].lower()
-                elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
-                    code_ext = rn_base.rsplit(".", 1)[-1].lower()
             file_content = event_data.get("buffer")
 
             # Connector streaming or JSON API responses may deliver already-parsed
@@ -1885,17 +1916,10 @@ class EventProcessor:
             )
             self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
             record_type = doc.get("recordType")
+            dispatch, code_ext, reads_as_code_file = self._read_plan(
+                record_type, mime_type, extension, event_data.get("filePath"), record_name, gate_route
+            )
             is_code = _is_code_file(mime_type, code_ext)
-            reads_as_code_file = self._reads_as_code_file(
-                record_type, mime_type, code_ext, record_name
-            )
-            dispatch = file_types.legacy_route(
-                mime_type, extension, code_extension=code_ext, reads_as_code_file=reads_as_code_file,
-                is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
-            )
-            if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:
-                # A docm, or a .log a repository stored as text/plain, is not source.
-                reads_as_code_file = False
             scans_for_secrets = self._scans_for_secrets(
                 record_type, reads_as_code_file=reads_as_code_file
             )
