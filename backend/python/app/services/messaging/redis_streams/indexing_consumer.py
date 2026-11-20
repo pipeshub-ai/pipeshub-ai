@@ -3440,6 +3440,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if chosen:
                 self._read_offset = topics.index(chosen[-1]) + 1
             streams = {t: ">" for t in streams if t not in extra or t in chosen}
+            if not streams:  # a window of extra streams the budget leaves out: nothing to read, and no block for it
+                self._lanes_with_data = set()  # as the empty read it replaces did, so parked base lanes get read again
+                await self.__wait_for_finish(_BUSY_BLOCK_MS / 1000)
+                return
         # Buffered work behind a task in flight waits for its finish, which no XREADGROUP
         # notices: read without blocking, then wait for the finish. A blocked read is never
         # cancelled (that drops its connection). A finish since the dispatch phase looked counts
