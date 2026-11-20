@@ -18,6 +18,7 @@ vi.mock('@/lib/hooks/use-is-mobile', async (importOriginal) => ({
 vi.mock('@/lib/store/user-store', () => ({
   useUserStore: (selector: (s: { isAdmin: boolean }) => unknown) => selector({ isAdmin: true }),
   selectIsAdmin: (s: { isAdmin: boolean }) => s.isAdmin,
+  selectRefreshedIsAdmin: (s: { isAdmin: boolean }) => s.isAdmin,
 }));
 
 vi.mock('@/lib/store/feature-flags-store', () => ({
