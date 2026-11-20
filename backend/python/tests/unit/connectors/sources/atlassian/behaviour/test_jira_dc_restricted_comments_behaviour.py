@@ -9,19 +9,22 @@ against the oldest, a middle and the newest supported release.
 
 import json
 from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from atlassian_behaviour_fakes import json_response
+from atlassian_behaviour_fakes import (
+    AtlassianApiStub,
+    FakeCheckpointStore,
+    json_response,
+)
 from test_jira_dc_sync_behaviour import (  # the stub site and fakes the sync tests use
     API,
     BASE,
-    db,  # noqa: F401 - fixture
+    IssueSearch,
+    JiraRecordsDb,
     issue,
-    jira,  # noqa: F401 - fixture
     make_connector,
-    search,  # noqa: F401 - fixture
-    store,  # noqa: F401 - fixture
     stub_site,
     tickets,
     ts,
@@ -30,12 +33,41 @@ from test_jira_dc_sync_behaviour import (  # the stub site and fakes the sync te
 from app.config.constants.arangodb import AccessRule
 from app.models.entities import CommentRecord, RecordType
 from app.models.permission import EntityType
+from app.sources.client.http.http_client import HTTPClient
 
 VERSIONS = {"10.2": [10, 2, 0], "10.7": [10, 7, 4], "11.3": [11, 3, 13]}
 
 
+@pytest.fixture
+def db() -> JiraRecordsDb:
+    return JiraRecordsDb()
+
+
+@pytest.fixture
+def store() -> FakeCheckpointStore:
+    return FakeCheckpointStore()
+
+
+@pytest.fixture
+def search() -> IssueSearch:
+    return IssueSearch()
+
+
+@pytest.fixture
+def jira(atlassian_api: AtlassianApiStub, monkeypatch: pytest.MonkeyPatch) -> AtlassianApiStub:
+    """Every real ``HTTPClient`` talks to the stub, as in the sync tests."""
+
+    async def _ensure_client(self: HTTPClient) -> httpx.AsyncClient:
+        if self.client is None:
+            atlassian_api.install(self)
+        return self.client
+
+    monkeypatch.setattr(HTTPClient, "_ensure_client", _ensure_client)
+    return atlassian_api
+
+
 @pytest.fixture(params=sorted(VERSIONS))
-def site(request, jira, search):  # noqa: ANN001, ANN201
+def site(request: pytest.FixtureRequest, jira: AtlassianApiStub, search: IssueSearch) -> AtlassianApiStub:
     stub_site(jira, search)
     numbers = VERSIONS[request.param]
     jira.on("GET", f"{API}/serverInfo", {"version": ".".join(map(str, numbers)), "versionNumbers": numbers})
@@ -59,15 +91,15 @@ def with_comments(updated: str, comments: list[dict[str, Any]], total: int | Non
     return out
 
 
-def comment_records(db) -> dict[str, CommentRecord]:  # noqa: ANN001
+def comment_records(db) -> dict[str, CommentRecord]:
     return {k: r for k, r in db.records.items() if r.record_type == RecordType.COMMENT}
 
 
-def grants(db, ext: str) -> set[tuple[EntityType, str]]:  # noqa: ANN001
+def grants(db, ext: str) -> set[tuple[EntityType, str]]:
     return {(p.entity_type, p.external_id) for p in db.record_permissions[ext]}
 
 
-def held(store) -> dict[str, int]:  # noqa: ANN001
+def held(store) -> dict[str, int]:
     return json.loads(store.values_for("project_ENG").get("failed_issue_attempts") or "{}")
 
 
@@ -168,7 +200,7 @@ async def test_a_restricted_comment_streams_alone_and_its_issue_streams_without_
             {"id": "500", "body": "<p>public words</p>"}, {"id": "501", "body": "<p>devs only</p>"}]}},
     })
 
-    async def streamed(record) -> list[dict[str, Any]]:  # noqa: ANN001
+    async def streamed(record) -> list[dict[str, Any]]:
         response = await connector.stream_record(record)
         return json.loads(b"".join([c async for c in response.body_iterator]))["block_groups"]
 
@@ -247,3 +279,23 @@ async def test_on_an_unknown_version_a_visibility_of_another_shape_grants_nobody
     assert grants(db, "comment_501") == {(EntityType.GROUP, "devs")}
     assert grants(db, "comment_503") == set()
     assert held(store) == {"1001": 1}
+
+
+async def test_a_stale_comment_record_that_cannot_be_deleted_holds_its_issue_until_it_is(site, db, store, search) -> None:
+    search.add("ENG", 0, [with_comments(ts(2), [comment("501", group="devs")])])
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    stored_time = tickets(db)["1001"].source_updated_at
+    delete = db.on_records_deleted_cascade
+    db.on_records_deleted_cascade = AsyncMock(return_value={"success": False, "reason": "db"})
+
+    search.pages.clear()
+    search.add("ENG", 0, [with_comments(ts(3), [comment("501", updated=ts(3))])])  # made public
+    await connector.run_sync()
+
+    assert held(store) == {"1001": 1}, "read again by the next sync"
+    assert tickets(db)["1001"].source_updated_at == stored_time, "the issue is left as stored, not taken as read"
+
+    db.on_records_deleted_cascade = delete
+    await connector.run_sync()
+    assert comment_records(db) == {} and held(store) == {}

@@ -5705,7 +5705,13 @@ class JiraDataCenterConnector(BaseConnector):
                             f"Issue {issue_key} and the others in its security level: "
                             f"holders of type {skipped_holders} were not granted"
                         )
+                # Before the issue is listed: a comment step that raises leaves the issue as stored, held for the next sync.
+                comment_records = await self._restricted_comment_records(
+                    issue, issue_record,
+                    existing_record if existing_record is not None and not existing_record.is_placeholder else None,
+                ) if self._enforces_issue_security else []
                 all_records.append((issue_record, permissions))
+                all_records.extend(comment_records)
                 if (
                     (self._collect_parents or (not stored_only and not is_new_project)) and not issue_data["is_subtask"]
                     and (read_security_level(fields)[1] is not None
@@ -5714,12 +5720,6 @@ class JiraDataCenterConnector(BaseConnector):
                     # Only an incremental batch names parents, and only one that has a level now or had one:
                     # a full read reaches every child itself, and a parent that never had one changes none.
                     self._batch_parents[str(issue_id)] = issue_key if issue_data["is_epic"] else None
-
-                if self._enforces_issue_security:
-                    all_records.extend(await self._restricted_comment_records(
-                        issue, issue_record,
-                        existing_record if existing_record is not None and not existing_record.is_placeholder else None,
-                    ))
 
                 # Attachments follow their issue
                 permissions = []
@@ -6019,6 +6019,7 @@ class JiraDataCenterConnector(BaseConnector):
         attachment_children_map: Optional[dict[str, ChildRecord]] = None,
         attachment_mime_types: Optional[dict[str, str]] = None,
         rendered_fields: Optional[dict[str, Any]] = None,
+        *,
         restricted: bool = False,
     ) -> BlocksContainer:
         """
@@ -7451,7 +7452,8 @@ class JiraDataCenterConnector(BaseConnector):
             comments = (comment_field.get("comments") or []) if isinstance(comment_field, dict) else []
             if self._enforces_issue_security and (
                 any(isinstance(c, dict) and is_restricted_comment(c) for c in comments)
-                or (isinstance(comment_field, dict) and (comment_field.get("total") or 0) > len(comments))
+                or (isinstance(comment_field, dict) and isinstance(comment_field.get("total"), int)
+                    and comment_field["total"] > len(comments))
                 or await self._stored_comment_records(issue_id)
             ):
                 # A reindex does not rebuild comment records (it has not read the role lists a sync reads). The issue

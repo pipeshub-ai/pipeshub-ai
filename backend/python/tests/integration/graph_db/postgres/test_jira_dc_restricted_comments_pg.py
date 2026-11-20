@@ -12,8 +12,12 @@ import pytest
 
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg.drainer import drain_org
-from tests.integration.graph_db import test_jira_dc_issue_security_real_backends as project_world
-from tests.integration.graph_db import test_jira_dc_restricted_comments_real_backends as it
+from tests.integration.graph_db import (
+    test_jira_dc_issue_security_real_backends as project_world,
+)
+from tests.integration.graph_db import (
+    test_jira_dc_restricted_comments_real_backends as it,
+)
 from tests.integration.graph_db.test_jira_issue_security_real_backends import _browse
 
 from .test_jira_issue_security_pg import _in_org
