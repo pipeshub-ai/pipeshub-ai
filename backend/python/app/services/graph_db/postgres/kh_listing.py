@@ -88,10 +88,10 @@ def _node_type(coll: str, doc: dict) -> str:
 async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str]) -> dict[str, Any] | None:
     """What the viewer's grants open of a connector kg serves, per class: met with no grant of the row's own (``plain``), met with the row's own grant (``own``), and the classes kg cannot vouch
     for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate."""
-    rows = await tx.fetch(kgl.CLASSES, org, app_sk, CLASS_MAX + 1)
-    if len(rows) > CLASS_MAX:
+    got = await tx.fetchrow(kgl.CLASSES, org, app_sk, CLASS_MAX + 1)
+    if got["n"] > CLASS_MAX:
         return None
-    found = {r["id"]: (json.loads(r["clauses"]) if isinstance(r["clauses"], str) else list(r["clauses"])) for r in rows}
+    found = {int(c): cl for c, cl in json.loads(got["doc"]).items()}
     verdicts = await kg_read.class_verdicts(tx, org, found, held)
     return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None}}
 

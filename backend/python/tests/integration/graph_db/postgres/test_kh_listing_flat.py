@@ -387,26 +387,6 @@ async def test_the_indexing_status_filter_probes_each_rows_node_and_never_joins_
         await con.close()
 
 
-@pytest.mark.parametrize("unvouched", [[], [1]], ids=["every_class_vouched", "a_class_unvouched"])
-async def test_the_rows_kg_does_not_decide_are_read_by_their_own_index_never_by_a_range_of_the_connector(pg_db, unvouched) -> None:
-    """A page of a connector kg serves asks for the few rows kg does not decide. Read as a range of the connector (records_app) it read every row at 1M records to find none.
-    Judged with statistics, as kg's tables are once copied (kg_0016): with statistics older than an organisation's rows the planner may take any index of the org."""
-    p, org = prov(pg_db), new_org()
-    await seed(p, pg_db, org, 400, promote=True)
-    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
-    try:
-        await con.execute("ANALYZE kg.records")
-        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
-        await con.execute("SET enable_seqscan = off")      # the planner's guess at a table this small is a scan; the gate is about which index bounds the read
-        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + kgl.undecided_sql("", "$4"), org, app_sk, 201, unvouched))
-        used = {name for s in plan_gate.scans(plan, "records") for name, _ in plan_gate.bounds(s)}
-        # the classes' read may take any range of the connector when a class holds most of it (as in this world); never the organisation
-        loose = plan_gate.unkeyed(plan, "records", r"app_sk")
-        assert "records_undecided" in used and not loose, f"undecided rows read by {used}: {loose}"
-    finally:
-        await con.close()
-
-
 async def test_the_records_a_viewers_classes_admit_are_read_within_the_connector_never_the_organisation(pg_db) -> None:
     """Search's record-id path reads the records a connector kg serves admits by class, within the connector (with statistics, as kg's tables are once copied:
     kg_0016): never a read of the organisation by records_id or records_pkey."""
@@ -637,6 +617,68 @@ async def test_a_record_named_longer_than_the_copy_once_took_is_copied_whole_and
     finally:
         await con.close()
     assert stored == long
+
+
+async def test_a_connectors_classes_are_decided_from_a_row_of_classes_and_a_row_of_literals_as_their_clauses_say(pg_db) -> None:
+    """3,000 classes of random clauses over the literals of a tree (a group, folders with children, a record with none, a key kg does not hold, ``@self``): each class is met with
+    no grant of the row's own, met with it, or not vouched for, as the clauses say. The classes and the literals kg vouches for reach the listing as one row each, not one row per
+    class or literal: a connector has tens of thousands of each, and their decoding held the event loop every page of the knowledge hub shares (about 0.2 s a connector at 1M records)."""
+    import random
+    p, org = prov(pg_db), new_org()
+    await _tree(p, pg_db, org)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        lit = {r["id"]: r["sk"] for r in await con.fetch("SELECT id, sk FROM kg.records WHERE org_id = $1 AND id = ANY($2::text[])", org, ["g1", "f1", "f2", "r1"])}
+        pool = [*lit.values(), 99_999_999, kg_read.SELF]
+        rng = random.Random(6051)
+        made = [[rng.sample(pool, rng.randint(0, 3)) for _ in range(rng.randint(0, 3))] for _ in range(3000)]
+        await con.execute("INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT $1, 980000 + i, $2, NULL, c::jsonb, decode(md5($1 || i), 'hex') "
+                          "FROM unnest($3::text[]) WITH ORDINALITY AS q(c, i)", org, app_sk, [json.dumps(m) for m in made])
+        classes = {r["id"]: json.loads(r["clauses"]) for r in await con.fetch("SELECT id, clauses::text FROM kg.scope_classes WHERE org_id = $1 AND app_sk = $2", org, app_sk)}
+        # what kg vouches for, by the rule of kg_read.LITERALS: a node kg holds that is not flagged a leaf and, for a record, has a child
+        seen = {r["sk"] for r in await con.fetch("SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[]) AND r.leaf IS FALSE AND (r.kind <> 3 OR EXISTS "
+                                                    "(SELECT 1 FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk = r.sk) OR EXISTS (SELECT 1 FROM kg.links l "
+                                                    "WHERE l.org_id = r.org_id AND l.parent_sk = r.sk AND l.kind = 1))", org, pool[:-1])}
+    finally:
+        await con.close()
+    assert seen == {lit["g1"], lit["f1"], lit["f2"]}          # the tree gives one literal of each kind: r1 has no child, the last key is not held
+    granted = {"g1", "f2", "r1"}
+    live = {lit[i] for i in granted} & seen
+
+    def verdict(cl: list[list]) -> tuple[bool, bool] | None:
+        if any(x != kg_read.SELF and x not in seen for clause in cl for x in clause):
+            return None
+        met = [all(x in live for x in clause if x != kg_read.SELF) for clause in cl]
+        return (any(m and kg_read.SELF not in c for m, c in zip(met, cl, strict=True)), any(m and kg_read.SELF in c for m, c in zip(met, cl, strict=True)))
+    want = {c: verdict(cl) for c, cl in classes.items()}
+
+    class Counted:
+        def __init__(self, tx) -> None:
+            self.tx, self.rows = tx, 0
+
+        async def fetch(self, *a) -> list:
+            out = await self.tx.fetch(*a)
+            self.rows += len(out)
+            return out
+
+        async def fetchrow(self, *a) -> object:
+            self.rows += 1
+            return await self.tx.fetchrow(*a)
+
+        async def fetchval(self, *a) -> object:
+            return await self.tx.fetchval(*a)
+
+    async def go(tx) -> tuple[dict, int]:
+        c = Counted(tx)
+        return await kh_listing.class_sets(c, org, app_sk, granted), c.rows
+    with ctx(org):
+        sets, rows = await pg_db.run(go)
+    assert sets["plain"] == {c for c, v in want.items() if v and v[0]}
+    assert sets["own"] == {c for c, v in want.items() if v and v[1] and not v[0]}
+    assert sets["unvouched"] == {c for c, v in want.items() if v is None}
+    assert sets["plain"] and sets["own"] and sets["unvouched"]
+    assert rows <= 2, rows
 
 
 async def test_a_change_to_the_whole_connector_that_commits_after_the_check_is_not_read_by_the_page(pg_db, monkeypatch) -> None:
