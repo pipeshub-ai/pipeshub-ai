@@ -92,11 +92,27 @@ class JiraRecordsDb(FakeRecordsDb):
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> RecordGroup | None:
         return self.record_groups.get(external_id)
 
+    async def get_record_group_user_emails(self, connector_id: str, external_id: str) -> set[str]:
+        return {p.email.lower() for p in self.record_group_permissions.get(external_id) or []
+                if p.entity_type == EntityType.USER and p.email}
+
+    async def get_record_access_group(self, connector_id: str, external_record_id: str) -> str | None:
+        return getattr(self.records.get(external_record_id), "access_group_external_id", None) or None
+
     def _keep_stored_group(self, record: Record) -> None:
-        """A record written with no level group named keeps the stored one, as the processor does (None)."""
+        """As the processor's ``_keep_access_group``: a record written with no level group named (None) keeps the stored
+        one, and its stored rule when it keeps its stored grants; filed in another project now, it names none. An explicit
+        "" names none."""
         old = self.records.get(record.external_record_id)
-        if getattr(record, "access_group_external_id", None) is None and old is not None:
-            record.access_group_external_id = getattr(old, "access_group_external_id", None)
+        if getattr(record, "access_group_external_id", None) is not None or old is None \
+                or not getattr(old, "access_group_external_id", None):
+            return
+        if record.external_record_group_id and record.external_record_group_id != old.external_record_group_id:
+            record.access_group_external_id = ""
+            return
+        record.access_group_external_id = old.access_group_external_id
+        if not record.rewrite_permissions:
+            record.access_rule = old.access_rule
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         for record, _ in records_with_permissions:

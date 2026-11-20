@@ -765,7 +765,9 @@ async def _sync_devs_level(world: dict[str, Any], members: list[str] | None, *, 
     context.level_readers = connector._level_readers(context, PROJECT_KEY, _directory(world))
     await _write(world, [_issue("31", "PROJ-31", "Task", level=DEVS_LEVEL, reporter="dave"),
                          _issue("32", "PROJ-32", "Task", level=DEVS_LEVEL, reporter="bob")], again=again)
-    return await _ticket_ids(world)
+    by_key = await _ticket_ids(world)
+    assert set(by_key) == {"PROJ-31", "PROJ-32"}, "both issues are stored, so each is judged"
+    return by_key
 
 
 async def test_a_reporter_in_the_level_through_a_group_reads_it_without_the_project_until_out_of_the_group(
@@ -784,3 +786,27 @@ async def test_a_group_whose_read_failed_does_not_open_the_issue_to_its_reporter
     await _sync_devs_level(world, ["alice", "dave"])
     by_key = await _sync_devs_level(world, None, again=True)
     assert not await _mismatches(world, {"PROJ-31": {"alice"}, "PROJ-32": {"alice"}}, by_key)
+
+
+async def test_a_short_user_list_drops_a_holder_the_level_lost_and_keeps_one_it_could_not_resolve(world: dict[str, Any]) -> None:
+    """The level held alice and carol. Jira takes alice out and names carol by username alone, and this sync's user list
+    stops early, showing alice but not carol or bob: carol (not shown, so not resolved) keeps her grant, alice loses
+    hers, and bob, who browses the project but is not in the level, gains nothing from the project's own grants."""
+    level, connector, processor = "10105", world["connector"], world["processor"]
+    await _open_project(world, _context(members_by_level={level: [_user_holder("alice"), _user_holder("carol")]}))
+    await _write(world, [_issue("41", "PROJ-41", "Task", level=level), _issue("42", "PROJ-42", "Task")])
+    by_key = await _ticket_ids(world)
+    assert set(by_key) == {"PROJ-41", "PROJ-42"}
+    assert not await _mismatches(world, {"PROJ-41": {"alice", "carol"}, "PROJ-42": PROJECT_READERS}, by_key)
+    assert await processor.get_record_access_group(world["connector_id"], "41") == f"level:{PROJECT_ID}:{level}"
+    assert await processor.get_record_access_group(world["connector_id"], "42") is None
+
+    connector._user_read_unfinished = True
+    connector._stored_app_users = _users(world)
+    connector._seen_user_keys = {PEOPLE["alice"], PEOPLE["dave"]}
+    connector._issue_security[PROJECT_ID] = _context(
+        members_by_level={level: [{"type": "user", "parameter": "carol", "user": {"name": "carol"}}]})
+    await _write(world, [_issue("41", "PROJ-41", "Task", level=level, updated="2024-06-16T10:00:00.000+0000")], again=True)
+    assert await processor.get_record_group_user_emails(world["connector_id"], f"level:{PROJECT_ID}:{level}") == {
+        _email("carol", world["run"])}
+    assert not await _mismatches(world, {"PROJ-41": {"carol"}, "PROJ-42": PROJECT_READERS}, by_key)

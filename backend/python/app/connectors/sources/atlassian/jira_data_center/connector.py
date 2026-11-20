@@ -3080,7 +3080,14 @@ class JiraDataCenterConnector(BaseConnector):
                             continue
 
                         role_data = role_response.json()
-                        actors = role_data.get("actors", [])
+                        actors = role_data.get("actors") if isinstance(role_data, dict) else None
+                        if not isinstance(actors, list):
+                            # ProjectRoleBean lists ``actors``: without the list the members are unread, not none, so the
+                            # stored ones stay and level readers do not take the role as empty.
+                            self.logger.warning(f"  {project_key}: role {role_name} answered without its actors")
+                            self._note_unread(None)
+                            role_detail_failed = True
+                            continue
 
                         # Extract available fields from role_data
                         role_name_display = role_data.get("name", role_name)
@@ -3980,14 +3987,10 @@ class JiraDataCenterConnector(BaseConnector):
             if skipped:
                 self.logger.warning(
                     f"Security level {level_id} of {project_key}: holders of type {skipped} were not granted")
-                external_id = level_group_external_id(project_id, level_id)
                 # Only an unfinished user read leaves a user holder unknown; a role holder resolves (or not) from the role
                 # list the levels apply (``roles_for_levels``), so past its bound the group drops the roles' groups.
-                if self._user_read_unfinished and HOLDER_USER in skipped and await \
-                        self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id) is not None:
-                    # A holder unread is not out of the level: the stored group keeps its grants, seen by a full sync.
-                    await self.data_entities_processor.note_kept_record_group(self.connector_id, external_id)
-                    continue
+                if self._user_read_unfinished and HOLDER_USER in skipped:
+                    grants = [*grants, *await self._grants_of_unshown_holders(level_group_external_id(project_id, level_id), grants)]
             groups.append((RecordGroup(
                 id=str(uuid4()),
                 org_id=self.data_entities_processor.org_id,
@@ -4004,6 +4007,18 @@ class JiraDataCenterConnector(BaseConnector):
             ), grants))
         if groups:
             await self.data_entities_processor.on_new_record_groups(groups)
+
+    async def _grants_of_unshown_holders(self, external_id: str, grants: list[Permission]) -> list[Permission]:
+        """On a user list cut short, the stored grants of a level's group that may be a user holder left unresolved: one
+        named by username alone is an account the list did not show, which keeps its last complete state
+        (``_linked_not_read``). A stored grant of anyone else the level no longer names goes, as the scheme read says."""
+        unshown = {u.email.lower() for u in self._linked_not_read() if u.email}
+        granted = {g.email.lower() for g in grants if g.email}
+        stored = await self.data_entities_processor.get_record_group_user_emails(self.connector_id, external_id)
+        # shortcut: a linked account with a hidden email is matched by email only, so its stored grant goes until the list
+        # is read in full; upgrade when stored grants carry the account key.
+        return [Permission(entity_type=EntityType.USER, email=e, type=PermissionType.READ)
+                for e in sorted(stored & unshown - granted)]
 
     def _level_readers(
         self, security: IssueSecurityContext, project_key: str, users: dict[str, AppUser],
@@ -7549,20 +7564,18 @@ class JiraDataCenterConnector(BaseConnector):
                     self._grant_directory(synced_users),
                 )
             self._hold_grants_while_holders_unread(issue_record, security, record, changed=True)  # a reindex reads only changed issues
-            if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED:
-                # Stored open, and the issue is not known to be without a level now: not left readable by the project.
-                # (A stored RESTRICTED issue keeps its grants below.) A leveled issue on its level's group is stored
-                # STRICT or OPEN too, so the stored rule does not tell them apart: an issue whose level has the group
-                # the last sync wrote hangs on it, read by that group's readers alone (no wider than the level as last
-                # read); any other is closed.
-                level_group = level_group_external_id(project_id, level_id) if (
-                    (level_id := read_security_level(fields)[1]) and not issue_data["is_subtask"]
-                    and project_id and project_id == issue_record.external_record_group_id) else None
-                if level_group and await self.data_entities_processor.get_record_group_by_external_id(
-                        self.connector_id, level_group) is not None:
-                    issue_record.access_rule, issue_record.access_group_external_id = AccessRule.STRICT, level_group
-                else:
-                    issue_record.access_rule, issue_record.access_group_external_id = AccessRule.RESTRICTED, None
+            # A leveled issue on its level's group is stored STRICT or OPEN, as one with no level is: one stored on the
+            # group of the level it has now keeps that, as stored, below (no wider than the level as last read).
+            level_group = level_group_external_id(project_id, level_id) if (
+                (level_id := read_security_level(fields)[1]) and not issue_data["is_subtask"]
+                and project_id and project_id == issue_record.external_record_group_id) else None
+            on_its_group = bool(level_group) and (not settled or bool(skipped_holders)) and await \
+                self.data_entities_processor.get_record_access_group(self.connector_id, record.external_record_id) == level_group
+            if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED \
+                    and not on_its_group:
+                # Stored open (or on another level's group), and the issue is not known to be without a level now: closed,
+                # not left readable by the project, nor by the readers of a group whose audience is not known now.
+                issue_record.access_rule, issue_record.access_group_external_id = AccessRule.RESTRICTED, None
                 issue_record.rewrite_permissions = True
                 # The write stores the issue's new timestamp, so the sync would skip it: leave the retry marker
                 # a failed sync leaves, and the next sync that reads the levels reads this issue again.
@@ -7578,7 +7591,10 @@ class JiraDataCenterConnector(BaseConnector):
                 )
                 return None
 
-            if members_pending:
+            # Who Browse names on it reads it alone by the level's members as read now, which the sync's level digests do not
+            # cover: one leaving the level before the next sync would keep the grant, so that sync reads it again.
+            members_read_now = bool(issue_record.access_group_external_id and security is not None and security.browse_holders)
+            if members_pending or members_read_now:
                 await self._retry_in_next_sync(str(project.get("key") or project_ref), str(issue_id))
             if (security is not None and security.enforce and security.browse_holders is None) or members_pending:
                 # Written without its holders' grants (or a level member's): the stored timestamp stays, so a sync whose

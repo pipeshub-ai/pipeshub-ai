@@ -1198,3 +1198,34 @@ class TestAHiddenEmailGroupMemberReadsByAccount:
             context=context, user_by_account_id=users, project_id="10")
         assert (record.access_rule, [(g.email, g.external_id) for g in c._directory_grants(grants, {"alice-key": alice})]) \
             == (AccessRule.OPEN, [(None, "carol-key")])
+
+
+class TestARoleAnsweredWithoutItsActors:
+    """ProjectRoleBean lists ``actors`` (Data Center 10.2 to 11.3 specifications): a role answered without that list has
+    unread members, not none, so its stored members stay and no level reads it as empty. ``[]`` is a role with none."""
+
+    @staticmethod
+    async def _sync(body: dict) -> JiraDataCenterConnector:
+        c = _connector()
+        c.data_source = MagicMock()
+        c.data_entities_processor.on_new_app_roles = AsyncMock()
+        roles, role = MagicMock(status=200), MagicMock(status=200)
+        roles.json = MagicMock(return_value={"Developers": "https://jira/rest/api/2/project/P/role/10002"})
+        role.json = MagicMock(return_value=body)
+        ds = MagicMock()
+        ds.get_project_roles_v2 = AsyncMock(return_value=roles)
+        ds.get_project_role_v2 = AsyncMock(return_value=role)
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_project_roles(["P"], [_user("alice-key", "alice@x.com")], {})
+        return c
+
+    @pytest.mark.parametrize("body", [{"name": "Developers", "id": 10002}, {"name": "Developers", "actors": None}])
+    async def test_its_members_are_unread_and_the_stored_role_stays(self, body: dict) -> None:
+        c = await self._sync(body)
+        c.data_entities_processor.on_new_app_roles.assert_not_called()
+        assert "P_10002" not in c._role_members and c._kept_unread_access
+
+    async def test_an_empty_list_is_a_role_with_no_members(self) -> None:
+        c = await self._sync({"name": "Developers", "id": 10002, "actors": []})
+        assert c._role_members == {"P_10002": []}
+        assert c.data_entities_processor.on_new_app_roles.await_args.args[0][0][1] == []
