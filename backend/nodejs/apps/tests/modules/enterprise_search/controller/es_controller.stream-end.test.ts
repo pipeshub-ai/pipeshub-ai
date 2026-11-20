@@ -13,7 +13,9 @@ import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.se
 import { InternalServerError } from '../../../../src/libs/errors/http.errors'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { oid, settle } from './chat-test-harness'
-import { AGENT_KEY, RUN, delta, finalAnswer, flows, startStream, Flow } from './streaming-flows'
+import { AGENT_KEY, RUN, delta, finalAnswer, flows, startStream, Flow, appConfig } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const ANSWER = 'nightjar answer text'
 const ERROR_TEXT = 'nightjar provider said no'
@@ -26,10 +28,7 @@ const onlyEnd = (): Rec => {
   expect(ends(), 'exactly one chat_stream.end').to.have.length(1)
   return ends()[0] as Rec
 }
-// Another file's app can leave the outbox dispatcher running in this process; its failures are not this stream's.
-const BACKGROUND_LINES = new Set(['Outbox dispatcher pass failed'])
-const atLeastWarn = (): Rec[] =>
-  recs.filter((r) => (r.level === 'warn' || r.level === 'error') && !BACKGROUND_LINES.has(r.message))
+const atLeastWarn = (): Rec[] => recs.filter((r) => r.level === 'warn' || r.level === 'error')
 
 const finish = async (run: Awaited<ReturnType<typeof startStream>>): Promise<void> => {
   run.ai.finish()
@@ -38,6 +37,9 @@ const finish = async (run: Awaited<ReturnType<typeof startStream>>): Promise<voi
 }
 
 describe('N3: chat stream end line', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   beforeEach(() => {
     recs = []
     for (const level of ['error', 'warn', 'info', 'debug'] as const) {

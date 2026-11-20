@@ -39,6 +39,7 @@ import { scopedStorageServiceJwtGenerator } from '../../../../src/libs/utils/cre
 import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeKeyValueStore } from '../../knowledge_base/routes/kb-http-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 const MONGO_URL = process.env.STORAGE_IT_MONGO_URL
 const JWT_SECRET = 'artifact-retention-it-jwt-secret'
@@ -153,6 +154,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`
     baseUrl = `${origin}/api/v1/document`
     kv.values.set(ENDPOINTS_KEY, JSON.stringify({ cm: { endpoint: backend.url }, storage: { endpoint: origin } }))
+    registerUpstreams({ nodejs: [backend.url, origin] })
     kv.changed(storageEtcdPaths)
   })
 
@@ -160,6 +162,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     await DocumentModel.deleteMany({ 'artifactSet.virtualRecordId': vrid })
     kv.changed(storageEtcdPaths)
     sinon.restore()
+    registerUpstreams({})
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await backend.stop()
     fs.rmSync(home, { recursive: true, force: true })

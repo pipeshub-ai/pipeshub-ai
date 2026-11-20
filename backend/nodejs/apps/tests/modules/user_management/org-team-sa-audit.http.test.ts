@@ -46,6 +46,8 @@ import * as pictureRepo from '../../../src/libs/repositories/picture';
 import * as oauthAppRepo from '../../../src/libs/repositories/oauth-app';
 import * as seam from '../../../src/libs/services/structured-logging';
 import { FakeBackend, Reply } from '../tokens_manager/routes/connectors-http-harness';
+import { registerUpstreams } from '../../../src/libs/http/upstream-call';
+import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
 
 const JWT_SECRET = 'n4c-audit-jwt-secret';
 const SCOPED_SECRET = 'n4c-audit-scoped-secret';
@@ -206,6 +208,7 @@ describe('org, team and service-account audit lines (HTTP)', function () {
     }));
 
     const config: Row = { jwtSecret: JWT_SECRET, scopedJwtSecret: SCOPED_SECRET, connectorBackend: backend.url, cmBackend: backend.url, frontendUrl: 'http://app.n4c.test', maxOAuthClientRequestsPerMinute: 10000 };
+    registerAppUpstreams(config);
     const logger = Logger.getInstance({ service: 'UserManagement' });
     const events = { start: async () => undefined, stop: async () => undefined, publishEvent: async () => { if (publishFails) throw new Error('outbox down'); } };
     const oauthTokens = {
@@ -246,6 +249,7 @@ describe('org, team and service-account audit lines (HTTP)', function () {
 
   afterEach(async () => {
     sinon.restore();
+    registerUpstreams({});
     await new Promise((resolve) => server.close(resolve));
   });
 
