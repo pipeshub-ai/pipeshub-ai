@@ -11,12 +11,15 @@ older_code_compatible = "adds three indexes and replaces three function bodies w
 
 FUNCTIONS = {"blocks_by_record": "text, text[], jsonb[], boolean, text, int", "blocks_by_name": "text, text, text[], jsonb[], boolean, text, int",
              "code_files_by_path": "text, text[], jsonb[], boolean, text, int"}
-# The graph_0001 key indexes with id appended, under new names: the matches of a key come in id order, so a page from a cursor reads n entries past
-# it, not every match. The graph_0001 indexes stay until a later contract revision drops them (dropping one here would lock readers out of the table).
+# An index per lookup of a 4-byte hash of the key, then id: the matches of a key come in id order, so a page from a cursor reads n entries past it,
+# not every match. The key is hashed, not stored, so an entry is never wider than the same row's primary-key entry (org_id, coll, id): the int4
+# after org_id takes at most 7 bytes where coll takes 7 or more ('blocks', 'codeFiles'), so every row graph.nodes holds fits, whatever the length
+# of its path, name or record id (a key stored whole fails past about 2,700 bytes, at the build or at a later write). The graph_0001 indexes stay
+# until a later contract revision drops them (dropping one here would lock readers out of the table); the prefix reads of a path keep theirs.
 INDEXES = [
-    ("nodes_block_record_seek", "org_id, (doc->>'recordId'), id", "coll = 'blocks'"),
-    ("nodes_block_name_seek", "org_id, (doc->>'connectorId'), (doc->>'nameFolded'), id", "coll = 'blocks'"),
-    ("nodes_codefile_path_seek", "org_id, (doc->>'filePath') text_pattern_ops, id", "coll = 'codeFiles'"),
+    ("nodes_block_record_seek", "org_id, hashtext(doc->>'recordId'), id", "coll = 'blocks'"),
+    ("nodes_block_name_seek", "org_id, hashtext((doc->>'connectorId') || '/' || (doc->>'nameFolded')), id", "coll = 'blocks'"),
+    ("nodes_codefile_path_seek", "org_id, hashtext(doc->>'filePath'), id", "coll = 'codeFiles'"),
 ]
 
 
@@ -33,4 +36,5 @@ def upgrade():
 
 
 def downgrade():
-    pass      # the bodies this revision installs read the new indexes and answer as the earlier ones did; graph_0001 and graph_0003 own the rest
+    # the bodies this revision installs stay (they answer as the earlier ones did; graph_0003 owns the functions)
+    op.execute("DROP INDEX IF EXISTS graph.nodes_block_record_seek, graph.nodes_block_name_seek, graph.nodes_codefile_path_seek")

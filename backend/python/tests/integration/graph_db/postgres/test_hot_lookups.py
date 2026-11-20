@@ -154,3 +154,35 @@ async def test_a_long_after_key_is_read_by_the_plain_statement_and_a_full_page_b
     sent.clear()
     assert len(await a.get_nodes_by_filters("blocks", {**f, "qualifiedName": "m::f3"}, raise_on_error=True)) == 1       # fewer than a page: the vetted read alone
     assert [("blocks_by_record" in s) for s in sent if "graph." in s] == [True]
+
+
+async def test_the_pages_of_a_lookup_read_one_snapshot(world, monkeypatch) -> None:
+    """A row another session commits between two pages, with a key past the cursor, is not in the answer: every page reads the snapshot of the first."""
+    import os
+
+    import asyncpg
+
+    from app.services.graph_db.postgres import core
+
+    a, _ = world
+    f = {"orgId": a.org, "recordId": "r1"}
+    before = sorted(d["_key"] for d in await a.get_nodes_by_filters("blocks", f, raise_on_error=True))
+    assert len(before) == 1502
+    real, pages = core._hot_rows, []
+
+    async def first_page_then_a_commit(*args: object, **kw: object) -> list:
+        rows = await real(*args, **kw)
+        pages.append(len(rows))
+        if len(pages) == 1:          # another session commits a match past the cursor before the second page is read
+            con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+            try:
+                await con.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'blocks', 'zzzz', $2::jsonb)", a.org,
+                                  json.dumps({"id": "zzzz", "orgId": a.org, "recordId": "r1", "connectorId": "c1"}))
+            finally:
+                await con.close()
+        return rows
+    monkeypatch.setattr(core, "_hot_rows", first_page_then_a_commit)
+    got = sorted(d["_key"] for d in await a.get_nodes_by_filters("blocks", f, raise_on_error=True))
+    assert pages[:2] == [1000, 502] and got == before, (pages, len(got), "zzzz" in got)
+    monkeypatch.undo()
+    assert "zzzz" in [d["_key"] for d in await a.get_nodes_by_filters("blocks", f, raise_on_error=True)]       # committed: the next read sees it

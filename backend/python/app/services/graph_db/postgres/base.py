@@ -352,7 +352,7 @@ def _hot(collection: str, filters: dict | None) -> tuple[str, tuple[str, ...]] |
         return "blocks_by_record", (rec,)
     if collection == "blocks" and 0 < len(conn) <= 200 and 0 < len(name) <= 1000:
         return "blocks_by_name", (conn, name)
-    if collection == "codeFiles" and 0 < len(path) <= 2000:
+    if collection == "codeFiles" and 0 < len(path) <= 4096:
         return "code_files_by_path", (path,)
     return None
 

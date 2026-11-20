@@ -510,6 +510,24 @@ def _analyzed(c, org: str, sql: str, params: tuple) -> str:
     return "\n".join(notes)
 
 
+def _seek_scans(plan: str, index: str) -> list[tuple[int, int, str, int]]:
+    """(actual rows, loops, index condition, rows removed by a filter) of every scan of ``index`` in an analyzed auto_explain plan."""
+    lines = plan.splitlines()
+    scans = []
+    for i, line in enumerate(lines):
+        m = re.search(rf"Index (?:Only )?Scan using \S*{index} on \S+ n(?:_\d+)?\b.*actual rows=(\d+)(?:\.\d+)? loops=(\d+)", line)
+        if m:
+            own = []                        # the node's own detail lines: up to its first child or the next node
+            for nxt in lines[i + 1:]:
+                if nxt.strip().startswith("->") or not nxt.startswith(" "):
+                    break
+                own.append(nxt.strip())
+            cond = next((x for x in own if x.startswith("Index Cond: ")), "")
+            removed = sum(int(x.split(": ")[1]) for x in own if x.startswith("Rows Removed by Filter: "))
+            scans.append((int(m[1]), int(m[2]), cond, removed))
+    return scans
+
+
 def test_a_page_of_a_hot_lookup_reads_one_page_of_matches_from_its_cursor(rdb):
     """A read of every match pages after the last id. With the matches of a key in id order inside its index (graph_0015), page k seeks past the cursor
     and reads one page of index entries; before, each page read every match of the key and dropped those before the cursor (pages x matches)."""
@@ -530,19 +548,7 @@ def test_a_page_of_a_hot_lookup_reads_one_page_of_matches_from_its_cursor(rdb):
         ]
         for call, lead, prefix, index in cases:
             plan = _analyzed(c, A, f"SELECT node_id FROM {call}", (*lead, json.dumps(A), f"{prefix}04999"))
-            lines = plan.splitlines()
-            scans = []
-            for i, line in enumerate(lines):
-                m = re.search(rf"Index (?:Only )?Scan using \S*{index} on \S+ n(?:_\d+)?\b.*actual rows=(\d+)(?:\.\d+)? loops=(\d+)", line)
-                if m:
-                    own = []                        # the node's own detail lines: up to its first child or the next node
-                    for nxt in lines[i + 1:]:
-                        if nxt.strip().startswith("->") or not nxt.startswith(" "):
-                            break
-                        own.append(nxt.strip())
-                    cond = next((x for x in own if x.startswith("Index Cond: ")), "")
-                    removed = sum(int(x.split(": ")[1]) for x in own if x.startswith("Rows Removed by Filter: "))
-                    scans.append((int(m[1]), int(m[2]), cond, removed))
+            scans = _seek_scans(plan, index)
             # one page of entries read once, from the cursor inside the index: not the 6,000 matches, nor 5,000 of them dropped by a filter
             assert scans and all(rows <= 1000 and loops == 1 and re.search(r"\bid > ", cond) and removed == 0 for rows, loops, cond, removed in scans), (index, scans, plan)
             as_role(c, "pipeshub_connectors", A)
@@ -555,6 +561,55 @@ def test_a_page_of_a_hot_lookup_reads_one_page_of_matches_from_its_cursor(rdb):
                 after = page[-1]
             assert ids == [f"{prefix}{i:05d}" for i in range(6000)], (index, len(ids))
             c.execute("RESET ROLE")
+
+
+_RANDOM_HEX = "(SELECT left(string_agg(md5(%s || g::text), ''), %s) FROM generate_series(1, 90) g)"      # incompressible text of the given length
+
+
+def test_a_hot_lookup_index_holds_every_row_the_primary_key_holds(db):
+    """The seek indexes key a 4-byte hash of the path, name or record, never the text: a row whose key is ~3,000 bytes and whose id is as long as the
+    primary key allows is built into them by the upgrade, written after it, and its page still seeks by the cursor (an index of the text and id fails
+    past about 2,700 bytes, at the build or at the write)."""
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "graph_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    # the longest arguments the reads take (path 4096, connector 200, name 1000, record 200), and a record id no read takes (3,000)
+    path, rec, conn, fold = "src/" + "deep/" * 600 + "x.py", "q" * 200, "c" * 200, "n" * 1000
+
+    def write(c, tag: str) -> None:
+        as_role(c, "pipeshub_connectors", A)
+        for coll, doc, t in (("codeFiles", {"orgId": A, "filePath": path}, tag), ("blocks", {"orgId": A, "recordId": "r" * 3000, "connectorId": conn, "nameFolded": fold}, tag + "a"),
+                             ("blocks", {"orgId": A, "recordId": rec, "connectorId": "d", "nameFolded": "m"}, tag + "b")):
+            c.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES (%s, %s, " + _RANDOM_HEX + ", %s::jsonb)", (A, coll, t, 2650, json.dumps(doc)))
+        c.execute("COMMIT")
+    with connect(cluster, name) as c:
+        write(c, "before")
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    with connect(cluster, name) as c:
+        for index in ("nodes_block_record_seek", "nodes_block_name_seek", "nodes_codefile_path_seek"):
+            assert c.execute(f"SELECT bool_and(i.indisvalid) FROM pg_partition_tree('graph.{index}') t JOIN pg_index i ON i.indexrelid = t.relid").fetchone()[0] is True
+        write(c, "after")
+        as_role(c, "pipeshub_connectors", A)        # other keys around them, analyzed, so the plan is the one a populated graph gets
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || i, jsonb_build_object('orgId', %s::text, 'filePath', 'src/p' || i || '.py') FROM generate_series(1, 9000) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || i, jsonb_build_object('orgId', %s::text, 'recordId', 'r' || (i %% 900), 'connectorId', 'c1', "
+                  "'nameFolded', 'n' || (i %% 300)) FROM generate_series(1, 9000) i", (A, A))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        cases = [("graph.code_files_by_path(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", (path,), "nodes_codefile_path_seek"),
+                 ("graph.blocks_by_record(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", (rec,), "nodes_block_record_seek"),
+                 ("graph.blocks_by_name(%s, %s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", (conn, fold), "nodes_block_name_seek")]
+        for call, lead, index in cases:
+            as_role(c, "pipeshub_connectors", A)
+            ids = [r[0] for r in c.execute(f"SELECT node_id FROM {call}", (*lead, json.dumps(A), ""))]
+            assert len(ids) == 2 and all(len(i) == 2650 for i in ids), (index, [len(i) for i in ids])
+            assert [r[0] for r in c.execute(f"SELECT node_id FROM {call}", (*lead, json.dumps(A), ids[0][:200]))] == [i for i in ids if i > ids[0][:200]]
+            c.execute("RESET ROLE")
+            scans = _seek_scans(_analyzed(c, A, f"SELECT node_id FROM {call}", (*lead, json.dumps(A), ids[0][:200])), index)
+            assert scans and all(loops == 1 and re.search(r"\bid > ", cond) and removed == 0 for _rows, loops, cond, removed in scans), (index, scans)
 
 
 # ---- keyed record lookups (graph_0014) -------------------------------------------------------------------------------------------------
