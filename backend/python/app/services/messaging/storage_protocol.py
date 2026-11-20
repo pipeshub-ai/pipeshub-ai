@@ -1,13 +1,15 @@
 """The storage-protocol tag every indexing consumer carries in its name.
 
 An indexing pod that writes the stored record by compare-and-set (this release) names its
-Kafka ``client_id`` and its Redis consumer with ``/sp3``. A member of an indexing consumer
+Kafka ``client_id`` and its Redis consumer with ``/sp4``. A member of an indexing consumer
 group without it is an older pod, whose in-place writes do not follow the protocol. The
 test is a substring match, never an end-of-name match: the consumers append their own
 suffixes.
 """
 
-STORAGE_PROTOCOL_TAG = "/sp3"
+# sp4: this release's sweeps and deletes count a record's pending virtual record as held (the keep-old-copy swap), which an
+# sp3 pod does not: it would delete a replacement copy while it is written.
+STORAGE_PROTOCOL_TAG = "/sp4"
 
 
 def tagged(client_id: str) -> str:

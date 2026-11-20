@@ -1,8 +1,9 @@
--- The code sandbox's load alerts keep one cooldown claim per scope and level under /services/sandbox/alerts/<scope>/<level>
--- (services/sandbox_alerts/cooldown.py): created if absent with a TTL, read back, rewritten with the remaining TTL to mark it resolved or to
--- put back the value it replaced, and deleted to release it or to take over a resolved one. Only query writes them: query_main.py starts
--- the alert loop. The prefix was not in query's write allow-list, so in enforce the claim was refused and no alert was ever sent.
--- The matrix grants exactly this: the prefix, to write, for query (query already reads every key but the Node API's own).
+-- The search-index cleanup runs in the connectors service: before it resets anything it makes a new epoch current for each records
+-- collection (CollectionEpochs.begin_reset), which creates the collection's current-epoch pointer and the issuing and live keys of
+-- the new token under /services/vectordb/embedding_epoch/. Under enforce the connectors role could not write them, so the cleanup failed.
+-- This replaces platform.kv_may with platform_0008's definition plus that one write prefix for the connectors role; nothing else changes
+-- (the confirmation of the drop and the precision pins are written by the indexing and query services, which already have /services/vectordb/;
+-- the connectors role still writes no pin key and no other /services/vectordb/ key).
 
 CREATE OR REPLACE FUNCTION platform.kv_may(p_key text, p_write boolean) RETURNS boolean
 LANGUAGE sql STABLE PARALLEL SAFE AS $$
@@ -18,6 +19,7 @@ SELECT CASE current_user
       OR pg_catalog.starts_with(p_key, '/services/lateWriteSweep/') OR pg_catalog.starts_with(p_key, '/services/storageMigration/')
       OR pg_catalog.starts_with(p_key, '/services/entityCleanup/') OR pg_catalog.starts_with(p_key, '/services/scopeFields/')
       OR pg_catalog.starts_with(p_key, '/services/demoData/') OR p_key = '/services/deployment'
+      OR pg_catalog.starts_with(p_key, '/services/vectordb/embedding_epoch/')
       OR pg_catalog.starts_with(p_key, '/migrations/') OR pg_catalog.starts_with(p_key, 'state:')
     ELSE NOT (p_key IN ('/services/smtp', '/services/slackBot') OR pg_catalog.starts_with(p_key, '/services/auth/')
               OR pg_catalog.starts_with(p_key, '/services/mcp/accessPolicy/') OR pg_catalog.starts_with(p_key, 'crawl:')) END
@@ -28,7 +30,6 @@ SELECT CASE current_user
       OR (pg_catalog.starts_with(p_key, '/services/mcp/') AND NOT pg_catalog.starts_with(p_key, '/services/mcp/accessPolicy/'))
       OR pg_catalog.starts_with(p_key, '/services/agents/') OR p_key = '/services/aiModelApiModes'
       OR pg_catalog.starts_with(p_key, '/services/scopeFields/') OR pg_catalog.starts_with(p_key, '/services/vectordb/') OR pg_catalog.starts_with(p_key, 'state:')
-      OR pg_catalog.starts_with(p_key, '/services/sandbox/alerts/')
     ELSE NOT (p_key IN ('/services/smtp', '/services/slackBot') OR pg_catalog.starts_with(p_key, '/services/auth/')
               OR pg_catalog.starts_with(p_key, '/services/mcp/accessPolicy/') OR pg_catalog.starts_with(p_key, 'crawl:')) END
   WHEN 'pipeshub_indexing' THEN NOT platform.kv_admin_or_credential(p_key) AND (

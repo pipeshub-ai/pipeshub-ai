@@ -1,20 +1,10 @@
-"""platform: the sandbox alert cooldown claims in the query role's key-value write allow-list"""
-from alembic import op
-from db.lib.run_sql import run_sql
+-- The code sandbox's load alerts keep one cooldown claim per scope and level under /services/sandbox/alerts/<scope>/<level>
+-- (services/sandbox_alerts/cooldown.py): created if absent with a TTL, read back, rewritten with the remaining TTL to mark it resolved or to
+-- put back the value it replaced, and deleted to release it or to take over a resolved one. Only query writes them: query_main.py starts
+-- the alert loop. The prefix was not in query's write allow-list, so in enforce the claim was refused and no alert was ever sent.
+-- Built on platform_0010's definition (the connectors role's embedding epoch keys). The matrix grants exactly this: the prefix, to write, for query (query already reads every key but the Node API's own).
 
-revision = "platform_0009"
-down_revision = "platform_0008"
-branch_labels = None
-depends_on = None
-older_code_compatible = "the matrix grants one more prefix to write and refuses none it granted, so earlier code reads and writes as before"
-
-
-def upgrade():
-    run_sql(__file__)
-
-
-def downgrade():
-    op.get_bind().connection.cursor().execute(r"""CREATE OR REPLACE FUNCTION platform.kv_may(p_key text, p_write boolean) RETURNS boolean
+CREATE OR REPLACE FUNCTION platform.kv_may(p_key text, p_write boolean) RETURNS boolean
 LANGUAGE sql STABLE PARALLEL SAFE AS $$
 SELECT CASE current_user
   WHEN 'pipeshub_node' THEN true
@@ -28,6 +18,7 @@ SELECT CASE current_user
       OR pg_catalog.starts_with(p_key, '/services/lateWriteSweep/') OR pg_catalog.starts_with(p_key, '/services/storageMigration/')
       OR pg_catalog.starts_with(p_key, '/services/entityCleanup/') OR pg_catalog.starts_with(p_key, '/services/scopeFields/')
       OR pg_catalog.starts_with(p_key, '/services/demoData/') OR p_key = '/services/deployment'
+      OR pg_catalog.starts_with(p_key, '/services/vectordb/embedding_epoch/')
       OR pg_catalog.starts_with(p_key, '/migrations/') OR pg_catalog.starts_with(p_key, 'state:')
     ELSE NOT (p_key IN ('/services/smtp', '/services/slackBot') OR pg_catalog.starts_with(p_key, '/services/auth/')
               OR pg_catalog.starts_with(p_key, '/services/mcp/accessPolicy/') OR pg_catalog.starts_with(p_key, 'crawl:')) END
@@ -38,6 +29,7 @@ SELECT CASE current_user
       OR (pg_catalog.starts_with(p_key, '/services/mcp/') AND NOT pg_catalog.starts_with(p_key, '/services/mcp/accessPolicy/'))
       OR pg_catalog.starts_with(p_key, '/services/agents/') OR p_key = '/services/aiModelApiModes'
       OR pg_catalog.starts_with(p_key, '/services/scopeFields/') OR pg_catalog.starts_with(p_key, '/services/vectordb/') OR pg_catalog.starts_with(p_key, 'state:')
+      OR pg_catalog.starts_with(p_key, '/services/sandbox/alerts/')
     ELSE NOT (p_key IN ('/services/smtp', '/services/slackBot') OR pg_catalog.starts_with(p_key, '/services/auth/')
               OR pg_catalog.starts_with(p_key, '/services/mcp/accessPolicy/') OR pg_catalog.starts_with(p_key, 'crawl:')) END
   WHEN 'pipeshub_indexing' THEN NOT platform.kv_admin_or_credential(p_key) AND (
@@ -54,4 +46,4 @@ SELECT CASE current_user
   WHEN 'pipeshub_kv' THEN NOT platform.kv_admin_or_credential(p_key) AND (p_key = '/services/indexing/spendGuard/hmacKey' OR (NOT p_write AND p_key IN (
       '/services/aiModels', '/services/secretKeys', '/services/aiGateway/identityPolicy', '/services/metricsCollection', '/migrations/etcd_to_redis',
       '/services/redis')))
-  ELSE false END $$;""")
+  ELSE false END $$;

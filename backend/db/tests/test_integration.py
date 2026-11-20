@@ -836,6 +836,15 @@ KV_MATRIX = [
     ("connectors", "/services/mcp/credentials/i1/u1", True, True), ("connectors", "/services/api-toolsets/credentials/i1/u1", True, True),
     ("connectors", "/services/softDeletePurge/state", True, True), ("connectors", "/services/deployment", True, True),
     ("connectors", "/migrations/node_relation_v1", True, True), ("connectors", "state:lock:x:leader", True, True),
+    ("connectors", "/services/vectordb/embedding_epoch/records/current", True, True),      # the cleanup moves the epoch (platform_0010)
+    ("connectors", "/services/vectordb/embedding_epoch/records/tokens/r1/issuing", True, True),
+    ("connectors", "/services/vectordb/embedding_epoch/records/debt/o1/ab12", True, True),  # debt of unconfirmed batches sits under the epoch prefix
+    ("indexing", "/services/vectordb/embedding_epoch/records/debt/o1/ab12", True, True),
+    ("query", "/services/vectordb/embedding_epoch/records/debt/o1/ab12", True, True),
+    ("connectors", "/services/vectordb/embedding_pin/records", True, False),               # pins are written by indexing and query
+    ("connectors", "/services/vectordb/embedding_epochx", True, False), ("connectors", "/services/vectordb/collection_manifest", True, False),
+    ("connectors", "/services/vectordb/precision_verdict", True, False),
+    ("indexing", "/services/vectordb/embedding_pin/records", True, True), ("query", "/services/vectordb/embedding_pin/records", True, True),
     ("connectors", "/services/agents/parked-turns/c1", True, False), ("connectors", "/services/smtp", False, False),
     ("connectors", "/services/slackBot", False, False), ("connectors", "/services/auth/google", False, False),
     ("connectors", "/services/mcp/accessPolicy/o1", False, False), ("connectors", "crawl:reconcile:c1", False, False),
@@ -847,6 +856,8 @@ KV_MATRIX = [
     ("query", "/services/scopeFields/enabled", True, True), ("query", "state:counter:retry:fail:m1", True, True),
     ("query", "/migrations/node_relation_v1", True, False), ("query", "/services/smtp", False, False),
     ("query", "/services/toolset-instancesx", True, False),
+    ("query", "/services/sandbox/alerts/org/o1/critical", True, True),                  # the sandbox alert cooldown claims (platform_0011)
+    ("connectors", "/services/sandbox/alerts/org/o1/critical", True, False), ("indexing", "/services/sandbox/alerts/org/o1/critical", True, False),
     ("indexing", "/services/secretKeys", True, False), ("indexing", "/services/aiModels", True, False),
     ("indexing", "/services/platform/settings", True, False), ("indexing", "/migrations/kh_listing_state_v1", True, False),
     ("indexing", "/services/connectors/c1/metadataSchemas/latest", True, False),
@@ -965,6 +976,68 @@ def test_in_shadow_every_access_is_admitted_and_one_outside_the_prefixes_is_logg
         assert all(f"role pipeshub_{role}" in n and "secret-value" not in n and n.count("/") <= 3 for n in outside), outside
     with connect(cluster, name) as c:
         assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is False
+
+
+def test_in_enforce_connectors_writes_the_epoch_keys_of_a_cleanup_and_no_pin_or_other_vector_key(kv_db):
+    """The search-index cleanup (connectors) begins a reset: a pointer set, then the issuing and live keys of the new token created."""
+    cluster, name = kv_db
+    _set_mode(cluster, name, True)
+    base = "/services/vectordb/embedding_epoch/records"
+    with _as(cluster, name, "connectors") as c:
+        c.execute(UPSERT, (f"{base}/current",))
+        for state in ("issuing", "live"):
+            c.execute("INSERT INTO platform.kv_entries (key, value) VALUES (%s, 'w') ON CONFLICT DO NOTHING RETURNING true",
+                      (f"{base}/tokens/r2/{state}",))
+        c.commit()
+        # The refusal itself is the proof: other roles write these keys elsewhere in this database, so their
+        # presence afterwards says nothing about this role.
+        for key in ("/services/vectordb/embedding_pin/records", "/services/vectordb/embedding_pin/records/o1",
+                    "/services/vectordb/collection_manifest", "/services/vectordb/embedding_epochs/records"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(UPSERT, (key,))
+            c.rollback()
+    wrote = (f"{base}/current", f"{base}/tokens/r2/issuing", f"{base}/tokens/r2/live")
+    with connect(cluster, name) as c:   # the exact keys, not a count: the role matrix above writes under the same prefix
+        present = {k for (k,) in c.execute("SELECT key FROM platform.kv_entries WHERE key = ANY(%s)", (list(wrote),))}
+        assert present == set(wrote)
+
+
+def test_platform_0010_downgrades_to_the_matrix_of_platform_0008_and_upgrades_again(kv_db):
+    cluster, name = kv_db
+    url = cluster.url(name, MIGRATE)
+    assert run_migrate(url, "downgrade", "platform_0009", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "connectors") as c:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute(UPSERT, ("/services/vectordb/embedding_epoch/records/current",))
+    with _as(cluster, name, "indexing") as c:                                   # platform_0007's spend guard grants are kept
+        assert c.execute("SELECT 1 FROM platform.kv_entries WHERE key = '/services/indexing/spendGuard/hmacKey'").fetchone() is not None
+    _set_mode(cluster, name, False)
+    assert run_migrate(url).returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "connectors") as c:
+        c.execute(UPSERT, ("/services/vectordb/embedding_epoch/records/current",))
+        c.rollback()
+
+
+def test_platform_0011_downgrades_to_the_matrix_of_platform_0010_and_upgrades_again(kv_db):
+    cluster, name = kv_db
+    url = cluster.url(name, MIGRATE)
+    key = "/services/sandbox/alerts/org/o1/critical"
+    assert run_migrate(url, "downgrade", "platform_0010", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "query") as c:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute(UPSERT, (key,))
+    with _as(cluster, name, "connectors") as c:                                 # platform_0010's epoch keys are kept
+        c.execute(UPSERT, ("/services/vectordb/embedding_epoch/records/current",))
+        c.rollback()
+    _set_mode(cluster, name, False)
+    assert run_migrate(url).returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "query") as c:
+        c.execute(UPSERT, (key,))
+        c.rollback()
 
 
 def test_a_service_role_cannot_create_anything_a_policy_function_could_resolve_to(kv_db):

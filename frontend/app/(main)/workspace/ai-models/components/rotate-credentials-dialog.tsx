@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Button, Dialog, Flex, Text, TextField } from '@radix-ui/themes';
+import { Button, Dialog, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { AIModelsApi } from '../api';
 import type { ConfiguredModel } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 interface RotateCredentialsDialogProps {
   model: ConfiguredModel | null;
@@ -48,8 +49,7 @@ export function RotateCredentialsDialog({ model, onClose, onSaved }: RotateCrede
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.aiModels.rotateCredentialsHint')}
           </Text>
-          <TextField.Root
-            type="password"
+          <SecretTextField
             value={apiKey}
             placeholder={t('workspace.aiModels.rotateCredentialsPlaceholder')}
             onChange={(event) => setApiKey(event.target.value)}

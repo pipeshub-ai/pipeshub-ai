@@ -523,6 +523,12 @@ def _exchange_refused(flow: _Flow) -> str:
     return f"code=c&state={flow.start('s')}"
 
 
+def _exchange_answered_200(flow: _Flow) -> str:
+    # GitHub's sign-in answer for a code that expired or was used twice: the user's, not our configuration (F26 N1).
+    flow.exchange.side_effect = MCPOAuthError(SENTINEL, error_code="bad_verification_code", status=200)
+    return f"code=c&state={flow.start('s')}"
+
+
 def _not_saved(flow: _Flow) -> str:
     flow.store.saves = False
     return f"code=c&state={flow.start('s')}"
@@ -541,6 +547,8 @@ def _not_saved(flow: _Flow) -> str:
     (_instance_gone, "instance_not_found", logging.WARNING, "not_found", None, {"mcp_server_id": "inst-1"}),
     (_client_changed, "client_config_changed", logging.WARNING, "conflict", "ValueError", {"mcp_server_id": "inst-1"}),
     (_exchange_refused, "token_exchange_failed", logging.WARNING, "auth_expired", "MCPOAuthError",
+     {"mcp_server_id": "inst-1"}),
+    (_exchange_answered_200, "token_exchange_failed", logging.WARNING, "auth_expired", "MCPOAuthError",
      {"mcp_server_id": "inst-1"}),
     (_not_saved, "credentials_not_saved", logging.WARNING, "unavailable", None, {"mcp_server_id": "inst-1"}),
 ])
