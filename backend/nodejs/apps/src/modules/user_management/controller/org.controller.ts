@@ -55,6 +55,13 @@ const ADDRESS_FIELDS = [
   'postCode',
 ] as const;
 
+/** The onboarding status as an audit reason (snake_case). */
+const ONBOARDING_REASONS: Readonly<Record<string, string>> = {
+  configured: 'configured',
+  notConfigured: 'not_configured',
+  skipped: 'skipped',
+};
+
 @injectable()
 export class OrgController {
   constructor(
@@ -426,6 +433,7 @@ export class OrgController {
         orgId as string,
         updateData,
       );
+      audit('org.update', { outcome: 'success' });
 
       await this.eventService.start();
       let event: Event = {
@@ -468,6 +476,7 @@ export class OrgController {
       if (!deleted) {
         throw new NotFoundError('Organisation not found');
       }
+      audit('org.delete', { outcome: 'success' });
 
       await this.eventService.start();
       let event: Event = {
@@ -542,6 +551,7 @@ export class OrgController {
 
       const base64Logo = processedBuffer.toString('base64');
       await getOrgRepository().setLogo(orgId as string, base64Logo, mimeType);
+      audit('org.logo.update', { outcome: 'success', reason: 'set' });
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability
       // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
@@ -599,6 +609,7 @@ export class OrgController {
       if (!orgLogo) {
         throw new NotFoundError('Organisation logo not found');
       }
+      audit('org.logo.update', { outcome: 'success', reason: 'removed' });
 
       res.status(200).send(orgLogo);
       return;
@@ -654,6 +665,10 @@ export class OrgController {
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
+      audit('org.onboarding.update', {
+        outcome: 'success',
+        reason: ONBOARDING_REASONS[status as string],
+      });
 
       res.status(200).json({
         message: 'Onboarding status updated successfully',
