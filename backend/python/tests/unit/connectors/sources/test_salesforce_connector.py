@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -1412,6 +1413,28 @@ class TestOnlyAccountsReadThroughTheConnector:
         connector._sync_product_readers = AsyncMock()
         await connector._sync_permissions_edges(api_version="59.0")
         assert asked[0] == e.READERS_SOQL
+
+    @pytest.mark.asyncio
+    async def test_a_withdrawn_user_loses_their_own_grants_too(self) -> None:
+        """Withdrawal also drops the user's grants: a product-group grant would otherwise stay
+        whenever the product readers cannot be read and the group's list is kept."""
+        connector = _make_connector()
+        eligibility = MagicMock()
+        eligibility.inactive_user_ids = AsyncMock(return_value={"005G"})
+        eligibility.frozen_user_ids = AsyncMock(return_value=set())
+        connector._eligibility = MagicMock(return_value=eligibility)
+        connector._eligible_emails = AsyncMock(return_value={"maya@example.com"})
+        connector.user_sync_point = MagicMock()
+        connector.user_sync_point.read_sync_point = AsyncMock(return_value={})
+        connector.user_sync_point.update_sync_point = AsyncMock()
+        guest_link = SimpleNamespace(id="user-carol", source_user_id="005G", email="carol@example.com")
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[guest_link])
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+
+        await connector._withdraw_ineligible_users("59.0", set())
+
+        connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
+            "conn-sf-1", [guest_link], drop_grants=True)
 
     @pytest.mark.asyncio
     async def test_only_internal_users_read_products(self) -> None:

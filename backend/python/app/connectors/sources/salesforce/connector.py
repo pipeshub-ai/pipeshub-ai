@@ -3454,7 +3454,11 @@ class SalesforceConnector(BaseConnector):
                 gone = [u for u in stored
                         if u.source_user_id in ineligible and (u.email or "").lower() not in eligible]
                 if gone:
-                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+                    # Their grants go too: the product group keeps its stored list when its
+                    # readers cannot be read. A user linked again gets them back from the
+                    # permission step, which reads every linked user on every sync.
+                    await self.data_entities_processor.withdraw_app_user_access(
+                        self.connector_id, gone, drop_grants=True)
         if frozen is None:
             return
         thawed = sorted(previously_frozen - frozen)
