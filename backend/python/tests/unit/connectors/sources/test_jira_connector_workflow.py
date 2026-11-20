@@ -685,14 +685,24 @@ class TestJiraFullSync:
         assert [name for name, *_ in dep.mock_calls if "team" in name] == ["withdraw_team_app_edge"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("licensed", "linked"), [(set(), False), ({"a1"}, True), (None, True)],
-                             ids=["no_product_access", "product_access", "product_access_unknown"])
+    @pytest.mark.parametrize(("licensed", "listed", "user_read_refused", "linked"), [
+        (set(), True, False, False),
+        ({"a1"}, True, False, True),
+        ({"other"}, False, False, False),
+        ({"other"}, False, True, False),
+        ({"a1"}, False, True, True),
+        (None, True, False, True),
+        (None, False, True, False),
+    ], ids=["no_product_access", "product_access", "not_listed_and_no_product_access",
+            "user_read_refused_and_no_product_access", "user_read_refused_and_product_access",
+            "product_access_unread_and_listed_active", "product_access_unread_and_user_read_refused"])
     async def test_the_configuring_user_reads_through_the_jira_account_only_while_jira_lets_it_in(
-        self, licensed: set[str] | None, linked: bool,
+        self, licensed: set[str] | None, listed: bool, user_read_refused: bool, linked: bool,
     ) -> None:
         """The user who configured the connector reads what its Jira account reads (``authenticatedAs``), and that link
-        passes the connector gate, ORG grants included. An account Jira shows without product access loses the link and
-        gets none written; one with product access, or whose product access could not be read, is linked."""
+        passes the connector gate, ORG grants included. It stays only while the sync confirms Jira lets the account in:
+        product access read in full that includes it, or, product access unread, a complete user list showing it
+        active. A product-access read without it, or nothing that can tell, removes the link (fail closed)."""
         connector, dep, *_ = _make_connector()
         connector.data_source = MagicMock()
         connector._authenticated_jira_account_id, connector._authenticated_jira_email = "a1", "sync@test.com"
@@ -702,13 +712,19 @@ class TestJiraFullSync:
         me = AppUser(app_name=Connectors.JIRA, connector_id="conn-jira-1", source_user_id="a1", org_id="org-jira-1",
                      email="sync@test.com", full_name="Sync", is_active=True)
 
+        async def fetch(**_kwargs: object) -> list[AppUser]:
+            # /users/search answered (listing the account active, or not), or was refused on its first page.
+            connector._user_bulk_forbidden = user_read_refused
+            connector._listed_account_ids = {"a1"} if listed else ({"other"} if not user_read_refused else set())
+            return [me] if listed else []
+
         async def keep(found: list[AppUser], _mapping: object) -> list[AppUser]:
             connector._licensed_account_ids = licensed
             return found if licensed is None else [u for u in found if u.source_user_id in licensed]
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
                    new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
-            connector._fetch_users = AsyncMock(return_value=[me])
+            connector._fetch_users = AsyncMock(side_effect=fetch)
             connector._keep_licensed_users = AsyncMock(side_effect=keep)
             connector._sync_user_groups = AsyncMock(return_value={})
             connector._fetch_projects = AsyncMock(return_value=([], []))

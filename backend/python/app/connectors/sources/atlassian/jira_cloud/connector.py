@@ -2948,15 +2948,22 @@ class JiraConnector(BaseConnector):
 
     async def _link_authenticated_account(self, ineligible_ids: set[str]) -> None:
         """The user who configured the connector reads what its Jira account reads (``authenticatedAs``), and that link
-        passes the connector gate, so it holds only while Jira lets the account in. A read that shows the account
-        ineligible (deactivated, without product access, gone from a complete list) removes it. It is written when the
-        account has product access, or when product access could not be read: ``_keep_licensed_users`` then keeps the
-        connector's own account too, since it reads the issues being synced."""
-        me = self._authenticated_jira_account_id
-        if me and me in ineligible_ids:
-            await self.data_entities_processor.unlink_authenticator(self.connector_id)
-        elif self._licensed_account_ids is None or me in self._licensed_account_ids:
+        passes the connector gate, so it holds only while this sync confirms Jira lets the account in; otherwise it is
+        removed (fail closed), and the next sync that confirms it writes it again. Confirmed: product access read in
+        full includes the account and no read shows it ineligible; or, product access unread, a complete user list
+        shows it active (``_keep_licensed_users`` then keeps the connector's own account). A product-access read
+        without the account is the answer that it has none, whatever the user list could show."""
+        me, licensed = self._authenticated_jira_account_id, self._licensed_account_ids
+        if me in ineligible_ids:
+            confirmed = False
+        elif licensed is not None:
+            confirmed = me in licensed
+        else:
+            confirmed = self._directory_read_complete() and me in self._listed_account_ids
+        if me and confirmed:
             await self.register_authenticated_source_user(self._authenticated_jira_email, me)
+        else:
+            await self.data_entities_processor.unlink_authenticator(self.connector_id)
 
     def _directory_read_complete(self) -> bool:
         """The user list was read in full: not cut short, not refused, and not empty when accounts were linked
