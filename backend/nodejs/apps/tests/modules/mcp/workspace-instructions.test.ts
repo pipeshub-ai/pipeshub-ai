@@ -85,6 +85,17 @@ describe('MCP workspace instructions', () => {
     expect(store.get.called).to.equal(false)
   })
 
+  it('keeps sending the last text it read while the store is disconnected', async () => {
+    const clock = sinon.useFakeTimers({ now: 1_000, toFake: ['Date'] })
+    let connected = true
+    const store = { ...storeWith({ customSystemPromptAgent: 'Kept', useInMcp: true }), isConnected: () => connected }
+    expect(await McpWorkspaceInstructions.read('org-a', async () => store)).to.equal('Kept')
+    clock.tick(MCP_WORKSPACE_INSTRUCTIONS_TTL_MS)
+    connected = false
+    expect(await McpWorkspaceInstructions.read('org-a', async () => store)).to.equal('Kept')
+    expect(store.get.callCount).to.equal(1)
+  })
+
   it('is needed only by the requests the server answers with its instructions', () => {
     expect(sendsInstructions({ method: 'initialize' })).to.equal(true)
     expect(sendsInstructions({ method: 'prompts/get' })).to.equal(true)

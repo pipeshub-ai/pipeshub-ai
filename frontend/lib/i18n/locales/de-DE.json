@@ -4055,7 +4055,8 @@
       "mcpToggleLabel": "Auch im PipesHub-MCP-Server verwenden",
       "mcpToggleDescription": "MCP-Clients wie Claude und Cursor erhalten diesen Prompt beim Verbinden vor den eigenen Anweisungen von PipesHub. Sie behalten nur einen Teil der Anweisungen eines Servers, daher darf der Prompt bei aktivierter Option höchstens {{max}} Zeichen lang sein.",
       "mcpCharCount": "{{length}} / {{max}} Zeichen",
-      "mcpTooLong": "{{length}} / {{max}} Zeichen. Kürzen Sie den Prompt oder deaktivieren Sie die Verwendung im MCP-Server, um zu speichern."
+      "mcpTooLong": "{{length}} / {{max}} Zeichen. Kürzen Sie den Prompt oder deaktivieren Sie die Verwendung im MCP-Server, um zu speichern.",
+      "loadError": "Die gespeicherten Prompts konnten nicht geladen werden, daher ist Speichern deaktiviert. Laden Sie die Seite neu, um es erneut zu versuchen."
     },
     "webSearch": {
       "loading": "Websuche-Einstellungen werden geladen…",

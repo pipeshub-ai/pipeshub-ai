@@ -4368,7 +4368,8 @@
       "mcpToggleLabel": "Also use in the PipesHub MCP server",
       "mcpToggleDescription": "MCP clients such as Claude and Cursor get this prompt ahead of PipesHub's own instructions when they connect. They keep only so much of a server's instructions, so the prompt can be at most {{max}} characters while this is on.",
       "mcpCharCount": "{{length}} / {{max}} characters",
-      "mcpTooLong": "{{length}} / {{max}} characters. Shorten the prompt, or turn off using it in the MCP server, to save."
+      "mcpTooLong": "{{length}} / {{max}} characters. Shorten the prompt, or turn off using it in the MCP server, to save.",
+      "loadError": "We couldn't load the saved prompts, so saving is off. Reload the page to try again."
     },
     "webSearch": {
       "loading": "Loading web search settings…",

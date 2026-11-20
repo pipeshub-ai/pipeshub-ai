@@ -4488,7 +4488,8 @@
       "mcpToggleLabel": "Použít také v MCP serveru PipesHub",
       "mcpToggleDescription": "MCP klienti jako Claude a Cursor dostanou tento prompt při připojení před vlastními pokyny PipesHubu. Z pokynů serveru si ponechají jen omezenou část, proto může mít prompt při zapnuté volbě nejvýše {{max}} znaků.",
       "mcpCharCount": "{{length}} / {{max}} znaků",
-      "mcpTooLong": "{{length}} / {{max}} znaků. Pro uložení prompt zkraťte, nebo vypněte jeho použití v MCP serveru."
+      "mcpTooLong": "{{length}} / {{max}} znaků. Pro uložení prompt zkraťte, nebo vypněte jeho použití v MCP serveru.",
+      "loadError": "Uložené prompty se nepodařilo načíst, proto je ukládání vypnuté. Zkuste to znovu po obnovení stránky."
     },
     "webSearch": {
       "loading": "Načítání nastavení vyhledávání na webu…",

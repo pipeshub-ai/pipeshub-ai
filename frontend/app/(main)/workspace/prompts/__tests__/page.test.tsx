@@ -127,6 +127,17 @@ describe('Using the Agent prompt in the MCP server', () => {
     );
   });
 
+  it('will not save over prompts that failed to load', async () => {
+    getSystemPrompts.mockResolvedValue(null);
+    render(<PromptsPage />);
+
+    await waitFor(() => expect(screen.getByTestId('prompts-load-error')).toBeTruthy());
+    fireEvent.change(agentEditor(), { target: { value: 'Be brief.' } });
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(saveButton());
+    expect(saveSystemPrompts).not.toHaveBeenCalled();
+  });
+
   it('will not save a prompt longer than the MCP server takes while it is on', async () => {
     stored('', false);
     render(<PromptsPage />);

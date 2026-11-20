@@ -4346,7 +4346,8 @@
       "mcpToggleLabel": "同時用於 PipesHub MCP 伺服器",
       "mcpToggleDescription": "Claude、Cursor 等 MCP 用戶端連線時，會先收到此提示，再收到 PipesHub 本身的指示。用戶端只保留伺服器指示的有限長度，因此開啟後提示最多 {{max}} 個字元。",
       "mcpCharCount": "{{length}} / {{max}} 個字元",
-      "mcpTooLong": "{{length}} / {{max}} 個字元。請縮短提示，或關閉在 MCP 伺服器中的使用，然後再儲存。"
+      "mcpTooLong": "{{length}} / {{max}} 個字元。請縮短提示，或關閉在 MCP 伺服器中的使用，然後再儲存。",
+      "loadError": "無法載入已儲存的提示，因此暫時無法儲存。請重新載入頁面後再試一次。"
     },
     "webSearch": {
       "loading": "正在載入網頁搜尋設定…",

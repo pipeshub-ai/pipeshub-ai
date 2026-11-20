@@ -49,8 +49,9 @@ export const McpWorkspaceInstructions = {
     }
     try {
       const store = await storeForOrg(orgId);
-      // At boot, before the store connects, the server answers with its own instructions.
-      if (store.isConnected?.() === false) return undefined;
+      // While the store is not connected (at boot, or after losing it), send what
+      // this process last read, or nothing: a read now would wait for it.
+      if (store.isConnected?.() === false) return hit?.text;
       const prompts = await readSystemPrompts(store);
       const prompt = prompts.customSystemPromptAgent.trim();
       const text = prompts.useInMcp && prompt !== '' ? prompt : undefined;

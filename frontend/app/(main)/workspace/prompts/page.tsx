@@ -231,6 +231,8 @@ export default function PromptsPage() {
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   const [isLoading, setIsLoading] = useState(true);
+  // Saving over prompts that never loaded would replace them with blanks.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   // Current editor state
@@ -255,6 +257,7 @@ export default function PromptsPage() {
   // The server sends the prompt without its leading and trailing space, and refuses a longer one.
   const agentPromptLength = customPromptAgent.trim().length;
   const agentPromptTooLongForMcp = useInMcp && agentPromptLength > mcpPromptMaxChars;
+  const cannotSave = loadFailed || agentPromptTooLongForMcp;
 
   // The sidebar hides this page from members, but the URL still opens it. A profile that failed
   // to load leaves isAdmin null; General is open to everyone, so that goes there too.
@@ -270,6 +273,10 @@ export default function PromptsPage() {
     const load = async () => {
       try {
         const prompts = await PromptsApi.getSystemPrompts();
+        if (!prompts) {
+          setLoadFailed(true);
+          return;
+        }
         setCustomPrompt(prompts.customSystemPrompt);
         setCustomPromptWebSearch(prompts.customSystemPromptWebSearch);
         setCustomPromptAgent(prompts.customSystemPromptAgent);
@@ -304,7 +311,7 @@ export default function PromptsPage() {
   }, []);
 
   const handleSave = useCallback(async () => {
-    if (agentPromptTooLongForMcp) return;
+    if (cannotSave) return;
     setIsSaving(true);
     try {
       await PromptsApi.saveSystemPrompts({
@@ -332,7 +339,7 @@ export default function PromptsPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [customPrompt, customPromptWebSearch, customPromptAgent, useInMcp, agentPromptTooLongForMcp, addToast, t]);
+  }, [customPrompt, customPromptWebSearch, customPromptAgent, useInMcp, cannotSave, addToast, t]);
 
   const handleDiscard = useCallback(() => {
     setCustomPrompt(savedPrompt);
@@ -386,6 +393,18 @@ export default function PromptsPage() {
             {t('workspace.bots.documentation')}
           </Button>
         </Flex>
+
+        {loadFailed && (
+          <Text
+            as="p"
+            size="2"
+            role="alert"
+            data-testid="prompts-load-error"
+            style={{ color: 'var(--red-11)', marginBottom: 20 }}
+          >
+            {t('workspace.prompts.loadError')}
+          </Text>
+        )}
 
         {/* ── Scope Callout: Chat Assistant (and the MCP server, if on), not Agent Builder ── */}
         <Flex
@@ -442,7 +461,7 @@ export default function PromptsPage() {
         onDiscard={handleDiscard}
         onSave={handleSave}
         isSaving={isSaving}
-        saveDisabled={agentPromptTooLongForMcp}
+        saveDisabled={cannotSave}
       />
     </Box>
     </ServiceGate>

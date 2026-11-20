@@ -4346,7 +4346,8 @@
       "mcpToggleLabel": "同时用于 PipesHub MCP 服务器",
       "mcpToggleDescription": "Claude、Cursor 等 MCP 客户端连接时，会先收到此提示词，再收到 PipesHub 自身的指令。客户端只保留服务器指令的有限长度，因此开启后提示词最多 {{max}} 个字符。",
       "mcpCharCount": "{{length}} / {{max}} 个字符",
-      "mcpTooLong": "{{length}} / {{max}} 个字符。请缩短提示词，或关闭在 MCP 服务器中的使用，然后再保存。"
+      "mcpTooLong": "{{length}} / {{max}} 个字符。请缩短提示词，或关闭在 MCP 服务器中的使用，然后再保存。",
+      "loadError": "无法加载已保存的提示词，因此暂时无法保存。请重新加载页面后重试。"
     },
     "webSearch": {
       "loading": "正在加载网络搜索设置…",

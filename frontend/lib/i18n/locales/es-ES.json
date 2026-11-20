@@ -4096,7 +4096,8 @@
       "mcpToggleLabel": "Usar también en el servidor MCP de PipesHub",
       "mcpToggleDescription": "Los clientes MCP como Claude y Cursor reciben este prompt antes de las instrucciones propias de PipesHub al conectarse. Solo conservan una parte de las instrucciones de un servidor, así que el prompt puede tener como máximo {{max}} caracteres mientras esta opción esté activada.",
       "mcpCharCount": "{{length}} / {{max}} caracteres",
-      "mcpTooLong": "{{length}} / {{max}} caracteres. Acorta el prompt o desactiva su uso en el servidor MCP para guardar."
+      "mcpTooLong": "{{length}} / {{max}} caracteres. Acorta el prompt o desactiva su uso en el servidor MCP para guardar.",
+      "loadError": "No se pudieron cargar los prompts guardados, así que no se puede guardar. Recarga la página para volver a intentarlo."
     },
     "webSearch": {
       "loading": "Loading web search settings…",

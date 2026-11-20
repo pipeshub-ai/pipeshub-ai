@@ -33,9 +33,10 @@ const DEFAULT_MCP_PROMPT_MAX_CHARS = 500;
 export const PromptsApi = {
   /**
    * GET /api/v1/configurationManager/prompts/system
-   * Returns the currently stored custom system prompts.
+   * Returns the currently stored custom system prompts, or null when they
+   * could not be read: a save then would overwrite them with blanks.
    */
-  async getSystemPrompts(): Promise<StoredSystemPrompts> {
+  async getSystemPrompts(): Promise<StoredSystemPrompts | null> {
     try {
       const { data } = await apiClient.get<Partial<StoredSystemPrompts>>(PROMPTS_URL);
       return {
@@ -46,13 +47,7 @@ export const PromptsApi = {
         mcpPromptMaxChars: data?.mcpPromptMaxChars ?? DEFAULT_MCP_PROMPT_MAX_CHARS,
       };
     } catch {
-      return {
-        customSystemPrompt: '',
-        customSystemPromptWebSearch: '',
-        customSystemPromptAgent: '',
-        useInMcp: false,
-        mcpPromptMaxChars: DEFAULT_MCP_PROMPT_MAX_CHARS,
-      };
+      return null;
     }
   },
 
