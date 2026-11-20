@@ -1,15 +1,16 @@
+import { turnDeps } from '../helpers/turn-deps'
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
-import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { HttpError } from '../../../../src/libs/errors/http.errors'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { logLevelFor } from '../../../../src/libs/utils/error.middleware.utils'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+import { NOT_ALLOWED, NOT_ALLOWED_TEXT, notAllowed, withTestAdminRefusals } from '../helpers/admin-refusals'
 import { CONVERSATION_ID_HEADER } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { setUserRepository } from '../../../../src/libs/repositories/user'
@@ -21,6 +22,7 @@ import {
   fakeReplicaSetSession,
   oid,
 } from './chat-test-harness'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
 import { AGENT_KEY, ORG, OWNER, appConfig, seedConversation } from './streaming-flows'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
@@ -46,7 +48,7 @@ interface Flow {
 const flows: Flow[] = [
   {
     name: 'createConversation',
-    handler: () => controller.createConversation(appConfig) as Handler,
+    handler: () => controller.createConversation(appConfig, turnDeps()) as Handler,
     agent: false,
     create: true,
     aiPath: '/api/v1/chat',
@@ -54,7 +56,7 @@ const flows: Flow[] = [
   },
   {
     name: 'addMessage',
-    handler: () => controller.addMessage(appConfig) as Handler,
+    handler: () => behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler),
     agent: false,
     create: false,
     aiPath: '/api/v1/chat',
@@ -65,7 +67,7 @@ const flows: Flow[] = [
   },
   {
     name: 'createAgentConversation',
-    handler: () => controller.createAgentConversation(appConfig) as Handler,
+    handler: () => controller.createAgentConversation(appConfig, turnDeps()) as Handler,
     agent: true,
     create: true,
     aiPath: `/api/v1/agent/${AGENT_KEY}/chat`,
@@ -73,7 +75,7 @@ const flows: Flow[] = [
   },
   {
     name: 'addMessageToAgentConversation',
-    handler: () => controller.addMessageToAgentConversation(appConfig) as Handler,
+    handler: () => behindGuard(realGuards(), 'send', controller.addMessageToAgentConversation(appConfig, turnDeps()) as Handler, 'agent'),
     agent: true,
     create: false,
     aiPath: `/api/v1/agent/${AGENT_KEY}/chat`,
@@ -142,12 +144,23 @@ async function run(
   }
 }
 
+
+/** History rows without the row, version and public mark they are sealed with, for comparing their text. */
+const unsealed = (rows: unknown): unknown =>
+  Array.isArray(rows)
+    ? rows.map((row) => {
+        const { _ref: _r, _ver: _v, _pub: _p, ...rest } = row as Record<string, unknown>
+        return rest
+      })
+    : rows
+
 describe('es_controller non-streaming chat routes', () => {
   beforeEach(() => registerAppUpstreams(appConfig))
   afterEach(() => registerUpstreams({}))
 
   afterEach(() => {
     sinon.restore()
+    delete (mongoose.connection as unknown as { readyState?: number }).readyState
   })
 
   for (const flow of flows) {
@@ -182,10 +195,15 @@ describe('es_controller non-streaming chat routes', () => {
           expect(call.body).to.have.property('recordIds')
         } else {
           // The earlier turn is history; the new question is only `query`.
-          expect(call.body.previousConversations).to.deep.equal([
+          expect(unsealed(call.body.previousConversations)).to.deep.equal([
             { content: 'What changed in the release?', role: 'user_query' },
             { content: 'An older answer.', role: 'bot_response' },
           ])
+          // Every earlier row names itself and the version of its text, so the new answer's label names it.
+          for (const row of call.body.previousConversations as Array<Record<string, unknown>>) {
+            expect(row._ref).to.be.a('string').and.not.equal('')
+            expect(row._ver).to.be.a('string').and.not.equal('')
+          }
           expect(call.body).not.to.have.property('recordIds')
         }
       })
@@ -212,7 +230,8 @@ describe('es_controller non-streaming chat routes', () => {
 
       if (!flow.create) {
         it('hides an earlier answer the reader lost access to, in the history and in the response', async () => {
-          sinon.stub(MongoConversationRepository.prototype, 'isConnected').returns(true)
+          // Connected, as in production: the response then carries the stored history.
+          Object.defineProperty(mongoose.connection, 'readyState', { configurable: true, get: () => 1 })
           const r = await run(flow, (ai, store) => {
             store.messages.find((m) => m.get('messageType') === 'bot_response')?.set('attachments', [{ recordId: 'rec-lost', recordName: 'lost.pdf' }])
             ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] })
@@ -279,6 +298,40 @@ describe('es_controller non-streaming chat routes', () => {
         expect(logLevelFor(r.error())).to.equal('warn')
         expect(error.called).to.equal(false)
         expect(warn.calledWith('Non-streaming chat turn failed')).to.equal(true)
+      })
+
+      it('passes on the code the AI backend names when it refuses the request as malformed, never its words', async () => {
+        const r = await run(flow, (ai) =>
+          ai.reply(exactPath(flow.aiPath), 400, { detail: { code: 'REQUEST_VERSION_UNSUPPORTED', message: 'Invalid request parameters' } }),
+        )
+
+        expect(r.error()).to.include({ code: 'REQUEST_VERSION_UNSUPPORTED', statusCode: 502, message: CHAT_ERROR_MESSAGES.failed })
+        expect(r.conversation().status).to.equal('Failed')
+        expect(r.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.failed)
+        expect(r.conversation().conversationErrors?.at(-1)?.errorType).to.equal('REQUEST_VERSION_UNSUPPORTED')
+      })
+
+      describe('a refusal only an admin can lift', () => {
+        withTestAdminRefusals()
+
+        it('is reported as one, with the words the AI backend chose for the person', async () => {
+          const r = await run(flow, (ai) => ai.reply(exactPath(flow.aiPath), 403, notAllowed))
+
+          expect(r.error()).to.include({ code: NOT_ALLOWED, statusCode: 403, message: NOT_ALLOWED_TEXT })
+          expect(r.conversation().status).to.equal('Failed')
+          expect(r.conversation().failReason).to.equal(NOT_ALLOWED_TEXT)
+          expect(r.conversation().conversationErrors?.at(-1)?.errorType).to.equal(NOT_ALLOWED)
+        })
+      })
+
+      it('with no refusal named, reports a 402 with the status the AI backend sent, not as a refusal', async () => {
+        const r = await run(flow, (ai) =>
+          ai.reply(exactPath(flow.aiPath), 402, { detail: { code: 'REQUEST_NOT_ALLOWED', message: NOT_ALLOWED_TEXT } }),
+        )
+
+        expect(r.error()?.statusCode).to.equal(402)
+        expect(r.error()?.code).to.not.equal(NOT_ALLOWED)
+        expect(r.conversation().status).to.equal('Failed')
       })
 
       it('never shows upstream text for a 5xx', async () => {
@@ -367,15 +420,15 @@ describe('es_controller non-streaming chat routes', () => {
     const chains = [
       {
         name: 'assistant',
-        create: () => controller.createConversation(appConfig) as Handler,
-        followUp: () => controller.addMessage(appConfig) as Handler,
+        create: () => controller.createConversation(appConfig, turnDeps()) as Handler,
+        followUp: () => behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler),
         params: {} as Record<string, string>,
         aiPath: '/api/v1/chat',
       },
       {
         name: 'agent',
-        create: () => controller.createAgentConversation(appConfig) as Handler,
-        followUp: () => controller.addMessageToAgentConversation(appConfig) as Handler,
+        create: () => controller.createAgentConversation(appConfig, turnDeps()) as Handler,
+        followUp: () => behindGuard(realGuards(), 'send', controller.addMessageToAgentConversation(appConfig, turnDeps()) as Handler, 'agent'),
         params: { agentKey: AGENT_KEY } as Record<string, string>,
         aiPath: `/api/v1/agent/${AGENT_KEY}/chat`,
       },
@@ -428,7 +481,7 @@ describe('es_controller non-streaming chat routes', () => {
         expect(conversation().failReason).to.be.undefined
         // The error text never goes back to the model; the failed question goes
         // back closed by a failed answer, so it never reads as still open.
-        expect(ai.calls[2]!.body.previousConversations).to.deep.equal([
+        expect(unsealed(ai.calls[2]!.body.previousConversations)).to.deep.equal([
           { content: 'Q1', role: 'user_query' },
           { content: 'A1', role: 'bot_response' },
           { content: 'Q2', role: 'user_query' },
@@ -438,7 +491,7 @@ describe('es_controller non-streaming chat routes', () => {
         answerNext(200, answer('A4'))
         const fourth = await turn(chain.followUp(), followUpParams, 'Q4')
         expect(fourth.error, String(fourth.error?.message)).to.be.undefined
-        expect(ai.calls[3]!.body.previousConversations).to.deep.equal([
+        expect(unsealed(ai.calls[3]!.body.previousConversations)).to.deep.equal([
           { content: 'Q1', role: 'user_query' },
           { content: 'A1', role: 'bot_response' },
           { content: 'Q2', role: 'user_query' },
@@ -516,7 +569,7 @@ describe('es_controller non-streaming chat routes', () => {
       const { session } = seedConversation(store, true)
       const next = sinon.stub()
 
-      await (controller.addMessage(appConfig) as Handler)(
+      await behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler)(
         {
           headers: {},
           params: { conversationId: String(session._id) },

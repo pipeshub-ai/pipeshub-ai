@@ -1,18 +1,30 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { Types } from 'mongoose'
+import mongoose, { Types } from 'mongoose'
 import * as controllerModule from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+import { NOT_ALLOWED, NOT_ALLOWED_TEXT, notAllowed, withTestAdminRefusals } from '../helpers/admin-refusals'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
-import { AGENT_KEY, Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream } from './streaming-flows'
-import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
+import { AGENT_KEY, Flow, ORG, OWNER, RUN, SEEDED_ANSWER, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream, type Run } from './streaming-flows'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+import { turnDeps } from '../helpers/turn-deps'
+import { withOwnerGrant } from '../helpers/conversation-grant'
+
+/** A regenerate whose run never started: its answer row is as it was, and the chat is not marked failed. */
+function expectStoredAnswerKept(run: Run): void {
+  const answer = run.answer() as Record<string, unknown>
+  expect(answer.messageType).to.equal('bot_response')
+  expect(answer.content).to.equal(SEEDED_ANSWER)
+  expect(run.conversation().status).to.not.equal('Failed')
+  expect(run.conversation().failReason).to.equal(undefined)
+  expect(run.conversation().conversationErrors ?? []).to.deep.equal([])
+}
 
 // What agui_emitter.py sends when a sub-agent (child run) fails; the parent run carries on.
 const subAgentError = { runId: 'run-child', parentRunId: RUN, message: 'Sub-agent failed: tool timeout', code: 'agent_error' }
@@ -216,8 +228,113 @@ describe('es_controller streaming answers', () => {
         expect(errors).to.have.length(1)
         expect(errors[0]?.data.message).to.equal(CHAT_ERROR_MESSAGES.unavailable)
         expect(run.res.body).to.not.match(/qdrant|cluster\.local/)
-        expect(run.conversation().status).to.equal('Failed')
-        expect(run.answer()?.content).to.equal(CHAT_ERROR_MESSAGES.unavailable)
+        if (flow.regenerate) {
+          expectStoredAnswerKept(run)
+        } else {
+          expect(run.conversation().status).to.equal('Failed')
+          expect(run.answer()?.content).to.equal(CHAT_ERROR_MESSAGES.unavailable)
+          expect(run.answer()?.errorCode).to.equal(undefined)
+        }
+      })
+
+      it('passes on the code the AI service names when it refuses the request as malformed, never its reply', async () => {
+        const run = await startStream(flow, controllerModule, (ai) => {
+          ai.refuseStream(400, { detail: { code: 'REQUEST_VERSION_UNSUPPORTED', message: 'Invalid request parameters' } })
+        })
+        await run.res.ended
+        await settle()
+
+        const errors = run.res.eventsOf('RUN_ERROR')
+        expect(errors.map((e) => e.data.message)).to.deep.equal([CHAT_ERROR_MESSAGES.failed])
+        // A regeneration's error frame passes it on too.
+        expect(errors[0]?.data.code).to.equal('REQUEST_VERSION_UNSUPPORTED')
+        expect(run.res.body).to.not.include('Invalid request parameters')
+        if (flow.regenerate) expectStoredAnswerKept(run)
+        else expect(run.conversation().status).to.equal('Failed')
+      })
+
+      it('keeps the words of a refusal that names no code, as before', async () => {
+        const run = await startStream(flow, controllerModule, (ai) => {
+          ai.refuseStream(400, { detail: 'The selected model does not support files.' })
+        })
+        await run.res.ended
+        await settle()
+
+        const [error] = run.res.eventsOf('RUN_ERROR')
+        expect(error?.data.message).to.equal('The selected model does not support files.')
+        expect(error?.data.code).to.not.equal('REQUEST_VERSION_UNSUPPORTED')
+      })
+
+      describe('a refusal only an admin can lift', () => {
+        withTestAdminRefusals()
+
+        it('keeps its words and reports it as one, not as an internal error', async () => {
+          const run = await startStream(flow, controllerModule, (ai) => {
+            ai.refuseStream(403, notAllowed)
+          })
+          await run.res.ended
+          await settle()
+
+          const [error] = run.res.eventsOf('RUN_ERROR')
+          expect(error?.data.message).to.equal(NOT_ALLOWED_TEXT)
+          expect(error?.data.code).to.equal(NOT_ALLOWED)
+          if (flow.regenerate) {
+            // The run never started: the answer on record stays, for everyone who reads the chat.
+            expectStoredAnswerKept(run)
+          } else {
+            expect(run.conversation().status).to.equal('Failed')
+            expect(run.conversation().failReason).to.equal(NOT_ALLOWED_TEXT)
+            expect(run.conversation().conversationErrors?.at(-1)?.errorType).to.equal(NOT_ALLOWED)
+            // On the row too: after a reload the card knows that trying again cannot help.
+            expect(run.answer()?.errorCode).to.equal(NOT_ALLOWED)
+          }
+        })
+
+        it('partway through a run keeps its code on the stored row, as one before the run does', async () => {
+          const run = await startStream(flow)
+
+          run.ai.send('RUN_FINISHED', {
+            runId: RUN,
+            result: { answer: NOT_ALLOWED_TEXT, citations: [], confidence: 'Low', answerMatchType: 'Error', errorCode: NOT_ALLOWED },
+          })
+          run.ai.finish()
+          await run.res.ended
+          await settle()
+
+          expect(run.answer()).to.include({ messageType: 'error', content: NOT_ALLOWED_TEXT, errorCode: NOT_ALLOWED })
+        })
+      })
+
+      it('with no refusal named, a 402 before the run is a failure like any other: no refusal code, on the frame or the row', async () => {
+        const run = await startStream(flow, controllerModule, (ai) => {
+          ai.refuseStream(402, { detail: { code: 'REQUEST_NOT_ALLOWED', message: NOT_ALLOWED_TEXT } })
+        })
+        await run.res.ended
+        await settle()
+
+        const [error] = run.res.eventsOf('RUN_ERROR')
+        expect(error?.data.code).to.not.equal(NOT_ALLOWED)
+        if (flow.regenerate) expectStoredAnswerKept(run)
+        else {
+          expect(run.conversation().status).to.equal('Failed')
+          expect(run.answer()?.messageType).to.equal('error')
+          expect(run.answer()?.errorCode).to.equal(undefined)
+        }
+      })
+
+      it('any other classified failure stores no code', async () => {
+        const run = await startStream(flow)
+
+        run.ai.send('RUN_FINISHED', {
+          runId: RUN,
+          result: { answer: 'The AI model is not responding.', citations: [], confidence: 'Low', answerMatchType: 'Error', errorCode: 'rate_limit' },
+        })
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.answer()?.messageType).to.equal('error')
+        expect(run.answer()?.errorCode).to.equal(undefined)
       })
 
       it('reports an interrupted answer when the AI stream ends without a final answer', async () => {
@@ -458,7 +575,8 @@ describe('es_controller streaming answers', () => {
 
         expect(run.answer()?.content).to.equal('Still answered.')
         expect(run.conversation().status).to.not.equal('Failed')
-        expect(run.res.body).to.contain('{not json')
+        // A frame Node cannot read is not passed on: only what it can check reaches the browser.
+        expect(run.res.body).to.not.contain('{not json')
       })
     })
   }
@@ -527,7 +645,11 @@ describe('es_controller streaming answers', () => {
         run.ai.send('TEXT_MESSAGE_CONTENT', delta('Still working'))
         await settle()
 
-        await clock.tickAsync(40 * 60 * 1000) // browser still connected the whole time
+        // Browser still connected the whole time; the AI service's heartbeats keep the run inside its limits.
+        for (let i = 0; i < 160; i += 1) {
+          await clock.tickAsync(15_000)
+          run.ai.send('HEARTBEAT')
+        }
         const second = sendAgain(flow, run)
         await clock.tickAsync(16_000)
         await second.done
@@ -606,7 +728,7 @@ describe('es_controller streaming answers', () => {
     const res = new FakeSSEResponse()
     let error: unknown
     try {
-      await controllerModule.streamChat(appConfig)({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
+      await controllerModule.streamChat(appConfig, turnDeps())({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
     } catch (e) {
       error = e
     }
@@ -683,14 +805,19 @@ describe('es_controller streaming answers', () => {
         return prepared
       },
     }
-    // Connected, as in production: the final conversation then carries the whole stored history.
-    sinon.stub(MongoConversationRepository.prototype, 'isConnected').returns(true)
-    const run = await startStream(lostHistory, undefined, (ai) => ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] }))
-    run.ai.send('RUN_FINISHED', finalAnswer('A fresh answer.'))
-    run.ai.finish()
-    await run.res.ended
+    let sent: Array<Record<string, unknown>>
+    // Connected, as in production: the final conversation then carries the stored history.
+    Object.defineProperty(mongoose.connection, 'readyState', { configurable: true, get: () => 1 })
+    try {
+      const run = await startStream(lostHistory, undefined, (ai) => ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] }))
+      run.ai.send('RUN_FINISHED', finalAnswer('A fresh answer.'))
+      run.ai.finish()
+      await run.res.ended
+      sent = (run.res.eventsOf('RUN_FINISHED')[0]?.data as any).result.conversation.messages as Array<Record<string, unknown>>
+    } finally {
+      delete (mongoose.connection as unknown as { readyState?: number }).readyState
+    }
 
-    const sent = (run.res.eventsOf('RUN_FINISHED')[0]?.data as any).result.conversation.messages as Array<Record<string, unknown>>
     const old = sent.find((m) => m.messageType === 'bot_response' && (m.answerHidden !== undefined || m.content === 'An older answer.'))
     expect(old?.answerHidden).to.deep.equal({ redacted: true, reason: 'no_longer_accessible' })
     expect(JSON.stringify(sent)).to.not.contain('An older answer.')
@@ -750,11 +877,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id) }, body: {}, query: {},
         user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -778,11 +905,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAgentAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAgentAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id), agentKey: AGENT_KEY },
         body: {}, query: {}, user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -808,11 +935,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAgentAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAgentAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id), agentKey: AGENT_KEY },
         body: {}, query: {}, user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -931,15 +1058,15 @@ describe('es_controller streaming answers', () => {
     const firstQuestion = store.messagesOf(session._id)[0] as { _id: Types.ObjectId }
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {},
         params: { conversationId: String(session._id), messageId: String(firstQuestion._id) },
         body: {},
         query: {},
         user: { userId: OWNER, orgId: ORG },
         context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()

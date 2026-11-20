@@ -9,7 +9,8 @@ interface UseChatSpeechSynthesisOptions {
   rate?: number;
   pitch?: number;
   onEnd?: () => void;
-  onError?: (error: string) => void;
+  /** `refusal` is the server's words when a server call met a refusal only an admin can lift. */
+  onError?: (error: string, refusal?: string) => void;
 }
 
 interface UseChatSpeechSynthesisReturn {

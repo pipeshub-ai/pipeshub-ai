@@ -1,7 +1,8 @@
 import React from 'react';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { KbListView, getKbItemStatusLabel } from '../components/kb-list-view';
+import { setReasonsSpokenToUploader } from '../utils/indexing-reason';
 import type { TFunction } from 'i18next';
 import type { KnowledgeHubNode } from '../types';
 import { hubNode, installBrowserShims, openRowMenu, renderInTheme, row } from './kb-page-harness';
@@ -180,5 +181,23 @@ describe('the status of a PDF that is over the page limit', () => {
   it('keeps the short label short', () => {
     const file = hubNode({ id: 'r1', name: 'long.pdf', indexingStatus: 'FILE_TYPE_NOT_SUPPORTED', reason });
     expect(getKbItemStatusLabel(file, t, false)).toBe('kb.indexingStatus.fileTypeNotSupported');
+  });
+});
+
+describe('the status label of a file whose reason speaks to its uploader', () => {
+  const REASON = 'You have no access to the folder this came from, so this file was not indexed. Ask an admin for access, then reindex.';
+  const node = { id: 'r1', name: 'plan.pdf', nodeType: 'record', origin: 'COLLECTION', indexingStatus: 'FAILED', reason: REASON } as never;
+  const t = ((key: string) => key) as unknown as TFunction;
+
+  beforeEach(() => setReasonsSpokenToUploader(new Map([[REASON, 'kb.reasonForOthers']])));
+  afterEach(() => setReasonsSpokenToUploader(undefined));
+
+  it('speaks to any reader of the list: its rows do not say who uploaded them', () => {
+    expect(getKbItemStatusLabel(node, t)).toBe('kb.indexingStatus.failed - kb.reasonForOthers');
+  });
+
+  it('keeps the stored words when no reason is named', () => {
+    setReasonsSpokenToUploader(undefined);
+    expect(getKbItemStatusLabel(node, t)).toBe(`kb.indexingStatus.failed - ${REASON}`);
   });
 });

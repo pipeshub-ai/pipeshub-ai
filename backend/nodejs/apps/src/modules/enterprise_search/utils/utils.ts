@@ -123,7 +123,7 @@ import { stripModelAuthoredMarkers } from './answer-markers';
 import { stripSignedUrlLinks } from './signed-url';
 import { sanitizeAnswerMessage } from './answer-sanitizer';
 import { sanitizeUnavailableTools } from './unavailable-tools';
-import { AIRequestRefusedError } from './ai-stream';
+import { adminRefusals, AIRequestRefusedError } from './ai-stream';
 import {
   answerLabelFrom,
   archivedLabelHistory,
@@ -1080,6 +1080,21 @@ export const redactRunConversationFor = async (
 };
 
 /**
+ * A session without the fields its schema never selects (`select: false`): internal bookkeeping that no documented
+ * response holds. A read leaves them out, but a session just created (a first send's) still holds every one.
+ */
+const withoutUnselectedFields = (session: object): Record<string, unknown> => {
+  const unselected = new Set(
+    Object.values(ChatSession.schema.paths)
+      .filter((type) => (type.options as { select?: unknown }).select === false)
+      .map((type) => type.path),
+  );
+  return Object.fromEntries(
+    Object.entries(session).filter(([field]) => !unselected.has(field)),
+  );
+};
+
+/**
  * `viewerId` is who the response goes to: each message passes through the message view extension for that viewer,
  * and the conversation through the conversation view unless `asStored` (a detail or list that shapes it itself).
  */
@@ -1089,9 +1104,8 @@ export const attachMessages = (
   viewerId?: string,
   { asStored = false }: { asStored?: boolean } = {},
 ): any => {
-  const { nextSeq, sessionType, ...cleanSession } = session ?? {};
   const conversation = conversationExtensions().views.viewRunFailures(
-    withoutErrorStacks(cleanSession as object),
+    withoutErrorStacks(withoutUnselectedFields((session ?? {}) as object)),
     viewerId,
   );
   return {
@@ -1450,10 +1464,14 @@ export const buildAIResponseMessage = (
     throw new InternalServerError('AI response must include an answer');
   }
 
+  const { errorCode } = data as { errorCode?: string };
   const message: IMessage = {
     messageType: isClassifiedFailureAnswer(data) ? 'error' : 'bot_response',
-    ...(isClassifiedFailureAnswer(data) && data.errorCode
-      ? { errorCode: data.errorCode }
+    // An error answer keeps its code for the web app to word (ERR-UX); a refusal partway through a run reads as one
+    // before it does: trying again cannot help.
+    ...((isClassifiedFailureAnswer(data) && errorCode) ||
+    adminRefusals().isCode(errorCode)
+      ? { errorCode }
       : {}),
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -2837,7 +2855,7 @@ export const buildConversationResponse = (
     initiator: conversation.initiator,
     createdAt: conversation.createdAt,
     isShared: conversation.isShared,
-    // With an access view only the owner sees who else has access (I-9), and why the last answer failed.
+    // With an access view only the owner sees who else has access, and why the last answer failed.
     sharedWith:
       accessView && !accessView.isOwner ? undefined : conversation.sharedWith,
     status: conversation.status,
@@ -3400,6 +3418,9 @@ const persistFailedTurn = async (
   try {
     const failedMessage = stampTurnRow(
       buildAIFailureResponseMessage(failReason, undefined, undefined, {
+        errorCode: adminRefusals().isCode(options.errorType)
+          ? options.errorType
+          : undefined,
         provenance: options.provenance,
       }),
       run,
@@ -4429,8 +4450,16 @@ export const handleRegenerationError = async (
   run?: TurnRun,
   beforeFrame?: () => Promise<void>,
   frame?: StreamFrame,
-  /** Who the error event goes to: the conversation it carries is hidden for them as in a fetch. Omitted only for a room read. */
-  reader?: { appConfig: AppConfig; userId: unknown; orgId: unknown },
+  /**
+   * Who the error event goes to: the conversation it carries is hidden for them as in a fetch, an agent rule checked as
+   * the request's `identity`. Omitted only for a room read.
+   */
+  reader?: {
+    appConfig: AppConfig;
+    userId: unknown;
+    orgId: unknown;
+    identity?: unknown;
+  },
 ): Promise<void> => {
   const errorMessage = userFacingChatError(error);
   const { message: details, stack } = error as {
@@ -4476,10 +4505,17 @@ export const handleRegenerationError = async (
         session,
       );
       if (conversationForFrame && reader) {
+        // The error row is this run's own, as an answer frame's new answer is: shown to its asker as written.
         conversationForFrame = await conversationForViewer(
           reader.appConfig,
           viewerOf(reader.userId, reader.orgId),
           conversationForFrame,
+          {
+            freshIds: [messageId],
+            ...(reader.identity !== undefined && {
+              identity: reader.identity,
+            }),
+          },
         );
       }
     } catch (reloadError: unknown) {

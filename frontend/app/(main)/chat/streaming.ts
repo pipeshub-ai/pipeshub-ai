@@ -590,8 +590,8 @@ export function editWasNotTaken(error: unknown): boolean {
 function notifyRegenerateFailed(error: unknown, editLost: boolean): void {
   const refused = error instanceof ChatStreamError || (error instanceof StreamError && error.status !== undefined && error.status < 500);
   const reason = refused ? error.message : '';
-  // One toast. The server's own words win, so a refusal only an admin can lift is never told to try again; the fixed line says less than
-  // the edit's own does.
+  // One toast. The server's own words win, so a refusal only an admin can lift is never told to try again; the fixed
+  // line says less than the edit's own does.
   if (editLost && (!reason || reason === CHAT_STREAM_ERROR_MESSAGES.unavailable)) toast.error(i18n.t('chat.editNotSaved'));
   else if (reason) toast.error(reason);
 }
