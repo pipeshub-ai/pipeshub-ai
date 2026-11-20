@@ -303,6 +303,12 @@ class TestAssistantMessageFromLangchain:
         result = convert_assistant_message_from_langchain(ai_message)
         assert result.truncated is True
 
+    @pytest.mark.parametrize("stop_reason, truncated", [("max_tokens", True), ("end_turn", False)])
+    def test_bedrock_stop_reason(self, stop_reason: str, truncated: bool) -> None:
+        ai_message = AIMessage(content="answer", response_metadata={"stopReason": stop_reason})
+        result = convert_assistant_message_from_langchain(ai_message)
+        assert result.truncated is truncated
+
     def test_truncated_response_from_responses_api_incomplete_details(self) -> None:
         """OpenAI's Responses API never sets `finish_reason` — it reports a
         cut-off answer as `status="incomplete"` plus `incomplete_details`."""

@@ -292,6 +292,18 @@ class TestComplete:
         assert response.stop_reason == StopReason.MAX_TOKENS
         assert response.message.truncated is True
 
+    @pytest.mark.parametrize("stop_reason, expected", [
+        ("max_tokens", StopReason.MAX_TOKENS),
+        ("end_turn", StopReason.END_TURN),
+    ])
+    async def test_bedrock_stop_reason(self, stop_reason: str, expected: StopReason) -> None:
+        ai_message = AIMessage(content="answer", response_metadata={"stopReason": stop_reason})
+        transport = LangChainTransport(_FakeModel(ai_message))
+        assert transport._stop_reason_from(ai_message) == expected
+        response = await transport.complete([UserMessage(content="hi")])
+        assert response.stop_reason == expected
+        assert response.message.truncated is (expected == StopReason.MAX_TOKENS)
+
     async def test_max_tokens_stop_reason_from_responses_api_incomplete_details(self) -> None:
         """The Responses API reports truncation as `incomplete_details`
         instead of the Chat Completions `finish_reason="length"`."""
@@ -450,6 +462,22 @@ class TestStream:
         assert isinstance(events[-1], StreamCompleteEvent)
         assert events[-1].response.message.text == "Hello world"
         assert events[-1].response.stop_reason == StopReason.END_TURN
+
+    @pytest.mark.parametrize("stop_reason, expected", [
+        ("max_tokens", StopReason.MAX_TOKENS),
+        ("end_turn", StopReason.END_TURN),
+    ])
+    async def test_bedrock_stream_stop_reason(self, stop_reason: str, expected: StopReason) -> None:
+        chunks = [
+            AIMessageChunk(content="answer"),
+            AIMessageChunk(content="", response_metadata={"stopReason": stop_reason}),
+        ]
+        transport = LangChainTransport(_FakeModel(stream_chunks=chunks))
+        events = [event async for event in transport.stream([UserMessage(content="hi")])]
+        final = events[-1]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.stop_reason == expected
+        assert final.response.message.truncated is (expected == StopReason.MAX_TOKENS)
 
     async def test_merges_tool_call_chunks_into_final_tool_use_response(self) -> None:
         chunks = [
