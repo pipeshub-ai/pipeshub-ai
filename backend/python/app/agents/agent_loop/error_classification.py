@@ -80,6 +80,7 @@ _REQUEST_TOO_LARGE_HINTS = (
 # waiting a minute never fixes it.
 _QUOTA_HINTS = (
     "insufficient_quota",
+    "credit_balance",
     "exceeded your current quota",
     "credit balance is too low",
 )

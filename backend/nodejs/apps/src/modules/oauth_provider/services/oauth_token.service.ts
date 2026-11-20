@@ -163,6 +163,12 @@ export class OAuthTokenService {
       // Changing an app's identity revokes its outstanding tokens, so none
       // minted under the previous answer survives to be honoured.
       ...creatorClaim,
+      // Only on a token with no caller of its own whose identity is the app's
+      // chosen service account, so a reader can tell it from a person: an app
+      // that falls back to its creator, or a user grant, never carries it.
+      ...(!userId && app.tokenIdentityUserId && 'createdBy' in creatorClaim
+        ? { actsAsServiceAccount: true as const }
+        : {}),
       knowledgeLimit,
       ...(opts?.audience === undefined ? {} : { aud: opts.audience }),
       ...(opts?.agentRegistrationId

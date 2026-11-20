@@ -35,6 +35,7 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.parsing.interface import ParseErrorCode, UnsupportedFormatError
 from app.utils.user_errors import to_user_reason, unsupported_file_type
+from tests.support.raised import raised_from
 from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
@@ -2172,6 +2173,128 @@ class TestOnEventDoclingFallback:
         processor.process_pdf_with_pdf_plumber.assert_called_once()
         processor.process_pdf_document_with_ocr.assert_not_called()
 
+    @staticmethod
+    async def _layout_fails_after(docling_error: Exception, layout_error: Exception, *, parsed: bool) -> Exception:
+        """What on_event raises when Docling raised *docling_error* and the layout parser then raised *layout_error*,
+        after its PARSING_COMPLETE when *parsed*."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def docling(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            raise docling_error
+            yield  # noqa: unreachable
+
+        async def layout(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            if parsed:
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            raise layout_error
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=docling)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=layout)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=False), \
+             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             pytest.raises(Exception) as raised:
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        processor.process_pdf_with_pdf_plumber.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+        return raised.value
+
+    @pytest.mark.asyncio
+    async def test_docling_down_and_the_layout_parser_failing_retries_the_record(self) -> None:
+        """Not failed as unreadable: Docling may read it once it is back. Built without a cause, so only the
+        exception itself (not the layout error as its context) can make it transient."""
+        from app.exceptions.indexing_exceptions import DocumentProcessingError
+        from app.services.docling.client import DoclingUnavailableError
+
+        down = DoclingUnavailableError("Docling is not serving")
+        raised = await self._layout_fails_after(
+            down, DocumentProcessingError("Failed to process document"), parsed=False
+        )
+
+        assert raised is down
+        assert MessageErrorClassifier.classify_by_exception(raised) == MessageErrorType.TRANSIENT
+
+    @pytest.mark.asyncio
+    async def test_a_layout_failure_after_its_parse_completed_keeps_its_own_error(self) -> None:
+        """Past PARSING_COMPLETE the failure is block building or indexing, not a parse Docling could redo."""
+        from app.exceptions.indexing_exceptions import DocumentProcessingError
+        from app.services.docling.client import DoclingUnavailableError
+
+        failure = DocumentProcessingError("Failed to process document")
+        raised = await self._layout_fails_after(DoclingUnavailableError("down"), failure, parsed=True)
+
+        assert raised is failure
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_docling_and_the_layout_parser_both_fail_on_stays_failed(self) -> None:
+        from app.exceptions.indexing_exceptions import DocumentProcessingError
+        from app.services.docling.client import DoclingParseError
+
+        failure = DocumentProcessingError("Failed to process document")
+        raised = await self._layout_fails_after(DoclingParseError("Docling answered 422"), failure, parsed=False)
+
+        assert raised is failure
+        assert MessageErrorClassifier.classify_by_exception(raised) == MessageErrorType.TERMINAL
+
+    @pytest.mark.asyncio
+    async def test_a_password_protected_pdf_with_docling_down_stays_password_protected(self) -> None:
+        from app.exceptions.indexing_exceptions import PasswordProtectedError
+        from app.services.docling.client import DoclingUnavailableError
+
+        locked = PasswordProtectedError("needs a password")
+        raised = await self._layout_fails_after(DoclingUnavailableError("down"), locked, parsed=False)
+
+        assert raised is locked
+
+    @pytest.mark.asyncio
+    async def test_the_retried_error_keeps_the_client_error_it_was_raised_from(self) -> None:
+        """The cause decides the stored reason: "a temporary problem", not "couldn't index this file"."""
+        from app.exceptions.indexing_exceptions import DocumentProcessingError
+        from app.services.base_client import ServiceCallError
+        from app.services.docling.client import DoclingUnavailableError
+
+        cause = ServiceCallError("Docling parse failed", status_code=503)
+        down = raised_from(DoclingUnavailableError("Docling is not serving"), cause)
+        raised = await self._layout_fails_after(
+            down, DocumentProcessingError("Failed to process document"), parsed=False
+        )
+
+        assert raised is down
+        assert raised.__cause__ is cause
+
+    @pytest.mark.asyncio
+    async def test_a_parse_abandoned_by_shutdown_is_raised_unchanged(self) -> None:
+        """Already retried as it is; it is not Docling's unavailability."""
+        from app.modules.parsers.parse_pool import ParseAbandonedError
+        from app.services.docling.client import DoclingUnavailableError
+
+        abandoned = ParseAbandonedError("parse abandoned while it was running")
+        raised = await self._layout_fails_after(DoclingUnavailableError("down"), abandoned, parsed=False)
+
+        assert raised is abandoned
+
+    @pytest.mark.parametrize(("worker_cause", "retried"), [("timed_out", False), ("crashed", False), ("unavailable", True)])
+    @pytest.mark.asyncio
+    async def test_a_layout_worker_that_ran_out_of_time_or_memory_still_fails_the_file(
+        self, worker_cause: str, retried: bool
+    ) -> None:
+        """Reading it again would cost the same (up to the PDF record budget each time)."""
+        from app.exceptions.indexing_exceptions import DocumentProcessingError
+        from app.modules.parsers.parse_pool import ParseWorkerError
+        from app.services.docling.client import DoclingUnavailableError
+
+        down = DoclingUnavailableError("down")
+        # As process_pdf_with_pdf_plumber wraps what the pool raised.
+        failure = raised_from(DocumentProcessingError("Failed to process document"), ParseWorkerError("msg", worker_cause))
+        raised = await self._layout_fails_after(down, failure, parsed=False)
+
+        assert raised is (down if retried else failure)
+
 
 # ===========================================================================
 # Coverage: on_event early return paths (lines 244-245, 253-254, 261-262, 280-281)
@@ -3380,7 +3503,29 @@ class TestProcessedTwinAttachOrdering:
         with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
             await ep._check_duplicate_by_md5(b"x", _copy())
 
-        assert seen == {"status": ProgressStatus.COMPLETED.value}
+        # Before the status: a redelivery is acknowledged for a COMPLETED record, so the sync must be able to run again.
+        assert seen["status"] != ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_a_flip_in_the_entity_sync_leaves_the_record_not_completed_and_its_redelivery_syncs_again(self) -> None:
+        from app.services.messaging.precision_flip import PrecisionFlip
+
+        ep, _, _, gp = _make_event_processor()
+        steps, fields_of, _ = _record_attach(ep, gp, [[_twin()], [_twin()]])
+        ep.sink_orchestrator = MagicMock()
+        ep.sink_orchestrator.sync_entities_for_duplicate = AsyncMock(side_effect=[PrecisionFlip("index holds fp32"), True])
+        doc = _copy()
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            with pytest.raises(PrecisionFlip):
+                await ep._check_duplicate_by_md5(b"x", doc)
+            assert ("status", "r1") not in steps
+            assert doc["indexingStatus"] != ProgressStatus.COMPLETED.value
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert ep.sink_orchestrator.sync_entities_for_duplicate.await_count == 2
+        assert steps[-1] == ("status", "r1")
 
     @pytest.mark.asyncio
     async def test_a_redelivery_after_a_failed_sync_attaches(self):
