@@ -540,7 +540,7 @@ async def submit(
         if pool is None and process_only:
             raise ParseWorkerError("No parse worker process is available", "no_worker")
         if pool is not None:
-            job = _Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind))
+            job = _Job(fn, args, label, size, timeout, require_worker=process_only, kind=kind, covered=_covered(kind))
             if held is not None:
                 # The lane decides when the job is over: it finishes it, kills its worker after a cancel, or drops it
                 # while still queued. The tokens go back then, not when the awaiting caller goes away.

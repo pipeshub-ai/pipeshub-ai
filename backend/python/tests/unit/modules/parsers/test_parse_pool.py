@@ -12,11 +12,12 @@ import resource
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -172,6 +173,39 @@ class TestWorkerCount:
 
 
 class TestJobs:
+    async def test_a_process_only_job_never_falls_back_to_a_thread_when_no_worker_starts(
+        self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fallback runs the job in the lane's thread, where a timeout cannot stop it."""
+        ran: list[int] = []
+
+        def job() -> int:
+            ran.append(threading.get_ident())
+            return 1
+
+        def no_worker(self: object, _job: object) -> None:
+            raise parse_pool._WorkerUnavailable("no fork")
+
+        monkeypatch.setattr(parse_pool._Lane, "_send", no_worker)
+        with pytest.raises(parse_pool.ParseWorkerError):
+            await parse_pool.submit(job, process_only=True)
+        assert ran == []
+        assert await parse_pool.submit(job) == 1, "a job that may run in a thread still falls back"
+        assert ran
+
+    async def test_a_page_count_is_unavailable_and_never_runs_in_a_thread_when_no_worker_starts(
+        self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.modules.parsers.pdf import page_count
+
+        def no_worker(self: object, _job: object) -> None:
+            raise parse_pool._WorkerUnavailable("no fork")
+
+        monkeypatch.setattr(parse_pool._Lane, "_send", no_worker)
+        with patch.object(page_count, "count_pages") as counted:
+            assert isinstance(await page_count.count_pdf_pages(b"%PDF", "t.pdf"), page_count.Unavailable)
+        counted.assert_not_called()
+
     async def test_a_job_runs_in_a_worker_process(self, governor: MagicMock) -> None:
         worker_pid = await parse_pool.submit(os.getpid)
 
