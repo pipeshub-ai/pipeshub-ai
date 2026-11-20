@@ -40,6 +40,23 @@ _AUTHORIZATION_ERROR_CLASS = {
 }
 
 
+# Codes a provider answers (Slack: with HTTP 200, ok=false) when it is down or throttling, so a retry can work.
+# Slack's names, but no provider uses them to mean "your configuration".
+TEMPORARY_ERROR_CODES = frozenset({"fatal_error", "internal_error", "service_unavailable", "request_timeout"})
+RATE_LIMITED_ERROR_CODES = frozenset({"ratelimited", "rate_limited"})
+
+_TRANSIENT_ERROR_CLASS = {
+    **dict.fromkeys(TEMPORARY_ERROR_CODES, "unavailable"),
+    **dict.fromkeys(RATE_LIMITED_ERROR_CODES, "rate_limited"),
+    "server_error": "upstream_5xx", "temporarily_unavailable": "unavailable",  # RFC 6749's names, classed as in the redirect map
+}
+
+
+def transient_error_class(code: Optional[str]) -> Optional[str]:
+    """The error_class of a provider `error` that says it is busy or down; None for any other code."""
+    return _TRANSIENT_ERROR_CLASS.get((code or "").lower())
+
+
 def authorization_error_class(code: Optional[str]) -> str:
     """The error_class of an authorization response's `error`; `forbidden` for a code no spec defines."""
     return _AUTHORIZATION_ERROR_CLASS.get(code or "", "forbidden")

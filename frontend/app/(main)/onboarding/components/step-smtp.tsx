@@ -7,6 +7,7 @@ import { InfoBanner } from './info-banner';
 import { useOnboardingStore } from '../store';
 import { getSmtpConfig, saveSmtpConfig } from '../api';
 import type { SmtpFormData, OnboardingStepId } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 interface StepSmtpProps {
   onSuccess: (nextStep: OnboardingStepId | null) => void;
@@ -194,8 +195,8 @@ export function StepSmtp({
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
               {t('onboarding.stepSmtp.passwordLabel')}
             </Text>
-            <TextField.Root
-              type={showPassword ? 'text' : 'password'}
+            <SecretTextField
+              masked={!showPassword}
               placeholder={t('onboarding.stepSmtp.passwordPlaceholder')}
               value={form.password}
               onChange={(e) => handleChange('password', e.target.value)}
@@ -222,7 +223,7 @@ export function StepSmtp({
                   </span>
                 </button>
               </TextField.Slot>
-            </TextField.Root>
+            </SecretTextField>
           </Flex>
         </Flex>
 

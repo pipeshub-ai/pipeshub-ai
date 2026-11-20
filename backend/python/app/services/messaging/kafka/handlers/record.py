@@ -48,7 +48,7 @@ from app.modules.code_graph.build_state import (
     claimed_build_already_ran,
     request_is_stale,
 )
-from app.modules.indexing import replay_set
+from app.modules.indexing import keep_old_copy, replay_set
 from app.modules.indexing.connector_off_events import (
     HELD_FOR_DELETE_DELAY_S,
     SAME_BYTES_GIVE_UP_LABEL,
@@ -130,6 +130,15 @@ from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import repurge_window
 from app.services.paid_cache import run as paid_cache_run
 from app.services.paid_cache.cache import RefreshPurgeInProgress
+from app.services.paid_cache.orphan import (
+    DeliveryGuard,
+    ProbeResult,
+    RecordGone,
+    RecordHandBack,
+    bind_guard,
+    is_record_gone,
+    orphan_check_enabled,
+)
 from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
@@ -811,6 +820,21 @@ class RecordEventHandler(BaseEventService):
         if not access:
             return _PARSE_NOW_NO_ACCESS, False
         return None
+
+    async def _release_pending_copy(self, record_id: str, org_id: str | None) -> None:
+        """A record failed for good: the replacement copy it was writing is released (it kept serving its old one).
+
+        The FAILED write already made that copy unheld for every sweep; this removes the field and deletes the copy through the
+        holder-checked paths. A failure is logged: the orphan sweep reclaims the copy."""
+        orchestrator = getattr(getattr(self.event_processor, "processor", None), "sink_orchestrator", None)
+        swap = getattr(orchestrator, "swap", None)
+        if swap is None or not org_id:
+            return
+        attempt = keep_old_copy.current_swap(record_id)
+        try:
+            await swap.release_failed(record_id, org_id, attempt.new_vrid if attempt is not None else None)
+        except Exception as exc:
+            self.logger.warning("Replacement copy of record %s not released: %s", record_id, type(exc).__name__)
 
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
@@ -1887,6 +1911,52 @@ class RecordEventHandler(BaseEventService):
             data=PipelineEventData(record_id=record_id),
         )
 
+    async def _begin_orphan_guard(self, record_id: str, record: dict) -> DeliveryGuard | None:
+        """The delivery's existence guard: the delete markers seen now (the watermarks), the record's creation time, and a
+        probe that reads the record. A run that starts under a marker confirms with the graph at its first paid call."""
+        if not orphan_check_enabled():
+            return None
+        bound = peek_org_context()
+        org_id = bound.org_id if bound is not None else None
+        if not org_id:
+            return None                      # the verified envelope's org only: no org, no check
+        cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
+        markers = await cache.read_markers(org_id, record_id)
+        graph = self.event_processor.graph_provider
+
+        async def probe() -> ProbeResult:
+            doc = await graph.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
+            if doc is None:
+                return ProbeResult(found=False)
+            return ProbeResult(found=True, live=is_live_record(doc), created=doc.get("createdAtTimestamp"))
+
+        guard = DeliveryGuard(
+            org_id=org_id, record_id=record_id,
+            wm_record=markers[0] if markers else None, wm_org=markers[1] if markers else None,
+            # The stamp tells a delete plus a re-upload apart for an uploaded record only: a connector that sets
+            # ``created_at`` to now rewrites it on every re-sync of a live record (D-186).
+            created=record.get("createdAtTimestamp") if record.get("origin") == OriginTypes.UPLOAD.value else None,
+            probe=probe,
+            confirm_first=bool(markers and (markers[0] or markers[1])),
+            backend_of=getattr(cache, "_backend", None),
+        )
+        guard.mark_read()
+        bind_guard(guard)
+        return guard
+
+    @staticmethod
+    def _orphan_outcome(exc: BaseException, guard: DeliveryGuard | None, record_id: str) -> BaseException | None:
+        """What a stop turns an error into: a hand-back when a 410's confirming read failed, the expected outcome
+        ``RecordGone`` when the run served a deleted record (found by the guard's flag or the cause chain, so a parser that
+        swallowed the stop and then failed differently is still drained). None: not a stop."""
+        if guard is None:
+            return None
+        if guard.gone or is_record_gone(exc, guard):
+            return exc if isinstance(exc, RecordGone) else RecordGone(record_id)
+        if guard.hand_back:
+            return RecordHandBack(f"{record_id}: the parsing service refused a deleted record and the record could not be read", delay_s=15.0)
+        return None
+
     async def process_event(self, event_type: str, payload: dict) -> AsyncGenerator[PipelineEvent, None]:
         """Process record events, yielding phase completion events.
 
@@ -1909,6 +1979,7 @@ class RecordEventHandler(BaseEventService):
         # A same-bytes update handed back: the record is indexed and nothing of it is written.
         skip_pending = False
         record = None
+        orphan_guard: DeliveryGuard | None = None
         resuming_enrichment = False
         source_name: str | None = None
         # A retry of named stages never writes the record's own statuses, even when it
@@ -2290,6 +2361,9 @@ class RecordEventHandler(BaseEventService):
             # A retry repeats the original message, which still holds the id from
             # before its first attempt; the record holds the one that attempt saved.
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
+
+            # From here on a record deleted while this run is in flight stops paying (paid_cache/orphan.py).
+            orphan_guard = await self._begin_orphan_guard(record_id, record)
 
             # A connector being deleted owns its records, and the delete may yet be put back, so its
             # record events are held before anything is written: a stage redrive's states, a vector
@@ -2839,6 +2913,10 @@ class RecordEventHandler(BaseEventService):
             error_occurred = True
             error_msg = str(ie)
             last_exception = ie
+            last_exception = self._orphan_outcome(ie, orphan_guard, record_id) or last_exception
+            if last_exception is not ie:
+                handed_back = isinstance(last_exception, RecordHandBack)
+                raise last_exception from ie
             if (wait := provider_rate_limit_wait(ie)) is not None:
                 # One draw of the jitter, used for the limit check and the stored deadline alike.
                 delay = handback_delay_s(wait, self._rate_limited_since_ms(record), self._handback_clock_ms(record))
@@ -2870,6 +2948,10 @@ class RecordEventHandler(BaseEventService):
             error_occurred = True
             error_msg = str(e)
             last_exception = e
+            last_exception = self._orphan_outcome(e, orphan_guard, record_id) or last_exception
+            if last_exception is not e:
+                handed_back = isinstance(last_exception, RecordHandBack)
+                raise last_exception from e
             if (wait := provider_rate_limit_wait(e)) is not None:
                 # The provider said when it can serve again: come back then, with no attempt spent on the wait, until the
                 # time the record has spent rate-limited passes the limit.
@@ -2887,6 +2969,8 @@ class RecordEventHandler(BaseEventService):
             # Not logged: the consumer's index.end writes the failure once.
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
+            if orphan_guard is not None:
+                orphan_guard.finish()
             if stage_redrive or held_for_delete or held_for_refresh or skip_pending:
                 # A stage re-run owns none of the record's bookkeeping (statuses, queued
                 # duplicates, index notifications); its stage state records the outcome.
@@ -3003,7 +3087,9 @@ class RecordEventHandler(BaseEventService):
                         raise
                     if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
-                        
+                        if keep_old_copy.pending_of(record):
+                            await self._release_pending_copy(record_id, RecordContext.from_graph_document(record).org_id)
+
                         # Decide duplicate handling based on error type
                         if (last_exception and 
                             MessageErrorClassifier.classify_by_exception(last_exception)

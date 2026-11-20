@@ -139,6 +139,27 @@ async def notify_kb_records_changed(kb_id: str, org_id: str | None = None, *, sc
         _logger.warning("accessible-records invalidation failed: %s", str(e))
 
 
+async def notify_record_vrid_moved(
+    connector_name: "Connectors | str | None" = None,
+    connector_id: str | None = None,
+    external_record_group_id: str | None = None,
+    org_id: str | None = None,
+) -> None:
+    """A record now names another virtual record. Drops its cache entry at once (not coalesced like `notify_record_indexed`)."""
+    invalidator = _state["invalidator"]
+    if invalidator is None:
+        return
+    try:
+        await invalidator.on_record_vrid_moved(
+            connector_name=connector_name,
+            connector_id=connector_id,
+            external_record_group_id=external_record_group_id,
+            org_id=org_id,
+        )
+    except Exception as e:  # pragma: no cover - the invalidator already swallows
+        _logger.warning("accessible-records invalidation failed: %s", str(e))
+
+
 async def notify_record_indexed(
     connector_name: "Connectors | str | None" = None,
     connector_id: str | None = None,
