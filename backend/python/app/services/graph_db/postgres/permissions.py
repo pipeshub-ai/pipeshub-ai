@@ -25,7 +25,9 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.identity import _AGENT_CAN, _soft
+from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
+from app.services.graph_db.postgres.kh_listing import UNDECIDED_MAX, class_sets
 from app.services.graph_db.taxonomy import own_record_labels
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -800,7 +802,11 @@ class PermissionsMixin(PgBase):
                       AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
                     ORDER BY r.id""".replace("{cols}", _CANDIDATE_COLUMNS), org, wide, kbs, *scope)) if wide or kbs else []
                 have = {r["id"] for r in rows}
-                reached, below = await access_sql.reachable_records(tx, org, access, sorted(level)) if level else (set(), {})
+                by_class, walked_apps = await _kg_admitted(tx, org, sorted(level), access)
+                reached, below = await access_sql.reachable_records(tx, org, access, walked_apps) if walked_apps else (set(), {})
+                for a, (sure, undecided) in by_class.items():
+                    below[a] = sure      # admitted by its class in this snapshot: what the access check answers for it
+                    reached |= sure | undecided
                 # shortcut: the set path reads a whole app (every child, every membership), so it runs only for an app that more than a chunk of the
                 # candidates come from and that is at most twice the size of them; a narrow search of a big app keeps the per-record check. Upgrade: a count
                 # per app that does not scan its index.
@@ -835,7 +841,8 @@ class PermissionsMixin(PgBase):
                     "/* pipeshub:graph.accessible_members */ SELECT from_id, to_id FROM graph.edges WHERE org_id = $1 AND coll = 'belongsTo' AND from_coll = 'records'"
                     " AND to_coll = 'apps' AND to_id = ANY($2::text[])", org, whole)} if whole else set()
                 return sorted(rows, key=lambda r: r["id"]), below, members
-            kept, below, members = await self._q(candidates, None)
+            # one snapshot: what kg admits by class is read with the currency check that lets it answer
+            kept, below, members = await self._db.run(candidates, isolation="repeatable_read", custom_plan=True, jobs=current_or_system().kind == "system")
             # What the arms of the access check admit in a set (a member of a collection or of an app that opens everything; a record the walk down from
             # its own app takes) is admitted here; the rest, which only a grant, a declared group or a seed can open, is checked one chunk at a time.
             ok = {c["id"] for c in kept if c["plain"] and ((c["id"], c["app"]) in members or c["id"] in below.get(c["app"], ()))}
@@ -853,3 +860,32 @@ class PermissionsMixin(PgBase):
             if raise_on_error:
                 raise
             return {}
+
+
+# The records of a connector kg serves that a viewer's classes admit (as kg.listing.count_sql reads them): stamped, not hidden, of no class kg cannot vouch for ($3), and of
+# a class the viewer's grants meet with no grant of the record's own ($4) or one that needs the record's own grant ($5, $6).
+_KG_ADMITTED = f"""/* pipeshub:kg.accessible_records */ SELECT r.id FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND r.kind = 3 AND {kgl.LIVE} AND {kgl.DECIDED}
+    AND NOT r.class_id = ANY($3::bigint[]) AND (r.class_id = ANY($4::bigint[]) OR (r.class_id = ANY($5::bigint[]) AND r.id = ANY($6::text[])))"""
+
+
+async def _kg_admitted(tx: Tx, org: str, apps: list[str], access: dict[str, Any]) -> tuple[dict[str, tuple[set[str], set[str]]], list[str]]:
+    """For each record-level connector kg serves in this snapshot: the records its classes admit, and the few rows no class decides (the access check's). Every other
+    connector, and one with more undecided rows or classes than a listing evaluates, is left to the walk (the second value)."""
+    if not kg_read.enabled() or current_or_system().kind == "system":
+        return {}, apps
+    held = {g for ids in access["by_connector"].values() for g in ids}
+    out: dict[str, tuple[set[str], set[str]]] = {}
+    rest: list[str] = []
+    for a in apps:
+        sk = await tx.fetchval(kgl.APP_KEY, org, a) if await kg_read.serves(tx, org, a) else None
+        sets = await class_sets(tx, org, sk, held) if sk is not None else None
+        unvouched = sorted(sets["unvouched"]) if sets is not None else []
+        q = kgl.Params([org, sk, UNDECIDED_MAX + 1])
+        undecided = [r["id"] for r in await tx.fetch(kgl.undecided_sql("", q.add(unvouched)), *q.values)] if sets is not None else None
+        if undecided is None or len(undecided) > UNDECIDED_MAX:
+            rest.append(a)
+            continue
+        own = sorted(access["by_connector"].get(a) or [])
+        admitted = await tx.fetch(_KG_ADMITTED, org, sk, unvouched, sorted(sets["plain"]), sorted(sets["own"]), own)
+        out[a] = ({r["id"] for r in admitted}, set(undecided))
+    return out, rest

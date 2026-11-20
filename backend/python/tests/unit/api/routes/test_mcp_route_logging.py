@@ -179,8 +179,8 @@ async def test_a_dead_server_on_test_connection_is_one_warning_without_its_text(
 @pytest.mark.parametrize(("error", "status", "level", "cls", "reason"), [
     (lambda: MCPRefreshTokenInvalidError(SENTINEL, error_code="invalid_grant", status=400), 409, logging.INFO,
      "auth_expired", "auth_expired"),
-    # What the token client raises for a rejected client: 409 "reconnect", so INFO (a 4xx), still misconfigured.
-    (lambda: MCPRefreshTokenInvalidError(SENTINEL, error_code="invalid_client", status=401), 409, logging.INFO,
+    # What the token client raises for a rejected client: not a rejected grant, so 502, ERROR (misconfigured).
+    (lambda: MCPOAuthError(SENTINEL, error_code="invalid_client", status=401), 502, logging.ERROR,
      "misconfigured", "auth_expired"),
     # A rejected client with an overloaded endpoint's status is not a refusal for good: 502.
     (lambda: MCPOAuthError(SENTINEL, error_code="invalid_client", status=429), 502, logging.ERROR, "misconfigured",
@@ -199,10 +199,8 @@ async def test_an_oauth_refresh_failure_is_one_line_at_its_class(capture, error,
     assert response.status_code == status
     record, fields = _end(capture)
     assert record.levelno == level
-    # A rejected refresh token signs the credential out, and says so: the request's own line stays the only other one.
-    deauthenticated = [r for r in capture.records if r.getMessage() == "credential_refresh.deauthenticated"]
-    assert len(deauthenticated) == (status == 409)
-    assert _loud(capture) == ([record] if level >= logging.WARNING else []) + deauthenticated
+    # The route signs nobody out itself (the shared refresh counts strikes): the request's line is the only one.
+    assert _loud(capture) == ([record] if level >= logging.WARNING else [])
     assert (fields["error_class"], fields["reason"], fields["mcp_server_id"]) == (cls, reason, "inst-1")
     assert "error_message" not in fields
     # ERROR keeps the stack's frames, each exception's text omitted.
@@ -231,13 +229,13 @@ class _SaveFails(FakeConfigService):
         return self.result
 
 
-@pytest.mark.parametrize(("saved", "gone", "status", "line"), [
-    (True, False, 409, "credential_refresh.deauthenticated"),
-    (False, False, 409, "credential_refresh.deauthenticate_failed"),
-    (True, True, 409, "credential_refresh.deauthenticate_failed"),  # removed (Disconnect) before the route's write
-    (None, False, 500, None),  # the write raises: a 500, as before
-], ids=["deauthenticated", "not-updated", "not-found", "write-raises"])
-async def test_a_rejected_refresh_through_the_real_route_is_one_end_and_its_deauth(capture, saved, gone, status, line) -> None:
+@pytest.mark.parametrize(("saved", "gone", "strike"), [
+    (True, False, {"strike": "1/3", "counted": True}),
+    (False, False, {"strike": "1/3", "counted": False, "reason": "not_saved"}),
+    (True, True, None),  # removed (Disconnect) before the strike's write: nothing to count
+    (None, False, {"strike": "1/3", "counted": False}),  # the write raises: a failure line, still the provider's 409
+], ids=["counted", "not-saved", "gone", "write-raises"])
+async def test_a_rejected_refresh_through_the_real_route_is_one_end_and_its_strike(capture, saved, gone, strike) -> None:
     store = _SaveFails({
         get_mcp_credentials_path("inst-1", USER): {"isAuthenticated": True, "oauthTokens": {
             "accessToken": "at-old", "refreshToken": SEEDED_RT, "tokenUrl": f"{TOKEN_URL}?tenant={SEEDED_RT}",
@@ -253,25 +251,20 @@ async def test_a_rejected_refresh_through_the_real_route_is_one_end_and_its_deau
     ):
         response = await _call(_app(store), "POST", f"{BASE}/instances/inst-1/oauth/refresh")
 
-    assert response.status_code == status
+    assert response.status_code == 409
     [end] = [r for r in capture.records if r.getMessage() == "credential_refresh.end"]
     assert end.levelno == logging.WARNING
     assert log_record_fields(end).items() >= {"error_class": "auth_expired", "reason": "invalid_grant"}.items()
-    deauth = [r for r in capture.records if r.getMessage().startswith("credential_refresh.deauth")]
-    assert [r.getMessage() for r in deauth] == ([line] if line else [])
-    if gone:
-        assert (deauth[0].levelno, log_record_fields(deauth[0])["reason"]) == (logging.ERROR, "not_found")
-    elif saved is True:
-        assert log_record_fields(deauth[0]).items() >= {
-            "reason": "refresh_token_invalid", "strikes": 1, "path": "route", "trigger": "on_demand",
-            "mcp_server_id": "inst-1", "owner_id": USER,
-        }.items()
-    if saved is False:
-        assert (deauth[0].levelno, log_record_fields(deauth[0])["reason"]) == (logging.ERROR, "not_updated")
+    strikes = [r for r in capture.records if r.getMessage() == "credential_refresh.strike"]
+    assert [{k: v for k, v in log_record_fields(r).items() if k in ("strike", "counted", "reason")} for r in strikes] == (
+        [strike] if strike else [])
+    for line in strikes:
+        assert log_record_fields(line).items() >= {"trigger": "on_demand", "mcp_server_id": "inst-1", "owner_id": USER}.items()
+    assert not [r for r in capture.records if r.getMessage().startswith("credential_refresh.deauth")]
     request_end, request_fields = _end(capture)
-    assert request_fields["status"] == status
-    assert "error_message" not in request_fields or saved is None
-    # The write's own error escapes without the provider's answer as its context: nothing of it in any record.
+    assert request_fields["status"] == 409
+    assert "error_message" not in request_fields
+    # The write's own error stays off the provider's answer: nothing of it in any record.
     assert_no_secrets(capture)
 
 
@@ -523,6 +516,12 @@ def _exchange_refused(flow: _Flow) -> str:
     return f"code=c&state={flow.start('s')}"
 
 
+def _exchange_answered_200(flow: _Flow) -> str:
+    # GitHub's sign-in answer for a code that expired or was used twice: the user's, not our configuration (F26 N1).
+    flow.exchange.side_effect = MCPOAuthError(SENTINEL, error_code="bad_verification_code", status=200)
+    return f"code=c&state={flow.start('s')}"
+
+
 def _not_saved(flow: _Flow) -> str:
     flow.store.saves = False
     return f"code=c&state={flow.start('s')}"
@@ -541,6 +540,8 @@ def _not_saved(flow: _Flow) -> str:
     (_instance_gone, "instance_not_found", logging.WARNING, "not_found", None, {"mcp_server_id": "inst-1"}),
     (_client_changed, "client_config_changed", logging.WARNING, "conflict", "ValueError", {"mcp_server_id": "inst-1"}),
     (_exchange_refused, "token_exchange_failed", logging.WARNING, "auth_expired", "MCPOAuthError",
+     {"mcp_server_id": "inst-1"}),
+    (_exchange_answered_200, "token_exchange_failed", logging.WARNING, "auth_expired", "MCPOAuthError",
      {"mcp_server_id": "inst-1"}),
     (_not_saved, "credentials_not_saved", logging.WARNING, "unavailable", None, {"mcp_server_id": "inst-1"}),
 ])

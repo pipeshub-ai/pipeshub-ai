@@ -282,6 +282,40 @@ class TestProviderAnswers:
         assert not [r for r in caplog.records if "Traceback" in r.getMessage()]
         assert_no_secrets(caplog)
 
+    @pytest.mark.parametrize("answer", [
+        (200, {"token_type": "Bearer", "note": f"no token for {SEEDED_RT}"}),
+        (200, {"error": "bad_verification_code", "error_description": f"code for {SEEDED_RT} is not valid"}),
+    ], ids=["200_no_access_token", "200_with_error"])
+    async def test_a_2xx_answer_that_is_not_a_token_is_misconfigured_once_and_the_turn_agrees(
+        self, endpoint: Endpoint, caplog: pytest.LogCaptureFixture, answer: tuple[int, dict[str, str]],
+    ) -> None:
+        endpoint.answers = [answer, answer]
+        store = _store()
+
+        exc = await _refresh_failing(store)
+        await _refresh_failing(store)
+
+        first, second = events(caplog, END)
+        assert (first.levelno, second.levelno) == (logging.ERROR, logging.DEBUG)
+        assert fields(first)["error_class"] == fields(second)["error_class"] == "misconfigured"
+        assert "error_message" not in fields(first) or SEEDED_RT not in str(fields(first)["error_message"])
+        # The tool call's or discovery's line of a turn says the same class as the end.
+        assert mcp_error_class(exc) == "misconfigured"
+        assert_no_secrets(caplog)
+
+    async def test_a_2xx_answer_saying_the_provider_is_busy_is_a_warning_every_time_and_the_turn_agrees(
+        self, endpoint: Endpoint, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        endpoint.answers = [(200, {"error": "ratelimited"})] * 2
+        store = _store()
+
+        exc = await _refresh_failing(store)
+        await _refresh_failing(store)
+
+        ends = events(caplog, END)
+        assert [(r.levelno, fields(r)["error_class"]) for r in ends] == [(logging.WARNING, "rate_limited")] * 2
+        assert mcp_error_class(exc) == "rate_limited"
+
     async def test_a_rejected_shared_client_is_one_error_an_hour_and_one_retire_warning(
         self, endpoint: Endpoint, caplog: pytest.LogCaptureFixture,
     ) -> None:

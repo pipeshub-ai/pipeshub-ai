@@ -5,11 +5,12 @@ import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from typing import ClassVar
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.config.constants.arangodb import ProgressStatus
-from app.exceptions.indexing_exceptions import ProcessingError
+from app.exceptions.indexing_exceptions import DocumentProcessingError, ProcessingError
 from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.models import (
     Priority,
@@ -1228,6 +1229,43 @@ async def test_a_failing_reconcile_scan_does_not_stop_the_owed_redrives(fleet: F
     assert h.handler._redrive_passes == before + 1
 
 
+@pytest.mark.asyncio
+async def test_the_stage_worker_pauses_not_fails_on_a_precision_flip() -> None:
+    from app.exceptions.indexing_exceptions import IndexingError
+    from app.modules.pipeline.worker import StageWaitsForPrecision
+    from app.services.messaging.precision_flip import PrecisionFlip
+
+    inner = RuntimeError("Failed to store batch 0")
+    inner.__cause__ = PrecisionFlip("the index holds int8-w and the server now produces fp32", delay_s=60.0)
+    outer = IndexingError("Failed to store documents")
+    outer.__cause__ = inner
+    h, job = _Harness(), _job()
+    h.seed(job)
+    h.stage.result = outer  # raised by the stage itself, so the worker's claim and settle code runs
+    with pytest.raises(StageWaitsForPrecision) as caught:
+        await h.deliver(job)
+    assert caught.value.delay_s == 60.0 and caught.value.pauses_consumer is False and caught.value.counts_toward_backstop is False
+    # Settled as queued, not failed or paused: the redelivery claims it again and the job finishes.
+    waiting = h.state(job)
+    assert waiting.status is ProgressStatus.QUEUED and waiting.attempt == 1
+    assert h.headlines.writes == [] and h.stage.runs == 1
+
+    h.stage.result = StageResult(outcome=StageOutcome.COMPLETED)
+    await h.deliver(job)
+    assert h.state(job).status is ProgressStatus.COMPLETED and h.state(job).attempt == 2
+
+
+@pytest.mark.asyncio
+async def test_any_other_error_still_leaves_the_worker_as_it_did() -> None:
+    from unittest.mock import AsyncMock
+
+    h, job = _Harness(), _job()
+    h.seed(job)
+    h.handler._handle = AsyncMock(side_effect=ProcessingError("boom"))
+    with pytest.raises(ProcessingError):
+        await h.deliver(job)
+
+
 class TestEndLine:
     """A stage delivery's one line is the consumer's index.end; the worker only notes the job on it."""
 
@@ -1277,3 +1315,215 @@ class TestEndLine:
         (line,) = [r for r in caplog.records if r.getMessage() == "stage.run_failed"]
         assert (line.levelno, line.reason, line.error_type) == (logging.WARNING, "superseded", "ProcessingError")
         assert not hasattr(line, "error_message")
+
+
+# A swallowed failure keeps its text unless the exception can quote the document (its name, its content).
+_SWALLOWED = [
+    (lambda: ConnectionError("graph unavailable"), True),
+    (lambda: DocumentProcessingError("Failed to process document: Quarterly-Secret-Plan.docx"), False),
+]
+
+
+class TestStageOutcomeOnEndLine:
+    """P6b-4: what the stage did, on the delivery's one index.end (docs/logging.md, "Indexing")."""
+
+    @staticmethod
+    async def _end(h: _Harness, job: StageJob, caplog, *, during=None) -> logging.LogRecord:
+        from app.utils import indexing_timing as timing
+
+        timeline, token = timing.begin_record(None, "stageJob", "light")
+        outcome = "failed"
+        with caplog.at_level(logging.DEBUG):
+            try:
+                run = asyncio.create_task(h.deliver(job))
+                if during is not None:
+                    await during()
+                await run
+                outcome = "ok"
+            except Exception as e:
+                timing.note(exc=e)
+            finally:
+                timing.end_record(timeline, token, outcome=outcome, logger=logging.getLogger("t.consumer"))
+        (end,) = [r for r in caplog.records if r.getMessage() == timing.INDEX_END]
+        return end
+
+    @pytest.mark.asyncio
+    async def test_unchanged_is_skipped(self, caplog) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        await h.deliver(job)  # completes and stores its fingerprint
+        caplog.clear()
+        end = await self._end(h, job, caplog)
+        assert (end.outcome, end.reason) == ("skipped", "unchanged")
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO] == ["index.end"]
+
+    @pytest.mark.asyncio
+    async def test_an_already_settled_job_is_skipped_as_a_duplicate_with_no_info_line(self, caplog) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job, ProgressStatus.FAILED)
+        end = await self._end(h, job, caplog)
+        assert (end.outcome, end.reason) == ("skipped", "duplicate")
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO] == ["index.end"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("result", "reason"), [
+        (StageResult(outcome=StageOutcome.SKIPPED, reason="free text, not copied"), "not_applicable"),
+        (StageResult(outcome=StageOutcome.STALE), "stale"),
+    ])
+    async def test_a_run_that_did_nothing_is_skipped(self, caplog, result, reason) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.stage.result = result
+        end = await self._end(h, job, caplog)
+        assert (end.outcome, end.reason, end.stage_attempt) == ("skipped", reason, 1)
+        assert not hasattr(end, "stage_outcome")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("result", "outcome"), [
+        (StageResult(outcome=StageOutcome.COMPLETED), "completed"),
+        (StageResult(outcome=StageOutcome.RETRY, reason="model produced nothing"), "retry"),
+        (StageResult(outcome=StageOutcome.PAUSED, reason="breaker open"), "paused"),
+        (StageResult(outcome=StageOutcome.FAILED, reason="bad input"), "failed"),
+    ])
+    async def test_a_run_says_its_stage_outcome_and_attempt(self, caplog, result, outcome) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.stage.result = result
+        end = await self._end(h, job, caplog)
+        assert (end.stage_outcome, end.stage_attempt) == (outcome, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_run_past_its_budget_says_so(self, caplog) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.stage.budget_s = 0.01
+        h.stage.delay = 0.2
+        end = await self._end(h, job, caplog)
+        assert (end.stage_outcome, end.timeout_s) == ("retry", 0.01)
+
+    @pytest.mark.asyncio
+    async def test_a_shorter_timeout_inside_the_stage_is_not_its_budget(self, caplog) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.stage.result = TimeoutError()  # a dependency's own timeout, long before the stage budget
+        end = await self._end(h, job, caplog)
+        assert end.stage_outcome == "retry"
+        assert not hasattr(end, "timeout_s")
+
+    @pytest.mark.asyncio
+    async def test_an_error_has_no_stage_outcome(self, caplog) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.stage.result = ProcessingError("model refused")
+        end = await self._end(h, job, caplog)
+        assert (end.outcome, end.error_type) == ("failure", "ProcessingError")
+        assert not hasattr(end, "stage_outcome")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("result", [
+        StageResult(outcome=StageOutcome.COMPLETED),
+        StageResult(outcome=StageOutcome.FAILED, reason="bad input"),
+        StageResult(outcome=StageOutcome.PAUSED, reason="breaker open"),
+    ], ids=["completed", "failed", "paused"])
+    async def test_a_run_whose_state_another_worker_took_is_superseded(self, caplog, result) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.stage.delay = 0.05
+        h.stage.result = result
+        end = await self._end(h, job, caplog, during=lambda: _reclaimed_and_taken_by(h, job, other="w2"))
+        assert (end.outcome, end.reason, end.stage_attempt, end.owner_attempt) == ("skipped", "superseded", 1, 2)
+        assert not hasattr(end, "stage_outcome")  # the run's result was not recorded
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+        assert h.handler.outcomes("classify")["duplicate"] == 1  # the metric key is unchanged
+
+    @pytest.mark.asyncio
+    async def test_a_job_whose_state_a_newer_release_owns_is_skipped(self, caplog) -> None:
+        from app.modules.pipeline.models import ForeignStatus
+
+        h, job = _Harness(), _job()
+        h.seed(job, ForeignStatus("ARCHIVED_BY_A_NEWER_RELEASE"))  # type: ignore[arg-type]
+        end = await self._end(h, job, caplog)
+        assert (end.outcome, end.reason, end.foreign_status) == ("skipped", "foreign_state", "ARCHIVED_BY_A_NEWER_RELEASE")
+        assert h.stage.runs == 0
+        assert self._info_and_up(caplog) == ["index.end"]
+
+    @staticmethod
+    def _info_and_up(caplog) -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
+
+    @pytest.mark.asyncio
+    async def test_a_job_whose_records_are_gone_is_stale_with_no_other_info_line(self, caplog, monkeypatch) -> None:
+        h, job = _Harness(), _job()
+        monkeypatch.setattr(_RecordsIO, "current", [])
+        h.handler._io_for = _RecordsIO  # type: ignore[assignment]
+        end = await self._end(h, job, caplog)
+        assert (end.outcome, end.reason) == ("skipped", "stale")
+        assert self._info_and_up(caplog) == ["index.end"]
+
+    @pytest.mark.asyncio
+    async def test_a_completed_run_with_no_bound_record_left_writes_no_other_info_line(self, caplog) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.headlines.moved_on = True
+        end = await self._end(h, job, caplog)
+        assert end.stage_outcome == "completed"
+        assert self._info_and_up(caplog) == ["index.end"]
+
+    @pytest.mark.asyncio
+    async def test_a_job_held_for_a_connector_delete_writes_no_other_info_line(self, caplog, monkeypatch) -> None:
+        h, job = _harness_with(_DeletingIO), _job()
+        monkeypatch.setattr(_DeletingIO, "deleting", {job.connector_id})
+        h.seed(job)
+        end = await self._end(h, job, caplog)
+        assert (end.error_type, end.stage_outcome) == ("StageHeldForDelete", "paused")
+        assert self._info_and_up(caplog) == ["index.end"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("failure", "has_text"), _SWALLOWED, ids=["plain", "content"])
+    async def test_a_failed_follow_up_is_one_warning_and_no_stack(self, caplog, failure, has_text) -> None:
+        h, job = _Harness(), _job()
+
+        async def on_settled(j: StageJob, record_ids: object, status: ProgressStatus) -> None:
+            raise failure()
+
+        h.handler = StageJobHandler(
+            h.registry, h.states, h.headlines, h.coordinator, StubIO,
+            logger=logging.getLogger("t"), worker_id="w1", clock_ms=h.clock, on_headline_settled=on_settled,
+        )
+        h.seed(job)
+        h.stage.result = StageResult(outcome=StageOutcome.FAILED, reason="bad input")
+        end = await self._end(h, job, caplog)
+        assert (end.outcome, end.stage_outcome) == ("failure", "failed")
+        (line,) = [r for r in caplog.records if r.getMessage() == "stage.follow_up_failed"]
+        assert (line.levelno, line.exc_info, hasattr(line, "error_message")) == (logging.WARNING, None, has_text)
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == ["stage.follow_up_failed", "index.end"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("failure", "has_text"), _SWALLOWED, ids=["plain", "content"])
+    async def test_a_dead_lettered_job_that_cannot_be_failed_is_one_warning(self, caplog, failure, has_text) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.states.cas = AsyncMock(side_effect=failure())  # type: ignore[method-assign]
+        message = StreamMessage(eventType="stageJob", payload=job.model_dump(mode="json", by_alias=True))
+        with caplog.at_level(logging.DEBUG):
+            await h.handler.on_message_abandoned(message, reason="transient error", attempts=3)
+        (line,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert (line.getMessage(), line.levelno, hasattr(line, "error_message")) == ("stage.abandon_failed", logging.WARNING, has_text)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ran", [True, False], ids=["after_a_failed_run", "never_ran"])
+    async def test_an_abandoned_job_notes_no_stage_outcome_of_its_own(self, caplog, ran) -> None:
+        """The sink runs inside the delivery's timeline: abandoning must not add or overwrite stage_outcome."""
+        from app.utils import indexing_timing as timing
+
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.stage.result = StageResult(outcome=StageOutcome.FAILED, reason="bad input")
+        message = StreamMessage(eventType="stageJob", payload=job.model_dump(mode="json", by_alias=True))
+        timeline, token = timing.begin_record(None, "stageJob", "light")
+        if ran:
+            with pytest.raises(StageFailed):
+                await h.deliver(job)
+        await h.handler.on_message_abandoned(message, reason="terminal error", attempts=1)
+        assert timeline.facts.get("stage_outcome") == ("failed" if ran else None)
+        timing.end_record(timeline, token, outcome="failed", logger=logging.getLogger("t.consumer"))

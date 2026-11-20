@@ -13,8 +13,12 @@ on:
     paths:
       - 'backend/db/**'
       - 'backend/python/app/core/**'
+      - 'backend/python/app/services/vector_db/collection_pin.py'
       - 'backend/python/app/services/pg_*.py'
       - 'backend/python/app/services/messaging/**'
+      # The window of the coalesced re-purge runs on the state tables in PostgreSQL mode (PgWindowStore).
+      - 'backend/python/app/services/paid_cache/**'
+      - 'backend/python/tests/support/repurge_window.py'
       - 'backend/python/app/services/redis/**'
       - 'backend/python/app/services/cache/**'
       - 'backend/python/app/config/**'
@@ -214,6 +218,19 @@ jobs:
           python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-runtime-enforce-junit.xml"
           # checked here, not in the job's last step: its node ids are the same as the shadow run's, so a set there would hide a missing run
           python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/py-runtime-enforce-junit.xml" --collected "$RUNNER_TEMP/py-runtime-enforce.collected"
+
+      - name: Python runtime window store as the indexing service, key-value access by prefix enforced
+        if: ${{ matrix.shard == 2 }}
+        working-directory: backend/python
+        run: |
+          # the coalesced re-purge window runs in the indexing service, whose login is not the connectors one the suite above uses
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
+          eval "$(PG_KV_ACCESS=enforce PG_RUNTIME_ROLE=indexing PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh" pipeshub_ci_kv_enforce_indexing)"
+          export PG_RUNTIME_TEST_SERVICE=indexing
+          args=(tests/integration/pg_runtime/test_repurge_window_pg.py -m "not chaos" -p no:cacheprovider)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-runtime-indexing.collected" "${args[@]}"
+          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-runtime-indexing-junit.xml"
+          python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/py-runtime-indexing-junit.xml" --collected "$RUNNER_TEMP/py-runtime-indexing.collected"
 
       - name: PostgreSQL graph provider (tests/integration/graph_db/postgres, shard ${{ matrix.shard }})
         working-directory: backend/python

@@ -334,12 +334,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        if: env.SUITE_RUNS == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install uv
         if: env.SUITE_RUNS == 'true'
         run: pip install uv
@@ -490,11 +484,6 @@ jobs:
           node-version: 24
           cache: 'npm'
           cache-dependency-path: backend/nodejs/apps/package-lock.json
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv

@@ -24,8 +24,8 @@ from .layers import GraphCheckLayer, arango_layer, neo4j_layer
 def graph_layers(
     neo4j_provider, arango_provider, neo4j_settings, arango_settings  # noqa: F811
 ) -> list[GraphCheckLayer]:
-    # A run with Neo4j on the split browse (permission-conformance.yml's second pass) checks Neo4j alone: the other stores have no mode.
-    if Neo4jProvider.kh_browse_mode() == "split":
+    # A run with Neo4j on the legacy browse (permission-conformance.yml's second pass) checks Neo4j alone: the other stores have no mode.
+    if Neo4jProvider.kh_browse_mode() == "legacy":
         return [neo4j_layer(neo4j_provider, neo4j_settings)]
     return [neo4j_layer(neo4j_provider, neo4j_settings), arango_layer(arango_provider, arango_settings)]
 

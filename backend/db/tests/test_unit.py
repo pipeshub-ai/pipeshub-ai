@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from db import epoch_lint, lint, locations, migrate
+from db import epoch_lint, lint, locations, migrate, released_heads
 from db.boot_assert import schema_problems
 
 
@@ -80,6 +80,22 @@ def test_no_released_head_is_gone():
     heads, _ = epoch_lint.expected_heads(locations.version_locations())
     below = {b: (heads.get(b, (0, 0))[0], n) for b, n in released.items() if heads.get(b, (0, 0))[0] < n}
     assert not below, f"branch heads below the released ones (now, released): {below}"
+
+
+def test_released_heads_records_the_tree_heads(tmp_path):
+    """The release step's writer, and the check the release workflow runs on the tagged tree."""
+    out = tmp_path / "released_heads.json"
+    released_heads.write("v9.9.9", out)
+    heads, _ = epoch_lint.expected_heads(locations.version_locations())
+    assert json.loads(out.read_text()) == {"release": "v9.9.9", "epochs": {b: e for b, (e, _) in heads.items()}}
+    assert released_heads.check(out) == ""
+    # a pre-release or hotfix tag names another release with the same heads
+    out.write_text(json.dumps({**json.loads(out.read_text()), "release": "v9.9.10-rc.1"}))
+    assert released_heads.check(out) == ""
+    stale = json.loads(out.read_text())
+    stale["epochs"]["kernel"] -= 1
+    out.write_text(json.dumps(stale))
+    assert released_heads.check(out) != ""
 
 
 def test_shipped_branches_pass_both_lints():

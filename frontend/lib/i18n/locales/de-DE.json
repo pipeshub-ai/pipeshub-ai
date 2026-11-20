@@ -2650,7 +2650,35 @@
       "tools": {
         "title": "Tools",
         "subtitle": "Schalten Sie einzelne Tools aus. Ein ausgeschaltetes Tool wird MCP-Clients nicht angeboten, und Aufrufe werden abgelehnt.",
-        "writes": "Schreibt"
+        "writes": "Schreibt",
+        "descriptions": {
+          "pipeshub_sources": "Listet die Konnektoren und Sammlungen auf, die der Benutzer lesen kann, sowie die im Arbeitsbereich eingerichteten KI-Modelle. Clients wählen damit aus, wo gesucht und mit welchem Modell gechattet wird.",
+          "pipeshub_search": "Durchsucht indexierte Dokumente nach Bedeutung in den Konnektoren und Sammlungen, die der Benutzer lesen kann, und liefert die passenden Textstellen mit ihren Datensätzen.",
+          "pipeshub_get_record_content": "Liest den vollständigen Text eines Datensatzes. Findet außerdem einen Datensatz anhand einer URL, eines Ticketschlüssels oder einer externen ID, zeigt, was unter einem Ordner, Bereich oder Epic liegt, und liest einen ganzen Slack-Thread.",
+          "pipeshub_download_record": "Lädt die Originaldatei eines Datensatzes herunter, auf Wunsch in PDF umgewandelt.",
+          "pipeshub_directory": "Schlägt den angemeldeten Benutzer, die Benutzer und Gruppen des Arbeitsbereichs und die Teams des Benutzers nach. Ändert nichts.",
+          "pipeshub_create_collection": "Erstellt eine neue, leere Sammlung, die dem Benutzer gehört und Uploads aufnehmen kann.",
+          "pipeshub_upload": "Lädt Dokumente in eine Sammlung hoch, damit sie indexiert und durchsuchbar werden. Bis zu 20 Dokumente und etwa 3 MB pro Aufruf.",
+          "pipeshub_indexing_status": "Meldet, wie weit die Indexierung einer Sammlung ist und welche Dokumente warum fehlgeschlagen sind.",
+          "pipeshub_connect_source": "Liefert einen Link, den der Benutzer im Browser öffnet, um eine Quelle wie Slack, Google Drive oder Jira zu verbinden. Das Tool selbst verbindet nichts.",
+          "pipeshub_add_web_source": "Fügt eine Website als eigenen Web-Connector des Benutzers hinzu. Der Crawl beginnt bei einer Startseite, folgt deren Links und wird täglich wiederholt. Behalten werden 100 Seiten, sofern der Client nicht mehr anfordert, höchstens 10.000. Eine OAuth-App oder ein Zugriffstoken braucht zusätzlich die Scopes connector:write und connector:sync.",
+          "pipeshub_chat": "Fragt den PipesHub-Assistenten oder einen Agenten des Arbeitsbereichs und liefert dessen Antwort mit Quellenangaben. Solange Schreib-Tools aus sind, führt es keine verbundenen Aktionen aus. Wird es ausgeschaltet, ist auch die Agentenliste aus.",
+          "pipeshub_agents": "Listet die Agenten des Arbeitsbereichs mit ihren Tools und ihrem Wissen auf, damit ein Client mit einem davon chatten kann. Wird nur angeboten, solange der Chat mit PipesHub eingeschaltet ist.",
+          "pipeshub_show_citations": "Zeigt dem Benutzer die Quellen hinter einer Antwort, nummeriert als [1], [2] und so weiter, mit einer Vorschau jedes Dokuments. Bis zu 30 Textstellen pro Aufruf. Wird nur Clients angeboten, die den Zitat-Viewer anzeigen können, etwa Claude.",
+          "pipeshub_preview_record": "Wird nur vom Zitat-Viewer verwendet, nie vom KI-Modell. Lädt die gespeicherte Datei eines Datensatzes stückweise, damit der Viewer das Dokument anzeigen kann. Solange es aus ist, kann der Viewer keine Dokumentvorschauen laden.",
+          "pipeshub_code_repos": "Listet die indexierten Code-Repositories auf, die der Benutzer lesen kann. Die Code-Tools werden nur Benutzern mit indexiertem Code angeboten; eine OAuth-App oder ein Zugriffstoken braucht zusätzlich den Scope code:read.",
+          "pipeshub_code_symbols": "Zeigt, was ein Verzeichnis oder eine Datei in einem indexierten Repository enthält: Unterverzeichnisse und Dateien oder die Symbole, die eine Datei definiert.",
+          "pipeshub_code_neighbours": "Zeigt, was eine Datei oder ein Symbol im Code-Graphen umgibt: Aufrufer, aufgerufener Code, Importe und Vererbung.",
+          "pipeshub_code_read": "Liest indexierten Quellcode: ein Symbol, einen Zeilenbereich oder eine ganze Datei. Gelesen wird die indexierte Kopie, die hinter dem Repository zurückliegen kann.",
+          "pipeshub_code_path": "Zeigt Schritt für Schritt, wie ein Symbol in einem Repository ein anderes erreicht.",
+          "pipeshub_code_search": "Findet Code anhand eines exakten Namens, einer Zeichenfolge oder eines regulären Ausdrucks.",
+          "pipeshub_code_semantic_search": "Findet den Code hinter einer Funktion oder einem Verhalten anhand einer Beschreibung in normaler Sprache, wenn die Namen nicht bekannt sind.",
+          "pipeshub_code_outline": "Listet die Klassen, Funktionen und Methoden einer Datei mit Signaturen und Zeilenbereichen auf, ohne deren Inhalt.",
+          "pipeshub_code_impact": "Zeigt, was von einem Symbol abhängt: alles, was es aufruft, importiert oder darauf aufbaut, samt der Tests, die es erreichen. Beantwortet, wer es aufruft und was bei einer Änderung bricht.",
+          "pipeshub_code_impact_of_diff": "Nimmt einen Unified Diff, etwa die Ausgabe von git diff oder den Diff eines Pull Requests, und zeigt die geänderten Symbole, die Dateien und Tests, die sie erreichen, und die Aufrufer, die kein Test abdeckt.",
+          "pipeshub_code_history": "Listet die indexierten Pull Requests auf, die eine Datei geändert haben, mit Autor, Reviewern, wer gemergt hat und den genannten Tickets.",
+          "pipeshub_code_entry_points": "Listet auf, wo die Ausführung in ein Repository eintritt, etwa Routen, Kommandozeilenwerkzeuge, Jobs und Hooks. Ein Einstieg in unbekannten Code."
+        }
       },
       "appliesNote": "Änderungen gelten innerhalb weniger Sekunden für neue MCP-Anfragen.",
       "loadError": "Die MCP-Zugriffseinstellungen konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
@@ -2765,8 +2793,7 @@
       },
       "enterpriseSso": {
         "title": "SAML-Single-Sign-on und OpenID Connect",
-        "description": "Melden Sie Personen über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-Identitätsanbieter an.",
-        "contactSales": "Zum Kauf schreiben Sie an {{email}}"
+        "description": "Melden Sie Personen über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-Identitätsanbieter an."
       }
     },
     "connectors": {
@@ -3057,7 +3084,8 @@
             "max_pages": "Seitenlimit erreicht",
             "time_limit": "Zeitlimit erreicht; die nächste Synchronisierung macht weiter",
             "stalled": "Die Website antwortete nicht mehr; die nächste Synchronisierung macht weiter",
-            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter"
+            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter",
+            "start_not_recorded": "Die Synchronisierung konnte ihren Start nicht speichern und lief daher nicht; die nächste Synchronisierung versucht es erneut"
           },
           "pagesSaved": "{{count}} Seiten gespeichert",
           "failed": "{{count}} Seiten fehlgeschlagen",
@@ -4297,6 +4325,9 @@
           "label": "Extraktionsdienst",
           "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
+      },
+      "healthWarnings": {
+        "title": "Aufmerksamkeit erforderlich"
       },
       "vectorDbMemory": {
         "title": "Der Suchindex passt nicht in den Arbeitsspeicher der Vektordatenbank",

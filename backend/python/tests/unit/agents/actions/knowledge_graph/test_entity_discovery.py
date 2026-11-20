@@ -26,7 +26,8 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.modules.retrieval.title_hits import TITLE_SEARCH_TOP_K
-from tests.support.provider_errors import assert_text_free, openai_error, with_cause
+from tests.support.log_capture import assert_text_free
+from tests.support.provider_errors import SENTINELS, openai_error, with_cause
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
@@ -903,4 +904,4 @@ async def test_a_failed_query_embedding_is_logged_by_type_without_the_provider_t
     assert (line.levelno, line.error_type, line.cause_type, line.exc_info) == (
         logging.WARNING, "EntityAccessError", "RateLimitError", None,
     )
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)

@@ -108,7 +108,8 @@ class TestAdmissionGateBasics:
 
 @pytest.mark.asyncio
 class TestAdmissionGateWaking:
-    async def test_waiters_wake_promptly_when_limit_rises(self) -> None:
+    async def test_waiters_wake_promptly_when_limit_rises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        virtual_loop_time(monkeypatch)  # the 0.5 s below is then exact: a missed wake is served only by the 1 s safety net
         registry = _registry(limit=1)
         gate = AdmissionGate(Pool.HEAVY_PARSE, registry)
         await gate.acquire(cost=1)  # occupy the only slot
@@ -125,7 +126,8 @@ class TestAdmissionGateWaking:
         result = await asyncio.wait_for(task, timeout=0.5)
         assert result is True
 
-    async def test_waiters_wake_on_release(self) -> None:
+    async def test_waiters_wake_on_release(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        virtual_loop_time(monkeypatch)
         registry = _registry(limit=1)
         gate = AdmissionGate(Pool.HEAVY_PARSE, registry)
         await gate.acquire(cost=1)

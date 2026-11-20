@@ -350,6 +350,11 @@ class TestNeo4jKnowledgeHubListing:
     lists the trash: every arm that collects nodes drops deleted ones, and a row
     counts only its live children."""
 
+    @pytest.fixture(autouse=True)
+    def _legacy_browse(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The browse statement pinned here is the legacy browse's (split's live tests: test_kh_split_browse.py); split is the default.
+        monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
+
     @staticmethod
     def _live(var: str) -> str:
         # Null-safe: a node written before soft delete has no isDeleted.

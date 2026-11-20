@@ -70,12 +70,14 @@ from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
 from app.services.messaging.message_log import bound_message
+from app.services.messaging.precision_check import PrecisionHandBack, counted
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
     EnqueueResult,
     FairnessKey,
     FairnessKeyExtractor,
     FairSchedulerConfig,
+    IndexingFairness,
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import (
@@ -295,10 +297,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         weight_provider: WeightProvider | None = None,
         disposition_sink: Optional[AbandonedMessageSink] = None,
         connector_off_filter: ConnectorOffFilter | None = None,
+        precision_filter: PrecisionHandBack | None = None,
         stage_admission: "concurrency.StageAdmission | None" = None,
         priority_lane: "concurrency.PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
+        fairness: IndexingFairness | None = None,
     ) -> None:
+        self._fairness = fairness
         self.logger = logger
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
@@ -313,6 +318,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Settles, as they are read, the events the handler would only skip
         # because their connector is off or gone -- see connector_off.py.
         self.connector_off_filter = connector_off_filter
+        self.precision_filter = precision_filter
         self.producer = producer
         self.concurrency_manager = concurrency_manager
         # When set, node-local parsing/indexing admission is delegated to the
@@ -364,6 +370,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         from app import edition_services
 
         self.admission_backlog = edition_services.admission_backlog()
+        if fairness is not None and fairness.observer is not None:
+            self.admission_backlog.observer = fairness.observer
         self._suspects_waiting = 0
         # Held by a record whose last attempt never finished, so such records
         # run one at a time: when the process dies again, the record that
@@ -467,14 +475,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._offset_fetcher: OffsetFetcher | None = None
         self._remembered_budget_logged = False
         self._fetch_back_task: asyncio.Task | None = None
+        self._fetch_turns = 0
         self._fetch_back_plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
         # Each connector's records in flight per index slot pool, so that
         # while another connector is waiting no one connector can hold more
         # than its share of the slots (see scheduling.slot_share).
         self._slot_share: SlotShare | None = None
         if self.fair_scheduler_config.enabled:
-            self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider)
-            self._slot_share = SlotShare(
+            room = (lambda key: fairness.buffer_room(key, self._scheduler)) if fairness and fairness.buffer_room else None
+            self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider, room=room)
+            self._slot_share = (fairness.planner if fairness and fairness.planner else SlotShare)(  # type: ignore[assignment]
                 self.fair_scheduler_config.entity_depth, self.weight_provider
             )
             self._offset_tracker = PartitionOffsetTracker(logger=logger)
@@ -1864,6 +1874,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                 if not self.__reserve_partition(message):
                                     break
                                 reserved = True
+                                # The read-time check also runs here, with the fair scheduler off: the one
+                                # message this iteration holds is handed back before anything is downloaded.
+                                if await self.__hand_back_one(message, parsed_message):
+                                    self.__finish_partition(message, retry_current=False)
+                                    reserved = False
+                                    continue
                                 await self.__start_processing_task(
                                     message, parsed_message
                                 )
@@ -1996,6 +2012,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         pre_parsed = await self.__parse_batch(message_batch)
         settled = await self.__settle_connector_off(pre_parsed)
+        handed_back = self.__precision_hand_backs(pre_parsed, settled)
         settled_reached: list[tuple[TopicPartition, int]] = []
         for tp, messages in message_batch.items():
             # The filter (and the enqueue below) await, and a rebalance can
@@ -2019,7 +2036,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 if tp in self._revoked_since_poll:
                     break
                 position = (tp, message.offset)
-                if position in settled:
+                if position in settled or position in handed_back:
+                    # Tracked as soon as it is reached, not when it is published: a later offset of this
+                    # partition (an unparseable one resolves inline) must not commit past it first.
+                    if self._offset_tracker is not None:
+                        self._offset_tracker.track(tp, message.offset)
                     settled_reached.append(position)
                     continue
                 try:
@@ -2065,7 +2086,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     self.__seek_back(tp, message.offset)
                     self.__pause_lane(tp, blocked_key)
                     break
-        await self.__resolve_settled(settled_reached, settled)
+        await self.__resolve_settled(settled_reached, settled, handed_back)
 
     async def __wait_for_finish(self) -> None:
         """Wait for a delivery to finish, for at most _BUSY_POLL_TIMEOUT_MS.
@@ -2121,10 +2142,125 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         settled = {positions[i]: considered[i] for i in result.settled}
         return {p: m for p, m in settled.items() if m is not None}
 
+    def __precision_hand_backs(
+        self,
+        pre_parsed: dict[tuple[TopicPartition, int], StreamMessage | None],
+        settled: dict[tuple[TopicPartition, int], StreamMessage],
+    ) -> dict[tuple[TopicPartition, int], tuple[StreamMessage, float]]:
+        """Messages that would write vectors of the wrong precision, with how long to wait before they come back.
+
+        Run after the connector-off filter, so a turned-off connector's events are settled, not handed back.
+        Nothing is published here: the read loop may still seek back, and a message read again would be
+        published again. ``__resolve_settled`` publishes the ones the loop reached.
+        """
+        if self.precision_filter is None or not pre_parsed:
+            return {}
+        positions = [p for p in pre_parsed if p not in settled]
+        messages = [pre_parsed[p] for p in positions]
+        try:
+            delays = self.precision_filter.hand_back(messages)
+        except Exception:
+            self.logger.warning("Could not check this batch against the embedding precision; it takes the normal path", exc_info=True)
+            return {}
+        return {positions[i]: (messages[i], delay) for i, delay in delays.items() if messages[i] is not None}
+
+    def __precision_delay(self, parsed: StreamMessage | None) -> float | None:
+        """How long one message waits if the precision check hands it back now, else None. Never raises."""
+        if self.precision_filter is None or parsed is None:
+            return None
+        try:
+            return self.precision_filter.hand_back([parsed]).get(0)
+        except Exception:
+            self.logger.warning("Could not check a message against the embedding precision; it takes the normal path", exc_info=True)
+            return None
+
+    async def __publish_one_hand_back(self, message: ConsumerRecord, parsed: StreamMessage, delay: float) -> None:
+        stable_id = str(parsed.payload.get("_retry_tracking_id") or f"{message.topic}-{message.partition}-{message.offset}")
+        await self._requeue_message(
+            message.topic, parsed, stable_id, retry_count=0, delay_s=delay, extra_payload=counted(parsed.payload),
+        )
+        await self._clear_retry_tracking(stable_id)
+
+    async def __hand_back_one(self, message: ConsumerRecord, parsed: StreamMessage | None) -> bool:
+        """The FIFO loop's hand-back: publish, then commit this offset. A failed publish raises, so the loop's
+        own handler seeks back to the offset and the message is read and handed back again."""
+        delay = self.__precision_delay(parsed)
+        if delay is None or parsed is None:
+            return False
+        await self.__publish_one_hand_back(message, parsed, delay)
+        await self.__settle_done(message, None)
+        return True
+
+    async def __publish_hand_backs(
+        self,
+        reached: list[tuple[TopicPartition, int]],
+        handed_back: dict[tuple[TopicPartition, int], tuple[StreamMessage, float]],
+    ) -> list[tuple[TopicPartition, int]]:
+        """Re-queue the handed-back messages the read reached; return the positions that may now be resolved.
+
+        Each offset is tracked before its publish, so a failed publish leaves a floor under the commit
+        watermark and a later offset that did publish cannot commit past it. A partition whose publish failed
+        publishes nothing more and is rewound once, to its lowest failed offset: everything behind it is read
+        again, not published twice. A partition revoked while a publish was awaited is left alone, since its
+        next owner reads from the last commit.
+        """
+        tracker = self._offset_tracker
+        epochs = {tp: self._partition_epoch.get(tp, 0) for tp, _ in reached}
+
+        def owned(tp: TopicPartition) -> bool:
+            return epochs[tp] == self._partition_epoch.get(tp, 0) and tp not in self._revoked_since_poll
+
+        resolvable: list[tuple[TopicPartition, int]] = []
+        failed_at: dict[TopicPartition, int] = {}
+        failed = 0
+        for position in reached:
+            tp, offset = position
+            if not owned(tp):
+                continue
+            if tp in failed_at:
+                continue
+            entry = handed_back.get(position)
+            if entry is None:
+                resolvable.append(position)
+                continue
+            message, delay = entry
+            if tracker is not None:
+                tracker.track(tp, offset)
+            stable_id = str(message.payload.get("_retry_tracking_id") or f"{tp.topic}-{tp.partition}-{offset}")
+            try:
+                await self._requeue_message(
+                    tp.topic, message, stable_id, retry_count=0, delay_s=delay, extra_payload=counted(message.payload),
+                )
+            except Exception:
+                failed += 1
+                failed_at[tp] = min(offset, failed_at.get(tp, offset))
+                if owned(tp) and tracker is not None:
+                    # Read again within this process: a floor, with no dwell clock. Nothing to commit for it;
+                    # the next offset that resolves carries the watermark.
+                    tracker.mark_redeliver(tp, offset, awaiting_reread=True)
+                continue
+            resolvable.append(position)
+        for tp, offset in failed_at.items():
+            if owned(tp):
+                self.__seek_back(tp, offset)
+        if failed:
+            self.logger.warning(
+                "Could not hand back %d event(s) waiting for the embedding precision; they are read again", failed,
+            )
+        # A rebalance during any publish above: what it touched is no longer ours to resolve.
+        resolvable = [p for p in resolvable if owned(p[0])]
+        sent = len(resolvable) - sum(1 for p in resolvable if p not in handed_back)
+        if sent:
+            self.logger.info(
+                "Handed back %d event(s) that write vectors while the embedding precision and the indexes disagree", sent,
+            )
+        return resolvable
+
     async def __resolve_settled(
         self,
         reached: list[tuple[TopicPartition, int]],
         settled: dict[tuple[TopicPartition, int], StreamMessage],
+        handed_back: dict[tuple[TopicPartition, int], tuple[StreamMessage, float]] | None = None,
     ) -> None:
         """Resolve the settled offsets the read reached, with one commit per
         partition rather than one per message.
@@ -2134,6 +2270,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """
         offset_tracker = self._offset_tracker
         reached = [p for p in reached if p[0] not in self._revoked_since_poll]
+        if handed_back:
+            reached = await self.__publish_hand_backs(reached, handed_back)
+            settled = {**settled, **{p: m for p, (m, _) in handed_back.items()}}
         if not reached or offset_tracker is None or self.consumer is None:
             return
         commits: dict[TopicPartition, int] = {}
@@ -2147,13 +2286,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             tracking_id = message.payload.get("_retry_tracking_id")
             if tracking_id:
                 await self._clear_retry_tracking(str(tracking_id))
-        metrics.record_connector_off_settled("kafka", len(messages))
-        self.logger.info(
-            "Acknowledged %d queued event(s) of turned-off or removed connectors "
-            "without indexing them: %s",
-            len(messages),
-            describe_connector_off(messages),
-        )
+        off = [m for p, m in zip(reached, messages) if not handed_back or p not in handed_back]
+        if off:
+            metrics.record_connector_off_settled("kafka", len(off))
+            self.logger.info(
+                "Acknowledged %d queued event(s) of turned-off or removed connectors "
+                "without indexing them: %s",
+                len(off),
+                describe_connector_off(off),
+            )
         if commits:
             try:
                 await self.consumer.commit(commits)  # type: ignore
@@ -2477,17 +2618,31 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             - self.__held_beside_scheduler()
         )
         plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
-        for entity in remembered.entities():
+        planned: dict[object, int] = {}
+        buffer_room = self._fairness.buffer_room if self._fairness else None
+        entities = remembered.entities()
+        if buffer_room and entities:  # entities sharing a bucket take turns at being first
+            self._fetch_turns += 1
+            entities = entities[self._fetch_turns % len(entities):] + entities[: self._fetch_turns % len(entities)]
+        for entity in entities:
             free = cap - scheduler.pending_count_for(entity)
+            shared = buffer_room(entity, scheduler) if buffer_room else None
+            chunk = min(cap // 2, remembered.count(entity))
+            if shared is not None:
+                # Less what this plan took from its bucket; a chunk is never more than the bucket has left to give.
+                left = shared[1] - planned.get(shared[0], 0)
+                free, chunk = min(free, left), min(chunk, left)
             # Refilled in chunks, not a message at a time as the connector's
             # buffered work is dispatched: each fetch is a broker round trip.
-            if free < max(1, min(cap // 2, remembered.count(entity))):
+            if free < max(1, chunk):
                 continue
             take = min(free, room, _FETCH_BACK_BATCH)
             if take <= 0:
                 continue
             plan[entity] = remembered.peek(entity, take)
             room -= len(plan[entity])
+            if shared is not None:
+                planned[shared[0]] = planned.get(shared[0], 0) + len(plan[entity])
             if room <= 0:
                 break
         if not plan:
@@ -2803,11 +2958,24 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             key, item = dispatched
             tp, message, parsed = item
             self.__unschedule(item)
+            in_flight = _InFlightOffset(tp, message.offset, self._partition_epoch.get(tp, 0))
+            # The verdict may have turned since this message was buffered: hand it back now, before a handler
+            # starts and downloads anything. A publish that fails puts it back in the buffer. This comes before
+            # the record wait below, which must have no await between it and the reservation.
+            hand_back_delay = self.__precision_delay(parsed)
+            if hand_back_delay is not None:
+                try:
+                    await self.__publish_one_hand_back(message, parsed, hand_back_delay)
+                except Exception:
+                    self.logger.warning("Could not hand back a buffered event; it stays buffered", exc_info=True)
+                    await self.__rebuffer_after_failed_handback(message, parsed, in_flight, hand_back_delay)
+                else:
+                    await self.__resolve_offset(in_flight, done=True)
+                continue
             record_key = self.__record_key(message, parsed) if parallel else None
             if record_key is not None and self.__waits_for_record(record_key, item, key):
                 continue
             metrics.record_dispatch("kafka", key[0] if key else "unknown")
-            in_flight = _InFlightOffset(tp, message.offset, self._partition_epoch.get(tp, 0))
             reserved = (
                 self.__reserve_record(record_key)
                 if record_key is not None
@@ -3155,6 +3323,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         retry_count: int = 1,
         delay_s: float | None = None,
         parse_enqueued_at_ms: int | None = None,
+        extra_payload: dict | None = None,
     ) -> None:
         """Re-publish a failed message to the same topic for retry.
         
@@ -3180,6 +3349,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             raise RuntimeError("No producer available for re-queue")
 
         payload = dict(message.payload)
+        payload.update(extra_payload or {})
         payload["_retry_tracking_id"] = stable_message_id
         backoff_seconds = delay_s if delay_s is not None else _compute_retry_backoff_seconds(retry_count)
         payload["_retry_not_before"] = time.time() + backoff_seconds
