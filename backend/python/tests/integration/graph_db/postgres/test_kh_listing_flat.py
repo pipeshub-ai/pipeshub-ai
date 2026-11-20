@@ -418,6 +418,43 @@ async def test_the_indexing_status_filter_probes_each_rows_node_and_never_joins_
         await con.close()
 
 
+def _rows_read(plan: object, relation: str) -> int:
+    """The rows the plan's reads of ``relation`` looked at: what each returned and what its filter removed, over every loop."""
+    return sum(int((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * n.get("Actual Loops", 1)) for n in plan_gate.scans(plan, relation))
+
+
+@pytest.mark.parametrize(("sort_dir", "direction"), [("ASC", "next"), ("ASC", "prev"), ("DESC", "next"), ("DESC", "prev")])
+async def test_a_name_ordered_window_past_a_boundary_reads_the_rows_up_to_it_not_the_connector(pg_db, sort_dir, direction) -> None:
+    """A page by name past a boundary, read as the listing's reader is, under row-level security: a condition on the name prefix (substring(), not leakproof) is never an
+    index condition there. Read as one disjoint read per part of the boundary, each read was a scan of the connector (or of the organisation, the planner's pick at 1M records)
+    to find a handful of rows; read as one walk of the name index it looks at the rows up to the boundary and the window."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 600, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("ANALYZE kg.records")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+    finally:
+        await con.close()
+    at = "r0010" if (sort_dir == "ASC") == (direction == "next") else "r0589"      # ten rows from the start of the walk in the page's direction
+    q = kgl.Params([org, app_sk, 20])
+    sql = kgl.page_sql("name", sort_dir, direction, "", kgl.after("name", sort_dir, direction, {"nullRank": 0, "sortKey": at, "id": at}, q))
+
+    async def read(tx) -> tuple[list[str], object]:
+        # A connector this small is read whole and sorted, to the planner; at scale the window's LIMIT makes the walk of the name index the cheap plan, which these
+        # settings leave as the only one. The gate is about how far that walk reads.
+        for setting in ("enable_seqscan", "enable_bitmapscan", "enable_sort"):
+            await tx.execute(f"SET LOCAL {setting} = off")
+        return [r["id"] for r in await tx.fetch(sql, *q.values)], json.loads(await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *q.values))
+    with ctx(org):
+        ids, plan = await pg_db.run(read, custom_plan=True)
+    n = int(at[1:])
+    want = [f"r{i:04d}" for i in (range(n + 1, n + 21) if (sort_dir == "ASC") == (direction == "next") else range(n - 1, n - 21, -1))]
+    assert ids == want
+    reads = [(n["Node Type"], plan_gate.bounds(n), n.get("Actual Rows"), n.get("Rows Removed by Filter")) for n in plan_gate.scans(plan, "records")]
+    assert _rows_read(plan, "records") <= 60, f"{sort_dir} {direction}: looked at {_rows_read(plan, 'records')} rows of a 600-row connector for a window of 20: {reads}"
+
+
 async def test_the_records_a_viewers_classes_admit_are_read_within_the_connector_never_the_organisation(pg_db) -> None:
     """Search's record-id path reads the records a connector kg serves admits by class, within the connector (with statistics, as kg's tables are once copied:
     kg_0016): never a read of the organisation by records_id or records_pkey."""
