@@ -484,7 +484,9 @@ async def test_a_read_pass_with_no_stream_left_by_the_budget_neither_reads_nor_b
 
 
 async def test_a_pass_with_no_stream_left_forgets_which_lanes_had_data_so_parked_base_lanes_are_read() -> None:
-    from app.services.messaging.redis_streams.indexing_consumer import IndexingRedisStreamsConsumer
+    from app.services.messaging.redis_streams.indexing_consumer import (
+        IndexingRedisStreamsConsumer,
+    )
 
     fairness = bundle(extra_topics=("extra-events",), extra_read_budget=lambda _s: 0)
     config = RedisStreamsConfig(
