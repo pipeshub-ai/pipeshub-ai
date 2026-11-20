@@ -3990,6 +3990,91 @@ class TestAGroupPickerMembershipChange:
         assert (await self._sync(c, point, [_users()[1]]))[0] == [(["10102"], False)]
 
 
+class TestARecordGroupOfPickedGroupsIsNeverStale:
+    """The record group of picked groups is written before any issue each sync, from the level read then: a level that no
+    longer gives one closes it at once (an issue still inheriting it, one that failed to build, reads nothing through it),
+    and the level's other holders reach it at once, as they reach the level's own record group."""
+
+    PICKER = picker_group_external_id(PROJECT_ID, "10102", {"g-pick"})
+
+    @staticmethod
+    def _point(c: JiraConnector) -> dict:
+        point = TestTheRetryListKeepsWhatAReindexAdds._store(c, [])
+        point.update({"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+                      "browse_holders": IssueSecurityContext(SchemeKnowledge.PRESENT, browse_holders=[{"type": "reporter"}])
+                      .browse_fingerprint()})
+        return point
+
+    async def _second_sync(self, members_by_level: dict, *, browse_unread: bool = False) -> tuple[JiraConnector, list]:
+        """A first sync writes issue 1001 under the record group of g-pick; the second reads ``members_by_level``. Returns
+        the record groups the second wrote before its first issue pass, as (external id, sorted grant ids)."""
+        c = _connector()
+        point = self._point(c)
+        await TestAGroupPickerMembershipChange._sync(c, point, [_users()[0]])
+        assert json.loads(point["picker_groups"]) == [["10102", ["g-pick"]]]
+        c.data_entities_processor.on_new_record_groups.reset_mock()
+        before_walk: list = []
+        fetch = c._fetch_issues_batched
+
+        def first_pass(*a: object, **kw: object) -> AsyncIterator:
+            if not before_walk:
+                before_walk.extend((g.external_group_id, sorted(p.external_id for p in grants))
+                                   for call in c.data_entities_processor.on_new_record_groups.await_args_list
+                                   for g, grants in call.args[0])
+            return fetch(*a, **kw)
+        ctx = _present({lid: list(h) for lid, h in members_by_level.items()})
+        if browse_unread:
+            async def unread(security: IssueSecurityContext, _key: str, **_kw: object) -> IssueSecurityContext:
+                security.browse_holders = None
+                return security
+            c._attach_browse_holders = unread
+        c._group_members, c._groups_complete = {"g-pick": [_users()[0]]}, True
+        c._load_issue_security = AsyncMock(return_value=ctx)
+        c._browse_issue_holders["PROJ"] = [{"type": "reporter"}]
+
+        async def fetch_first(*a: object, **kw: object) -> AsyncIterator:
+            async for item in first_pass(*a, **kw):
+                yield item
+        c._fetch_issues_batched = fetch_first
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        return c, before_walk
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("levels", [
+        {"10199": [{"type": "group", "value": "group-1"}]},  # the level was removed from the scheme
+        {"10102": [{"type": "group", "value": "group-1"}]},  # the level no longer holds a group picker holder
+    ])
+    async def test_a_level_that_no_longer_gives_one_closes_it_before_any_issue(self, levels: dict) -> None:
+        _, before_walk = await self._second_sync(levels)
+        assert (self.PICKER, []) in before_walk
+
+    @pytest.mark.asyncio
+    async def test_the_level_s_other_holders_reach_it_before_any_issue(self) -> None:
+        _, before_walk = await self._second_sync({"10102": [*PICKER_LEVEL["10102"], {"type": "group", "value": "group-new"}]})
+        assert (self.PICKER, ["g-pick", "group-new"]) in before_walk
+
+    @pytest.mark.asyncio
+    async def test_browse_holders_unread_leave_it_as_stored(self) -> None:
+        _, before_walk = await self._second_sync(PICKER_LEVEL, browse_unread=True)
+        assert all(ext != self.PICKER for ext, _ in before_walk)
+
+    @pytest.mark.asyncio
+    async def test_one_no_issue_inherits_once_its_level_was_read_in_full_is_dropped(self) -> None:
+        """The issue's picker now holds g-other: after the level's issues are all read, only that group's record group is
+        kept; the old one was written (with its grants) before the walk and is inherited by no stored issue."""
+        c = _connector()
+        point = self._point(c)
+        await TestAGroupPickerMembershipChange._sync(c, point, [_users()[0]])
+        point["level_field_groups"] = json.dumps({"10102": {"g-pick": "changed"}})  # so the level is read again
+        build = c._build_issue_records
+
+        async def other(issues: list, *a: object, **kw: object) -> tuple:
+            return await build([_picked_issue(OTHER)], *a, **kw)
+        c._build_issue_records = other
+        await TestAGroupPickerMembershipChange._sync(c, point, [_users()[0]])
+        assert json.loads(point["picker_groups"]) == [["10102", ["g-other"]]]
+
+
 class TestAReindexReadsTheGroupsAPickerSelects:
     MEMBERS = {"isLast": True, "values": [{"issueSecurityLevelId": "10102", "holder": h} for h in PICKER_LEVEL["10102"]]}
 

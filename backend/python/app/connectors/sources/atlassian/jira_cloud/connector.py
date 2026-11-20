@@ -615,8 +615,10 @@ class JiraConnector(BaseConnector):
         self._groups_complete: bool = False
         # Level id -> the groups the group pickers of the issues this project sync wrote select (``_save_field_groups``).
         self._field_groups_seen: dict[str, set[str]] = {}
-        # The record groups of picked groups (``picker_group_external_id``) this project sync wrote.
-        self._picker_groups_written: set[str] = set()
+        # The record groups of picked groups (``picker_group_external_id``) this project sync wrote with grants, each with its
+        # level and groups, and those an issue it wrote inherits (``_save_picker_groups``).
+        self._picker_groups_written: dict[str, tuple[str, list[str]]] = {}
+        self._picker_groups_used: set[str] = set()
         self._role_members: dict[str, list[AppUser]] = {}
         # True when the group list stopped on something other than 401/403 (rate limit, outage,
         # dropped connection): the groups are there and could not be read this time.
@@ -1760,6 +1762,7 @@ class JiraConnector(BaseConnector):
         people_reread: str | None = None,
         people_read: int | None = None,
         level_field_groups: str | None = None,
+        picker_groups: str | None = None,
         *,
         add_retry: str | None = None,
         ack_retry: dict[str, str] | None = None,
@@ -1799,6 +1802,7 @@ class JiraConnector(BaseConnector):
                 "people_reread": people_reread if people_reread is not None else existing.get("people_reread"),
                 "people_read": people_read if people_read is not None else existing.get("people_read"),
                 "level_field_groups": level_field_groups if level_field_groups is not None else existing.get("level_field_groups"),
+                "picker_groups": picker_groups if picker_groups is not None else existing.get("picker_groups"),
                 "reindex_retry": json.dumps(requests, sort_keys=True),
             }
 
@@ -4886,7 +4890,7 @@ class JiraConnector(BaseConnector):
         security.level_readers = self._level_readers(
             security, project_key, self._grant_directory({u.source_user_id: u for u in jira_users if u.source_user_id}))
         security.group_members, security.groups_complete = self._group_members, self._groups_complete
-        self._field_groups_seen, self._picker_groups_written = {}, set()
+        self._field_groups_seen, self._picker_groups_written, self._picker_groups_used = {}, {}, set()
         self._issue_build_failures = 0
         self._parents_to_retry = set()
         self._issues_to_retry = set()
@@ -4944,6 +4948,20 @@ class JiraConnector(BaseConnector):
                 # As an issue's own grants: the synced directory, and the linked accounts a list cut short did not show.
                 self._grant_directory({user.source_user_id: user for user in jira_users if user.source_user_id}),
             )
+        try:
+            stored_pickers = [(str(lid), sorted(str(g) for g in gids)) for lid, gids in
+                              json.loads((project_sync_data or {}).get("picker_groups") or "[]")]
+        except (TypeError, ValueError):
+            stored_pickers = []
+        # Browse holders unread: no issue is moved to or from these groups now, so they keep what they hold.
+        pickers_known = readable and not security.defer_checkpoint and security.browse_holders is not None
+        if pickers_known:
+            # Before any issue, as the level groups: a changed level's other holders reach the record groups of its picked
+            # groups at once, and one of a level that no longer holds a group picker holder (or is gone, or a project whose
+            # Browse no longer names people on each issue) is written with no grant, so an issue still inheriting it closes.
+            for lid, gids in stored_pickers:
+                await self._write_picker_group(project_id, project_key, security, lid, gids, self._grant_directory(
+                    {user.source_user_id: user for user in jira_users if user.source_user_id}))
         # A changed level's issues are read again even when its group's write holds the change: a sub-task holds a copy of
         # its level's holders, and an OPEN issue a grant to a user holder who reads it alone (``_reads_alone``).
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
@@ -5123,11 +5141,13 @@ class JiraConnector(BaseConnector):
                     f"Some issues of {project_key} could not be read again; re-reading them next sync"
                 )
 
+        every_issue = is_new_project or reread in ("leveled", "project") or placement_reread
+        reread_levels = set(changed_levels or []) if reread == "levels" else set()
         if readable and not security.defer_checkpoint:  # otherwise nothing was settled: the saved groups stay
-            await self._save_field_groups(
-                project_key, field_levels, stored_field_groups,
-                every_issue=is_new_project or reread in ("leveled", "project") or placement_reread,
-                reread_levels=set(changed_levels or []) if reread == "levels" else set())
+            await self._save_field_groups(project_key, field_levels, stored_field_groups,
+                                          every_issue=every_issue, reread_levels=reread_levels)
+        if pickers_known:
+            await self._save_picker_groups(project_key, stored_pickers, every_issue=every_issue, reread_levels=reread_levels)
         saved_retry = await self._save_issues_to_retry(project_key, saved_retry)
         if self._parents_to_retry:
             # Their children kept where they were filed; the next sync reads them first.
@@ -5448,10 +5468,44 @@ class JiraConnector(BaseConnector):
         picked, _ = field_group_ids(security.members_by_level.get(level_id or "", []), fields)
         if not level_id or not picked or record.access_group_external_id != picker_group_external_id(project_id, level_id, picked):
             return
+        self._picker_groups_used.add(record.access_group_external_id)
         if once and record.access_group_external_id in self._picker_groups_written:
             return
-        await self._write_level_groups(project_id, project_key, security, [level_id], user_by_account_id, picked=picked)
-        self._picker_groups_written.add(record.access_group_external_id)
+        await self._write_picker_group(project_id, project_key, security, level_id, sorted(picked), user_by_account_id)
+
+    async def _write_picker_group(
+        self, project_id: str, project_key: str, security: IssueSecurityContext, level_id: str, group_ids: list[str],
+        user_by_account_id: dict[str, AppUser],
+    ) -> None:
+        """Write the record group of a level's picked groups (``picker_group_external_id``): the level's holders that name the
+        same people on every issue and those groups, or no grant when the level no longer gives one (``_field_group_levels``)."""
+        external_id = picker_group_external_id(project_id, level_id, set(group_ids))
+        if level_id in self._field_group_levels(security):
+            await self._write_level_groups(project_id, project_key, security, [level_id], user_by_account_id,
+                                           picked=set(group_ids))
+            self._picker_groups_written[external_id] = (level_id, list(group_ids))
+            return
+        await self.data_entities_processor.on_new_record_groups([(RecordGroup(
+            id=str(uuid4()), org_id=self.data_entities_processor.org_id, external_group_id=external_id,
+            parent_external_group_id=project_id, connector_id=self.connector_id, connector_name=self.connector_name,
+            name=f"Security level: {security.level_names.get(level_id, level_id)}", group_type=RecordGroupType.PROJECT,
+            inherit_permissions=True, access_rule=AccessRule.RESTRICTED, access_only=True,
+        ), [])])
+
+    async def _save_picker_groups(
+        self, project_key: str, stored: list[tuple[str, list[str]]], *, every_issue: bool, reread_levels: set[str],
+    ) -> None:
+        """Save the record groups of picked groups the next sync writes before any issue (``_write_picker_group``): those
+        written with grants this sync, less one no issue inherits now when every stored issue of its level was written. After
+        a failed issue every saved one stays, so one a failed issue may still inherit is written again (or closed)."""
+        keep = {(lid, tuple(gids)) for ext, (lid, gids) in self._picker_groups_written.items()
+                if ext in self._picker_groups_used or not (every_issue or lid in reread_levels)}
+        if self._issue_build_failures:
+            keep |= {(lid, tuple(gids)) for lid, gids in stored}
+            keep |= {(lid, tuple(gids)) for lid, gids in self._picker_groups_written.values()}
+        to_save = sorted([lid, list(gids)] for lid, gids in keep)
+        if to_save != sorted([lid, gids] for lid, gids in stored):
+            await self._update_project_sync_checkpoint(project_key, picker_groups=json.dumps(to_save))
 
     async def _record_security_levels(
         self, project_key: str, levels: dict[str, str], *, force: bool = False,
