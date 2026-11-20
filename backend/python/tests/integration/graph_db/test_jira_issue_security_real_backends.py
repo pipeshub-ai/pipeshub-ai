@@ -23,10 +23,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
