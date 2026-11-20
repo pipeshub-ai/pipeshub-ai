@@ -124,6 +124,8 @@ class PermissionsMixin(PgBase):
         """Who the user is (``grantees``), the apps they pass the connector gate for, and the source accounts they authenticated as; None when the
         user is no node of the graph. The part of ``get_knowledge_hub_access_v3`` that does not read the grants."""
         # single-table lookups (edges by the key, nodes by primary key): no plan depends on table statistics
+        await tx.fetchval(access_sql.NO_JIT)
+
         async def exist(coll: str, ids: list[str]) -> set[str]:
             if not ids:
                 return set()
