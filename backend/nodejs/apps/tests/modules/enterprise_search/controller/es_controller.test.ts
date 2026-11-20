@@ -70,7 +70,9 @@ import { Logger } from '../../../../src/libs/services/logger.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
 import { runWithRequestContext } from '../../../../src/libs/context/request-context'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
-import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { BadRequestError, ConflictError, InternalServerError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema'
@@ -380,6 +382,7 @@ let restoreSessionDocs: () => void = () => undefined
 
 describe('Enterprise Search Controller', () => {
   beforeEach(() => {
+    registerAppUpstreams(createMockAppConfig())
     if (!(conversationArtifacts.deleteConversationArtifacts as any).restore) {
       sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()
     }
@@ -447,6 +450,7 @@ describe('Enterprise Search Controller', () => {
   afterEach(() => {
     sinon.restore()
     restoreSessionDocs()
+    registerUpstreams({})
   })
 
   // -----------------------------------------------------------------------
@@ -14299,6 +14303,29 @@ describe('Enterprise Search Controller', () => {
         const lines = debug.getCalls().filter((c) => c.args[0] === 'upstream.call.end')
         expect(lines.map((c) => [c.args[1].method, c.args[1].status])).to.deep.equal([['DELETE', 204]])
       })
+
+      for (const [name, aiBackend, reason] of [
+        ['an AI backend that is not a registered service', 'http://169.254.169.254', 'not a registered PipesHub service'],
+        ['an AI backend with embedded credentials', 'http://user:pass@localhost:8000', 'must not contain embedded credentials'],
+      ] as const) {
+        it(`sends nothing to ${name}, and hands the refusal to the error middleware`, async () => {
+          const fetchStub = sinon.stub(globalThis, 'fetch').resolves({ status: 204, ok: true } as Response)
+          const res = createMockResponse()
+          const next = createMockNext()
+
+          await deleteChatAttachment({ ...createMockAppConfig(), aiBackend })(
+            createMockRequest({ params: { recordId: 'my-record-id' }, headers: { authorization: 'Bearer tok' } }),
+            res,
+            next,
+          )
+
+          expect(fetchStub.called, 'fetch reached').to.equal(false)
+          expect(next.calledOnce).to.equal(true)
+          expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+          expect(next.firstCall.args[0].message).to.include(reason)
+          expect(res.status.called).to.equal(false)
+        })
+      }
     })
   })
 

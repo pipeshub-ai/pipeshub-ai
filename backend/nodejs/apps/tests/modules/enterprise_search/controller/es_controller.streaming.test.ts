@@ -10,11 +10,16 @@ import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './cha
 import { AGENT_KEY, Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream } from './streaming-flows'
 import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 // What agui_emitter.py sends when a sub-agent (child run) fails; the parent run carries on.
 const subAgentError = { runId: 'run-child', parentRunId: RUN, message: 'Sub-agent failed: tool timeout', code: 'agent_error' }
 
 describe('es_controller streaming answers', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })

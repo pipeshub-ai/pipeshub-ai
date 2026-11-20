@@ -234,6 +234,7 @@ from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.modules.indexing import refresh_intent
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import (
+    check_record_access_or_503,
     get_document_or_503,
     get_org_or_503,
     get_record_or_503,
@@ -878,7 +879,7 @@ async def get_record_content_internal(
             )
 
         # Independent ACL check — never trust the caller.
-        access = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
+        access = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
         if not access:
             logger.warning(
                 "get_record_content_internal: access denied user=%s record=%s", user_id, record_id,
@@ -1494,9 +1495,7 @@ async def get_signed_url(
 
         mint_user = caller_user or path_user
         if not is_scoped:
-            access = await graph_provider.check_record_access_with_details(
-                mint_user, caller_org, record_id
-            )
+            access = await check_record_access_or_503(graph_provider, mint_user, caller_org, record_id)
             if not access:
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
@@ -1721,9 +1720,7 @@ async def download_file(
             )
 
         if not is_scoped:
-            access = await graph_provider.check_record_access_with_details(
-                user_id, record_org, record_id
-            )
+            access = await check_record_access_or_503(graph_provider, user_id, record_org, record_id)
             if not access:
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
@@ -1804,7 +1801,7 @@ async def stream_record(
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
 
-        access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
+        access_check = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
         if not access_check:
             logger.warning(f"User {user_id} does not have access to record {record_id}")
             raise HTTPException(
@@ -2112,11 +2109,7 @@ async def get_record_by_id(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        has_access = await graph_provider.check_record_access_with_details(
-            user_id=user_id,
-            org_id=org_id,
-            record_id=record_id,
-        )
+        has_access = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
         logger.debug(f"🚀 has_access: {has_access}")
         if has_access:
             doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
@@ -2602,11 +2595,7 @@ async def delete_record(
             )
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
-        has_access = await graph_provider.check_record_access_with_details(
-            user_id=user_id,
-            org_id=org_id,
-            record_id=record_id,
-        )
+        has_access = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
         if not has_access:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,

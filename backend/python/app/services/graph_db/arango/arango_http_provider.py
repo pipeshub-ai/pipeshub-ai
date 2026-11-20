@@ -2103,9 +2103,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return self._translate_node_from_arango(doc)
             return None
         except Exception as e:
-            self.logger.error(f"❌ Failed to get document: {str(e)}")
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            self.logger.error(f"❌ Failed to get document: {str(e)}")
             return None
 
     async def get_record_by_id(
@@ -8571,9 +8571,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return result[0] if result else None
         except Exception as e:
-            self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
 
     async def apply_verified_user_email(
@@ -8795,9 +8795,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
         except Exception as e:
-            self.logger.error("❌ Failed to get user app ids: %s", str(e))
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            self.logger.error("❌ Failed to get user app ids: %s", str(e))
             return []
 
     async def get_users(
@@ -24434,21 +24434,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"🚀 Checking record access for user {user_id}, record {record_id}")
 
             # Get user document to verify user exists
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
             if not user:
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return None
 
             # Get user's accessible apps and extract connector IDs (_key)
             # Note: _get_user_app_ids accepts external userId and converts to user_key internally
-            user_apps_ids = await self._get_user_app_ids(user_id, org_id)
+            user_apps_ids = await self._get_user_app_ids(user_id, org_id, raise_on_error=True)
 
             # Get record to verify it exists before running complex query
-            record_doc = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
-            if not record_doc:
+            record = await self.get_document(
+                record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True,
+            )
+            if not record:
                 self.logger.warning(f"⚠️ Record not found: {record_id}")
                 return None
-            if not is_live_record(record_doc):
+            if not is_live_record(record):
                 self.logger.info("Record %s is in the trash; no access", record_id)
                 return None
 
@@ -24716,28 +24718,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # access, and the UI shows a null role as Owner.
                 access_result = [{"type": "CONNECTOR", "role": "READER"}]
 
-            # If we have access, get the complete record details
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
-            if not record:
-                return None
-
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                return None
-
             # Get file or mail details based on record type
             additional_data = None
             if record.get("recordType") == RecordTypes.FILE.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.FILES.value, transaction
+                    record_id, CollectionNames.FILES.value, transaction, raise_on_error=True,
                 )
             elif record.get("recordType") == RecordTypes.MAIL.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.MAILS.value, transaction
+                    record_id, CollectionNames.MAILS.value, transaction, raise_on_error=True,
                 )
             elif record.get("recordType") == RecordTypes.TICKET.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.TICKETS.value, transaction
+                    record_id, CollectionNames.TICKETS.value, transaction, raise_on_error=True,
                 )
 
             connector_name = record.get("connectorName")

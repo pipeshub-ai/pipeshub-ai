@@ -99,9 +99,9 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
             except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch, SchemaValidationError):    # a rejected payload is never a default
                 raise
             except Exception as e:
-                self.logger.error("%s failed: %s", fn.__name__, e)
-                if flag and k.get("raise_on_error"):
+                if flag and k.get("raise_on_error"):  # raised before logging: the caller that handles it logs it once
                     raise
+                self.logger.error("%s failed: %s", fn.__name__, e)
                 return default() if callable(default) else default
         return wrapper
     return deco

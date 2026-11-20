@@ -20,6 +20,8 @@ const { handleMCPRequest } = require(CONTROLLER_PATH) as typeof import('../../..
 import { CODE_GRAPH_INSTRUCTIONS, CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
 import { McpToolCatalog } from '../../../../src/modules/mcp/tool-catalog'
 import path from 'path'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 // Cached module references — we mutate these exports per-test so the controller
 // picks up our stubs (it destructures from the same object on every request).
@@ -46,6 +48,7 @@ describe('MCP Controller — handleMCPRequest', () => {
 
   beforeEach(() => {
     appConfig = createMockAppConfig()
+    registerAppUpstreams(appConfig)
 
     // Preserve originals
     origCreateMCPServer = mcpServerExports.createMCPServer
@@ -59,6 +62,7 @@ describe('MCP Controller — handleMCPRequest', () => {
     mcpCoreExports.PipeshubCore = origPipeshubCore
     sdkTransportExports.StreamableHTTPServerTransport = origTransport
     sinon.restore()
+    registerUpstreams({})
   })
 
   // =========================================================================
