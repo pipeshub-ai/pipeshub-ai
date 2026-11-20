@@ -7468,6 +7468,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of deleted permission edges (OLD values)
+
+        Raises:
+            Exception: the delete failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 
@@ -7490,6 +7493,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of updated permission edges
+
+        Raises:
+            Exception: the update failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 

@@ -26848,46 +26848,41 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Delete edges to remove team members.
         """
-        try:
-            team_label = collection_to_label(CollectionNames.TEAMS.value)
-            user_label = collection_to_label(CollectionNames.USERS.value)
-            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+        team_label = collection_to_label(CollectionNames.TEAMS.value)
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            delete_query = f"""
-            MATCH (u:{user_label})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
-            WHERE u.id IN $userIds
-            WITH p, properties(p) AS old_props, u.id AS from_id, team.id AS to_id
-            DELETE p
-            RETURN old_props, from_id, to_id
-            """
+        delete_query = f"""
+        MATCH (u:{user_label})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
+        WHERE u.id IN $userIds
+        WITH p, properties(p) AS old_props, u.id AS from_id, team.id AS to_id
+        DELETE p
+        RETURN old_props, from_id, to_id
+        """
 
-            results = await self.client.execute_query(
-                delete_query,
-                parameters={
-                    "userIds": user_ids,
-                    "team_id": team_id
-                },
-                txn_id=transaction
-            )
+        results = await self.client.execute_query(
+            delete_query,
+            parameters={
+                "userIds": user_ids,
+                "team_id": team_id
+            },
+            txn_id=transaction
+        )
 
-            # Convert results to ArangoDB format
-            deleted_list = []
-            for row in results:
-                old_props = row.get("old_props", {})
-                edge_data = {
-                    **old_props,
-                    "from_id": row.get("from_id"),
-                    "to_id": row.get("to_id"),
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_collection": CollectionNames.TEAMS.value
-                }
-                deleted_list.append(self._neo4j_to_arango_edge(edge_data, CollectionNames.PERMISSION.value))
+        # Convert results to ArangoDB format
+        deleted_list = []
+        for row in results:
+            old_props = row.get("old_props", {})
+            edge_data = {
+                **old_props,
+                "from_id": row.get("from_id"),
+                "to_id": row.get("to_id"),
+                "from_collection": CollectionNames.USERS.value,
+                "to_collection": CollectionNames.TEAMS.value
+            }
+            deleted_list.append(self._neo4j_to_arango_edge(edge_data, CollectionNames.PERMISSION.value))
 
-            return deleted_list if deleted_list else []
-
-        except Exception as e:
-            self.logger.error(f"Error in delete_team_member_edges: {str(e)}", exc_info=True)
-            return []
+        return deleted_list if deleted_list else []
 
     async def batch_update_team_member_roles(
         self,
@@ -26899,52 +26894,45 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Batch update user roles in a team.
         """
-        try:
-            for user_role in user_roles:
-                self.validator.validate_edge_update(
-                    CollectionNames.PERMISSION.value, {"role": user_role.get("role"), "updatedAtTimestamp": timestamp}
-                )
-            team_label = collection_to_label(CollectionNames.TEAMS.value)
-            user_label = collection_to_label(CollectionNames.USERS.value)
-            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-
-            batch_update_query = f"""
-            UNWIND $user_roles AS user_role
-            MATCH (u:{user_label} {{id: user_role.userId}})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
-            SET p.role = user_role.role, p.updatedAtTimestamp = $timestamp
-            RETURN properties(p) AS updated_props, u.id AS from_id, team.id AS to_id
-            """
-
-            results = await self.client.execute_query(
-                batch_update_query,
-                parameters={
-                    "team_id": team_id,
-                    "user_roles": user_roles,
-                    "timestamp": timestamp
-                },
-                txn_id=transaction
+        for user_role in user_roles:
+            self.validator.validate_edge_update(
+                CollectionNames.PERMISSION.value, {"role": user_role.get("role"), "updatedAtTimestamp": timestamp}
             )
+        team_label = collection_to_label(CollectionNames.TEAMS.value)
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            # Convert results to ArangoDB format
-            updated_permissions = []
-            for row in results:
-                updated_props = row.get("updated_props", {})
-                edge_data = {
-                    **updated_props,
-                    "from_id": row.get("from_id"),
-                    "to_id": row.get("to_id"),
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_collection": CollectionNames.TEAMS.value
-                }
-                updated_permissions.append(self._neo4j_to_arango_edge(edge_data, CollectionNames.PERMISSION.value))
+        batch_update_query = f"""
+        UNWIND $user_roles AS user_role
+        MATCH (u:{user_label} {{id: user_role.userId}})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
+        SET p.role = user_role.role, p.updatedAtTimestamp = $timestamp
+        RETURN properties(p) AS updated_props, u.id AS from_id, team.id AS to_id
+        """
 
-            return updated_permissions if updated_permissions else []
+        results = await self.client.execute_query(
+            batch_update_query,
+            parameters={
+                "team_id": team_id,
+                "user_roles": user_roles,
+                "timestamp": timestamp
+            },
+            txn_id=transaction
+        )
 
-        except SchemaValidationError:
-            raise
-        except Exception as e:
-            self.logger.error(f"Error in batch_update_team_member_roles: {str(e)}", exc_info=True)
-            return []
+        # Convert results to ArangoDB format
+        updated_permissions = []
+        for row in results:
+            updated_props = row.get("updated_props", {})
+            edge_data = {
+                **updated_props,
+                "from_id": row.get("from_id"),
+                "to_id": row.get("to_id"),
+                "from_collection": CollectionNames.USERS.value,
+                "to_collection": CollectionNames.TEAMS.value
+            }
+            updated_permissions.append(self._neo4j_to_arango_edge(edge_data, CollectionNames.PERMISSION.value))
+
+        return updated_permissions if updated_permissions else []
 
     async def delete_all_team_permissions(
         self,
