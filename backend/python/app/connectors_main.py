@@ -1269,6 +1269,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         app.state.kg_worker = start_kg_worker(graph_provider, logger)
+    except ValueError:          # a kg setting this service cannot run with (the message names it): refuse to start rather than serve a knowledge hub that never lists
+        raise
     except Exception as e:      # the service runs without it: reads stay on the walk, and the change log is drained at the next start
         logger.error(f"Failed to start the kg worker: {e}", exc_info=True)
 
