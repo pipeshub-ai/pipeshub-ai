@@ -588,7 +588,9 @@ class RetrievalService:
         async def run_scoped(flt: Any) -> list[dict[str, Any]]:  # noqa: ANN401
             token = _SHADOW_SCOPE_FILTER.set(flt)
             try:
-                found = await self._execute_parallel_searches(queries, filter, asked, org_id, user_id, plan=shadow_plan)
+                # its partial search is its own: it reaches neither the request's answer nor a search running beside it
+                with degraded_notice.isolated():
+                    found = await self._execute_parallel_searches(queries, filter, asked, org_id, user_id, plan=shadow_plan)
             finally:
                 _SHADOW_SCOPE_FILTER.reset(token)
             if shadow_plan.failed_collections:      # a collection that failed to answer would read as recall loss
@@ -1031,6 +1033,9 @@ class RetrievalService:
                     # stands.
                     adjudicated = (search_results, accessible_virtual_id_to_record_id)
                     kept_failed, kept_searched = plan.failed_collections, plan.collections_searched
+                    # the replacement's partial search is its own: the page that is served, kept or replaced, says only what its own search said
+                    kept_partial = (plan.degraded, set(plan.degraded_reasons))
+                    plan.degraded, plan.degraded_reasons = False, set()
                     try:
                         replacement = await self._search_by_record_ids(
                             queries, limit, org_id, user_id, user_key, filters, time_range,
@@ -1050,12 +1055,14 @@ class RetrievalService:
                         log_failure(self.logger, "search.record_id_retry_failed", exc, include_error_text=False)
                         replacement = None
                         plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
+                        plan.degraded, plan.degraded_reasons = kept_partial
                     if replacement is None:
                         search_results, accessible_virtual_id_to_record_id = adjudicated
                     elif replacement.empty_scope:
                         # The record list is empty. No vector query: an empty id
                         # list is dropped by every backend, which would leave an
                         # org-wide search. What the access check admitted stands.
+                        plan.degraded, plan.degraded_reasons = kept_partial
                         if not search_results:
                             return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
                     elif not replacement.results:
@@ -1071,6 +1078,7 @@ class RetrievalService:
                         )
                         search_results, accessible_virtual_id_to_record_id = adjudicated
                         plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
+                        plan.degraded, plan.degraded_reasons = kept_partial
                     else:
                         search_results = replacement.results
                         accessible_virtual_id_to_record_id = replacement.accessible
@@ -2931,50 +2939,51 @@ class RetrievalService:
             return [[] for _ in requests]
 
         degraded_notice.track()
-        noted_before = degraded_notice.count()
-        semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
+        # This search's own notes: other searches of the request (a turn's parallel tools, a timeline's periods) note beside it.
+        with degraded_notice.collect() as noted:
+            semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
 
-        async def _search(collection_name: str) -> list[list]:
-            async with semaphore:
-                return await query_nearest_points_with_retry(
-                    self.vector_db_service, collection_name, requests, logger=self.logger,
-                )
-
-        outcomes = await asyncio.gather(
-            *[_search(name) for name in collections],
-            return_exceptions=True,
-        )
-
-        # Per query index, one CollectionResults per collection that answered.
-        per_query: list[list[CollectionResults]] = [[] for _ in requests]
-        failures: list[BaseException] = []
-        for collection_name, outcome in zip(collections, outcomes):
-            if isinstance(outcome, BaseException):
-                failures.append(outcome)
-                if failed is not None:
-                    failed.append(collection_name)
-                self.logger.warning(
-                    "Search against collection '%s' failed; continuing with the "
-                    "remaining %d collection(s): %s",
-                    collection_name,
-                    len(collections) - 1,
-                    outcome,
-                )
-                continue
-            for batch in outcome:
-                for hit in batch:
-                    if isinstance(reason := getattr(hit, "degraded", None), str):
-                        degraded_notice.note(reason)
-                        break
-            for i, batch in enumerate(outcome):
-                if i < len(per_query):
-                    per_query[i].append(
-                        CollectionResults(collection_name=collection_name, results=batch)
+            async def _search(collection_name: str) -> list[list]:
+                async with semaphore:
+                    return await query_nearest_points_with_retry(
+                        self.vector_db_service, collection_name, requests, logger=self.logger,
                     )
+
+            outcomes = await asyncio.gather(
+                *[_search(name) for name in collections],
+                return_exceptions=True,
+            )
+
+            # Per query index, one CollectionResults per collection that answered.
+            per_query: list[list[CollectionResults]] = [[] for _ in requests]
+            failures: list[BaseException] = []
+            for collection_name, outcome in zip(collections, outcomes):
+                if isinstance(outcome, BaseException):
+                    failures.append(outcome)
+                    if failed is not None:
+                        failed.append(collection_name)
+                    self.logger.warning(
+                        "Search against collection '%s' failed; continuing with the "
+                        "remaining %d collection(s): %s",
+                        collection_name,
+                        len(collections) - 1,
+                        outcome,
+                    )
+                    continue
+                for batch in outcome:
+                    for hit in batch:
+                        if isinstance(reason := getattr(hit, "degraded", None), str):
+                            degraded_notice.note(reason)
+                            break
+                for i, batch in enumerate(outcome):
+                    if i < len(per_query):
+                        per_query[i].append(
+                            CollectionResults(collection_name=collection_name, results=batch)
+                        )
 
         # Read before the merge trims: a store that found nothing, or whose hits fall below the cut, still counts.
         if degraded is not None:
-            degraded.extend(degraded_notice.since(noted_before))
+            degraded.extend(noted)
 
         # Degrading when one collection is unreachable is the point of
         # return_exceptions; degrading when *every* one failed is not — that is

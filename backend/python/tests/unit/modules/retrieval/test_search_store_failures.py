@@ -404,3 +404,61 @@ async def test_a_requery_that_stopped_short_does_not_mark_the_attempt_that_was_k
     assert len(calls) == 2 and len(kept) == 3                         # the re-query ran and the first attempt was kept
     assert plan.degraded is False and plan.degraded_reasons == set()
     assert plan.incomplete_notice() is None
+
+
+async def test_two_searches_at_once_each_report_only_their_own_partial_search(service, mock_vector_db_service, tracked_request) -> None:
+    """Searches of one request run side by side (a turn's parallel tools, a timeline's periods): the one that timed out gets the sentence, the one that
+    finished in full does not, though it finished after the other noted its timeout."""
+    import asyncio
+
+    noted = asyncio.Event()
+
+    async def query(collection_name: str, requests: list) -> list[list]:
+        if collection_name == "late":
+            degraded_notice.note("timeout")
+            noted.set()
+            return [[] for _ in requests]
+        await noted.wait()              # finishes after the other search noted its timeout
+        return [[] for _ in requests]
+
+    mock_vector_db_service.query_nearest_points = AsyncMock(side_effect=query)
+    timed_out: list[str] = []
+    complete: list[str] = []
+    await asyncio.gather(service._fan_out_searches(["full"], [MagicMock()], 10, degraded=complete),
+                         service._fan_out_searches(["late"], [MagicMock()], 10, degraded=timed_out))
+
+    assert timed_out == ["timeout"] and complete == []
+    assert mod._QueryPlan(degraded=True, degraded_reasons=set(timed_out)).incomplete_notice() == mod.SEARCH_DEGRADED_MESSAGE
+    assert degraded_notice.was_degraded()                  # the request still knows a search of it was partial
+
+
+async def test_the_shadow_comparisons_partial_search_is_its_own(service, mock_vector_db_service, tracked_request) -> None:
+    """The shadow comparison repeats a search in a task of its own: a timeout of it reaches neither the request's answer nor a search beside it."""
+    import asyncio
+
+    noted = asyncio.Event()
+
+    async def query(collection_name: str, requests: list) -> list[list]:
+        if mod._SHADOW_SCOPE_FILTER.get() is not None:              # the shadow's search
+            degraded_notice.note("timeout")
+            noted.set()
+        else:
+            await noted.wait()
+        return [[] for _ in requests]
+
+    mock_vector_db_service.query_nearest_points = AsyncMock(side_effect=query)
+    started: list[asyncio.Task] = []
+
+    class Shadow:
+        def submit(self, org_id, user_key, returned, accessible, run_scoped, check, served) -> None:
+            started.append(asyncio.get_running_loop().create_task(run_scoped(object())))
+
+    service._shadow = Shadow()
+    plan = mod._QueryPlan(dense=[[0.1]], sparse=[None], collections=["records"])
+    service._submit_shadow(["q"], None, 10, "o1", "u1", "user-key", None, (), plan, {"vr1"}, {"vr1": "r1"})
+    own: list[str] = []
+    await service._fan_out_searches(["records"], [MagicMock()], 10, degraded=own)
+    await started[0]
+
+    assert own == []
+    assert not degraded_notice.was_degraded()
