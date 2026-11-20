@@ -170,8 +170,61 @@ async def test_a_connector_with_nodes_before_the_worker_is_backfilled_once_and_a
         assert await bootstrap.bring_to_enforce(pg_db, other, due2) == 0
     assert await _mode(p, other) != "enforce"
     assert "stays on the walk" in caplog.text
-    assert await bootstrap.bring_to_enforce(pg_db, other, due2) == 0         # once: a failed verify is not retried by the worker
+    assert await bootstrap.bring_to_enforce(pg_db, other, due2) == 0         # not at once: the retry waits its backoff
     assert await _mode(p, other) != "enforce"
+
+
+async def test_a_connector_that_differed_is_copied_again_and_promoted_on_a_later_pass_once_it_matches(pg_db, monkeypatch, caplog) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    real, verifies, restarts = bf.verify_app, [], []
+    real_scope = bf.backfill_scope
+
+    async def differs_once(tx, o, app) -> object:
+        res = await real(tx, o, app)
+        verifies.append(app)
+        if len(verifies) == 1:
+            res.note("extra", "x")
+        return res
+
+    async def scope(db, o, app, **k) -> int:
+        if k.get("restart"):
+            restarts.append(app)
+        return await real_scope(db, o, app, **k)
+    monkeypatch.setattr(bf, "verify_app", differs_once)
+    monkeypatch.setattr(bf, "backfill_scope", scope)
+    due: dict = {}
+    with caplog.at_level("WARNING"):
+        assert await bootstrap.bring_to_enforce(pg_db, org, due) == 0
+    assert await _mode(p, org) != "enforce" and "differs from the graph (1 time(s) in a row)" in caplog.text
+    assert 0 < due[(org, "drv")] - time.monotonic() <= bootstrap.DIFFERS_RETRY_S      # tried again later, not never
+    assert await bootstrap.bring_to_enforce(pg_db, org, due) == 0 and verifies == ["drv"]      # not before its turn: no hot loop
+    due[(org, "drv")] = 0.0                                                     # its turn has come
+    assert await bootstrap.bring_to_enforce(pg_db, org, due) == 1
+    assert restarts == ["drv"] and verifies == ["drv", "drv"]                  # a fresh copy, verified again
+    assert await _mode(p, org) == "enforce"
+
+
+async def test_a_connector_that_keeps_differing_stays_on_the_walk_and_waits_longer_each_time(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    real, verifies = bf.verify_app, []
+
+    async def differs(tx, o, app) -> object:
+        res = await real(tx, o, app)
+        verifies.append(app)
+        res.note("extra", "x")
+        return res
+    monkeypatch.setattr(bf, "verify_app", differs)
+    due: dict = {}
+    waits = []
+    for _ in range(3):
+        due[(org, "drv")] = 0.0
+        assert await bootstrap.bring_to_enforce(pg_db, org, due) == 0
+        waits.append(due[(org, "drv")] - time.monotonic())
+        assert await _mode(p, org) != "enforce"                                 # never promoted while it differs
+    assert len(verifies) == 3
+    assert waits[0] <= bootstrap.DIFFERS_RETRY_S < waits[1] <= 2 * bootstrap.DIFFERS_RETRY_S < waits[2] <= bootstrap.DIFFERS_RETRY_MAX_S, waits
 
 
 async def test_the_bootstrap_verifies_a_connector_once_and_promotes_it_with_that_verify(pg_db, monkeypatch) -> None:
