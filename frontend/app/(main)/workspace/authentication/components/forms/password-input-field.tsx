@@ -5,6 +5,7 @@ import { Flex, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FieldLabel } from './field-label';
 import type { PasswordFieldDef } from '../../constants';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 interface PasswordInputFieldProps {
   field: PasswordFieldDef;
@@ -23,8 +24,8 @@ export function PasswordInputField({ field, value, onChange, revealed = false }:
   return (
     <Flex direction="column" gap="1">
       <FieldLabel label={field.label} labelSuffix={field.labelSuffix} required={field.required} />
-      <TextField.Root
-        type={showSecret ? 'text' : 'password'}
+      <SecretTextField
+        masked={!showSecret}
         placeholder={field.placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -41,7 +42,7 @@ export function PasswordInputField({ field, value, onChange, revealed = false }:
             />
           </span>
         </TextField.Slot>
-      </TextField.Root>
+      </SecretTextField>
       {field.helperText && (
         <Text size="1" style={{ color: 'var(--slate-10)' }}>
           {field.helperText}

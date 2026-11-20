@@ -31,7 +31,7 @@ import {
 } from '../toolset-form';
 import type { ApiCompiledSpec, ApiToolsetConfig } from '../types';
 import { ApiOperationsChecklist } from './api-operations-checklist';
-import { LabeledTextArea, LabeledTextField } from './labeled-controls';
+import { LabeledSecretTextField, LabeledTextArea, LabeledTextField } from './labeled-controls';
 import { PanelSection } from './panel-section';
 
 const SPEC_FILE_TYPES = '.json,.yaml,.yml,application/json,application/yaml,text/yaml';
@@ -438,9 +438,8 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
                     <LabeledTextField size="2" value={form.oauthClientId} onChange={(e) => update({ oauthClientId: e.target.value })} />
                   </FormField>
                   <FormField label={t('workspace.apiToolsets.editor.oauthClientSecret')} optional>
-                    <LabeledTextField
+                    <LabeledSecretTextField
                       size="2"
-                      type="password"
                       value={form.oauthClientSecret}
                       placeholder={config?.hasOauthClientSecret ? t('workspace.apiToolsets.editor.keepSecret') : undefined}
                       onChange={(e) => update({ oauthClientSecret: e.target.value })}
