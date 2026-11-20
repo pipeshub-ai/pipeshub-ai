@@ -584,3 +584,94 @@ class TestChainHas:
         assert EC.chain_has(outer, OSError) is True
         assert EC.chain_has(outer, KeyError, ValueError) is True
         assert EC.chain_has(outer, KeyError) is False
+
+
+class TestChainHelpers:
+    def test_has_chain(self) -> None:
+        assert EC.has_chain(_chained(RuntimeError("outer"), KeyError("k")))
+        assert EC.has_chain(_chained(RuntimeError("outer"), KeyError("k"), explicit=False))
+        assert not EC.has_chain(_raised(RuntimeError("alone")))
+        suppressed = RuntimeError("from None")
+        suppressed.__context__, suppressed.__suppress_context__ = KeyError("k"), True
+        assert not EC.has_chain(suppressed)
+
+    def test_quotes_content_reads_every_link(self) -> None:
+        deep = _chained(RuntimeError("outer"), _chained(DocumentProcessingError("Failed: report.docx"), KeyError("k")))
+        assert EC.quotes_content(deep)
+        assert EC.quotes_content(DocumentProcessingError("x"))
+        assert not EC.quotes_content(_chained(RuntimeError("outer"), ConnectionError("down")))
+
+    def test_a_group_whose_member_points_back_at_it_is_walked_once(self) -> None:
+        member = ConnectionError("down")
+        group = ExceptionGroup("batch", [member])
+        member.__cause__ = group  # a cycle through the member edge
+        assert EC.quotes_content(group) is False
+        assert EC._hides_text(group) is False
+        member.log_hide_text = True
+        assert EC._hides_text(member) is True
+        content = DocumentProcessingError("a.docx")
+        content.__cause__ = ExceptionGroup("g", [content])
+        assert EC.quotes_content(content) is True
+
+    def test_a_parsing_service_error_quotes_content(self) -> None:
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        assert EC.quotes_content(ParsingClientError(ParseErrorCode.PARSE_FAILED, "Docling service failed to parse 'a.pdf'"))
+
+    def test_quotes_content_reads_exception_group_members(self) -> None:
+        group = ExceptionGroup("pages", [ConnectionError("down"), DocumentProcessingError("Failed: report.docx")])
+        assert EC.quotes_content(_chained(RuntimeError("outer"), group))
+        assert not EC.quotes_content(ExceptionGroup("pages", [ConnectionError("down")]))
+
+    def test_a_validation_error_quotes_the_message(self) -> None:
+        from pydantic import BaseModel, ValidationError
+
+        class _M(BaseModel):
+            payload: dict
+
+        with pytest.raises(ValidationError) as caught:
+            _M(payload="Quarterly-Secret-Plan.docx")
+        assert EC.quotes_content(_chained(RuntimeError("outer"), caught.value))
+
+
+class TestLogUnitEnd:
+    def test_no_exception_writes_the_event_at_the_level(self, capture) -> None:
+        logger, records = capture
+        EC.log_unit_end(logger, "unit.end", None, level=logging.INFO, outcome="success", n=3)
+        (record,) = records
+        assert (record.levelno, record.getMessage(), record.outcome, record.n) == (logging.INFO, "unit.end", "success", 3)
+        assert not hasattr(record, "error_class")
+
+    def test_no_exception_with_a_class_writes_the_class(self, capture) -> None:
+        logger, records = capture
+        EC.log_unit_end(logger, "unit.end", None, level=logging.WARNING, error_class="timeout", outcome="failure")
+        (record,) = records
+        assert (record.levelno, record.error_class, record.outcome) == (logging.WARNING, "timeout", "failure")
+        assert record.exc_info is None and not hasattr(record, "error_type")
+
+    def test_a_fresh_exception_is_one_failure_line_with_the_stack_once(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(KeyError("k"))
+        EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, include_error_text=False, outcome="failure")
+        (record,) = records
+        assert (record.levelno, record.error_class, record.error_type) == (logging.ERROR, "internal", "KeyError")
+        assert not hasattr(record, "error_message") and "KeyError: <message omitted>" in record.exc_text
+        assert EC.logged_level(exc) == logging.ERROR
+
+    def test_an_exception_already_logged_as_high_adds_no_text_and_no_stack(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(KeyError("secret-arg"))
+        EC.log_failure(logger, "inner.failed", exc)  # ERROR, with the stack
+        EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, outcome="failure")
+        end = records[-1]
+        assert (end.levelno, end.getMessage(), end.error_class, end.error_type) == (logging.ERROR, "unit.end", "internal", "KeyError")
+        assert end.exc_info is None and getattr(end, "exc_text", None) is None and not hasattr(end, "error_message")
+
+    def test_an_exception_logged_lower_is_written_again_at_the_higher_level(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(KeyError("k"))
+        EC.log_failure(logger, "inner.failed", exc, level=logging.WARNING)
+        EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, outcome="failure")
+        end = records[-1]
+        assert end.levelno == logging.ERROR and "KeyError" in end.exc_text and hasattr(end, "error_message")

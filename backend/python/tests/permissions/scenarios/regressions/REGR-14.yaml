@@ -1,0 +1,53 @@
+- id: REGR-14
+  title: 'A Jira level held through a group: the reporter Browse names on the issue reads it alone, and not once out of the group'
+  source: >-
+    Jira Cloud access harness on the connector simulator (JUNI-121). Browse holder `reporter` is "Grant for the user who reported the issue";
+    a level narrows Browse "within the bounds of the project's permissions" and can hold "Groups of users"
+    (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json, https://support.atlassian.com/jira/kb/jira-permissions-general-overview/)
+  rule: intersection
+  world:
+    principals:
+      - {id: rep}
+      - {id: asg}
+      - {id: dev}
+      - {id: admin}
+      - {id: g:admins, kind: group}
+    nodes:
+      - {id: J, kind: app, app_type: JIRA}
+      - {id: P, kind: group, connector: J, rule: OPEN, parents: [J], belongs: [J]}
+      - {id: L, kind: group, connector: J, rule: RESTRICTED, access_only: true, parents: [P], inherits: [P], belongs: [P]}
+      - {id: i, kind: record, connector: J, rule: OPEN, parents: [P, L], inherits: [L], belongs: [P]}
+    grants:
+      - [dev, P]
+      - [g:admins, L]
+      - [rep, i]
+      - [asg, i]
+    memberships:
+      - [rep, g:admins]
+      - [asg, g:admins]
+      - [dev, g:admins]
+      - [admin, g:admins]
+    gates:
+      - [rep, J]
+      - [asg, J]
+      - [dev, J]
+      - [admin, J]
+  mutations:
+    - {kind: member_removed, node: g:admins, ref: rep}
+    - {kind: grant_removed, node: i, ref: rep}
+  expect:
+    before:
+      rep: {i: admit}
+      asg: {i: admit}
+      dev: {i: admit}
+      admin: {i: deny}
+    verdicts:
+      rep: {i: deny}
+      asg: {i: admit}
+      dev: {i: admit}
+      admin: {i: deny}
+  tags: [regression, jira, "cell:jira/level-holder", "cell:jira/level-members-change"]
+  comment: >-
+    The project grants Browse to its role (dev) and to each issue's reporter and assignee; the level holds g:admins. rep reports i and asg is
+    assigned it, both in g:admins, so Jira shows i to both, and the connector grants each on the OPEN issue (level_readers). admin is in the level but cannot browse the project,
+    and dev reads it through the project and the level. Out of g:admins, the level's digest moves, the issue is read again and rep's grant goes.

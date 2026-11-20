@@ -178,16 +178,39 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       # Real-file conversions run in the modules shard and must not skip there (checked below). The
       # same LibreOffice components as the application image: Writer (doc, odt, rtf), Calc (xls), Impress (ppt).
+      # The ~108 MB download once took 16-26 minutes from the runner's mirror (azure.archive.ubuntu.com, ~100 kB/s)
+      # and the job hit its 30-minute limit mid-pytest. apt only fails over between the image's mirrors
+      # (/etc/apt/apt-mirrors.txt) on an error, never on a slow transfer, so each download attempt is bounded and the
+      # second one goes to archive.ubuntu.com. Rewriting the mirror list keeps the package lists the image shipped:
+      # their names follow the source URI (mirror+file:...), not the mirror. Only the download is bounded; the
+      # install reads local files, so a timeout can never interrupt dpkg.
       - name: Install LibreOffice
         if: ${{ matrix.shard == 'modules' }}
-        run: sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui
+        timeout-minutes: 10
+        env:
+          ATTEMPT_SECONDS: '240'
+        run: |
+          packages=(libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui)
+          download() {
+            sudo timeout --kill-after=10 "$ATTEMPT_SECONDS" apt-get install -y --no-install-recommends --download-only \
+              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 "${packages[@]}"
+          }
+          if ! download; then
+            echo "::warning::The LibreOffice download from the runner's apt mirror failed or took over ${ATTEMPT_SECONDS}s; retrying from archive.ubuntu.com"
+            if ! grep -rqs 'mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list /etc/apt/sources.list.d/; then
+              echo "::error::The runner's apt sources no longer use /etc/apt/apt-mirrors.txt, so there is no mirror to fall back to"
+              exit 1
+            fi
+            printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://security.ubuntu.com/ubuntu/\tpriority:2\n' \
+              | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            if ! download; then
+              echo "::error::The LibreOffice download failed or took over ${ATTEMPT_SECONDS}s from both the runner's apt mirror and archive.ubuntu.com"
+              exit 1
+            fi
+          fi
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
 
       - name: Install uv
         run: pip install uv
@@ -416,11 +439,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install uv
         run: pip install uv
 
@@ -466,11 +484,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv
@@ -531,11 +544,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv
@@ -603,11 +611,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv

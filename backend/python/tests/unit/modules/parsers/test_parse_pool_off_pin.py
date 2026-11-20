@@ -59,6 +59,7 @@ PARSE_POOL_ALLOWED = {
     "_ParsePool.__init__", "_ParsePool._make_lane",  # one lane factory hook; the default factory builds the same _Lane (test_parse_pool_classes::test_default_lane_factory_is_the_legacy_lane)
     "set_resource_governor",  # refuses PARSE_LANES=on with PARSE_ADMISSION=classes; a no-op with the flag off
     "_Job.kind", "_Job.covered", "_covered",  # the optional kind and covered fields: None and False leave the legacy pool untouched
+    "_Lane._crashed",  # a worker ended by its job's CPU limit is a timeout (test_excel_worker_load_round6); any other death is still a crash (test_parse_pool::TestWorkerCrash)
 }
 TABLE_DETECTOR_ALLOWED = {
     "_session",  # reads _threads()

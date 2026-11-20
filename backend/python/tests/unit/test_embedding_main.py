@@ -32,7 +32,6 @@ from app.embedding_main import (
     _measure_blobs_dir_bytes,
     _normalize_input,
     app,
-    model_manager,
     release_memory,
     run,
 )
@@ -123,7 +122,7 @@ class TestEmbeddingServerRoutes:
             ["hello"],
             trust_remote_code=False,
             priority=EncodePriority.BULK,
-            should_stop=ANY,
+            should_stop=ANY, witness=ANY,
         )
 
     def test_create_embeddings_batch_input(self, client):
@@ -144,7 +143,7 @@ class TestEmbeddingServerRoutes:
             ["hello", "world"],
             trust_remote_code=False,
             priority=EncodePriority.BULK,
-            should_stop=ANY,
+            should_stop=ANY, witness=ANY,
         )
 
     def test_create_embeddings_empty_input_rejected(self, client):
@@ -211,7 +210,7 @@ class TestEmbeddingServerRoutes:
             ["hello"],
             trust_remote_code=True,
             priority=EncodePriority.BULK,
-            should_stop=ANY,
+            should_stop=ANY, witness=ANY,
         )
 
     def test_a_marked_query_is_encoded_as_a_query(self, client) -> None:
@@ -1276,10 +1275,8 @@ class TestQueriesDuringIndexing:
             assert before["in_use"] == 1 and before["waiting"] == 2
             assert before["oldest_in_use_age_s"]["bulk"] > 0
 
-            started = time.monotonic()
-            await asyncio.wait_for(manager.encode("m", ["query"], priority=EncodePriority.QUERY), timeout=2)
-            assert time.monotonic() - started < 1
-            # The query took the reserved slot without queueing.
+            await asyncio.wait_for(manager.encode("m", ["query"], priority=EncodePriority.QUERY), timeout=10)
+            # The query took the reserved slot without queueing (read on the gate's own clock, not timed).
             assert manager.encode_gate_stats()["wait_p95_ms"]["query"] == 0.0
 
             release_bulk.set()

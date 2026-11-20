@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
@@ -40,9 +41,10 @@ from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
     RecordEventHandler,
+    logged_file_type,
 )
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
-from app.utils import user_errors
+from app.utils import indexing_timing, user_errors
 from tests.support.record_handler import make_record_handler
 from tests.unit.attempt_start import attempt_start_via
 
@@ -51,6 +53,16 @@ from tests.unit.attempt_start import attempt_start_via
 # ---------------------------------------------------------------------------
 
 _make_handler = make_record_handler
+
+
+async def _collect_noted(handler, event_type, payload) -> tuple[list, dict]:
+    """The events, and the facts the handler noted for the record's index.end line."""
+    timeline, token = indexing_timing.begin_record(payload.get("recordId"))
+    try:
+        events = await _collect_events(handler, event_type, payload)
+        return events, dict(timeline.facts)
+    finally:
+        indexing_timing.end_record(timeline, token, outcome="ok")
 
 
 async def _collect_events(handler, event_type, payload):
@@ -1008,6 +1020,7 @@ class TestDeleteVectorCollectionEvent:
         sink.vector_store = MagicMock(spec=VectorStore)
         sink.vector_store.get_embedding_model_instance = AsyncMock(return_value=False)
         sink.vector_store.embedding_size = embedding_size
+        sink.entity_vector_store = MagicMock(reset_collection=AsyncMock(return_value=True))
         handler.event_processor.sink_orchestrator = sink
         registry = AsyncMock()
         registry.recreate_records_collections = AsyncMock(return_value=["records"])
@@ -1016,7 +1029,7 @@ class TestDeleteVectorCollectionEvent:
 
     @pytest.mark.asyncio
     async def test_recreates_every_managed_collection_and_marks_ready(self):
-        handler, _sink, registry = self._handler_with_vector_store()
+        handler, sink, registry = self._handler_with_vector_store()
 
         with patch(
             "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
@@ -1029,6 +1042,8 @@ class TestDeleteVectorCollectionEvent:
             )
 
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        sink.entity_vector_store.reset_collection.assert_awaited_once()  # the entity index is reset with the records collections
+        registry.release_orphan_pins.assert_awaited_once()
         assert events[0].data.record_id == "delete_vector_collection"
         # The dimension comes from the live model, not the manifest: this event
         # fires precisely because the model (and so the width) changed.
@@ -1371,6 +1386,40 @@ class TestVectorDbOnlyReindex:
         sink.index.assert_not_awaited()
         updates = handler.event_processor.graph_provider.update_node.await_args.args[2]
         assert updates["indexingStatus"] == ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("write_fails", [False, True])
+    async def test_an_unreadable_blob_is_noted_only_once_failed_is_written(self, write_fails) -> None:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value=_vector_only_graph_doc())
+        gp.update_node = AsyncMock(side_effect=ConnectionError("graph down") if write_fails else None, return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        sink = MagicMock()
+        sink.blob_storage.get_record_from_storage = AsyncMock(side_effect=DocumentProcessingError("bad stored payload"))  # terminal
+        handler.event_processor.sink_orchestrator = sink
+        payload = {"recordId": "rec-1", "orgId": "org-1", "virtualRecordId": "vr-1",
+                   "mimeType": MimeTypes.PLAIN_TEXT.value, "forceReindex": True, "vectorDbOnly": True}
+        timeline, token = indexing_timing.begin_record("rec-1")
+        try:
+            if write_fails:
+                with pytest.raises(ConnectionError, match="graph down"):  # the status write's own error, not the blob's
+                    await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+            else:
+                await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+            noted = dict(timeline.facts)
+        finally:
+            indexing_timing.end_record(timeline, token, outcome="ok")
+        assert any(
+            call.args[2].get("indexingStatus") == ProgressStatus.FAILED.value for call in gp.update_node.await_args_list
+        )
+        if write_fails:
+            assert noted.get("reason") != "stored_content_missing"
+        else:
+            assert (noted.get("outcome"), noted.get("reason")) == ("skipped", "stored_content_missing")
 
     @pytest.mark.asyncio
     async def test_missing_virtual_record_id_is_skipped_not_failed(self):
@@ -1764,20 +1813,19 @@ class TestRecordNotFound:
         ]
 
     @pytest.mark.asyncio
-    async def test_record_not_found_is_a_warning_not_an_error(self) -> None:
+    async def test_record_not_found_is_a_skip_not_a_fault(self, caplog) -> None:
         """Deleting a record while its event is queued is normal, so draining
-        it must not show up in error-level alerting."""
-        handler = _make_handler()
+        it must not show up in warning- or error-level alerting: the record's
+        index.end says skipped, reason not_found."""
+        handler = _make_handler(logger=logging.getLogger("test.p6.record_handler"))
         handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
 
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
-        await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        with caplog.at_level(logging.DEBUG, logger="test.p6.record_handler"):
+            _, noted = await _collect_noted(handler, EventTypes.NEW_RECORD.value, payload)
 
-        handler.logger.error.assert_not_called()
-        assert any(
-            "not found in database" in str(c)
-            for c in handler.logger.warning.call_args_list
-        )
+        assert (noted.get("outcome"), noted.get("reason")) == ("skipped", "not_found")
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     @pytest.mark.asyncio
     async def test_an_unreadable_graph_is_not_drained_as_a_deletion(self):
@@ -1929,17 +1977,13 @@ class TestAlreadyIndexed:
         handler.event_processor.stage_ingress = ingress
         return handler, ingress
 
-    @staticmethod
-    def _logged_already_done(handler: RecordEventHandler) -> bool:
-        return any("Indexing already done" in str(c.args[0]) for c in handler.logger.info.call_args_list if c.args)
-
     @pytest.mark.asyncio
     async def test_a_record_the_stage_runtime_holds_is_acknowledged(self) -> None:
         handler, ingress = self._queued_for_classification(handoff_lost=False)
         payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
-        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        events, noted = await _collect_noted(handler, EventTypes.NEW_RECORD.value, payload)
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
-        assert self._logged_already_done(handler)
+        assert (noted.get("outcome"), noted.get("reason")) == ("skipped", "already_indexed")
         ingress.handoff_lost.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1948,10 +1992,32 @@ class TestAlreadyIndexed:
         payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
         # The full path runs into the bare test doubles further on; what matters is
         # that the delivery is not acknowledged as already indexed.
+        timeline, token = indexing_timing.begin_record("r1")
+        seen = []
         with contextlib.suppress(Exception):
-            await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+            async for event in handler.process_event(EventTypes.NEW_RECORD.value, payload):
+                seen.append(event.event)  # noqa: PERF401 - keeps the events seen before the exception
+        noted = dict(timeline.facts)
+        indexing_timing.end_record(timeline, token, outcome="ok")
         ingress.handoff_lost.assert_awaited_once()
-        assert not self._logged_already_done(handler)
+        assert IndexingEvent.START_DOWNLOAD in seen  # the record path did start
+        assert noted.get("reason") != "already_indexed"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_release_of_queued_copies_replaces_the_skip_reason(self) -> None:
+        handler, _ingress = self._queued_for_classification(handoff_lost=False)
+        injected = RuntimeError("copies not released")
+        handler._release_queued_copies = AsyncMock(side_effect=injected)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
+        timeline, token = indexing_timing.begin_record("r1")
+        try:
+            with pytest.raises(RuntimeError) as raised:
+                await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+            noted = dict(timeline.facts)
+        finally:
+            indexing_timing.end_record(timeline, token, outcome="ok")
+        assert raised.value is injected
+        assert noted.get("reason") == "queued_copies_release_failed"
 
     _XLSX = {
         "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2082,6 +2148,23 @@ class TestAlreadyIndexed:
 
         assert events == self._ACK
         handler.event_processor.processor.indexing_pipeline.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_replay_is_noted_as_a_skip_on_the_end_line(self, redis) -> None:
+        await self._completed_by(redis, "r1", ("evt-42", "t-0-42", ""))
+        handler = self._completed_record_handler(redis)
+        timeline, token = indexing_timing.begin_record("r1")
+        try:
+            await self._until_it_starts_work(
+                handler, EventTypes.UPDATE_RECORD.value, self._update(_event_id="evt-42", _delivery_id="t-0-42")
+            )
+            assert (timeline.facts.get("outcome"), timeline.facts.get("reason")) == ("skipped", "replayed")
+        finally:
+            indexing_timing.end_record(timeline, token, outcome="ok")
+        # index.end says it: the handler's own line is DEBUG only
+        said = {level: [str(c.args) for c in getattr(handler.logger, level).call_args_list] for level in ("debug", "info")}
+        assert any("Replay of a delivery" in m for m in said["debug"])
+        assert not any("Replay of a delivery" in m for m in said["info"])
 
     @pytest.mark.asyncio
     async def test_the_replay_is_identified_by_the_envelope_event_id(self, redis) -> None:
@@ -2912,10 +2995,11 @@ class TestConnectorActiveCheck:
 
         with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
             mock_dl.return_value = b"file content"
-            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+            events, noted = await _collect_noted(handler, EventTypes.NEW_RECORD.value, payload)
 
         # Should proceed past the connector check and yield events from processor
         assert len(events) == 2
+        assert (noted["size_bytes"], noted["extension"], noted["mime_type"]) == (12, "pdf", "application/pdf")
 
     @pytest.mark.asyncio
     async def test_non_connector_origin_skips_connector_check(self):
@@ -3013,6 +3097,35 @@ class TestUpdateRecordEvent:
 class TestUnsupportedFileType:
     """Tests for unsupported mime types and extensions."""
 
+    @pytest.mark.parametrize(("extension", "mime_type", "logged"), [
+        ("PDF", 'application/pdf; name="Jane.pdf"', ("pdf", "application/pdf")),
+        (["pdf"], ["application/pdf"], ("unknown", "unknown")),  # a malformed payload is described, never raised on
+        (None, None, ("unknown", "unknown")),
+        (3, {"x": 1}, ("unknown", "unknown")),
+    ], ids=["known", "lists", "none", "other_types"])
+    def test_the_logged_file_type_never_raises_on_a_payload_value(self, extension, mime_type, logged) -> None:
+        assert tuple(logged_file_type(extension, mime_type).values()) == logged
+
+    @pytest.mark.asyncio
+    async def test_an_extension_judged_from_the_name_is_not_logged(self) -> None:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        name = "Payroll v2.3 Jane Doe notes"
+        gp.get_document = AsyncMock(return_value={
+            "_key": "r1", "virtualRecordId": "vr1", "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "recordName": name, "mimeType": "application/x-unknown-type",
+        })
+        gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        payload = {"recordId": "r1", "recordName": name, "mimeType": f'application/x-unknown-type; name="{name}"'}
+
+        _events, noted = await _collect_noted(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert noted["reason"] == "unsupported_type"
+        assert (noted["extension"], noted["mime_type"]) == ("unknown", "unknown")
+        assert "Jane" not in str(noted)
+
     @pytest.mark.asyncio
     async def test_unsupported_mime_and_extension(self):
         handler = _make_handler()
@@ -3033,12 +3146,52 @@ class TestUnsupportedFileType:
             "mimeType": "application/x-unknown-type",
             "extension": "xyz",
         }
-        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        events, noted = await _collect_noted(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
+        # An extension the registry does not know is not logged as such: it can be the text after a name's last dot.
+        assert (noted["outcome"], noted["reason"], noted["extension"], noted["mime_type"]) == (
+            "skipped", "unsupported_type", "unknown", "unknown")
         updates = gp.update_node.await_args_list[0].args[2]
         assert updates["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
         assert updates["extractionStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+
+
+    @pytest.mark.asyncio
+    async def test_a_skip_whose_status_write_fails_is_not_noted_as_a_skip(self) -> None:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1",
+                                                  "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                                                  "mimeType": "application/x-unknown-type"})
+        gp.update_node = AsyncMock(side_effect=ConnectionError("graph down"))
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        timeline, token = indexing_timing.begin_record("r1")
+        try:
+            with pytest.raises(ConnectionError):
+                await _collect_events(handler, EventTypes.NEW_RECORD.value,
+                                      {"recordId": "r1", "mimeType": "application/x-unknown-type", "extension": "xyz"})
+            assert "outcome" not in timeline.facts and "reason" not in timeline.facts
+        finally:
+            indexing_timing.end_record(timeline, token, outcome="failed")
+
+    @pytest.mark.asyncio
+    async def test_a_file_too_large_to_read_is_noted_as_too_large(self) -> None:
+        from app.config import file_types
+
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1",
+                                                  "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "text/plain"})
+        gp.update_node = AsyncMock(return_value=True)
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        refused = file_types.GateDecision(supported=False, judged_extension="log", file_type=None, refusal="too_large",
+                                          limited_as="log")
+        with patch.object(file_types, "gate_decision", return_value=refused):
+            _events, noted = await _collect_noted(
+                handler, EventTypes.NEW_RECORD.value, {"recordId": "r1", "mimeType": "text/plain", "extension": "log"},
+            )
+        assert (noted["outcome"], noted["reason"], noted["extension"]) == ("skipped", "too_large", "log")
 
     @pytest.mark.asyncio
     async def test_supported_mime_type_passes_check(self):
@@ -6472,6 +6625,18 @@ class TestStageRedrive:
         events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(firstUse=True))
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
         ingress.redrive.assert_awaited_once()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("dispatched", "facts"), [
+        (["vr1:rev-1:classify@1"], {"reason": "stage_rerun"}),
+        ([], {"outcome": "skipped", "reason": "nothing_to_rerun"}),
+    ], ids=["dispatched", "nothing_dispatched"])
+    async def test_the_end_line_says_whether_a_stage_was_dispatched(self, dispatched, facts) -> None:
+        handler, _gp, _ingress = self._handler(dispatched)
+        events, noted = await _collect_noted(handler, EventTypes.REINDEX_RECORD.value, self._payload(forceReindex=True))
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        assert {k: v for k, v in noted.items() if k in ("outcome", "reason")} == facts
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio

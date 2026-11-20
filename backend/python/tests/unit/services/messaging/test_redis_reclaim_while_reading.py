@@ -606,11 +606,14 @@ class TestEveryRememberedIdIsExamined:
 
 class TestAPeersClaimBeforeTheDeadLetterCheck:
     async def test_a_transferred_entry_past_the_delivery_backstop_is_not_acknowledged(
-        self, consumer
+        self, consumer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Own-pending recovery found the entry; a peer claimed it before the
         dead-letter check (its claims taking the delivery count past the
         backstop). The check must not acknowledge the peer's entry."""
+        # The server's clock stands still: a runner stalled past STOPPED_MS after the peer's claim would otherwise make
+        # the peer look stopped, and the read pass's own reclaim would rightly take the entry back from it.
+        monkeypatch.setattr(fake_stream, "current_time", lambda: 1_000_000)
         await consumer.redis.xreadgroup(GROUP, "live-peer", {LANE: ">"}, count=1)
         await consumer.redis.xadd(LANE, _fields("transferred"))
         read = await consumer.redis.xreadgroup(GROUP, consumer.consumer_name, {LANE: ">"})

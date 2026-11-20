@@ -54,6 +54,7 @@ import {
   MCP_TRANSPORT_LABELS,
   isPersonalMcpInstance,
 } from '../../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const DCR_PROBE_DEBOUNCE_MS = 500;
 
@@ -874,9 +875,9 @@ export function McpInstanceConfigPanel({
               const isRequired = effectiveRequiredEnv.includes(envKey);
               return (
                 <FormField key={envKey} label={envKey} optional={!isRequired}>
-                  <TextField.Root
+                  <SecretTextField
                     size="2"
-                    type={isSecretFieldName(envKey) ? 'password' : 'text'}
+                    masked={isSecretFieldName(envKey)}
                     value={envValues[envKey] ?? ''}
                     onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
                     placeholder={credentialsPlaceholder}
@@ -887,9 +888,8 @@ export function McpInstanceConfigPanel({
 
           {authMode === 'api_token' && !multiEnvAuth && (
             <FormField label={apiTokenLabel} optional>
-              <TextField.Root
+              <SecretTextField
                 size="2"
-                type="password"
                 value={apiToken}
                 onChange={(e) => setApiToken(e.target.value)}
                 placeholder={credentialsPlaceholder ?? apiTokenPlaceholder}
@@ -902,9 +902,8 @@ export function McpInstanceConfigPanel({
               label={t('workspace.mcpServers.form.headerValue', { headerName: headerName || 'Authorization' })}
               optional
             >
-              <TextField.Root
+              <SecretTextField
                 size="2"
-                type="password"
                 value={headerValue}
                 onChange={(e) => setHeaderValue(e.target.value)}
                 placeholder={credentialsPlaceholder}
@@ -950,9 +949,9 @@ export function McpInstanceConfigPanel({
                 required={oauthClientRequired}
                 optional={!oauthClientRequired}
               >
-                <TextField.Root
+                <SecretTextField
                   size="2"
-                  type={showOauthClientSecret ? 'text' : 'password'}
+                  masked={!showOauthClientSecret}
                   value={oauthClientSecret}
                   onChange={(e) => setOauthClientSecret(e.target.value)}
                   placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientSecretPlaceholder')}
@@ -973,7 +972,7 @@ export function McpInstanceConfigPanel({
                       />
                     </IconButton>
                   </TextField.Slot>
-                </TextField.Root>
+                </SecretTextField>
                 <McpClientSecretPrefixHint prefix={resolvedTemplate?.clientSecretPrefix} secret={oauthClientSecret} />
               </FormField>
               {mode === 'edit' && hasExistingOAuthClient && (

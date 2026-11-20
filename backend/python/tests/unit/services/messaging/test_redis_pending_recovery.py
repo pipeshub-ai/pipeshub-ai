@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.redis_streams.indexing_consumer import (
+    _REFRESH_OWN_SCRIPT,
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
@@ -70,6 +71,12 @@ def _consumer(**fair: object) -> IndexingRedisStreamsConsumer:
         return list(message_ids)
 
     consumer.redis.xclaim = AsyncMock(side_effect=xclaim)
+
+    async def scripts(script: str, _numkeys: int, *args: object) -> object:
+        # The ownership refresh answers with the ids it refreshed: all of them.
+        return list(args[4:]) if script == _REFRESH_OWN_SCRIPT else 1
+
+    consumer.redis.eval = AsyncMock(side_effect=scripts)
     consumer.redis.xinfo_consumers = AsyncMock(return_value=[])
     consumer._pending_message_is_owned = AsyncMock(return_value=True)
     consumer._should_dead_letter = AsyncMock(return_value=False)
@@ -397,9 +404,10 @@ class TestHeldEntriesAreKeyedByStream:
         _owns_what_it_asks_about(consumer)
         await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
         refreshed = {
-            (call.args[0], message_id)
-            for call in consumer.redis.xclaim.await_args_list
-            for message_id in call.kwargs["message_ids"]
+            (call.args[2], message_id)
+            for call in consumer.redis.eval.await_args_list
+            if call.args[0] == _REFRESH_OWN_SCRIPT
+            for message_id in call.args[6:]
         }
         assert {(LANES[0], "5-0"), (LANES[1], "5-0")} <= refreshed
 

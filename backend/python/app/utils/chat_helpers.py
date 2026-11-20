@@ -1935,7 +1935,7 @@ async def accessible_node_ids(
     try:
         user = await get_caller_user(graph_provider, user_id, raise_on_error=True)
     except Exception as exc:
-        raise PermissionVerificationUnavailableError(str(exc)) from exc
+        raise PermissionVerificationUnavailableError() from exc
     user_key = (user or {}).get("id") or (user or {}).get("_key")
     if not user_key:
         return set()

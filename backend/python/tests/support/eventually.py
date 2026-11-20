@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
+
+T = TypeVar("T")
 
 
 async def until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
@@ -22,3 +24,13 @@ async def until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
             return False
         await asyncio.sleep(0.01)
     return True
+
+
+def done_without_waiting(coro: Coroutine[object, None, T]) -> T:
+    """Run ``coro`` up to its first suspension, where it must already be done: "never waits" with no wall-clock bound to miss."""
+    try:
+        coro.send(None)
+    except StopIteration as done:
+        return done.value
+    coro.close()
+    raise AssertionError("it waited")

@@ -5,7 +5,9 @@ name: permission-conformance
 #
 #   oracle     scenarios, round-trip, deltas and coverage matrix; no services, every pull request.
 #   graph      the oracle against the real graph check, and the Knowledge Hub listing and its counts, on Neo4j and ArangoDB (corpus + 50 generated worlds), plus
-#              the graph-permissions integration suite, which ran in no workflow before; four shards, each with its own stores.
+#              the graph-permissions integration suite, which ran in no workflow before; each shard with its own stores. Shards 1-7 run Neo4j on
+#              the default browse (split); shards 8 and 9 run the Knowledge Hub conformance again with Neo4j on the legacy browse
+#              (KH_BROWSE_MODE=legacy, the opt-out).
 #   nightly    600 generated worlds per generator for each standing seed (7, 11, 2026).
 
 on:
@@ -64,11 +66,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install dependencies
         run: |
           pip install uv
@@ -115,7 +112,7 @@ jobs:
         # report. Shards 2 and 7 run their folder minus what the others name, so a new test file runs there.
         # scripts/test_permission_conformance_shards.py checks that every case runs exactly once; each shard checks its run against its
         # own collection, so no count is written here.
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
         include:
           # The graph-permissions suite ran in no workflow before; it includes the tests that a connector list never shows another
           # organization's connectors. Two of its slowest files run here, about half of it.
@@ -164,6 +161,22 @@ jobs:
             tests: tests/permissions --ignore=tests/permissions/test_conformance_kh.py
             pytest_args: -p no:logging --timeout=3000
             allow: test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]
+          # The Knowledge Hub conformance again with Neo4j browsing by the legacy browse (KH_BROWSE_MODE=legacy, the opt-out from the default
+          # split browse, docs/knowledge-hub-browse.md), Neo4j only: the other stores have no browse mode. A second pass, outside the once-each
+          # split above; its two shards hold each test once.
+          - shard: 8
+            suite: tests.permissions
+            tests: tests/permissions/test_conformance_kh.py
+            k: '[adversarial-1of2] or [adversarial-2of2]'
+            browse_mode: legacy
+            pytest_args: -p no:logging --timeout=3000
+          - shard: 9
+            suite: tests.permissions
+            tests: tests/permissions/test_conformance_kh.py
+            k: not [adversarial-1of2] and not [adversarial-2of2]
+            browse_mode: legacy
+            pytest_args: -p no:logging --timeout=3000
+            allow: test_conformance_kh::test_an_open_apps_member_is_matched_by_the_apps_handle_not_its_key
     services:
       neo4j:
         image: neo4j:5.26.0
@@ -202,11 +215,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install dependencies
         run: |
           pip install uv
@@ -222,6 +230,8 @@ jobs:
           TESTS: ${{ matrix.tests }}
           K: ${{ matrix.k }}
           PYTEST_ARGS: ${{ matrix.pytest_args }}
+          # Unset (empty) is the shipped default, split.
+          KH_BROWSE_MODE: ${{ matrix.browse_mode }}
         run: |
           cd backend/python
           # Log capture off in the conformance shards: pytest keeps every record a test logs, and the Knowledge Hub layer's whole-tree browse
@@ -305,11 +315,6 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install dependencies
         run: |

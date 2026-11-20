@@ -2909,7 +2909,35 @@
       "tools": {
         "title": "Nástroje",
         "subtitle": "Vypněte jednotlivé nástroje. Vypnutý nástroj se klientům MCP nenabízí a jeho volání jsou odmítnuta.",
-        "writes": "Zapisuje"
+        "writes": "Zapisuje",
+        "descriptions": {
+          "pipeshub_sources": "Vypíše konektory a kolekce, které může uživatel číst, a modely AI nastavené v pracovním prostoru. Klienti podle toho volí, kde hledat a se kterým modelem chatovat.",
+          "pipeshub_search": "Prohledává indexované dokumenty podle významu v konektorech a kolekcích, které může uživatel číst, a vrací odpovídající pasáže s jejich záznamy.",
+          "pipeshub_get_record_content": "Přečte celý text jednoho záznamu. Umí také najít záznam podle adresy URL, klíče požadavku nebo externího ID, procházet obsah složky, prostoru nebo epiku a přečíst celé vlákno ve Slacku.",
+          "pipeshub_download_record": "Stáhne původní soubor uložený k záznamu, volitelně převedený do PDF.",
+          "pipeshub_directory": "Vyhledá přihlášeného uživatele, uživatele a skupiny pracovního prostoru a týmy, do kterých uživatel patří. Nic nemění.",
+          "pipeshub_create_collection": "Vytvoří novou prázdnou kolekci ve vlastnictví uživatele, připravenou pro nahrávání.",
+          "pipeshub_upload": "Nahraje dokumenty do kolekce, aby se indexovaly a daly se vyhledat. Nejvýše 20 dokumentů a přibližně 3 MB na jedno volání.",
+          "pipeshub_indexing_status": "Hlásí, jak daleko je indexování kolekce a které dokumenty selhaly a proč.",
+          "pipeshub_connect_source": "Vrátí odkaz, který uživatel otevře v prohlížeči, aby připojil zdroj, například Slack, Google Drive nebo Jira. Nástroj sám nic nepřipojuje.",
+          "pipeshub_add_web_source": "Přidá web jako vlastní konektor Web uživatele. Prochází web od úvodní stránky, sleduje její odkazy a každý den jej prochází znovu. Uchová 100 stránek, pokud klient nepožádá o více, nejvýše 10 000. Aplikace OAuth nebo přístupový token navíc potřebuje oprávnění connector:write a connector:sync.",
+          "pipeshub_chat": "Zeptá se vlastního asistenta PipesHub nebo některého agenta pracovního prostoru a vrátí jeho odpověď s citacemi. Když jsou nástroje pro zápis vypnuté, nespouští připojené akce. Jeho vypnutím se vypne i seznam agentů.",
+          "pipeshub_agents": "Vypíše agenty pracovního prostoru s jejich nástroji a znalostmi, aby s některým z nich mohl klient chatovat. Nabízí se, jen když je zapnutý chat s PipesHub.",
+          "pipeshub_show_citations": "Ukáže uživateli zdroje, o které se odpověď opírá, očíslované [1], [2] a tak dále, s náhledem každého dokumentu. Nejvýše 30 pasáží na jedno volání. Nabízí se jen klientům, kteří umějí zobrazit prohlížeč citací, například Claude.",
+          "pipeshub_preview_record": "Používá jej pouze prohlížeč citací, nikdy model AI. Načítá uložený soubor záznamu po částech, aby prohlížeč mohl dokument zobrazit. Je-li vypnutý, prohlížeč nemůže načíst náhledy dokumentů.",
+          "pipeshub_code_repos": "Vypíše indexované repozitáře kódu, které může uživatel číst. Nástroje pro kód se nabízejí jen uživatelům s indexovaným kódem; aplikace OAuth nebo přístupový token navíc potřebuje oprávnění code:read.",
+          "pipeshub_code_symbols": "Ukáže, co obsahuje adresář nebo soubor v indexovaném repozitáři: podadresáře a soubory, nebo symboly, které soubor definuje.",
+          "pipeshub_code_neighbours": "Ukáže okolí souboru nebo symbolu v grafu kódu: kdo ho volá, co volá on, jeho importy a dědičnost.",
+          "pipeshub_code_read": "Čte indexovaný zdrojový kód: jeden symbol, rozsah řádků nebo celý soubor. Čte indexovanou kopii, která může být oproti repozitáři pozadu.",
+          "pipeshub_code_path": "Krok za krokem ukáže, jak se v repozitáři jeden symbol dostane k druhému.",
+          "pipeshub_code_search": "Najde kód podle přesného názvu, řetězce nebo regulárního výrazu.",
+          "pipeshub_code_semantic_search": "Najde kód, který stojí za funkcí nebo chováním, podle popisu v běžném jazyce, když nejsou známy jeho názvy.",
+          "pipeshub_code_outline": "Vypíše třídy, funkce a metody souboru s jejich signaturami a rozsahy řádků, bez těl.",
+          "pipeshub_code_impact": "Ukáže, co na symbolu závisí: vše, co ho volá, importuje nebo na něm staví, včetně testů, které k němu vedou. Odpovídá na to, kdo ho volá a co se rozbije, když se změní.",
+          "pipeshub_code_impact_of_diff": "Vezme unified diff, například výstup příkazu git diff nebo diff pull requestu, a ukáže symboly, které mění, soubory a testy, které k nim vedou, a volající, které nepokrývá žádný test.",
+          "pipeshub_code_history": "Vypíše indexované pull requesty, které změnily soubor, s autorem, recenzenty, tím, kdo je sloučil, a s tikety, které zmiňují.",
+          "pipeshub_code_entry_points": "Vypíše, kde do repozitáře vstupuje běh programu, například trasy, nástroje příkazového řádku, úlohy a hooky. Výchozí bod pro čtení neznámého kódu."
+        }
       },
       "appliesNote": "Změny se na nové požadavky MCP uplatní během několika sekund.",
       "loadError": "Nastavení přístupu MCP se nepodařilo načíst. Zkuste stránku načíst znovu.",
@@ -3026,8 +3054,7 @@
       },
       "enterpriseSso": {
         "title": "Jednotné přihlášení SAML a OpenID Connect",
-        "description": "Přihlašujte uživatele přes Okta, OneLogin nebo jiného poskytovatele identity SAML 2.0 či OpenID Connect.",
-        "contactSales": "Pro nákup napište na {{email}}"
+        "description": "Přihlašujte uživatele přes Okta, OneLogin nebo jiného poskytovatele identity SAML 2.0 či OpenID Connect."
       }
     },
     "connectors": {
@@ -3320,7 +3347,8 @@
             "max_pages": "Dosažen limit Maximum stránek",
             "time_limit": "Vypršel časový limit; příští synchronizace naváže",
             "stalled": "Web přestal odpovídat; příští synchronizace naváže",
-            "rate_limited": "Web opakovaně žádal o méně požadavků; příští synchronizace naváže"
+            "rate_limited": "Web opakovaně žádal o méně požadavků; příští synchronizace naváže",
+            "start_not_recorded": "Synchronizace nemohla uložit svůj začátek, a proto neproběhla; příští synchronizace to zkusí znovu"
           },
           "pagesSaved": "Uložené stránky: {{count}}",
           "failed": "Neúspěšné stránky: {{count}}",
@@ -4827,6 +4855,9 @@
           "label": "Služba Extraction",
           "description": "Klasifikace dokumentů a extrakce metadat pomocí LLM"
         }
+      },
+      "healthWarnings": {
+        "title": "Vyžaduje pozornost"
       },
       "vectorDbMemory": {
         "title": "Vyhledávací index se nevejde do paměti vektorové databáze",

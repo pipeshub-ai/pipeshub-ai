@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { NotificationConsumer } from '../../../../src/modules/notification/service/notification.consumer';
+import { NotificationConsumer, notificationEventRefused } from '../../../../src/modules/notification/service/notification.consumer';
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
 import { setNotificationRepository } from '../../../../src/libs/repositories/notification';
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
@@ -205,6 +205,33 @@ describe('notification/service/notification.consumer', () => {
         await outcome;
         expect(seen).to.equal(orgId);
         expect(handler.calledOnce).to.be.true;
+      });
+
+      describe('a supplied _id', () => {
+        const other = new mongoose.Types.ObjectId().toString();
+        it('refuses an event with an _id and several recipients: logged, counted, nothing written, marked handled', async () => {
+          mockConsumer.isConnected.returns(true);
+          sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user), new mongoose.Types.ObjectId(other)]);
+          const insertMany = sinon.stub().resolves([]);
+          setNotificationRepository({ insertMany } as never);
+          const refused = sinon.spy(notificationEventRefused, 'inc');
+          const handler = sinon.stub().resolves();
+          await consumer.consume(handler);
+          await mockConsumer.consume.firstCall.args[0]({ value: { ...event, _id: 'fixed-id', recipientUserIds: [user, other] } });
+          expect(insertMany.called).to.be.false;
+          expect(mockNotificationService.sendToUser.called).to.be.false;
+          expect(mockLogger.error.calledOnce).to.be.true;
+          expect(mockLogger.error.firstCall.args[1].error).to.equal('Notification event refused');
+          expect(handler.calledOnce).to.be.true;
+          expect(refused.calledOnceWithExactly({ reason: 'id_with_many_recipients' })).to.be.true;
+        });
+
+        it('keeps the _id for one recipient', async () => {
+          const insertMany = sinon.stub().resolves([]);
+          const { outcome } = await run(insertMany, { ...event, _id: 'fixed-id' });
+          await outcome;
+          expect(insertMany.firstCall.args[0].map((d: any) => d._id)).to.deep.equal(['fixed-id']);
+        });
       });
 
       describe('scheduled notifications (visibleAt ahead)', () => {

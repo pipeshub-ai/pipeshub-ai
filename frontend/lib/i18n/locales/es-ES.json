@@ -2682,7 +2682,35 @@
       "tools": {
         "title": "Herramientas",
         "subtitle": "Desactiva herramientas concretas. Una herramienta desactivada no se ofrece a los clientes MCP y se rechazan sus llamadas.",
-        "writes": "Escribe"
+        "writes": "Escribe",
+        "descriptions": {
+          "pipeshub_sources": "Enumera los conectores y las colecciones que el usuario puede leer, y los modelos de IA configurados en el espacio de trabajo. Los clientes lo usan para elegir dónde buscar y con qué modelo chatear.",
+          "pipeshub_search": "Busca por significado en los documentos indexados de los conectores y las colecciones que el usuario puede leer, y devuelve los pasajes coincidentes con sus registros.",
+          "pipeshub_get_record_content": "Lee el texto completo de un registro. También encuentra un registro a partir de una URL, una clave de incidencia o un ID externo, explora lo que hay bajo una carpeta, un espacio o una épica, y lee un hilo de Slack completo.",
+          "pipeshub_download_record": "Descarga el archivo original guardado para un registro, opcionalmente convertido a PDF.",
+          "pipeshub_directory": "Consulta el usuario que ha iniciado sesión, los usuarios y grupos del espacio de trabajo y los equipos a los que pertenece el usuario. No modifica nada.",
+          "pipeshub_create_collection": "Crea una colección nueva y vacía, propiedad del usuario, lista para recibir archivos.",
+          "pipeshub_upload": "Sube documentos a una colección para que se indexen y se puedan buscar. Hasta 20 documentos y unos 3 MB por llamada.",
+          "pipeshub_indexing_status": "Informa de cuánto ha avanzado la indexación de una colección y de qué documentos han fallado y por qué.",
+          "pipeshub_connect_source": "Devuelve un enlace que el usuario abre en el navegador para conectar una fuente como Slack, Google Drive o Jira. La herramienta en sí no conecta nada.",
+          "pipeshub_add_web_source": "Añade un sitio web como conector Web propio del usuario. Lo rastrea desde una página inicial, sigue sus enlaces y vuelve a rastrearlo cada día. Conserva 100 páginas salvo que el cliente pida más, hasta 10 000. Una aplicación OAuth o un token de acceso necesita además los permisos connector:write y connector:sync.",
+          "pipeshub_chat": "Pregunta al asistente de PipesHub, o a uno de los agentes del espacio de trabajo, y devuelve su respuesta con citas. Mientras las herramientas de escritura están desactivadas, no ejecuta acciones conectadas. Al desactivarla también se desactiva la lista de agentes.",
+          "pipeshub_agents": "Enumera los agentes del espacio de trabajo con sus herramientas y su conocimiento, para que un cliente pueda chatear con uno. Solo se ofrece mientras el chat con PipesHub está activado.",
+          "pipeshub_show_citations": "Muestra al usuario las fuentes en las que se basa una respuesta, numeradas [1], [2], etc., con una vista previa de cada documento. Hasta 30 pasajes por llamada. Solo se ofrece a clientes que pueden mostrar el visor de citas, como Claude.",
+          "pipeshub_preview_record": "Solo lo usa el visor de citas, nunca el modelo de IA. Carga por partes el archivo almacenado de un registro para que el visor pueda mostrar el documento. Mientras está desactivado, el visor no puede cargar vistas previas de documentos.",
+          "pipeshub_code_repos": "Enumera los repositorios de código indexados que el usuario puede leer. Las herramientas de código solo se ofrecen a usuarios con código indexado; una aplicación OAuth o un token de acceso necesita además el permiso code:read.",
+          "pipeshub_code_symbols": "Muestra lo que contiene un directorio o un archivo de un repositorio indexado: subdirectorios y archivos, o los símbolos que define un archivo.",
+          "pipeshub_code_neighbours": "Muestra lo que rodea a un archivo o símbolo en el grafo de código: quién lo llama, a qué llama, sus importaciones y su herencia.",
+          "pipeshub_code_read": "Lee código fuente indexado: un símbolo, un rango de líneas o un archivo completo. Lee la copia indexada, que puede ir por detrás del repositorio.",
+          "pipeshub_code_path": "Muestra, paso a paso, cómo un símbolo llega a otro dentro de un repositorio.",
+          "pipeshub_code_search": "Encuentra código por un nombre exacto, una cadena de texto o una expresión regular.",
+          "pipeshub_code_semantic_search": "Encuentra el código que hay detrás de una función o un comportamiento a partir de una descripción en lenguaje natural, cuando no se conocen sus nombres.",
+          "pipeshub_code_outline": "Enumera las clases, funciones y métodos de un archivo con sus firmas y rangos de líneas, sin el cuerpo.",
+          "pipeshub_code_impact": "Muestra lo que depende de un símbolo: todo lo que lo llama, lo importa o se basa en él, con las pruebas que lo alcanzan. Responde quién lo llama y qué se rompe si cambia.",
+          "pipeshub_code_impact_of_diff": "Recibe un diff unificado, como la salida de git diff o el diff de una pull request, y muestra los símbolos que cambia, los archivos y las pruebas que los alcanzan, y los llamadores que ninguna prueba cubre.",
+          "pipeshub_code_history": "Enumera las pull requests indexadas que modificaron un archivo, con autor, revisores, quién la fusionó y las incidencias que menciona.",
+          "pipeshub_code_entry_points": "Enumera por dónde entra la ejecución en un repositorio, como rutas, herramientas de línea de comandos, tareas y hooks. Un punto de partida para leer código desconocido."
+        }
       },
       "appliesNote": "Los cambios se aplican a las nuevas solicitudes MCP en unos segundos.",
       "loadError": "No se pudo cargar la configuración de acceso MCP. Recarga la página para volver a intentarlo.",
@@ -2798,8 +2826,7 @@
       },
       "enterpriseSso": {
         "title": "Inicio de sesión único SAML y OpenID Connect",
-        "description": "Permite iniciar sesión con Okta, OneLogin o cualquier otro proveedor de identidad SAML 2.0 u OpenID Connect.",
-        "contactSales": "Para comprar, escribe a {{email}}"
+        "description": "Permite iniciar sesión con Okta, OneLogin o cualquier otro proveedor de identidad SAML 2.0 u OpenID Connect."
       }
     },
     "connectors": {
@@ -3091,7 +3118,8 @@
             "max_pages": "Alcanzó el límite de páginas",
             "time_limit": "Alcanzó su límite de tiempo; la próxima sincronización continúa",
             "stalled": "El sitio dejó de responder; la próxima sincronización continúa",
-            "rate_limited": "El sitio pidió repetidamente menos solicitudes; la próxima sincronización continúa"
+            "rate_limited": "El sitio pidió repetidamente menos solicitudes; la próxima sincronización continúa",
+            "start_not_recorded": "La sincronización no pudo guardar su inicio, así que no se ejecutó; la próxima sincronización lo vuelve a intentar"
           },
           "pagesSaved": "{{count}} páginas guardadas",
           "failed": "{{count}} páginas con error",
@@ -4431,6 +4459,9 @@
           "label": "Servicio de extracción",
           "description": "Clasificación de documentos y extracción de metadatos basada en LLM"
         }
+      },
+      "healthWarnings": {
+        "title": "Requiere atención"
       },
       "vectorDbMemory": {
         "title": "El índice de búsqueda no cabe en la memoria de la base de datos vectorial",

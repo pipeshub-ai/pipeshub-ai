@@ -509,6 +509,23 @@ class TestOpenAIErrors:
         except ImportError:
             pytest.skip("OpenAI not available")
 
+    def test_openai_empty_balance_is_terminal_although_it_is_a_429(self) -> None:
+        """A 429 that says the account is out of credit fails the same way on every redelivery."""
+        import httpx
+        import openai
+
+        from app.exceptions.indexing_exceptions import EmbeddingError
+
+        exc = openai.RateLimitError(
+            "Error code: 429",
+            response=httpx.Response(429, request=httpx.Request("POST", "http://x/v1/embeddings")),
+            body={"error": {"message": "no credit", "type": "insufficient_quota", "code": "insufficient_quota"}},
+        )
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+        wrapped = EmbeddingError("Dense embedding failed")
+        wrapped.__cause__ = exc
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL
+
     def test_openai_auth_error(self):
         """Test that OpenAI auth errors are terminal."""
         try:

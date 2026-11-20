@@ -1903,22 +1903,26 @@ class TestGraphDbHealthCheck:
 
         from app.connectors_main import graph_db_health_check
 
-        async def hang() -> None:  # ignores cancellation, as a unit waiting on its rollback does
-            end = time.monotonic() + 2
-            while time.monotonic() < end:
+        stop, pings = asyncio.Event(), []
+
+        async def hang() -> None:  # ignores cancellation, as a unit waiting on its rollback does, until the test lets it go
+            pings.append(asyncio.current_task())
+            end = time.monotonic() + 10  # bounds a hang
+            while not stop.is_set() and time.monotonic() < end:
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.sleep(0.05)
 
         request = MagicMock()
         request.app.state.graph_provider = MagicMock(ping=hang)
 
-        t0 = time.monotonic()
         with patch("app.connectors_main.os.getenv", return_value="postgres"), \
              patch("app.connectors_main.PG_PROBE_TIMEOUT_SEC", 0.05):
             response = await graph_db_health_check(request)
 
+        assert not pings[0].done(), "the answer waited for the ping to finish"
+        stop.set()
+        await asyncio.wait(pings)
         assert response.status_code == 503
-        assert time.monotonic() - t0 < 1
         assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
 
     @pytest.mark.asyncio

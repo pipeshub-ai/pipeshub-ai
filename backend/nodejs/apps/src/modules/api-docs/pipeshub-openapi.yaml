@@ -1102,6 +1102,547 @@ components:
               type: string
             code:
               type: string
+    OpenAIChatModel:
+      type: object
+      required: [id, object, created, owned_by, name]
+      properties:
+        id:
+          type: string
+          description: Pass as `model`. The model name, or `provider/name` when the name is configured more than once.
+        object:
+          type: string
+          enum: [model]
+        created:
+          type: integer
+          description: Unix seconds the model entry was saved; 0 when unknown.
+        owned_by:
+          type: string
+          description: Provider id the model is configured under.
+        name:
+          type: string
+          description: The configured friendly name, else the model name.
+    OpenAIChatModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIChatModel'
+    OpenAIUrlCitation:
+      type: object
+      required: [type, url, title, start_index, end_index]
+      description: A source the answer cites. The indices span the whole text.
+      properties:
+        type:
+          type: string
+          enum: [url_citation]
+        url:
+          type: string
+        title:
+          type: string
+        start_index:
+          type: integer
+        end_index:
+          type: integer
+    OpenAIChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+          description: Model id from `GET /openai/models`.
+        messages:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [system, developer, user, assistant]
+              content:
+                oneOf:
+                  - type: string
+                  - type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                        text:
+                          type: string
+        stream:
+          type: boolean
+          default: false
+    OpenAIChatCompletion:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [chat.completion]
+        created:
+          type: integer
+        model:
+          type: string
+        conversation_id:
+          type: string
+          description: The PipesHub conversation this answer was saved to.
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              finish_reason:
+                type: string
+                enum: [stop]
+              message:
+                type: object
+                properties:
+                  role:
+                    type: string
+                    enum: [assistant]
+                  content:
+                    type: string
+                  annotations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum: [url_citation]
+                        url_citation:
+                          type: object
+                          properties:
+                            url:
+                              type: string
+                            title:
+                              type: string
+                            start_index:
+                              type: integer
+                            end_index:
+                              type: integer
+        usage:
+          type: object
+          nullable: true
+          description: Always null; token counts are not reported.
+    OpenAIResponseRequest:
+      type: object
+      required: [model, input]
+      properties:
+        model:
+          type: string
+          description: Model id from `GET /openai/models`.
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: [message]
+                  role:
+                    type: string
+                    enum: [system, developer, user, assistant]
+                  content:
+                    oneOf:
+                      - type: string
+                      - type: array
+                        items:
+                          type: object
+                          properties:
+                            type:
+                              type: string
+                            text:
+                              type: string
+        instructions:
+          type: string
+          nullable: true
+        previous_response_id:
+          type: string
+          nullable: true
+          description: An `id` this server returned; continues that conversation.
+        tools:
+          type: array
+          description: Only `file_search` is read; other tool types are ignored.
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              vector_store_ids:
+                type: array
+                items:
+                  type: string
+        stream:
+          type: boolean
+          default: false
+    OpenAIResponse:
+      type: object
+      required: [id, object, created_at, status, model, output]
+      properties:
+        id:
+          type: string
+          description: Pass as `previous_response_id` to continue the conversation.
+        object:
+          type: string
+          enum: [response]
+        created_at:
+          type: integer
+        status:
+          type: string
+          enum: [completed, in_progress, failed]
+        model:
+          type: string
+        instructions:
+          type: string
+          nullable: true
+        previous_response_id:
+          type: string
+          nullable: true
+        error:
+          type: object
+          nullable: true
+        output:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [message]
+              id:
+                type: string
+              status:
+                type: string
+              role:
+                type: string
+                enum: [assistant]
+              content:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum: [output_text]
+                    text:
+                      type: string
+                    annotations:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/OpenAIUrlCitation'
+        output_text:
+          type: string
+          description: The answer text (non-streaming responses only).
+        usage:
+          type: object
+          nullable: true
+          description: Always null; token counts are not reported.
+    OpenAIFile:
+      type: object
+      required:
+      - id
+      - object
+      - bytes
+      - created_at
+      - filename
+      - purpose
+      - status
+      properties:
+        id:
+          type: string
+          description: '`file-<record id>`'
+        object:
+          type: string
+          enum:
+          - file
+        bytes:
+          type: integer
+        created_at:
+          type: integer
+        expires_at:
+          type: integer
+          nullable: true
+        filename:
+          type: string
+        purpose:
+          type: string
+        status:
+          type: string
+          enum:
+          - uploaded
+          - processed
+          - error
+        status_details:
+          type: string
+          nullable: true
+    OpenAIFileList:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      properties:
+        object:
+          type: string
+          enum:
+          - list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIFile'
+        first_id:
+          type: string
+          nullable: true
+        last_id:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+    OpenAIFileCounts:
+      type: object
+      properties:
+        in_progress:
+          type: integer
+        completed:
+          type: integer
+        failed:
+          type: integer
+        cancelled:
+          type: integer
+        total:
+          type: integer
+    OpenAIVectorStore:
+      type: object
+      required:
+      - id
+      - object
+      - created_at
+      - name
+      - file_counts
+      - status
+      properties:
+        id:
+          type: string
+          description: '`vs_<collection id>`'
+        object:
+          type: string
+          enum:
+          - vector_store
+        created_at:
+          type: integer
+        name:
+          type: string
+        usage_bytes:
+          type: integer
+        file_counts:
+          $ref: '#/components/schemas/OpenAIFileCounts'
+        status:
+          type: string
+          enum:
+          - in_progress
+          - completed
+        expires_after:
+          type: object
+          nullable: true
+        expires_at:
+          type: integer
+          nullable: true
+        last_active_at:
+          type: integer
+        metadata:
+          type: object
+    OpenAIVectorStoreList:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      properties:
+        object:
+          type: string
+          enum:
+          - list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIVectorStore'
+        first_id:
+          type: string
+          nullable: true
+        last_id:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+    OpenAIVectorStoreFile:
+      type: object
+      required:
+      - id
+      - object
+      - created_at
+      - vector_store_id
+      - status
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum:
+          - vector_store.file
+        usage_bytes:
+          type: integer
+        created_at:
+          type: integer
+        vector_store_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - in_progress
+          - completed
+          - failed
+        last_error:
+          type: object
+          nullable: true
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+        chunking_strategy:
+          type: object
+        attributes:
+          type: object
+    OpenAIVectorStoreFileList:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      properties:
+        object:
+          type: string
+          enum:
+          - list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIVectorStoreFile'
+        first_id:
+          type: string
+          nullable: true
+        last_id:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+    OpenAIVectorStoreFileBatch:
+      type: object
+      required:
+      - id
+      - object
+      - vector_store_id
+      - status
+      - file_counts
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum:
+          - vector_store.files_batch
+        created_at:
+          type: integer
+        vector_store_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - in_progress
+          - completed
+          - failed
+        file_counts:
+          $ref: '#/components/schemas/OpenAIFileCounts'
+    OpenAIDeleted:
+      type: object
+      required:
+      - id
+      - object
+      - deleted
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum:
+          - file
+          - vector_store.deleted
+          - vector_store.file.deleted
+        deleted:
+          type: boolean
+    OpenAIProject:
+      type: object
+      required:
+      - id
+      - object
+      - name
+      - created_at
+      - status
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum:
+          - organization.project
+        name:
+          type: string
+        created_at:
+          type: integer
+        archived_at:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum:
+          - active
+          - archived
+    OpenAIProjectList:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      properties:
+        object:
+          type: string
+          enum:
+          - list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIProject'
+        first_id:
+          type: string
+          nullable: true
+        last_id:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
     DiscoveredAIModel:
       type: object
       required: [id, displayName, capabilities, source]
@@ -1687,7 +2228,7 @@ components:
             when present, are strings; other fields of the object are passed through. An
             object without the field its method needs is refused later as a failed sign-in,
             not as a validation error: `microsoft` without `idToken` answers `400`, and a Google
-            token that is not a JWT answers `500`.
+            token that is not a JWT answers `401`.
         email:
           type: string
           format: email
@@ -8742,8 +9283,12 @@ components:
                 Items in the whole result. For a search by a connected app
                 limited to spaces, folders or files, the matches found so far: it can
                 grow from page to page and is final once `hasNext` is false.
-                Otherwise exact unless `totalCapped` is `true`. Never counts an item the
-                caller cannot read.
+                Otherwise exact unless `totalCapped` is `true`. Counted on the first page
+                and carried by the cursor, so it reflects access when it was counted: a
+                later page carries that count even if the caller has since lost access to
+                an item in it (the page's rows are always checked). The next page
+                requested once the carried count is more than five minutes old counts
+                again; nothing recounts between requests.
             totalCapped:
               type: boolean
               description: |
@@ -17325,7 +17870,9 @@ components:
           type: integer
           format: int64
           nullable: true
-          description: Epoch ms when the last sync run started; absent before the first run
+          description: >-
+            Epoch ms when the last sync run started; absent before the first run. A pass that links newly added users to the
+            connector moves it too, when it starts.
         lastSyncFinishedAtTimestamp:
           type: integer
           format: int64
@@ -17341,7 +17888,8 @@ components:
           nullable: true
           additionalProperties: true
           description: >-
-            What the last run did, in the connector's own terms. For a Web connector: pagesSaved (written this run),
+            What the last run did, in the connector's own terms. Any connector: stopReason start_not_recorded when the run
+            did not start because its start could not be saved. For a Web connector: pagesSaved (written this run),
             pagesStored (kept after it, which Maximum pages caps), pagesVisited, failed, failedByStatus, robotsSkipped, noindexSkipped, skippedMaxPages,
             deferred, pruned, sitemapUrls, stopReason (max_pages, time_limit, stalled, rate_limited or null) and resumed.
         actionItems:
@@ -21168,12 +21716,11 @@ components:
         - idToken
     GoogleCredentials:
       type: object
-      additionalProperties: false
       description: |
-        Google ID token wrapped in an object, as Google's sign-in button returns it. Only the
-        first token check reads `credential`; the second one (`authenticateWithGoogle`) is
-        handed the whole object, so by code reading a sign-in sent this way ends in `500`
-        even with a valid token. Send the bare token string instead.
+        Google ID token wrapped in an object: the `credential` field of Google's sign-in button
+        response. Signs in the same as sending the bare token string. Without a non-empty
+        string `credential` the sign-in answers `400`. The response's other fields, such as
+        `select_by`, may be sent as they are; they are ignored.
       properties:
         credential:
           type: string
@@ -23539,6 +24086,19 @@ components:
         message:
           type: string
           description: Message of the underlying error, or `Unknown error`.
+    ApiDocsSpecUnavailableResponse:
+      type: object
+      description: |
+        Error payload of `GET /docs/openapi.yaml` when the server has no specification loaded.
+        This route answers on its own and does not use the standard error envelope.
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          enum:
+            - OpenAPI spec not available
     ApiDocsModuleInfo:
       type: object
       description: One documentation module (a group of tags shown together in the docs sidebar).
@@ -25209,6 +25769,286 @@ components:
                     type: string
         moreRecords:
           type: boolean
+    EntityCapabilities:
+      type: object
+      description: Which entity lookups the caller is served; see `GET /search/entities/capabilities`.
+      required: [entitySearch, entityRecords, namedEntities, coMentions, recordsByValue, recordsByEntities, recordsByPerson]
+      properties:
+        entitySearch:
+          type: boolean
+          description: '`POST /search/entities`.'
+        entityRecords:
+          type: boolean
+          description: '`POST /search/entities/records`.'
+        namedEntities:
+          type: boolean
+          description: Named-entity extraction is on, so `named_entity` entities and kinds can be asked for.
+        coMentions:
+          type: boolean
+          description: '`POST /search/entities/co-mentioned`.'
+        recordsByValue:
+          type: boolean
+          description: '`POST /search/records/by-value`.'
+        recordsByEntities:
+          type: boolean
+          description: '`POST /search/records/by-entities`.'
+        recordsByPerson:
+          type: boolean
+          description: '`POST /search/records/by-person`; always true.'
+      additionalProperties: false
+    EntityToolListing:
+      type: object
+      description: A listing as the assistant reads it, with record ids and links, and the next page's call at its end when there is one.
+      required: [text]
+      properties:
+        text:
+          type: string
+      additionalProperties: false
+    EntityRecordsRequest:
+      type: object
+      description: Request body for `POST /search/entities/records`.
+      required: [entityId, entityType]
+      properties:
+        entityId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "`entityId` from `POST /search/entities`."
+        entityType:
+          $ref: '#/components/schemas/EntitySearchResultType'
+        recordTypes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Record types to keep, e.g. FILE, MAIL, TICKET.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: From the previous page's continue call.
+      additionalProperties: false
+    CoMentionedEntitiesRequest:
+      type: object
+      description: Request body for `POST /search/entities/co-mentioned`.
+      required: [entityIds]
+      properties:
+        entityIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          description: Every id `POST /search/entities` returned for the one entity.
+        kinds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Kinds to list, e.g. person, organization, product. Emails and phones are listed only when named here.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+      additionalProperties: false
+    RecordsByPersonRequest:
+      type: object
+      description: Request body for `POST /search/records/by-person`.
+      required: [person]
+      properties:
+        person:
+          type: string
+          minLength: 1
+          maxLength: 320
+          description: A full name, an email, or `me`.
+        roles:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 32
+            enum: [assignee, reporter, creator, author, owner, editor, reviewer, recipient, lead, mentioned, involved]
+          description: Roles to keep; every role when omitted.
+        recordTypes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+      additionalProperties: false
+    RecordsByValueRequest:
+      type: object
+      description: >-
+        Request body for `POST /search/records/by-value`. Give at least one constraint: `entityIds`, `name`,
+        `kinds`, a date, an amount or `currency`, a quantity or `dimension`, or a percentage. `currency` alone
+        finds any amount in that currency.
+      properties:
+        kinds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Value kinds, e.g. date, currency, percentage, dimension.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: A company, person or product the records must also mention.
+        entityIds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          description: Entity ids from `POST /search/entities` the records must mention.
+        dateFrom:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Earliest date mentioned, ISO 8601.
+        dateTo:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Latest date mentioned, ISO 8601.
+        amountMin:
+          type: number
+        amountMax:
+          type: number
+        currency:
+          type: string
+          minLength: 1
+          maxLength: 16
+          description: ISO 4217 code, e.g. USD.
+        quantityMin:
+          type: number
+          description: In SI units.
+        quantityMax:
+          type: number
+        dimension:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The quantity's dimension, e.g. time, length, mass, data.
+        percentMin:
+          type: number
+          description: As a fraction, 0.2 for 20%.
+        percentMax:
+          type: number
+        recordTypes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        sourceIds:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          description: App or knowledge base ids to look in.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+      additionalProperties: false
+    RecordsByEntitiesRequest:
+      type: object
+      description: Request body for `POST /search/records/by-entities`.
+      required: [mentions]
+      properties:
+        mentions:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items:
+            type: object
+            required: [name]
+            properties:
+              name:
+                type: string
+                minLength: 1
+                maxLength: 200
+              kind:
+                type: string
+                minLength: 1
+                maxLength: 64
+                description: person, organization, product, event, location, ... when known.
+            additionalProperties: false
+        match:
+          type: string
+          enum: [any, all]
+          default: any
+          description: '`all` keeps the records that mention every name.'
+        query:
+          type: string
+          maxLength: 1000
+          description: What to look for inside those records; the names when omitted.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+          description: Passages to return.
+        maxChunksPerRecord:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: At most this many passages from one record.
+      additionalProperties: false
+    RecordsByEntitiesResponse:
+      type: object
+      required: [entities, chunks, incomplete]
+      properties:
+        entities:
+          type: string
+          description: How each name was resolved, with how many readable records mention it and the look-alikes that are not the same.
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetrieveChunk'
+        incomplete:
+          type: boolean
+          description: True when part of the search could not run.
+        message:
+          type: string
+          nullable: true
+          description: Why `chunks` is empty, when the search gave a reason.
+      additionalProperties: false
     EntityNeighborsRequest:
       type: object
       description: Request body for `POST /search/entities/neighbors`.
@@ -25864,6 +26704,1414 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /openai/models:
+    get:
+      tags:
+        - AI Models Providers
+      summary: List chat models (OpenAI-compatible)
+      description: |
+        OpenAI `GET /v1/models` shape for the chat LLMs this organization has
+        configured (embedding, OCR, speech and image models are left out). Set
+        an OpenAI client's base URL to `{instance}/api/v1/openai` and pass a
+        model `id` as `model` to `/openai/chat/completions` or
+        `/openai/responses`; the chat then runs PipesHub's assistant with that
+        model.
+
+        The `id` is the model name (`gpt-5`). A name configured under more than
+        one provider is listed as `provider/name` (`azureOpenAI/gpt-5`), and as
+        `provider/name@<key prefix>` if one provider holds it twice. The org
+        default comes first. Credentials are not included.
+      operationId: listChatModelsOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      responses:
+        '200':
+          description: The configured chat models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIChatModelList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth access token lacks the `conversation:chat` scope (`HTTP_FORBIDDEN`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The model configuration could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/models/{modelId}:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Retrieve one chat model (OpenAI-compatible)
+      description: |
+        OpenAI `GET /v1/models/{model}` for one configured chat model, by its `id`
+        or by `provider/name` when that names exactly one model. `modelId` may
+        contain slashes.
+      operationId: retrieveChatModelOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Model id from `GET /openai/models`, or `provider/name`
+      responses:
+        '200':
+          description: The model
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIChatModel'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth access token lacks the `conversation:chat` scope (`HTTP_FORBIDDEN`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No configured chat model has this id (`model_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/chat/completions:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Chat with the assistant (OpenAI Chat Completions)
+      description: |
+        OpenAI `POST /v1/chat/completions` backed by PipesHub's assistant: it
+        searches the knowledge the caller can access, uses its tools, and
+        answers with the configured model named by `model` (an `id` from
+        `GET /openai/models`). Each call starts a new conversation, visible in
+        the caller's chat history, in the assistant's default (`agent`) mode.
+        Chat Completions clients resend
+        the whole history, so earlier `messages` (and `system`/`developer`
+        messages) are folded into the query as a plain-text transcript ahead of
+        the last user message. Only text content is read.
+
+        File parts (`{"type": "file", "file": {"file_id": ...}}`) attach those
+        files to the chat; inline file data is not read. Fields this endpoint
+        does not use (`temperature`, `tools`, `max_tokens`, ...) are accepted and
+        ignored. `usage` is `null`. Citations come back as
+        `url_citation` annotations on the message, and `conversation_id` names the
+        PipesHub conversation.
+
+        With `stream: true` the answer is sent as `chat.completion.chunk` events
+        ending in `data: [DONE]`. The text arrives in one chunk when the assistant
+        finishes; `: keepalive` comments are sent while it works. An error after
+        the stream opens is sent as one `data: {"error": ...}` event.
+      operationId: createChatCompletionOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: OpenAI-Project
+          in: header
+          required: false
+          schema:
+            type: string
+          description: |
+            A project `id` from `GET /openai/organization/projects` (the OpenAI
+            SDKs' `project` option). A new conversation runs inside that project,
+            with its instructions and knowledge scope; a follow-up keeps its own.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIChatCompletionRequest'
+      responses:
+        '200':
+          description: The answer, or an SSE stream of chunks when `stream` is true.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIChatCompletion'
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: |
+            `model` or `messages` is missing, or no message is a user message with
+            text (`invalid_request`), or the body failed validation (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OpenAIModelError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `conversation:chat`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OpenAIModelError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No configured chat model has this id (`model_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '502':
+          description: The chat run failed before streaming started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/responses:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Chat with the assistant (OpenAI Responses)
+      description: |
+        OpenAI `POST /v1/responses` backed by PipesHub's assistant, answering
+        with the configured model named by `model`. Without
+        `previous_response_id` a new conversation starts; with
+        it, the turn is added to that response's conversation, so the client
+        sends only the new message. A `previous_response_id` this server did not
+        return is refused.
+
+        `input` is a string or a list of message items. Their text is read, and
+        `input_file` parts with a `file_id` attach those files; other item types
+        are ignored. `instructions` is passed to the assistant with the message.
+        A `file_search` tool limits the knowledge the assistant searches to its
+        `vector_store_ids` (collections); other tools are ignored. Other fields
+        (`temperature`, `store`, ...) are accepted and ignored. Citations come
+        back as `url_citation` annotations on the `output_text` part.
+
+        With `stream: true` the Responses events are sent in order
+        (`response.created`, `response.in_progress`, `response.output_item.added`,
+        `response.content_part.added`, `response.output_text.delta`,
+        `response.output_text.annotation.added` per citation,
+        `response.output_text.done`, `response.content_part.done`,
+        `response.output_item.done`, `response.completed`), each with a
+        `sequence_number`. The text arrives in one delta when the assistant finishes;
+        `: keepalive` comments are sent while it works. An error after the
+        stream opens ends it with `response.failed`.
+      operationId: createResponseOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: OpenAI-Project
+          in: header
+          required: false
+          schema:
+            type: string
+          description: |
+            A project `id` from `GET /openai/organization/projects` (the OpenAI
+            SDKs' `project` option). A new conversation runs inside that project,
+            with its instructions and knowledge scope; a follow-up keeps its own.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIResponseRequest'
+      responses:
+        '200':
+          description: The response, or an SSE stream of Responses events when `stream` is true.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIResponse'
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: |
+            `model` or `input` is missing, no input item is a user message with text,
+            or `previous_response_id` was not returned by this server
+            (`invalid_request`), or the body failed validation (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OpenAIModelError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `conversation:chat`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OpenAIModelError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            No configured chat model has this id (`model_not_found`), or the
+            conversation of `previous_response_id` is gone or not the caller's
+            (`previous_response_not_found`, with `param` set to
+            `previous_response_id`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '502':
+          description: The chat run failed before streaming started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+
+  /openai/files:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List files (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/files`: the files the caller uploaded through `POST /openai/files`,
+        kept in their own collection named "OpenAI API files". `purpose` is not stored, so listed files
+        report `user_data`.'
+      operationId: listFilesOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIFileList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    post:
+      tags:
+      - AI Models Providers
+      summary: Upload a file (OpenAI-compatible)
+      description: 'OpenAI `POST /v1/files` (multipart, `file` and `purpose`). The file is stored as a record
+        in the caller''s "OpenAI API files" collection, created on first upload, and indexed like any upload.
+        The returned `purpose` echoes the request. The platform upload size limit applies.
+
+
+        `status` is `uploaded` while indexing runs, `processed` once indexed, and `error` if indexing fails.'
+      operationId: createFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:upload
+        - kb:read
+        - kb:write
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                purpose:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIFile'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:upload`, `kb:read`, `kb:write`, or the caller has no access (the
+            knowledge base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '400':
+          description: No `file` part, or the upload was refused (`invalid_request`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/files/{fileId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a file (OpenAI-compatible)
+      description: OpenAI `GET /v1/files/{file_id}` for any record the caller can read, by `file-<record
+        id>`.
+      operationId: retrieveFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIFile'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    delete:
+      tags:
+      - AI Models Providers
+      summary: Delete a file (OpenAI-compatible)
+      description: 'OpenAI `DELETE /v1/files/{file_id}`: deletes the record. Personal access tokens cannot
+        carry `kb:delete`, so deleting needs an OAuth token with that scope (or a session).'
+      operationId: deleteFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      parameters:
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIDeleted'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:delete`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/files/{fileId}/content:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Download a file (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/files/{file_id}/content`: the original bytes, with the stored content
+        type.'
+      operationId: fileContentOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: The file bytes
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List vector stores (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/vector_stores`: every collection the caller can read is a vector store,
+        `vs_<collection id>`. `file_counts` and `usage_bytes` are counted from its records; `status` is
+        `in_progress` while any is still indexing.'
+      operationId: listVectorStoresOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    post:
+      tags:
+      - AI Models Providers
+      summary: Create a vector store (OpenAI-compatible)
+      description: 'OpenAI `POST /v1/vector_stores`: creates a collection named `name` and adds `file_ids`
+        to it (see `POST .../files`). `expires_after`, `chunking_strategy` and `metadata` are accepted and
+        ignored.'
+      operationId: createVectorStoreOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:upload
+        - kb:read
+        - kb:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  nullable: true
+                file_ids:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStore'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:upload`, `kb:read`, `kb:write`, or the caller has no access (the
+            knowledge base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '400':
+          description: A `file_ids` entry is not a file id (`invalid_request`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a vector store (OpenAI-compatible)
+      description: OpenAI `GET /v1/vector_stores/{vector_store_id}`.
+      operationId: retrieveVectorStoreOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStore'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    post:
+      tags:
+      - AI Models Providers
+      summary: Modify a vector store (OpenAI-compatible)
+      description: 'OpenAI `POST /v1/vector_stores/{vector_store_id}`: renames the collection when `name`
+        is set.'
+      operationId: modifyVectorStoreOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:write
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStore'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:write`, `kb:read`, or the caller has no access (the knowledge
+            base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    delete:
+      tags:
+      - AI Models Providers
+      summary: Delete a vector store (OpenAI-compatible)
+      description: 'OpenAI `DELETE /v1/vector_stores/{vector_store_id}`: deletes the collection and the
+        records in it. Files uploaded through `POST /openai/files` stay in the files collection. Needs `kb:delete`,
+        which personal access tokens cannot carry.'
+      operationId: deleteVectorStoreOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIDeleted'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:delete`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/files:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List vector store files (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/vector_stores/{vector_store_id}/files`: the records in the collection.
+        A file copied in by `POST .../files` is listed under its copy''s id.'
+      operationId: listVectorStoreFilesOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: filter
+        in: query
+        schema:
+          type: string
+          enum:
+          - in_progress
+          - completed
+          - failed
+          - cancelled
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    post:
+      tags:
+      - AI Models Providers
+      summary: Add a file to a vector store (OpenAI-compatible)
+      description: OpenAI `POST /v1/vector_stores/{vector_store_id}/files`. A record belongs to one collection,
+        so a file from another collection (the files collection, another store) is copied in and indexed
+        there. Adding a file the store already holds (same id, or a copy with the same name and size) changes
+        nothing. The returned object keeps the requested `file_id`, and `GET .../files/{file_id}` finds
+        the copy by it. `attributes` and `chunking_strategy` are ignored.
+      operationId: createVectorStoreFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:upload
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - file_id
+              properties:
+                file_id:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFile'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:upload`, `kb:read`, or the caller has no access (the knowledge
+            base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '400':
+          description: '`file_id` is not a file id (`invalid_request`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/files/{fileId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a vector store file (OpenAI-compatible)
+      description: OpenAI `GET /v1/vector_stores/{vector_store_id}/files/{file_id}`, by the file's own id
+        or the id it was added with.
+      operationId: retrieveVectorStoreFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFile'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    delete:
+      tags:
+      - AI Models Providers
+      summary: Remove a file from a vector store (OpenAI-compatible)
+      description: 'OpenAI `DELETE /v1/vector_stores/{vector_store_id}/files/{file_id}`: deletes the record
+        that holds it in the collection (the copy, for a copied file). Needs `kb:delete`.'
+      operationId: deleteVectorStoreFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIDeleted'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:delete`, `kb:read`, or the caller has no access (the knowledge
+            base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/file_batches:
+    post:
+      tags:
+      - AI Models Providers
+      summary: Add files in a batch (OpenAI-compatible)
+      description: 'OpenAI `POST /v1/vector_stores/{vector_store_id}/file_batches`: adds each file as `POST
+        .../files` does, before answering. The batch `id` carries its file ids, so it needs no storage;
+        up to 100 files.'
+      operationId: createVectorStoreFileBatchOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:upload
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - file_ids
+              properties:
+                file_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileBatch'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:upload`, `kb:read`, or the caller has no access (the knowledge
+            base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '400':
+          description: '`file_ids` is empty, too long, or holds a non-file id (`invalid_request`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/file_batches/{batchId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a file batch (OpenAI-compatible)
+      description: OpenAI `GET /v1/vector_stores/{vector_store_id}/file_batches/{batch_id}`, with counts
+        from the files' indexing status.
+      operationId: retrieveVectorStoreFileBatchOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The `id` returned by `POST .../file_batches`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileBatch'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/file_batches/{batchId}/cancel:
+    post:
+      tags:
+      - AI Models Providers
+      summary: Cancel a file batch (OpenAI-compatible)
+      description: OpenAI `POST .../file_batches/{batch_id}/cancel`. Files are added when the batch is created,
+        so nothing is left to cancel; answers the batch as `GET` does.
+      operationId: cancelVectorStoreFileBatchOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The `id` returned by `POST .../file_batches`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileBatch'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/file_batches/{batchId}/files:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List a file batch's files (OpenAI-compatible)
+      description: OpenAI `GET .../file_batches/{batch_id}/files`.
+      operationId: listVectorStoreFileBatchFilesOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The `id` returned by `POST .../file_batches`.
+      - name: filter
+        in: query
+        schema:
+          type: string
+          enum:
+          - in_progress
+          - completed
+          - failed
+          - cancelled
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/organization/projects:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List projects (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/organization/projects`: the PipesHub projects the caller can see, as
+        `organization.project` objects. Pass a project `id` as the `OpenAI-Project` header (the OpenAI SDKs''
+        `project` option) on `/openai/chat/completions` or `/openai/responses` to chat inside it.'
+      operationId: listProjectsOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:read
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      - name: include_archived
+        in: query
+        schema:
+          type: boolean
+          default: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIProjectList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `project:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/organization/projects/{projectId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a project (OpenAI-compatible)
+      description: OpenAI `GET /v1/organization/projects/{project_id}`.
+      operationId: retrieveProjectOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:read
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Project id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIProject'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `project:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
   # ==================== IN-APP NOTIFICATIONS ====================
   /notifications:
     get:
@@ -29186,9 +31434,8 @@ paths:
 
         - `password`: `{ "credentials": { "password": "your-password" } }`
         - `otp`: `{ "credentials": { "otp": "123456" } }` (6-digit code, valid for 10 minutes)
-        - `google`: `{ "credentials": "google-id-token-string" }`. The object form
-          `{ "credentials": { "credential": "..." } }` passes the first token check, but by code
-          reading the second check is handed the whole object, so it ends in `500`
+        - `google`: `{ "credentials": "google-id-token-string" }` or
+          `{ "credentials": { "credential": "google-id-token-string" } }`
         - `microsoft`: `{ "credentials": { "idToken": "..." } }` (only `idToken` is read)
 
         SAML (`samlSso`), generic OAuth (`oauth`) and Azure AD (`azureAd`) sign-in were removed in 1.0;
@@ -29249,6 +31496,7 @@ paths:
             - `github`, which has no sign-in flow
             - Wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
             - Microsoft: no `idToken` (an `accessToken` alone is not read), or no client ID saved for it
+            - Google: `credentials` is an object without a non-empty string `credential`
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -29261,7 +31509,7 @@ paths:
             - No `x-session-token` header, or a session that is unknown, expired or already used to finish a sign-in; start again with `/initAuth`
             - Wrong, missing, expired or already used sign-in code (the same message for an email with no account and for a locked account)
             - CAPTCHA refused
-            - The identity provider rejected the sign-in, or a Microsoft `idToken` is not a valid token for the saved client ID
+            - The identity provider rejected the sign-in (for Google: an ID token with a bad signature, for another client, expired or malformed), or a Microsoft `idToken` is not a valid token for the saved client ID
           content:
             application/json:
               schema:
@@ -29275,10 +31523,18 @@ paths:
         '500':
           description: |
             Internal server error. Also returned for a password or code sign-in when neither
-            the session nor the body carries an email (the account lookup fails), for a
-            Google token that is not a JWT (the Google library's error is not mapped).
+            the session nor the body carries an email (the account lookup fails), or when
+            Google's signing-key endpoint answers with an error or without a usable key set.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The identity provider could not be reached: the connection to Google's
+            signing-key endpoint, or to Microsoft's, was refused or dropped. Safe to retry.
           content:
             application/json:
               schema:
@@ -30461,6 +32717,9 @@ paths:
         Deleted users are always excluded. Any authenticated member may call it; requires
         `user:read` OAuth scope. Query parameters not listed here are ignored (a former
         `blocked` parameter, for example, no longer changes the response).
+
+        The `email` field is omitted from every user when the `HIDE_EMAIL` environment variable
+        is set to `true`, as it is from `GET /users/{id}`.
       operationId: getAllUsers
       security:
         - bearerAuth: []
@@ -32721,6 +34980,9 @@ paths:
         is — nothing says it was there. Its `userId` is what binds an agent to
         it, so resolving one here would be a way around the admin-only service
         accounts screen.
+
+        The `email` field is omitted from every user when the `HIDE_EMAIL` environment variable
+        is set to `true`, as it is from `GET /users/{id}`.
       operationId: getUsersByIds
       security:
         - bearerAuth: []
@@ -38637,6 +40899,78 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/purge-batch:
+    post:
+      tags:
+        - Internal Storage
+      summary: Remove the paid-result folders of up to 100 records in one call (service-to-service)
+      description: |
+        The same removal as `DELETE /document/internal/paid-results/{recordId}` without `before`, for many
+        records at once, so that a re-purge of a large delete costs one request per 100 records instead of
+        one per record. The organization is the scoped token's; a body that names one (or any other field)
+        is refused. Each record gets its own result, so one folder that cannot be removed never hides the
+        others: the caller repeats only the ones that failed. A record with nothing stored is a success,
+        and so is a repeat.
+      operationId: internalPaidResultsPurgeBatch
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - recordIds
+              properties:
+                recordIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  uniqueItems: true
+                  items:
+                    type: string
+                    pattern: '^[A-Za-z0-9_-]{1,128}$'
+                    not:
+                      const: org
+      responses:
+        '200':
+          description: One result per requested record, in request order. The call is 200 even when some records failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - results
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - recordId
+                        - purged
+                      properties:
+                        recordId:
+                          type: string
+                        purged:
+                          type: boolean
+                        error:
+                          type: string
+                          description: Present when `purged` is false.
+        '400':
+          description: A record id is not valid, one is repeated, there are none or more than 100, or the body has a field other than `recordIds` (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /document/internal/paid-results/{recordId}/purge-cutoff:
     post:
       tags:
@@ -40492,7 +42826,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: Connector service unavailable or connection refused
+          description: |
+            Connector service unavailable or connection refused, or (with `X-Record-Content-Open: 1`)
+            the record's connector could not be read because the database was unreachable. Safe to retry.
           content:
             application/json:
               schema:
@@ -41080,6 +43416,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/stream/record/{recordId}:
+    # Response headers on this operation (ETag, Content-Range, Retry-After, ...) are described in
+    # prose only. Declaring one under `headers:` changes the TypeScript SDK's return type to
+    # {headers, result} and breaks every caller; SDK Tests' surface check fails on it.
     get:
       tags:
         - Knowledge Base
@@ -41242,6 +43581,15 @@ paths:
           description: |
             The record has no file content the connector service can fetch, for example a
             folder: `{"error": "Could not retrieve this item right now. Please try again later."}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '503':
+          description: |
+            The record, its organization or its connector could not be read because the database
+            was unreachable. The record may well exist. The response carries `Retry-After` (seconds,
+            usually 5); retry after that long.
           content:
             application/json:
               schema:
@@ -77147,6 +79495,339 @@ paths:
         '503':
           description: The AI search service could not be reached, or the lookup failed or timed out. This is not an empty result; try again.
 
+  /search/entities/capabilities:
+    get:
+      tags:
+        - Semantic Search
+      summary: Which entity lookups the caller is served
+      description: |
+        Which of the entity lookups below this deployment, organisation and caller
+        are served. They depend on what the deployment and organisation turn on:
+
+        - `entitySearch`, `entityRecords`: an entity store with this organisation's
+          entities in it.
+        - `namedEntities`, `coMentions`, `recordsByValue`: named-entity extraction
+          (`HIGH_ACCURACY_MODE`, or the organisation's Labs setting).
+        - `recordsByEntities`: both of the above and the deployment's
+          `ENTITY_SEARCH_TOOL` switch.
+        - `recordsByPerson`: always.
+
+        The MCP server lists only the entity tool actions marked `true`. Every lookup
+        also checks its own condition, so calling one that is `false` answers 404.
+      operationId: entityCapabilities
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      responses:
+        '200':
+          description: The lookups this caller is served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityCapabilities'
+        '400':
+          description: The connected app's knowledge limit is too large to resolve.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: Access could not be checked, or the AI search service could not be reached; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/entities/records:
+    post:
+      tags:
+        - Semantic Search
+      summary: List an entity's records
+      description: |
+        Every record connected to one entity that the caller can read, newest first,
+        in pages: every record tagged with a department, category, subcategory, topic
+        or language, every record directly inside a record group, every record naming
+        a person, every record of an organisation's account or naming it, every record
+        that mentions a named entity, or the record itself for a `record` entity.
+
+        The listing is returned as text, as the assistant reads it, with the next
+        page's call at its end. An entity the caller cannot reach and an entity with
+        no readable records answer the same way.
+      operationId: listEntityRecords
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntityRecordsRequest'
+            examples:
+              topic:
+                summary: Records tagged with a topic
+                value:
+                  entityId: "0c9b3e0e-6f4e-4f07-a6d3-2a8c1d7e9b11"
+                  entityType: topic
+      responses:
+        '200':
+          description: The listing, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example an unsupported `entityType`, `named_entity` while named-entity extraction is off, or a cursor from another listing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: Nothing has been indexed into the entity store for this organisation yet, so entity lookups are not served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/entities/co-mentioned:
+    post:
+      tags:
+        - Semantic Search
+      summary: List the entities mentioned with an entity
+      description: |
+        The named entities (people, organisations, products, places, events, ...)
+        mentioned in the readable records that mention one entity, with how many of
+        those records mention each, most first. Pass every id `POST /search/entities`
+        returned for that entity, aliases included.
+      operationId: listCoMentionedEntities
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoMentionedEntitiesRequest'
+            examples:
+              people:
+                summary: People mentioned with a company
+                value:
+                  entityIds: ["7d1f0a52-55c2-4a8e-9f1c-0b6e3f2a9d40"]
+                  kinds: ["person"]
+      responses:
+        '200':
+          description: The entities, most mentioned first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example no `kinds` this lookup can list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: Named-entity extraction is off for this organisation (it is on under `HIGH_ACCURACY_MODE` or with the Labs setting), so this lookup is not served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/records/by-person:
+    post:
+      tags:
+        - Semantic Search
+      summary: List the records linked to a person
+      description: |
+        The records the connectors link to a person by role (assignee, reporter,
+        creator, author, owner, editor, reviewer, recipient, lead, mentioned,
+        involved) that the caller can read, newest first. `person` is a full name, an
+        email, or `me`; several people with one name are listed to pick from by email.
+        Served in every deployment.
+      operationId: listRecordsByPerson
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordsByPersonRequest'
+            examples:
+              mine:
+                summary: Tickets assigned to the caller
+                value:
+                  person: me
+                  roles: [assignee]
+                  recordTypes: [TICKET]
+      responses:
+        '200':
+          description: The listing, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example an unknown role or a cursor from another listing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/records/by-value:
+    post:
+      tags:
+        - Semantic Search
+      summary: List the records that mention a typed value
+      description: |
+        The records the caller can read that mention a date range, an amount in a
+        currency, a quantity or a percentage, however the record writes it, most
+        recently modified first, each with the values that matched.
+      operationId: listRecordsByValue
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordsByValueRequest'
+            examples:
+              amount:
+                summary: Amounts over 50,000 USD
+                value:
+                  amountMin: 50000
+                  currency: USD
+      responses:
+        '200':
+          description: The listing, most recently modified first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example no constraint at all, or an inverted range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: Named-entity extraction is off for this organisation (it is on under `HIGH_ACCURACY_MODE` or with the Labs setting), so this lookup is not served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/records/by-entities:
+    post:
+      tags:
+        - Semantic Search
+      summary: Search inside the records that mention named entities
+      description: |
+        Each name is linked to the entities extracted from the documents: an exact
+        name settles it, and look-alikes go through one model check, so "Acme
+        Robotics" never returns "Acme Financial". Then the best passages for `query`
+        (the names, when it is omitted) are returned from inside the readable records
+        that mention them: any of them, or every one of them for `match: all`.
+        `entities` says how each name was resolved.
+      operationId: searchRecordsByEntities
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordsByEntitiesRequest'
+            examples:
+              together:
+                summary: Records naming two companies
+                value:
+                  mentions:
+                    - name: Acme Robotics
+                      kind: organization
+                    - name: Globex
+                  match: all
+                  query: renewal terms
+      responses:
+        '200':
+          description: How each name was resolved, and the best passages inside the records naming them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordsByEntitiesResponse'
+        '400':
+          description: The request is invalid, for example no names.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: This deployment does not serve this search, which needs the entity store, named-entity extraction and the `ENTITY_SEARCH_TOOL` switch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
   /search/updateAppConfig:
     post:
       tags:
@@ -78344,9 +81025,9 @@ paths:
         Returns the HTML page of the built-in API reference. The page loads its data from
         `GET /docs/json` in the browser.
 
-        The route is a catch-all: every `GET` under `/docs` other than `/docs/health` and
-        `/docs/json` (for example `/docs/` or `/docs/any/sub/path`) returns this same page with
-        `200`, so there is no `404` under this prefix; `GET /docs/{subPath}` documents that part.
+        The route is a catch-all: every `GET` under `/docs` other than `/docs/health`,
+        `/docs/json` and `/docs/openapi.yaml` (for example `/docs/` or `/docs/any/sub/path`) returns this same page with
+        `200`, so the catch-all never answers `404`; `GET /docs/{subPath}` documents that part.
         Query parameters are ignored.
 
         No authentication is required and a supplied token is not read.
@@ -78385,8 +81066,8 @@ paths:
       summary: API documentation UI (any other path under /docs)
       description: |
         The catch-all behind `GET /docs`: every `GET` under `/docs` that is not exactly
-        `/docs/health` or `/docs/json` returns the same HTML page as `GET /docs` with `200`,
-        so no path under this prefix answers `404`.
+        `/docs/health`, `/docs/json` or `/docs/openapi.yaml` returns the same HTML page as `GET /docs` with `200`,
+        so no path the catch-all serves answers `404`.
 
         The match is not limited to one segment: `/docs/a/b/c` and `/docs/health/x` are served
         the same way. An OpenAPI path parameter cannot hold a `/`, so a single segment is
@@ -78399,7 +81080,7 @@ paths:
         - name: subPath
           in: path
           required: true
-          description: Any path other than `health` and `json`. The value is not read.
+          description: Any path other than `health`, `json` and `openapi.yaml`. The value is not read.
           schema:
             type: string
       responses:
@@ -78508,6 +81189,60 @@ paths:
                   - $ref: '#/components/schemas/ApiDocsLoadErrorResponse'
 
   # ==================== MAIL ====================
+  /docs/openapi.yaml:
+    get:
+      tags:
+        - API Documentation
+      summary: Download the OpenAPI specification
+      description: |
+        Returns the OpenAPI specification this server documents, as YAML, for import into API
+        clients and code generators. It is the specification file read at server start, with any
+        overlays merged in. Its `servers` use the `{instance_url}` variable, so the file does not
+        name the deployment that served it.
+
+        The answer carries `Content-Disposition: attachment; filename="pipeshub-openapi.yaml"`,
+        so a browser saves it as a file. If the specification could not be read at server start,
+        the answer is `404`.
+
+        No authentication is required; query parameters are ignored.
+      operationId: getApiDocsOpenApiYaml
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI specification
+          headers:
+            Content-Disposition:
+              description: Always `attachment; filename="pipeshub-openapi.yaml"`.
+              schema:
+                type: string
+          content:
+            application/yaml:
+              schema:
+                type: string
+                description: An OpenAPI 3.0 document in YAML.
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '404':
+          description: No specification was loaded at server start
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiDocsSpecUnavailableResponse'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: |
+            Internal server error.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mail/emails/sendEmail:
     post:
       tags:

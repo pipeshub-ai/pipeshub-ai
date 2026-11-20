@@ -15,6 +15,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
+    _BACKPRESSURE_CLEAR_SETTLE_SECONDS,
     IndexingKafkaConsumer,
 )
 from app.services.resource_governor.models import ParseTier
@@ -302,7 +303,11 @@ class TestApplyBackpressure:
         consumer._backpressure_logged = True
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
 
 class TestInitialize:

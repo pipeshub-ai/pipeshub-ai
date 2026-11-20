@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 from . import gen
 from .kh_layer import (
@@ -127,6 +128,11 @@ def _assert_each_store(results: list[tuple[GraphCheckLayer, list[KhFinding] | Ex
         raise ExceptionGroup(f"{len(problems)} stores failed", problems)
     if problems:
         raise problems[0]
+
+
+def _split(layer: object) -> bool:
+    """Whether ``layer`` browses with the split browse (docs/knowledge-hub-browse.md), which has no sample and no time budget."""
+    return getattr(layer, "name", "") == "neo4j" and Neo4jProvider.kh_browse_mode() == "split"
 
 
 async def test_golden_worlds_count_what_the_viewer_may_read(graph_layers) -> None:
@@ -242,7 +248,8 @@ async def test_a_page_that_ends_where_the_check_was_last_asked_names_no_child_th
             ns, cursors = await layer._ns(WIDE), []
             items, _, _ = await browse_pages(layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
             assert [ns.local(i.id) for i in items] == readable, layer.name
-            assert cursors, layer.name
+            # The split browse decides every child before the page, so the forty fit one page and no cursor resumes a check.
+            assert cursors or _split(layer), layer.name
             assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], layer.name
         finally:
             await layer.release([WIDE])
@@ -364,7 +371,8 @@ async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(gr
             assert await children_of(layer, STUBSEED, "u", "h", "recordGroup") == {"S": True}, layer.name
             assert await children_of(layer, NESTSTUB, "u", "h", "recordGroup") == {"S": True}, layer.name
             assert await children_of(layer, NESTSTUB, "u", "S", "record") == {"T": True}, layer.name
-            assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == {}, layer.name
+            # Past the sample the legacy listing leaves the stub out; the split browse has no sample and lists it, since opening it lists k200.
+            assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == ({"S": True} if _split(layer) else {}), layer.name
             assert await children_of(layer, CAPSTUB, "u", "S", "record") == {"k200": False}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "R", "record") == {"S": True}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "f", "recordGroup") == {"R": True}, layer.name

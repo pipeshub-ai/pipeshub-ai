@@ -94,6 +94,23 @@ describe('McpAccessPage', () => {
     expect(screen.queryByText('save')).toBeNull();
   });
 
+  it('explains what each tool does, next to its name', async () => {
+    renderPage();
+    expect(await screen.findByText(strings.tools.descriptions.pipeshub_search)).toBeTruthy();
+    expect(screen.getByText(strings.tools.descriptions.pipeshub_upload)).toBeTruthy();
+    expect(screen.getByText('pipeshub_search')).toBeTruthy();
+  });
+
+  it('shows a tool this build has no explanation for by its name alone', async () => {
+    vi.mocked(McpAccessApi.getTools).mockResolvedValue([
+      { name: 'pipeshub_future', title: 'pipeshub_future', writes: false },
+    ]);
+    renderPage();
+    expect(await screen.findByRole('switch', { name: 'pipeshub_future' })).toBeTruthy();
+    expect(screen.getAllByText('pipeshub_future')).toHaveLength(1);
+    expect(screen.queryByText(/workspace\.mcpAccess/)).toBeNull();
+  });
+
   it('saves a tool turned off', async () => {
     renderPage();
     fireEvent.click(await screen.findByRole('switch', { name: 'Semantic search' }));

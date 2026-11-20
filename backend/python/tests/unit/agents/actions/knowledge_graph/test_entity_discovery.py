@@ -1,5 +1,6 @@
 """Unit tests for ``ops/entity_discovery.py`` (``search_entities``)."""
 import json
+import logging
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,6 +26,8 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.modules.retrieval.title_hits import TITLE_SEARCH_TOP_K
+from tests.support.log_capture import assert_text_free
+from tests.support.provider_errors import SENTINELS, openai_error, with_cause
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
@@ -887,3 +890,18 @@ class TestRecordHitsWhoseContentIsNotIndexed:
         state = _state()
         await execute_search_entities(state, "plan", entity_types=["record"])
         assert "r1" in state["known_record_ids"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_query_embedding_is_logged_by_type_without_the_provider_text(patched, caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    patched[1].side_effect = with_cause(EntityAccessError("Entity vector search failed"), openai_error(429))
+
+    ok, _ = await execute_search_entities(_state(), "legal")
+
+    assert ok is False
+    (line,) = [r for r in caplog.records if r.getMessage() == "search_entities failed"]
+    assert (line.levelno, line.error_type, line.cause_type, line.exc_info) == (
+        logging.WARNING, "EntityAccessError", "RateLimitError", None,
+    )
+    assert_text_free(caplog.records, *SENTINELS)

@@ -50,11 +50,9 @@ async def test_the_lane_adopts_the_callers_permit_and_reserves_nothing(
 
     async def step() -> int:
         p = await b.reserve(Demand(Family.DOCLING, 1, 0, "small"), deadline_s=5)
-        return await parse_pool.submit(work, timeout=2, permit=p)
+        return await parse_pool.submit(work, timeout=10, permit=p)  # a lane that reserves again waits out this 10 s
 
-    t = time.monotonic()
     assert await asyncio.gather(*(step() for _ in range(n))) == [1] * n
-    assert time.monotonic() - t < 1.5, "a lane that reserves again waits for tokens its own caller holds"
     assert max(seen) == n  # exactly N tokens held, none for a second permit
     assert b.snapshot()["used"] == 0  # the lane released them at job end
     assert b.snapshot()["families"]["docling"]["used"] == 0
@@ -267,11 +265,16 @@ def test_run_blocking_stops_waiting_for_capacity_when_its_caller_is_cancelled(mo
     b = install_budget(monkeypatch, tmp_path / "l", c=1)
     held = b.try_reserve(Demand(Family.PARSE, 1, 0, "small"))
     cancelled = threading.Event()
-    threading.Timer(0.2, cancelled.set).start()
-    started = time.monotonic()
-    with pytest.raises(ParseAbandonedError):
-        parse_pool.run_blocking(_hold, 0, timeout=30, cancelled=cancelled)  # the budget is full: it waits, then is cancelled
-    assert time.monotonic() - started < 3.0
+
+    def cancel_once_it_waits() -> None:
+        end = time.monotonic() + 10
+        while not any(f["waiting"] for f in b.snapshot()["families"].values()) and time.monotonic() < end:
+            time.sleep(0.005)
+        cancelled.set()
+
+    threading.Thread(target=cancel_once_it_waits, daemon=True).start()
+    with pytest.raises(ParseAbandonedError):  # a cancel it ignored would end as a capacity timeout at 10 s instead
+        parse_pool.run_blocking(_hold, 0, timeout=10, cancelled=cancelled)  # the budget is full: it waits, then is cancelled
     held.release()
 
 

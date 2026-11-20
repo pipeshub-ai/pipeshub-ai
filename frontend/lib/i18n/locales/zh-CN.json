@@ -2793,7 +2793,35 @@
       "tools": {
         "title": "工具",
         "subtitle": "关闭单个工具。关闭的工具不会提供给 MCP 客户端，对它的调用会被拒绝。",
-        "writes": "写入"
+        "writes": "写入",
+        "descriptions": {
+          "pipeshub_sources": "列出用户可读取的连接器和集合，以及工作区已配置的 AI 模型。客户端据此选择在哪里搜索以及使用哪个模型聊天。",
+          "pipeshub_search": "在用户可读取的连接器和集合中按语义搜索已索引的文档，并返回匹配的段落及其所属记录。",
+          "pipeshub_get_record_content": "读取一条记录的全文。还可以通过 URL、问题编号或外部 ID 查找记录，浏览文件夹、空间或史诗下的内容，以及读取整个 Slack 会话串。",
+          "pipeshub_download_record": "下载记录存储的原始文件，可选择转换为 PDF。",
+          "pipeshub_directory": "查询当前登录的用户、工作区的用户和群组，以及该用户所属的团队。不会更改任何内容。",
+          "pipeshub_create_collection": "创建一个归用户所有的新空集合，可向其中上传文件。",
+          "pipeshub_upload": "将文档上传到集合，以便建立索引并可供搜索。每次调用最多 20 个文档、约 3 MB。",
+          "pipeshub_indexing_status": "报告集合的索引进度，以及哪些文档失败及其原因。",
+          "pipeshub_connect_source": "返回一个链接，用户在浏览器中打开它来连接 Slack、Google Drive 或 Jira 等来源。该工具本身不会连接任何内容。",
+          "pipeshub_add_web_source": "将网站添加为用户自己的 Web 连接器。它从起始页面开始抓取，跟随页面中的链接，并且每天重新抓取。默认保留 100 个页面，客户端可要求更多，最多 10,000 个。OAuth 应用或访问令牌还需要 connector:write 和 connector:sync 权限范围。",
+          "pipeshub_chat": "向 PipesHub 自带的助手或工作区的某个智能体提问，并返回带引用的回答。写入工具关闭时，它不会运行已连接的操作。关闭它也会同时关闭智能体列表。",
+          "pipeshub_agents": "列出工作区的智能体及其工具和知识，以便客户端与其中一个聊天。仅在“与 PipesHub 聊天”开启时提供。",
+          "pipeshub_show_citations": "向用户展示回答所依据的来源，按 [1]、[2] 等编号，并附带每个文档的预览。每次调用最多 30 个段落。仅提供给能够显示引用查看器的客户端，例如 Claude。",
+          "pipeshub_preview_record": "仅供引用查看器使用，AI 模型不会调用。它分段加载记录所存储的文件，以便查看器显示文档。关闭期间，查看器无法加载文档预览。",
+          "pipeshub_code_repos": "列出用户可读取的已索引代码仓库。代码工具仅提供给拥有已索引代码的用户；OAuth 应用或访问令牌还需要 code:read 权限范围。",
+          "pipeshub_code_symbols": "显示已索引仓库中某个目录或文件包含的内容：子目录和文件，或文件定义的符号。",
+          "pipeshub_code_neighbours": "显示代码图中某个文件或符号周围的内容：它的调用方、它调用的代码、导入和继承关系。",
+          "pipeshub_code_read": "读取已索引的源代码：一个符号、一段行范围或整个文件。读取的是索引副本，可能落后于仓库。",
+          "pipeshub_code_path": "逐步显示仓库中一个符号如何到达另一个符号。",
+          "pipeshub_code_search": "按确切名称、字符串或正则表达式查找代码。",
+          "pipeshub_code_semantic_search": "在不知道名称时，根据自然语言描述查找某个功能或行为背后的代码。",
+          "pipeshub_code_outline": "列出文件中的类、函数和方法及其签名和行范围，不含函数体。",
+          "pipeshub_code_impact": "显示依赖某个符号的内容：所有调用、导入或基于它的代码，以及覆盖到它的测试。可回答谁调用了它、修改后会影响什么。",
+          "pipeshub_code_impact_of_diff": "接收一个统一格式的 diff，例如 git diff 的输出或拉取请求的 diff，显示它更改的符号、涉及这些符号的文件和测试，以及没有测试覆盖的调用方。",
+          "pipeshub_code_history": "列出修改过某个文件的已索引拉取请求，包括作者、审阅者、合并者及其提到的工单。",
+          "pipeshub_code_entry_points": "列出执行进入仓库的位置，例如路由、命令行工具、任务和钩子。是阅读陌生代码的起点。"
+        }
       },
       "appliesNote": "更改会在几秒内应用于新的 MCP 请求。",
       "loadError": "无法加载 MCP 访问设置。请重新加载页面后重试。",
@@ -2907,8 +2935,7 @@
       },
       "enterpriseSso": {
         "title": "SAML 单点登录和 OpenID Connect",
-        "description": "让成员通过 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身份提供商登录。",
-        "contactSales": "如需购买，请发送邮件至 {{email}}"
+        "description": "让成员通过 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身份提供商登录。"
       }
     },
     "connectors": {
@@ -3199,7 +3226,8 @@
             "max_pages": "已达到最大页数限制",
             "time_limit": "已达到时间限制；下次同步将继续",
             "stalled": "网站停止响应；下次同步将继续",
-            "rate_limited": "网站一再要求减少请求；下次同步将继续"
+            "rate_limited": "网站一再要求减少请求；下次同步将继续",
+            "start_not_recorded": "同步无法保存其开始记录，因此未运行；下次同步将重试"
           },
           "pagesSaved": "已保存 {{count}} 个页面",
           "failed": "{{count}} 个页面失败",
@@ -4673,6 +4701,9 @@
           "label": "提取服务",
           "description": "基于 LLM 的文档分类和元数据提取"
         }
+      },
+      "healthWarnings": {
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜索索引超出了向量数据库的内存",

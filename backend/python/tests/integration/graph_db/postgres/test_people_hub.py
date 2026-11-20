@@ -13,9 +13,11 @@ import asyncio
 import pytest
 
 from app.core import org_context
+from app.core.db import uow
 from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
 from app.models.entities import Person
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+from tests.support import plan_gate
 
 from .test_access import APP, World, _org, rec
 from .test_access import w as w
@@ -484,6 +486,38 @@ async def test_the_root_listing_gives_the_users_role_on_each_app_and_nothing_to_
         await roots(w, sort_dir="sideways")
     with pytest.raises(ValueError, match="page direction"):
         await roots(w, direction="up")
+
+
+async def test_a_collection_has_children_when_one_live_record_of_its_own_belongs_to_it(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``hasChildren`` of a collection at the root: a live, non-placeholder record of that collection (and this org) that belongs to it. One such record is enough,
+    so the read stops at the first: a DISTINCT over every belongs-to edge of every collection read 258,000 buffers (245 ms) for 11 collections at a million records."""
+    await w.nodes("users", {"_key": "u", "userId": "uid-u"})
+    await w.nodes("apps", *({"_key": k, "type": "KB", "name": k} for k in ("full", "dead", "ph", "alien", "foreign", "empty", "big")))
+    await w.nodes("records", rec("f1", connectorId="full"), rec("d1", connectorId="dead", isDeleted=True), rec("p1", connectorId="ph", isPlaceholder=True),
+                  rec("a1", connectorId="full"), rec("o1", connectorId="foreign", orgId="another-org"))
+    for r, app in (("f1", "full"), ("d1", "dead"), ("p1", "ph"), ("a1", "alien"), ("o1", "foreign")):        # a1 belongs to 'alien' but is a record of 'full'
+        await w.edge("belongsTo", ("records", r), ("apps", app))
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'b' || g,
+        jsonb_build_object('connectorId', 'big', 'orgId', $1::text) FROM generate_series(1, 3000) g""", w.org), write=True)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc)
+        SELECT $1, 'belongsTo', 'records', 'b' || g, 'apps', 'big', '{}'::jsonb FROM generate_series(1, 3000) g""", w.org), write=True)
+    sent: list[tuple[str, tuple]] = []
+    real = uow.Tx.fetch
+
+    async def spy(tx: uow.Tx, sql: str, *args: object, **kw: object) -> object:
+        if "pipeshub:graph.hub_root_kb_children" in sql:
+            sent.append((sql, args))
+        return await real(tx, sql, *args, **kw)
+    monkeypatch.setattr(uow.Tx, "fetch", spy)
+    rows = (await roots(w, apps=["full", "dead", "ph", "alien", "foreign", "empty", "big"]))["rows"]
+    assert {r["id"]: r["hasChildren"] for r in rows} == {"full": True, "dead": False, "ph": False, "alien": False, "foreign": False, "empty": False, "big": True}
+    assert len(sent) == 1
+    sql, args = sent[0]
+    plan = plan_gate.root(await pg_db.run(lambda tx: tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args)))
+    # each record read by its key and each edge read by its collection; a few index pages per collection, not one node read per child of 'big'
+    assert not (bad := plan_gate.unkeyed(plan, "nodes", r"\bid = ")), bad
+    assert not (bad := plan_gate.unkeyed(plan, "edges", r"\bto_id = ")), bad
+    assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 100, plan.get("Shared Hit Blocks")
 
 
 async def test_a_failed_root_listing_raises_rather_than_listing_nothing_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
