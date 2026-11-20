@@ -30,7 +30,13 @@ from app.config.constants.service import (
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
-from app.core.org_context import current_org_id, for_org
+from app.core.org_context import (
+    MissingOrgContext,
+    current_or_system,
+    current_org_id,
+    for_org,
+    system,
+)
 from app.core.org_context import peek as peek_org_context
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import (
@@ -125,6 +131,8 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
+from app.services.messaging.precision_check import active_verdict
+from app.services.messaging.precision_flip import PrecisionFlip, precision_flip_in
 from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import repurge_window
@@ -1694,12 +1702,56 @@ class RecordEventHandler(BaseEventService):
             key=str(payload.get("connectorId")),
         )
 
+    async def _org_ids_to_sweep(self) -> list[str]:
+        """The organisations whose retired-epoch points the cleanup's tail removes.
+
+        A store deletes for one organisation at a time. When the event runs bound to an organisation, that one;
+        otherwise every one the graph lists. A listing that fails leaves the sweep to the end of each organisation's
+        next record, which runs it too.
+        """
+        try:
+            try:
+                bound = current_or_system().org_id
+            except MissingOrgContext:
+                bound = None
+            if bound:
+                return [bound]
+            with system("epoch_sweep_orgs"):
+                orgs = await self.event_processor.graph_provider.get_all_orgs(active=False, raise_on_error=True) or []
+        except Exception:
+            self.logger.warning("Could not list the organisations to sweep retired epochs for", exc_info=True)
+            return []
+        return [str(o.get("_key") or o.get("id")) for o in orgs if o.get("_key") or o.get("id")]
+
+    async def _forget_precision_state(self) -> None:
+        """After the drop: release the pins of collections that are gone (orphans) and recompute the verdict now.
+
+        The pin of every collection the cleanup dropped was released with its vectors. A pin over a collection that
+        still exists stays: it describes vectors that are still there.
+
+        Without the recompute, a process would keep handing events back for up to a poll period after the
+        indexes it was waiting on are gone.
+        """
+        try:
+            registry = self.event_processor.processor.indexing_pipeline.collection_registry
+            await registry.release_orphan_pins()
+            await registry.sweep_dead_epochs(await self._org_ids_to_sweep())
+        except Exception:
+            # Raised: the consumer's index.end writes the failure once.
+            self.logger.debug("Could not release the weight-precision pins of collections that are gone", exc_info=True)
+            raise
+        verdict = active_verdict()
+        if verdict is not None:
+            verdict.clear()
+            await verdict.refresh()
+
     async def _delete_vector_collection(self, payload: dict | None = None) -> AsyncGenerator[PipelineEvent, None]:
         # The cleanup job polls for a phase and otherwise waits out its whole
         # deadline, so every exit from here must publish one — a failure
         # included — rather than let the job time out with no explanation.
         try:
             await self._recreate_managed_collections()
+            await self._forget_precision_state()
         except Exception:
             await mark_cleanup_phase(
                 self.config_service, PHASE_FAILED, logger=self.logger
@@ -1716,11 +1768,13 @@ class RecordEventHandler(BaseEventService):
         )
 
     async def _recreate_managed_collections(self) -> list[str]:
-        """Drop and rebuild every records collection the registry manages.
+        """Drop and rebuild every records collection the registry manages, and reset the entity index.
 
-        The entity index is not one of them: it is a projection of the graph
-        that ``EntityVectorStore`` keeps on the current model by itself, and
-        nothing here would fill it again.
+        The entity index is not a records collection: it is a projection of the graph that
+        ``EntityVectorStore`` keeps on the current model by itself. It holds embedding vectors of the
+        weight precision it was written with, so it is dropped and created empty here, with its pin, and the
+        entity index rebuild (which reads the new collection as one it has not filled) projects the graph
+        into it again, as it does after a model change.
 
         The embedding dimension is re-derived from the *live* model rather
         than the manifest, because this event fires precisely when the model
@@ -1748,6 +1802,9 @@ class RecordEventHandler(BaseEventService):
         # are rebuilt but every later resolution still uses the outgoing
         # strategy's names until the service restarts.
         reset_strategy_cache()
+        entity_store = self._entity_vector_store()
+        if entity_store is not None:
+            await entity_store.reset_collection()
         self.logger.info(
             "Recreated %d records collection(s) at dimension %s: %s",
             len(recreated),
@@ -1973,6 +2030,7 @@ class RecordEventHandler(BaseEventService):
         cancelled = False
         # Handed back to the broker for a model provider's rate-limit wait (``ProviderRateLimitRequeue``).
         handed_back = False
+        precision_flipped = False
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
         held_for_refresh = False
@@ -2909,7 +2967,24 @@ class RecordEventHandler(BaseEventService):
             error_msg = "Record processing was cancelled"
             last_exception = ce
             raise
+        except PrecisionFlip as flip:
+            # The embedding server serves other weights than this index holds: the message goes back
+            # with no attempt counted, and the record is never failed for it.
+            error_occurred = True
+            precision_flipped = True
+            error_msg = str(flip)
+            last_exception = flip
+            self.logger.debug(f"Record {record_id} handed back: {flip}")
+            raise
         except IndexingError as ie:
+            flip = precision_flip_in(ie)
+            if flip is not None:
+                error_occurred = True
+                precision_flipped = True
+                error_msg = str(flip)
+                last_exception = flip
+                self.logger.debug(f"Record {record_id} handed back: {flip}")
+                raise flip from ie
             error_occurred = True
             error_msg = str(ie)
             last_exception = ie
@@ -2945,6 +3020,14 @@ class RecordEventHandler(BaseEventService):
             self.logger.debug(f"Record {record_id} held: another delivery of its refresh is purging")
             raise
         except Exception as e:
+            flip = precision_flip_in(e)
+            if flip is not None:
+                error_occurred = True
+                precision_flipped = True
+                error_msg = str(flip)
+                last_exception = flip
+                self.logger.debug(f"Record {record_id} handed back: {flip}")
+                raise flip from e
             error_occurred = True
             error_msg = str(e)
             last_exception = e
@@ -3001,6 +3084,10 @@ class RecordEventHandler(BaseEventService):
                     == MessageErrorType.TERMINAL
                 ):
                     is_final = True
+
+                if precision_flipped:
+                    # A flip is never final: the record waits in the broker for the setting to be put right.
+                    is_final = False
 
                 if is_final is None:
                     self.logger.warning(

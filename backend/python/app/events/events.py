@@ -118,6 +118,7 @@ from app.services.messaging.config import (
     PipelineEventData,
     messaging_env,
 )
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.paid_cache.access import abandon_run, complete_run, start_run
 from app.services.paid_cache.run import current_run as current_paid_run
 from app.services.paid_cache.run import refresh_requested
@@ -126,6 +127,7 @@ from app.services.parsing.interface import ParserProvider, UnsupportedFormatErro
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor import classify
+from app.services.vector_db.filters import OrgRequired, org_for_filter
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
     CollectionStrategy,
@@ -270,6 +272,7 @@ class EventProcessor:
     async def _skip_same_bytes(self, record: Mapping[str, Any], record_id: str) -> bool:
         """Settle a same-bytes update without parsing or embedding; False when it must run in full.
 
+        0. The record's own points are still in the store (a cleanup or reset of the index leaves a COMPLETED record with none).
         1. The membership sync: a full update ends in one, and the update may be the sign that the
            record's connector, groups or permissions changed under the same bytes.
         2. An unforced redrive of the stages after embed that did not finish (failed or paused). A
@@ -287,6 +290,17 @@ class EventProcessor:
         vrid, rev = str(record["virtualRecordId"]), str(record["contentRev"])
         try:
             if await ingress.handoff_lost(record):
+                return False
+            # The record's points must still be in the store: after a cleanup or a reset of the index its status still says
+            # COMPLETED while its vectors are gone (or were never written under the live epoch), and skipping would keep it
+            # unsearchable until a reindex reaches it. No point of its own, or nothing to ask: run in full, which embeds under
+            # the index's current precision and epoch.
+            pipeline = self._indexing_pipeline()
+            try:
+                org_id = org_for_filter()
+            except OrgRequired:
+                return False
+            if pipeline is None or org_id not in await pipeline.orgs_holding_points(vrid):
                 return False
             await self.sync_vector_membership(vrid)
             dispatched = await ingress.redrive_unchanged(vrid, rev, record)
@@ -1524,25 +1538,6 @@ class EventProcessor:
                     doc,
                 )
             await self._copy_twin_edges(match.record, doc)
-        if match.same_collection and self.sink_orchestrator is not None:
-            # The copy above only touched the graph — this record still
-            # has no `record`/`record_group` point, and the taxonomy
-            # points it now shares carry only the other record's
-            # connectorId/recordGroupId. Different-collection duplicates
-            # skip this: they continue to full indexing and get entity
-            # sync from SinkOrchestrator.index()/enrich() there instead.
-            # sync_entities_for_duplicate is already best-effort
-            # internally; caught again here so a mock/mis-wired sink in
-            # a caller can never turn dedup's own bookkeeping into a
-            # failed event.
-            try:
-                await self.sink_orchestrator.sync_entities_for_duplicate(doc)
-            except Exception as exc:
-                self.logger.warning(
-                    "Entity vector sync failed for duplicate %s (non-fatal): %s",
-                    _record_key(doc),
-                    exc,
-                )
         self.logger.debug(
             "Duplicate record %s resolved (same_collection=%s)",
             _record_key(match.record),
@@ -1631,6 +1626,10 @@ class EventProcessor:
                 # have written some of the points.
                 sync_attempted = True
                 await self.sync_vector_membership(vrid)
+            # Before the status: the copy has no `record`/`record_group` point yet, and the taxonomy points it now
+            # shares carry only the twin's connectorId/recordGroupId. The handler acknowledges a redelivered event
+            # for a COMPLETED record, so a flip handed back after the status was written would never run this again.
+            await self._sync_entities_for_attached_copy(doc)
             self._require_persisted(
                 await self.update_record_fields(
                     doc,
@@ -1667,6 +1666,26 @@ class EventProcessor:
                 target_key, prior_identity, vrid if sync_attempted else None
             )
             raise
+
+    async def _sync_entities_for_attached_copy(self, doc: dict[str, Any]) -> None:
+        """Project the copy's taxonomy and its own record points into the entity index.
+
+        ``sync_entities_for_duplicate`` is already best-effort internally; caught again here so a mock/mis-wired sink
+        can never turn dedup's own bookkeeping into a failed event. A flip of the weight precision is the exception:
+        it goes up, with the record still not COMPLETED, so its redelivery attaches and syncs again.
+        """
+        if self.sink_orchestrator is None:
+            return
+        try:
+            await self.sink_orchestrator.sync_entities_for_duplicate(doc)
+        except PrecisionFlip:
+            raise
+        except Exception as exc:
+            self.logger.warning(
+                "Entity vector sync failed for duplicate %s (non-fatal): %s",
+                _record_key(doc),
+                exc,
+            )
 
     async def _restore_identity_after_failed_attach(
         self,

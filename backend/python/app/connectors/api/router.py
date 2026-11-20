@@ -159,6 +159,7 @@ from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildConflictError,
     acquire_rebuild_lock,
     assert_no_indexing_in_flight,
+    precision_wait_in_force,
     list_rebuild_apps,
     release_rebuild_lock,
     schedule_vector_store_job_async,
@@ -3171,7 +3172,10 @@ async def _accept_vector_store_job(
     # the same VRID can interleave delete-then-upsert into duplicates.
     try:
         apps = await list_rebuild_apps(graph_provider, org_id=org_id)
-        await assert_no_indexing_in_flight(graph_provider, apps)
+        # A cleanup is how an index is moved to another weight precision: while indexing is waiting for the
+        # embedding precision its queued records are not work in flight, so only IN_PROGRESS ones are counted.
+        waiting_for_precision = operation == "cleanup" and await precision_wait_in_force(config_service)
+        await assert_no_indexing_in_flight(graph_provider, apps, waiting_for_precision=waiting_for_precision)
     except VectorStoreRebuildConflictError as exc:
         await release_rebuild_lock(lock, redis)
         raise HTTPException(
@@ -3192,6 +3196,7 @@ async def _accept_vector_store_job(
         if operation == "cleanup":
             job = start_vector_store_cleanup(
                 logger=logger,
+                config_service=config_service,
                 graph_provider=graph_provider,
                 kafka_service=kafka_service,
                 lock=lock,
@@ -3199,6 +3204,7 @@ async def _accept_vector_store_job(
                 org_id=org_id,
                 user_id=user_id,
                 apps=apps,
+                waiting_for_precision=waiting_for_precision,
             )
         else:
             data_store = await container.data_store()

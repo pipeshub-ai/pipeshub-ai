@@ -31,6 +31,13 @@ RECORD_CONFIG = SimpleNamespace(group_id="records_consumer_group", topics=["reco
 
 
 @pytest.fixture(autouse=True)
+def _no_precision_check_task():  # noqa: ANN202
+    """The weight-precision check polls the embedding server in the background; these tests have none."""
+    with patch("app.indexing_main.start_precision_check", new=AsyncMock(return_value=(None, MagicMock()))):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
 
@@ -1285,6 +1292,37 @@ class TestStartKafkaConsumers:
 
         # The first consumer is the record consumer; the stage consumers follow it.
         assert create_consumer.call_args_list[0].kwargs["connector_off_filter"] is connector_off_filter
+
+    async def test_the_precision_filter_reaches_the_record_and_priority_consumers(self) -> None:
+        """Built but not passed, the check hands nothing back: the record and priority consumers must get it."""
+        from app.indexing_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        precision_filter = MagicMock()
+        record_consumer = MagicMock(start=AsyncMock())
+        priority_consumer = MagicMock(start=AsyncMock())
+        stage_consumer = MagicMock(start=AsyncMock())
+
+        with (
+            patch("app.indexing_main.start_precision_check", new=AsyncMock(return_value=(precision_filter, MagicMock()))) as started,
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
+            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, priority_consumer, stage_consumer]) as create_consumer,
+            patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_admin", return_value=MagicMock(ensure_topics_exist=AsyncMock())),
+            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
+        ):
+            await start_kafka_consumers(mock_container)
+
+        started.assert_awaited_once()
+        assert started.await_args.args[0] is mock_container
+        assert create_consumer.call_args_list[0].kwargs["precision_filter"] is precision_filter
+        assert create_consumer.call_args_list[1].kwargs["precision_filter"] is precision_filter
 
     async def test_stage_lease_pools_are_sized_for_every_worker_process(self) -> None:
         """As the record leases are (#4216): one worker's share would cap the cluster at it."""
