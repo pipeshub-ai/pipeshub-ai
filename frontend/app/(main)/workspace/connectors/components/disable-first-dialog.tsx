@@ -83,7 +83,7 @@ export function DisableFirstDialog({
   const handleProceed = useCallback(async () => {
     setIsBusy(true);
     try {
-      await ConnectorsApi.toggleConnector(connectorId, 'sync');
+      await ConnectorsApi.toggleConnector(connectorId, 'sync', false);
     } catch (err: unknown) {
       setIsBusy(false);
       // The interceptor exempts desktop refusals from its toast, so they are worded here.

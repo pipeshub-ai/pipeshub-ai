@@ -14,8 +14,10 @@ import {
   InternalServerError,
 } from '../../../../src/libs/errors/http.errors'
 import * as kbUtils from '../../../../src/modules/knowledge_base/utils/utils'
+import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import {
   getKnowledgeHubNodes,
+  KNOWLEDGE_HUB_NODES_TIMEOUT_MS,
   createKnowledgeBase,
   getKnowledgeBase,
   listKnowledgeBases,
@@ -292,6 +294,19 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+    it('gives up on a slow connector service rather than wait for the default five minutes', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { items: [] },
+      })
+
+      await handler(createMockRequest(), createMockResponse(), createMockNext())
+
+      expect(execStub.calledOnce).to.be.true
+      expect(execStub.firstCall.args[0]).to.include('/api/v1/knowledge-hub/nodes')
+      expect(execStub.firstCall.args[4]).to.deep.equal({ timeoutMs: KNOWLEDGE_HUB_NODES_TIMEOUT_MS })
     })
   })
 

@@ -101,7 +101,7 @@ describe('DisableFirstDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
     await waitFor(() => expect(onProceed).toHaveBeenCalledTimes(1));
-    expect(toggleConnector).toHaveBeenCalledWith('conn-1', 'sync');
+    expect(toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', false);
     expect(onOpenChange).toHaveBeenCalledWith(false);
     const s = useConnectorsStore.getState();
     expect(s.panelConnector?.isActive).toBe(false);
