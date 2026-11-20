@@ -8,10 +8,11 @@ import {
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
-import { logLevelFor } from '../../../libs/utils/error.middleware.utils';
 import { catchAsync } from '../../../libs/middlewares/catch-async.middleware';
 import { refuseIfDraining } from '../../../libs/repositories/drain';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { resolvedProxyHeaders } from '../../agent-harness/transport/resolved-turn-header';
+import { expandedChatCommand } from '../utils/chat-command';
 import { RunLostError } from '../services/conversation/domain/errors';
 import { conversationExtensions } from '../services/conversation/conversation-extensions';
 import { LeaseLostError } from '../services/conversation/turn/run-lease';
@@ -37,6 +38,7 @@ import {
 } from '../utils/follow-up-turn';
 import { refuseRunWhileShuttingDown } from '../utils/active-runs';
 import { attachUpstreamAbort } from '../utils/stream-lifecycle';
+import { ChatStreamRun } from '../utils/chat-stream-run';
 import { openTurnSse, TurnStreamPump } from '../utils/turn-stream';
 import {
   conversationForViewer,
@@ -68,6 +70,8 @@ export const followUpStream = (
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     const { conversationId, agentKey } = req.params;
+    const streamRun = new ChatStreamRun(req, res);
+    if (conversationId) streamRun.bind({ conversationId, agentKey });
     const body = req.body as FollowUpBody;
     if (!body.query) {
       throw new BadRequestError('Query is required');
@@ -95,7 +99,7 @@ export const followUpStream = (
       if (error instanceof LeaseLostError) return;
       throw error;
     }
-    const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+    const upstreamAbort = attachUpstreamAbort(res, () => {
       void live.pump?.onDisconnect();
     });
 
@@ -122,6 +126,7 @@ export const followUpStream = (
         body,
         attachments,
         gate,
+        command: expandedChatCommand(res),
       });
       if (live.lost) throw new LeaseLostError(gate.lease?.runId ?? '');
       // With a lease every 4xx so far was JSON; from here on failures are SSE frames.
@@ -139,6 +144,7 @@ export const followUpStream = (
       }
 
       const pump = new TurnStreamPump({
+        streamRun,
         res,
         requestId,
         startTime,
@@ -176,6 +182,9 @@ export const followUpStream = (
         {
           conversationId,
           previousConversations: context.previousConversations,
+          ...(context.historyLabel !== undefined
+            ? { historyLabel: context.historyLabel }
+            : {}),
           isNewConversation: false,
           extraPayload: {
             ...turns.aiPayloadFields(turn.conversation),
@@ -194,21 +203,26 @@ export const followUpStream = (
         uri: `${appConfig.aiBackend}${aiRequest.path}/stream`,
         method: HttpMethod.POST,
         headers: {
-          ...(req.headers as Record<string, string>),
+          ...(await resolvedProxyHeaders(req, {
+            agentKey:
+              responder.target.kind === 'agent'
+                ? responder.target.agentKey
+                : null,
+            conversationId: conversationId as string,
+          })),
           'Content-Type': 'application/json',
         },
         body: { ...aiRequest.payload, protocol: AGUI_PROTOCOL },
       };
 
-      const stream = await startAIStream(
-        aiCommandOptions,
-        responder.target.kind === 'agent'
-          ? 'Add Message Agent Stream'
-          : 'Add Message Stream',
-        responder.target.kind === 'agent'
-          ? { requestId, agentKey: responder.target.agentKey }
-          : { requestId },
-        upstreamAbort.signal,
+      const stream = await streamRun.open(() =>
+        startAIStream(
+          aiCommandOptions,
+          responder.target.kind === 'agent'
+            ? 'Add Message Agent Stream'
+            : 'Add Message Stream',
+          upstreamAbort.signal,
+        ),
       );
       if (!stream) {
         // The lost-lease or abandon path already ended the turn.
@@ -224,20 +238,11 @@ export const followUpStream = (
       );
       pump.attach(stream);
     } catch (error: unknown) {
-      const level = logLevelFor(error);
-      logger[level]('Error in follow-up stream', {
-        requestId,
-        conversationId,
-        agentKey,
-        error: error instanceof Error ? error.message : String(error),
-        ...(level === 'error' && error instanceof Error
-          ? { stack: error.stack }
-          : {}),
-      });
       if (live.pump) {
         await live.pump.fail(error);
         return;
       }
+      streamRun.end({ kind: 'failed', error });
       // Nothing was appended, so the session goes back to idle rather than failed.
       const outcome = outcomeForError(error);
       await gate.settle(outcome === 'failed' ? 'unstarted' : outcome);

@@ -100,15 +100,15 @@ describe('hot session document', () => {
       expect(errors[49]?.message).to.equal('It failed')
     })
 
-    it('logs a stack and does not store it', async () => {
-      const logged = sinon.stub(Logger.prototype, 'error')
+    it('keeps a stack off the session document and out of the logs: a stack starts with the error text', async () => {
+      const logged = (['error', 'warn', 'info', 'debug'] as const).map((level) => sinon.stub(Logger.prototype, level))
       const { store, session, doc } = world()
 
       await markConversationFailed(doc, 'It failed', null, 'internal_error', 'Error: boom\n    at handler.ts:1')
 
       const errors = store.session(session._id)?.toObject().conversationErrors as Array<{ stack?: string }>
       expect(errors[0]?.stack).to.equal(undefined)
-      expect(JSON.stringify(logged.args)).to.contain('handler.ts:1')
+      expect(JSON.stringify(logged.map((stub) => stub.args))).to.not.contain('boom')
     })
   })
 

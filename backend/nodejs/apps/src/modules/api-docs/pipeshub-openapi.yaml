@@ -16146,16 +16146,6 @@ components:
           minItems: 1
           description: IDs of users to share with
           example: ["507f1f77bcf86cd799439011"]
-        accessLevel:
-          type: string
-          enum: [read, write]
-          default: read
-          description: |
-            Permission level for shared users:
-
-            - `read` — Can view only
-            - `write` — Stored as `read`; the response carries an `ACCESS_LEVEL_DOWNGRADED` warning
-
     RetrieveRequest:
       type: object
       required: [query]
@@ -54850,7 +54840,7 @@ paths:
                           description: Subdocument identifier auto-assigned by MongoDB.
                   warnings:
                     type: array
-                    description: Present only when `write` was requested; access is stored as `read`.
+                    description: Present only when the level stored is lower than the one requested; by default a share stores the level requested.
                     items:
                       type: object
                       additionalProperties: false

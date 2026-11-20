@@ -57,6 +57,7 @@ export async function createPlainFirstTurn(
     body.appliedFilters,
     body.chatMode,
     input.attachments,
+    input.command,
     { authorUserId },
   );
   const { conversation, userRow } = await openConversation(

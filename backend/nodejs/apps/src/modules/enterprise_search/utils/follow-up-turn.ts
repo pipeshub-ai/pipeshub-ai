@@ -125,6 +125,7 @@ export async function appendPlainFollowUp(
     body.appliedFilters,
     body.chatMode,
     input.attachments,
+    input.command,
     { authorUserId },
   );
   const sessionPatch = {

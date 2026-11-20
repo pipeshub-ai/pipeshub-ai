@@ -2,6 +2,7 @@ import { Readable } from 'stream';
 import { Response } from 'express';
 import { Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
+import { GatewayTimeoutError } from '../../../libs/errors/http.errors';
 import {
   IAIModel,
   IAIResponse,
@@ -32,6 +33,7 @@ import { conversationExtensions } from '../services/conversation/conversation-ex
 import { trackRun } from './active-runs';
 import { AGUIEventType, aguiErrorCodeFromPayload, frameAGUI } from './agui';
 import { AIRequestRefusedError } from './ai-stream';
+import { ChatStreamRun, logBadFrame, type StreamEnd } from './chat-stream-run';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
@@ -627,6 +629,8 @@ export class RunWatchdog {
 }
 
 export interface TurnStreamOptions {
+  /** The stream's `chat_stream.end` line: fed the AI service's frames, ended once by whichever way the turn ends. */
+  streamRun?: ChatStreamRun;
   res: Response;
   requestId?: string;
   startTime: number;
@@ -758,6 +762,7 @@ export class TurnStreamPump {
       },
     );
     stream.on('data', (chunk: Buffer) => {
+      this.o.streamRun?.observe(chunk);
       this.watchdog?.onChunk(chunk);
       this.onData(chunk);
     });
@@ -780,6 +785,7 @@ export class TurnStreamPump {
   /** The turn failed after the stream opened: record it, release the lease, and end the stream with an error frame. */
   async fail(error: unknown): Promise<void> {
     if (!this.claim()) return;
+    this.o.streamRun?.end({ kind: 'failed', error });
     const message = userFacingChatError(error);
     // A refusal the AI service named keeps its code, so the client can say what to do.
     const code =
@@ -826,10 +832,20 @@ export class TurnStreamPump {
     // The answer (or its error) already arrived: finish the turn as the end of the stream would.
     if (this.completeData || this.upstreamErrorForwarded) return this.onEnd();
     if (!this.claim()) return;
+    // A run that went quiet past its limit ended upstream; a shutdown stops it as a Stop would.
+    const ending: StreamEnd = timedOut
+      ? { kind: 'failed', error: new GatewayTimeoutError('The run reached its time limit'), fromStream: true }
+      : this.stoppedEnding();
     await (timedOut && !this.content.hasContent()
-      ? this.failTimedOut()
-      : this.stopAfterDisconnect());
+      ? this.failTimedOut(ending)
+      : this.stopAfterDisconnect(ending));
     this.end(frame);
+  }
+
+  /** The end line of a run stopped before its answer: what streamed is its stopped answer. */
+  private stoppedEnding(): StreamEnd {
+    this.o.streamRun?.sawResult(stoppedAnswer(this.content));
+    return { kind: 'answered' };
   }
 
   /** Someone stopped the run: it ends as the AI backend's own stop does, with what streamed saved as a stopped answer. */
@@ -837,20 +853,18 @@ export class TurnStreamPump {
     this.o.upstreamAbort.abort();
     if (!this.finished && !this.upstreamErrorForwarded) {
       this.completeData ??= stoppedAnswer(this.content);
+      this.o.streamRun?.sawResult(this.completeData);
     }
     return this.onEnd();
   }
 
-  private async failTimedOut(): Promise<void> {
+  private async failTimedOut(ending: StreamEnd): Promise<void> {
     try {
       await this.writes;
       await this.markFailed(CHAT_ERROR_MESSAGES.timedOut, 'timeout');
+      this.o.streamRun?.end(ending);
     } catch (error: unknown) {
-      logger.error('Failed to record the run that ran out of time', {
-        requestId: this.o.requestId,
-        conversationId: this.o.conversation._id,
-        error: messageOf(error),
-      });
+      this.o.streamRun?.end({ kind: 'failed', error });
     }
     await this.settle('failed');
   }
@@ -951,13 +965,7 @@ export class TurnStreamPump {
       const parsed = this.parse(data, 'RUN_FINISHED');
       if (!parsed?.result) return forward();
       this.completeData = parsed.result as IAIResponse;
-      logger.debug('Captured RUN_FINISHED result from AI backend', {
-        requestId: this.o.requestId,
-        conversationId: this.o.conversation._id,
-        citationsCount: Array.isArray(this.completeData.citations)
-          ? this.completeData.citations.length
-          : 0,
-      });
+      this.o.streamRun?.sawResult(this.completeData);
       return '';
     }
     // Feeds what a stopped run saves, and what the chat's other readers see of the run as it goes.
@@ -975,6 +983,7 @@ export class TurnStreamPump {
     if (eventType === AGUIEventType.RUN_ERROR) {
       const parsed = this.parse(data, 'RUN_ERROR');
       if (!parsed) return '';
+      this.o.streamRun?.sawRunError(parsed.code);
       this.upstreamErrorForwarded = true;
       const message =
         typeof parsed.message === 'string' && parsed.message !== ''
@@ -1010,20 +1019,14 @@ export class TurnStreamPump {
 
   private parse(
     data: string,
-    label: string,
+    label: 'RUN_FINISHED' | 'RUN_ERROR' | 'CUSTOM',
     logFailure = true,
   ): Frame | undefined {
     try {
       return JSON.parse(data) as Frame;
-    } catch (parseError: unknown) {
-      if (logFailure) {
-        // The frame's size only: its text can quote what the run read.
-        logger.error(`Failed to parse ${label} event data`, {
-          requestId: this.o.requestId,
-          parseError: messageOf(parseError),
-          dataLength: data.length,
-        });
-      }
+    } catch {
+      // The frame's size only: its text can quote what the run read.
+      if (logFailure) logBadFrame(label, data);
       return undefined;
     }
   }
@@ -1064,11 +1067,19 @@ export class TurnStreamPump {
   }
 
   private async onEnd(): Promise<void> {
-    logger.debug('Stream ended successfully', { requestId: this.o.requestId });
     if (!this.claim()) return;
     const { outcome, frame } = await this.writes
       .then(() => this.finishStream())
-      .catch((error: unknown) => this.finishAfterError(error));
+      .then(
+        (finish) => {
+          this.o.streamRun?.end({ kind: 'answered' });
+          return finish;
+        },
+        (error: unknown) => {
+          this.o.streamRun?.end({ kind: 'failed', error });
+          return this.finishAfterError(error);
+        },
+      );
     // Release before the last frame: a browser that sends again on seeing it must not meet our lease.
     await this.settle(outcome);
     this.end(frame);
@@ -1216,11 +1227,13 @@ export class TurnStreamPump {
       }
       cause = inner;
     }
-    logger.error('Failed to save AI response to conversation', {
-      requestId,
-      conversationId: conversation._id,
-      error: messageOf(cause),
-    });
+    // The end line already reported the failure; a second failure, marking it, is said here.
+    if (cause !== error) {
+      logger.error('Failed to mark the unsaved answer as failed', {
+        conversationId: conversation._id,
+        error: cause,
+      });
+    }
     return {
       outcome: 'failed',
       frame: runErrorFrame(CHAT_ERROR_MESSAGES.saveFailed, 'save_error'),
@@ -1236,7 +1249,7 @@ export class TurnStreamPump {
       return;
     }
     if (!this.claim()) return;
-    logger.error('Stream error', { requestId, error: error.message });
+    this.o.streamRun?.end({ kind: 'failed', error, fromStream: true });
     let outcome: TurnOutcome = 'failed';
     let frame = runErrorFrame(userFacingChatError(error), 'stream_error');
     try {
@@ -1265,8 +1278,10 @@ export class TurnStreamPump {
     this.end(frame);
   }
 
-  private async stopAfterDisconnect(): Promise<void> {
-    const { conversation, run, requestId } = this.o;
+  private async stopAfterDisconnect(
+    ending: StreamEnd = { kind: 'abandoned' },
+  ): Promise<void> {
+    const { conversation, run } = this.o;
     try {
       await this.writes;
       const streamed = {
@@ -1279,11 +1294,9 @@ export class TurnStreamPump {
           streamed.parts,
         ) ?? streamed;
       await savePartialConversation(conversation, text, null, { run, parts });
+      this.o.streamRun?.end(ending);
     } catch (error: unknown) {
-      logger.error('Failed to save partial conversation on disconnect', {
-        requestId,
-        error: messageOf(error),
-      });
+      this.o.streamRun?.end({ kind: 'failed', error });
     }
     await this.settle('stopped');
     this.stopWatching();
@@ -1295,6 +1308,7 @@ export class TurnStreamPump {
       conversationId: this.o.conversation._id,
     });
     this.o.upstreamAbort.abort();
+    this.o.streamRun?.end(this.stoppedEnding());
     await this.settle('stopped');
     this.end(STOPPED_FRAME);
   }

@@ -593,8 +593,7 @@ export function createConversationalRouter(container: Container): Router {
       archived: 'exclude',
     }),
     createConversationRunStatesMiddleware(container),
-    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) =>
-      getAllConversations(req, res, next, appConfig),
+    getAllConversations,
   );
 
   /**
@@ -1431,8 +1430,7 @@ export function createAgentConversationalRouter(container: Container): Router {
       archived: 'exclude',
     }),
     createConversationRunStatesMiddleware(container),
-    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) =>
-      getAllAgentConversations(req, res, next, appConfig),
+    getAllAgentConversations,
   );
 
   router.get(

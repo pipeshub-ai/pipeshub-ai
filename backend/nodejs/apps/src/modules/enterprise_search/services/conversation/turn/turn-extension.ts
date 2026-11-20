@@ -1,4 +1,5 @@
 import type { TurnLabel } from '../../../../agent-harness/domain/turn-labels';
+import type { RunCommand } from '../../../../agent-harness/domain/commands';
 import { Response } from 'express';
 import { ClientSession, Types } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../../../libs/middlewares/types';
@@ -53,6 +54,8 @@ export interface FirstTurnInput {
   attachments?: IChatAttachmentRef[];
   link: ResolvedProjectLink;
   preparation: FirstSendPreparation;
+  /** The `/command` the stream route expanded the message from: stored on the question (SLASH1, LC2FIX). */
+  command?: RunCommand;
 }
 
 export interface FollowUpAppendInput {
@@ -63,6 +66,8 @@ export interface FollowUpAppendInput {
   body: TurnBody;
   attachments?: IChatAttachmentRef[];
   gate: TurnGate;
+  /** The `/command` the stream route expanded the message from: stored on the question (SLASH1, LC2FIX). */
+  command?: RunCommand;
 }
 
 export interface AppendedTurn {

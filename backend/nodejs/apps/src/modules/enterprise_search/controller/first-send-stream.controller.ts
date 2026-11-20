@@ -8,10 +8,11 @@ import {
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
-import { logLevelFor } from '../../../libs/utils/error.middleware.utils';
 import { catchAsync } from '../../../libs/middlewares/catch-async.middleware';
 import { refuseIfDraining } from '../../../libs/repositories/drain';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { resolvedProxyHeaders } from '../../agent-harness/transport/resolved-turn-header';
+import { expandedChatCommand } from '../utils/chat-command';
 import { RunLostError } from '../services/conversation/domain/errors';
 import { extendedTurnFor } from '../services/conversation/http/conversation-context';
 import { LeaseLostError } from '../services/conversation/turn/run-lease';
@@ -25,11 +26,7 @@ import {
 } from '../services/conversation/turn/turn-gate';
 import { AGUI_PROTOCOL, AGUIEventType, frameAGUI } from '../utils/agui';
 import { startAIStream } from '../utils/ai-stream';
-import {
-  buildAiChatRequest,
-  ChatTarget,
-  parseChatMode,
-} from '../utils/ai-chat-payload';
+import { buildAiChatRequest, ChatTarget } from '../utils/ai-chat-payload';
 import { userFacingChatError } from '../utils/chat-error-messages';
 import { emitTurnStarted } from '../utils/compare-turn';
 import { createFirstTurn } from '../utils/first-turn';
@@ -44,6 +41,7 @@ import {
 } from '../utils/project-context';
 import { refuseRunWhileShuttingDown } from '../utils/active-runs';
 import { attachUpstreamAbort } from '../utils/stream-lifecycle';
+import { ChatStreamRun } from '../utils/chat-stream-run';
 import {
   TurnStreamPump,
   writeConversationCreated,
@@ -52,7 +50,6 @@ import {
 import {
   extractModelInfo,
   keepRunAlive,
-  StageTimer,
   streamFrameOf,
 } from '../utils/utils';
 
@@ -76,7 +73,7 @@ export const firstSendStream = (
     if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
-    const timer = new StageTimer();
+    const streamRun = new ChatStreamRun(req, res);
     const body = req.body as FollowUpBody;
     if (!body.query) {
       throw new BadRequestError('Query is required');
@@ -95,7 +92,7 @@ export const firstSendStream = (
     // The heartbeat and the client's close can fire before the pump exists, so they reach it through this holder.
     const live: { pump?: TurnStreamPump; lost: boolean } = { lost: false };
     let gate: TurnGate = unleasedGate();
-    const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+    const upstreamAbort = attachUpstreamAbort(res, () => {
       void live.pump?.onDisconnect();
     });
 
@@ -130,6 +127,7 @@ export const firstSendStream = (
         attachments,
         link,
         preparation,
+        command: expandedChatCommand(res),
       });
       const { conversation, run } = turn;
       gate = run.lease
@@ -139,6 +137,7 @@ export const firstSendStream = (
           })
         : unleasedGate();
       const conversationId = String(conversation._id);
+      streamRun.bind({ conversationId, agentKey });
       if (
         await turns.replyWithoutRun({
           req: req,
@@ -174,10 +173,10 @@ export const firstSendStream = (
           Promise.resolve(String(turn.userRow._id)),
         );
       }
-      timer.mark('conversation_created');
 
       const pump = new TurnStreamPump({
         res,
+        streamRun,
         requestId,
         startTime,
         orgId,
@@ -217,52 +216,39 @@ export const firstSendStream = (
         uri: `${appConfig.aiBackend}${aiRequest.path}/stream`,
         method: HttpMethod.POST,
         headers: {
-          ...(req.headers as Record<string, string>),
+          ...(await resolvedProxyHeaders(req, {
+            agentKey:
+              responder.target.kind === 'agent'
+                ? responder.target.agentKey
+                : null,
+            conversationId,
+          })),
           'Content-Type': 'application/json',
         },
         body: { ...aiRequest.payload, protocol: AGUI_PROTOCOL },
       };
 
-      const stream = await startAIStream(
-        aiCommandOptions,
-        responder.target.kind === 'agent' ? 'Agent Chat Stream' : 'Chat Stream',
-        responder.target.kind === 'agent'
-          ? { requestId, agentKey: responder.target.agentKey }
-          : { requestId },
-        upstreamAbort.signal,
+      const stream = await streamRun.open(() =>
+        startAIStream(
+          aiCommandOptions,
+          responder.target.kind === 'agent' ? 'Agent Chat Stream' : 'Chat Stream',
+          upstreamAbort.signal,
+        ),
       );
       if (!stream) {
         // The lost-lease or abandon path already ended the turn.
         if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
-      timer.mark('ai_stream_open');
-      if (responder.target.kind === 'assistant') {
-        stream.once('data', () => {
-          timer.mark('ai_first_byte');
-          timer.emit('chat stream (node)', {
-            requestId,
-            agentMode: parseChatMode(body.chatMode).agentMode,
-          });
-        });
-      }
       upstreamAbort.bindStream(stream);
       keepRunAlive(stream, conversation._id, undefined, gate.lease);
       pump.attach(stream);
     } catch (error: unknown) {
-      const level = logLevelFor(error);
-      logger[level]('Error in first-send stream', {
-        requestId,
-        agentKey,
-        error: error instanceof Error ? error.message : String(error),
-        ...(level === 'error' && error instanceof Error
-          ? { stack: error.stack }
-          : {}),
-      });
       if (live.pump) {
         await live.pump.fail(error);
         return;
       }
+      streamRun.end({ kind: 'failed', error });
       // No turn ran (or its conversation could not be reached), so the lease, if any, goes back as it was.
       await gate.settle(outcomeForError(error));
       if (!res.headersSent && next) {

@@ -328,21 +328,19 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
       return { s, id: String(chat._id) }
     }
 
-    it('write is stored as read and the response warns ACCESS_LEVEL_DOWNGRADED', async () => {
+    it('write is stored as write, with no warning (OWD-19)', async () => {
       const { s, id } = shareSetup()
       const out = await call(env, 'C7', owner, s, { conversationId: id, body: { userIds: [String(RECIPIENT)], accessLevel: 'write' } })
       expect(out.error).to.equal(undefined)
       expect(out.status).to.equal(200)
-      expect((out.body as { warnings?: unknown }).warnings).to.deep.equal([
-        { code: 'ACCESS_LEVEL_DOWNGRADED', requested: 'write', applied: 'read' },
-      ])
+      expect(out.body).to.not.have.property('warnings')
       const rows = s.store.session(id)?.sharedWith as Array<{ userId: unknown; accessLevel: string }>
-      expect(rows.map((r) => [String(r.userId), r.accessLevel])).to.deep.equal([[String(RECIPIENT), 'read']])
+      expect(rows.map((r) => [String(r.userId), r.accessLevel])).to.deep.equal([[String(RECIPIENT), 'write']])
     })
 
-    it('re-sharing an existing write row stores read', async () => {
+    it('re-sharing an existing write row at read stores read', async () => {
       const { s, id } = shareSetup([{ userId: RECIPIENT, accessLevel: 'write' }])
-      const out = await call(env, 'C7', owner, s, { conversationId: id, body: { userIds: [String(RECIPIENT)], accessLevel: 'write' } })
+      const out = await call(env, 'C7', owner, s, { conversationId: id, body: { userIds: [String(RECIPIENT)], accessLevel: 'read' } })
       expect(out.status).to.equal(200)
       const rows = s.store.session(id)?.sharedWith as Array<{ accessLevel: string }>
       expect(rows.map((r) => r.accessLevel)).to.deep.equal(['read'])
