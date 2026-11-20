@@ -126,11 +126,13 @@ class LookupsMixin(PgBase):
             return None
 
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str, transaction: str | None = None) -> Record | None:
-        org = current_org_id()
+        current_org_id()      # the vetted read answers for the org of the unit of work; a missing org raises here, before the try
+        if not connector_id:
+            return None
         try:
-            d = await self._one("""/* pipeshub:graph.get_record_by_issue_key */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-                AND n.doc->>'connectorId' = $2 AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' ~ $3 LIMIT 1""",
-                                org, connector_id, jira_issue_browse_url_regex(issue_key), transaction=transaction)
+            # graph_0014: a plain statement under row security reaches no index on the address, so it read every record of the org
+            d = await self._one("/* pipeshub:graph.record_by_issue_url */ SELECT doc FROM graph.record_by_issue_url($1, $2)",
+                                connector_id, jira_issue_browse_url_regex(issue_key), transaction=transaction)
             return Record.from_arango_base_record(_arango(d, "records")) if d else None
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve record for issue key {connector_id} {issue_key}: {e}")
@@ -185,7 +187,6 @@ class LookupsMixin(PgBase):
                                 org, connector_id, external_record_group_id, list(path), transaction=transaction)
             return _arango(d, "records") if d else None
         except Exception as e:
-            self.logger.error(f"❌ Get record by path failed: {e}")
             raise GraphQueryError(f"Could not look up the record at path {path}: {e}") from e
 
     async def get_records_by_file_path(self, connector_id: str, path: str, transaction: str | None = None) -> list[Record]:
@@ -196,7 +197,6 @@ class LookupsMixin(PgBase):
                                     org, path, connector_id, transaction=transaction)
             return [Record.from_arango_base_record(_rec(r["doc"])) for r in rows]
         except Exception as e:
-            self.logger.error(f"❌ Get records by file path failed: {e}")
             raise GraphQueryError(f"Could not look up records at path {path}: {e}") from e
 
     async def get_records_by_record_type(self, connector_id: str, record_type: str, transaction: str | None = None) -> list[Record]:
@@ -223,7 +223,6 @@ class LookupsMixin(PgBase):
                 ORDER BY r.id OFFSET $9 LIMIT $10""", org, org_id, connector_id, status_filters, record_group_id, is_placeholder,
                                     exclude_statuses, after_key, offset if limit is not None else 0, limit, attr, _vis_code(visibility), transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get records by status failed: {e}")
             raise GraphQueryError(f"Could not list records for connector {connector_id}: {e}") from e
         return [_typed(r["rec"], r["typ"]) for r in rows]
 
@@ -678,8 +677,7 @@ class LookupsMixin(PgBase):
         try:
             if people:
                 await self.batch_upsert_nodes([p.to_arango_person() for p in people], CollectionNames.PEOPLE.value, transaction)
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert people failed: {e}")
+        except Exception:
             raise      # as the Neo4j and Arango providers: the caller must not add edges for people that were not written
 
     async def update_node_if_match(self, key: str, collection: str, node: dict, match_field: str, match_value: Any,  # noqa: ANN401
@@ -740,7 +738,6 @@ class LookupsMixin(PgBase):
             return FileRecord.from_arango_record(file, record)
 
         except Exception as e:
-            self.logger.error(f"❌ Get file record by ID failed: {str(e)}")
             raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
 
     async def get_record_owner_source_user_email(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> str | None:

@@ -76,6 +76,37 @@ async def test_a_connector_listed_while_kg_does_not_serve_it_lists_the_same_rows
     assert served == walked == [f"r{i:04d}" for i in range(7)] and first["total"] == again["total"] == 7
 
 
+@pytest.mark.parametrize("hidden", [False, True], ids=["plain", "walked"])
+async def test_a_first_page_that_reads_its_whole_listing_counts_its_total_from_it_without_a_second_read(pg_db, monkeypatch, hidden) -> None:
+    """300 records, 15 readable. A search that matches ten names reads its whole listing in the page's first window: the total (5, of the readable ones) and the counts are the
+    rows the window admitted, and the connector is not read again to count them (a rare word was read whole twice, once to find its rows and once to count them). A listing that
+    does not end in the page's windows (no search), and a page after a boundary, still count by the count. ``walked``: a matching readable record no class decides (a restamp hides
+    it) is in the total as the access check admits it, in the window as in the count."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 300, readable=15)
+    if hidden:
+        await _admin("UPDATE kg.records SET fence_job = 1 WHERE org_id = $1 AND id = 'r0012' AND coll = 3", org)
+    counted: list[bool] = []
+    real = kh_listing.KhListingMixin._kh_flat_exact
+
+    async def spy(self, *a, **kw) -> object:
+        counted.append(True)
+        return await real(self, *a, **kw)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_flat_exact", spy)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, filters={"search_query": "r001"})
+    matched = [f"r{i:04d}" for i in range(10, 15)]
+    assert [r["id"] for r in page["rows"]] == matched and page["total"] == 5 and page["counts"] == {"record": 5} and not page.get("totalCapped")
+    assert not counted
+    with ctx(org):
+        whole = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=3)
+    assert whole["total"] == 15 and len(counted) == 1
+    after = {k: whole["rows"][-1][k] for k in ("nullRank", "sortKey", "id")}
+    with ctx(org):
+        later = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, after=after, filters={"search_query": "r001"})
+    assert [r["id"] for r in later["rows"]] == matched and later["total"] == 5 and len(counted) == 2
+
+
 async def test_a_connector_with_no_copy_is_refused(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 3, promote=False)
@@ -387,24 +418,41 @@ async def test_the_indexing_status_filter_probes_each_rows_node_and_never_joins_
         await con.close()
 
 
-@pytest.mark.parametrize("unvouched", [[], [1]], ids=["every_class_vouched", "a_class_unvouched"])
-async def test_the_rows_kg_does_not_decide_are_read_by_their_own_index_never_by_a_range_of_the_connector(pg_db, unvouched) -> None:
-    """A page of a connector kg serves asks for the few rows kg does not decide. Read as a range of the connector (records_app) it read every row at 1M records to find none.
-    Judged with statistics, as kg's tables are once copied (kg_0016): with statistics older than an organisation's rows the planner may take any index of the org."""
+def _rows_read(plan: object, relation: str) -> int:
+    """The rows the plan's reads of ``relation`` looked at: what each returned and what its filter removed, over every loop."""
+    return sum(int((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * n.get("Actual Loops", 1)) for n in plan_gate.scans(plan, relation))
+
+
+@pytest.mark.parametrize(("sort_dir", "direction"), [("ASC", "next"), ("ASC", "prev"), ("DESC", "next"), ("DESC", "prev")])
+async def test_a_name_ordered_window_past_a_boundary_reads_the_rows_up_to_it_not_the_connector(pg_db, sort_dir, direction) -> None:
+    """A page by name past a boundary, read as the listing's reader is, under row-level security: a condition on the name prefix (substring(), not leakproof) is never an
+    index condition there. Read as one disjoint read per part of the boundary, each read was a scan of the connector (or of the organisation, the planner's pick at 1M records)
+    to find a handful of rows; read as one walk of the name index it looks at the rows up to the boundary and the window."""
     p, org = prov(pg_db), new_org()
-    await seed(p, pg_db, org, 400, promote=True)
+    await seed(p, pg_db, org, 600, promote=True)
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     try:
         await con.execute("ANALYZE kg.records")
         app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
-        await con.execute("SET enable_seqscan = off")      # the planner's guess at a table this small is a scan; the gate is about which index bounds the read
-        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + kgl.undecided_sql("", "$4"), org, app_sk, 201, unvouched))
-        used = {name for s in plan_gate.scans(plan, "records") for name, _ in plan_gate.bounds(s)}
-        # the classes' read may take any range of the connector when a class holds most of it (as in this world); never the organisation
-        loose = plan_gate.unkeyed(plan, "records", r"app_sk")
-        assert "records_undecided" in used and not loose, f"undecided rows read by {used}: {loose}"
     finally:
         await con.close()
+    at = "r0010" if (sort_dir == "ASC") == (direction == "next") else "r0589"      # ten rows from the start of the walk in the page's direction
+    q = kgl.Params([org, app_sk, 20])
+    sql = kgl.page_sql("name", sort_dir, direction, "", kgl.after("name", sort_dir, direction, {"nullRank": 0, "sortKey": at, "id": at}, q))
+
+    async def read(tx) -> tuple[list[str], object]:
+        # A connector this small is read whole and sorted, to the planner; at scale the window's LIMIT makes the walk of the name index the cheap plan, which these
+        # settings leave as the only one. The gate is about how far that walk reads.
+        for setting in ("enable_seqscan", "enable_bitmapscan", "enable_sort"):
+            await tx.execute(f"SET LOCAL {setting} = off")
+        return [r["id"] for r in await tx.fetch(sql, *q.values)], json.loads(await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *q.values))
+    with ctx(org):
+        ids, plan = await pg_db.run(read, custom_plan=True)
+    n = int(at[1:])
+    want = [f"r{i:04d}" for i in (range(n + 1, n + 21) if (sort_dir == "ASC") == (direction == "next") else range(n - 1, n - 21, -1))]
+    assert ids == want
+    reads = [(n["Node Type"], plan_gate.bounds(n), n.get("Actual Rows"), n.get("Rows Removed by Filter")) for n in plan_gate.scans(plan, "records")]
+    assert _rows_read(plan, "records") <= 60, f"{sort_dir} {direction}: looked at {_rows_read(plan, 'records')} rows of a 600-row connector for a window of 20: {reads}"
 
 
 async def test_the_records_a_viewers_classes_admit_are_read_within_the_connector_never_the_organisation(pg_db) -> None:
@@ -637,6 +685,68 @@ async def test_a_record_named_longer_than_the_copy_once_took_is_copied_whole_and
     finally:
         await con.close()
     assert stored == long
+
+
+async def test_a_connectors_classes_are_decided_from_a_row_of_classes_and_a_row_of_literals_as_their_clauses_say(pg_db) -> None:
+    """3,000 classes of random clauses over the literals of a tree (a group, folders with children, a record with none, a key kg does not hold, ``@self``): each class is met with
+    no grant of the row's own, met with it, or not vouched for, as the clauses say. The classes and the literals kg vouches for reach the listing as one row each, not one row per
+    class or literal: a connector has tens of thousands of each, and their decoding held the event loop every page of the knowledge hub shares (about 0.2 s a connector at 1M records)."""
+    import random
+    p, org = prov(pg_db), new_org()
+    await _tree(p, pg_db, org)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        lit = {r["id"]: r["sk"] for r in await con.fetch("SELECT id, sk FROM kg.records WHERE org_id = $1 AND id = ANY($2::text[])", org, ["g1", "f1", "f2", "r1"])}
+        pool = [*lit.values(), 99_999_999, kg_read.SELF]
+        rng = random.Random(6051)
+        made = [[rng.sample(pool, rng.randint(0, 3)) for _ in range(rng.randint(0, 3))] for _ in range(3000)]
+        await con.execute("INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT $1, 980000 + i, $2, NULL, c::jsonb, decode(md5($1 || i), 'hex') "
+                          "FROM unnest($3::text[]) WITH ORDINALITY AS q(c, i)", org, app_sk, [json.dumps(m) for m in made])
+        classes = {r["id"]: json.loads(r["clauses"]) for r in await con.fetch("SELECT id, clauses::text FROM kg.scope_classes WHERE org_id = $1 AND app_sk = $2", org, app_sk)}
+        # what kg vouches for, by the rule of kg_read.LITERALS: a node kg holds that is not flagged a leaf and, for a record, has a child
+        seen = {r["sk"] for r in await con.fetch("SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[]) AND r.leaf IS FALSE AND (r.kind <> 3 OR EXISTS "
+                                                    "(SELECT 1 FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk = r.sk) OR EXISTS (SELECT 1 FROM kg.links l "
+                                                    "WHERE l.org_id = r.org_id AND l.parent_sk = r.sk AND l.kind = 1))", org, pool[:-1])}
+    finally:
+        await con.close()
+    assert seen == {lit["g1"], lit["f1"], lit["f2"]}          # the tree gives one literal of each kind: r1 has no child, the last key is not held
+    granted = {"g1", "f2", "r1"}
+    live = {lit[i] for i in granted} & seen
+
+    def verdict(cl: list[list]) -> tuple[bool, bool] | None:
+        if any(x != kg_read.SELF and x not in seen for clause in cl for x in clause):
+            return None
+        met = [all(x in live for x in clause if x != kg_read.SELF) for clause in cl]
+        return (any(m and kg_read.SELF not in c for m, c in zip(met, cl, strict=True)), any(m and kg_read.SELF in c for m, c in zip(met, cl, strict=True)))
+    want = {c: verdict(cl) for c, cl in classes.items()}
+
+    class Counted:
+        def __init__(self, tx) -> None:
+            self.tx, self.rows = tx, 0
+
+        async def fetch(self, *a) -> list:
+            out = await self.tx.fetch(*a)
+            self.rows += len(out)
+            return out
+
+        async def fetchrow(self, *a) -> object:
+            self.rows += 1
+            return await self.tx.fetchrow(*a)
+
+        async def fetchval(self, *a) -> object:
+            return await self.tx.fetchval(*a)
+
+    async def go(tx) -> tuple[dict, int]:
+        c = Counted(tx)
+        return await kh_listing.class_sets(c, org, app_sk, granted), c.rows
+    with ctx(org):
+        sets, rows = await pg_db.run(go)
+    assert sets["plain"] == {c for c, v in want.items() if v and v[0]}
+    assert sets["own"] == {c for c, v in want.items() if v and v[1] and not v[0]}
+    assert sets["unvouched"] == {c for c, v in want.items() if v is None}
+    assert sets["plain"] and sets["own"] and sets["unvouched"]
+    assert rows <= 2, rows
 
 
 async def test_a_change_to_the_whole_connector_that_commits_after_the_check_is_not_read_by_the_page(pg_db, monkeypatch) -> None:

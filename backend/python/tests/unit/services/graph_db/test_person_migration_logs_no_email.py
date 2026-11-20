@@ -54,7 +54,7 @@ async def test_arango_migration_logs_person_and_user_keys(caplog: pytest.LogCapt
     assert "Person p1 -> user u1: migrated (0 edge(s) moved)" in messages
 
 
-async def test_arango_migration_failure_logs_user_key(caplog: pytest.LogCaptureFixture) -> None:
+async def test_arango_migration_failure_is_left_to_the_caller(caplog: pytest.LogCaptureFixture) -> None:
     provider = _arango()
     provider.get_person_by_email = AsyncMock(side_effect=RuntimeError("graph down"))
 
@@ -62,7 +62,7 @@ async def test_arango_migration_failure_logs_user_key(caplog: pytest.LogCaptureF
         await provider.migrate_person_to_user(EMAIL, "u1", "org-1", transaction="txn-1")
 
     assert not any(EMAIL in m for m in _messages(caplog))
-    assert _messages(caplog, logging.ERROR) == ["Migrate person to user failed for user u1 in org org-1: graph down"]
+    assert _messages(caplog, logging.ERROR) == []  # re-raised: the caller logs it (batch_upsert_app_users below)
 
 
 async def test_neo4j_migration_logs_user_key(caplog: pytest.LogCaptureFixture) -> None:
@@ -76,14 +76,14 @@ async def test_neo4j_migration_logs_user_key(caplog: pytest.LogCaptureFixture) -
     assert "Person -> user u1: migrated (2 permission, 1 app-relation edges moved)" in messages
 
 
-async def test_neo4j_migration_failure_logs_user_key(caplog: pytest.LogCaptureFixture) -> None:
+async def test_neo4j_migration_failure_is_left_to_the_caller(caplog: pytest.LogCaptureFixture) -> None:
     provider = _neo4j(AsyncMock(side_effect=RuntimeError("graph down")))
 
     with pytest.raises(RuntimeError):
         await provider.migrate_person_to_user(EMAIL, "u1", "org-1")
 
     assert not any(EMAIL in m for m in _messages(caplog))
-    assert _messages(caplog, logging.ERROR) == ["Migrate person to user failed for user u1 in org org-1: graph down"]
+    assert _messages(caplog, logging.ERROR) == []  # re-raised: the caller logs it (batch_upsert_app_users below)
 
 
 # ---- callers: batch_upsert_app_users adopts a Person for each new app user, and a failed adoption is logged, not raised ----

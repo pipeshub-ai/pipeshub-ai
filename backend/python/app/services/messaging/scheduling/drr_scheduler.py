@@ -269,9 +269,11 @@ class DRRScheduler(Generic[T]):
         self,
         config: FairSchedulerConfig,
         weights: WeightProvider | None = None,
+        room: Callable[[FairnessKey], tuple[object, int] | None] | None = None,
     ) -> None:
         self._config = config
         self._weights = weights
+        self._room = room
         self._depth = max(1, config.key_depth)
         self._entity_depth = max(1, min(config.entity_depth, self._depth))
         self._root: _Node[T] = _Node((), 0, self._depth)
@@ -318,6 +320,10 @@ class DRRScheduler(Generic[T]):
             >= self._config.max_per_entity_messages
         ):
             return EnqueueResult.ENTITY_FULL
+        if self._room is not None:
+            left = self._room(key)
+            if left is not None and left[1] <= 0:
+                return EnqueueResult.ENTITY_FULL
 
         self._root.push(key, _Entry(item=item, not_before=not_before))
         return EnqueueResult.ACCEPTED

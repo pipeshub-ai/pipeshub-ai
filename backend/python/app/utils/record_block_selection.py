@@ -173,9 +173,11 @@ def _hits_from_search(
     """Block indices from a search response, best first.
 
     A grouped-row point yields every row it lists; without ``blocks`` it can
-    only yield its first row.
+    only yield its first row. With ``blocks`` a point is placed by its
+    ``blockId``; its stored ``blockIndex`` is used only without them, or for a
+    point that has no id.
 
-    Results without a `blockIndex` are skipped rather than guessed at: a wrong
+    Results without a position are skipped rather than guessed at: a wrong
     index would pull an unrelated block into the selection.
     """
     if not isinstance(response, dict):
@@ -189,6 +191,14 @@ def _hits_from_search(
         if metadata.get("virtualRecordId") not in (None, virtual_record_id):
             continue
         index = metadata.get("blockIndex")
+        block_id = metadata.get("blockId")
+        if blocks is not None and block_id:
+            # A reconciled update keeps an unchanged block's point, and the position it stores can be from an
+            # earlier revision: the id says which block it is. A block no longer in the record has no position.
+            index = positions.get(block_id)
+            if index is None:  # the first row of a grouped-row point is gone: the rows it still has place it
+                surviving = [positions[i] for i in metadata.get("rowBlockIds") or [] if i in positions]
+                index = min(surviving, default=None)
         if not isinstance(index, int):
             continue
         for row in grouped_row_indexes(metadata, positions, index):

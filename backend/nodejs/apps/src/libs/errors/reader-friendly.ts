@@ -52,6 +52,10 @@ const READER_WRITTEN_MESSAGES: ReadonlySet<string> = new Set([
   // when the vector store timed out or could not be reached, after a retry.
   'The search index took too long to respond, so no results are shown. Please try again in a minute.',
   "We couldn't reach the search index just now, so no results are shown. Please try again in a minute.",
+  // backend/python/app/modules/retrieval/retrieval_service.py
+  // (EMBEDDING_OUT_OF_CREDIT_MESSAGE) — the 503 when the embedding provider
+  // refuses a search query because its account has no credit left.
+  "Search can't run because the embedding model's provider account is out of credit. An admin can add credit with the provider, or choose another embedding model in Workspace > AI Models.",
   // backend/python/app/api/routes/search.py (SEARCH_TIMED_OUT_MESSAGE) — the
   // 503 when a search runs past SEARCH_DEADLINE_SECONDS and is stopped.
   'This search took too long, so it was stopped and no results are shown. Try again, or narrow it with filters or a shorter date range.',
