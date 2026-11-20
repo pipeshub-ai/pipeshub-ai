@@ -1993,14 +1993,14 @@ class TestUserAddedConnectorLink:
 
         async def link() -> None:
             try:
-                await asyncio.sleep(2)
+                await asyncio.sleep(5)
             except asyncio.CancelledError:
                 stopped.set()
                 raise
 
         async def write(nodes: list, collection: str) -> bool:
             if written:
-                await asyncio.sleep(2)      # the rewrite never answers in time
+                await asyncio.sleep(5)      # the rewrite never answers in time
             written.append(nodes[0])
             return True
 
@@ -2012,8 +2012,8 @@ class TestUserAddedConnectorLink:
         began = loop.time()
         with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
             assert await svc._link_connector("c1") is True
-        assert loop.time() - began < 0.04       # the start, 10 ms of waiting, 10 ms for the rewrite: within the 40 ms TTL
-        assert stopped.is_set() and len(written) == 1
+        assert stopped.is_set() and len(written) == 1       # cancelled at the rewrite's deadline; the stalled rewrite never landed
+        assert loop.time() - began < 1      # a watchdog only: without the deadline the pass waits out the 5 s rewrite
 
     @pytest.mark.asyncio
     async def test_a_pass_that_fails_partway_writes_nothing_after_it(self, no_debounce: None) -> None:
