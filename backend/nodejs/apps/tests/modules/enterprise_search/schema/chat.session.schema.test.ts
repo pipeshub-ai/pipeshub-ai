@@ -36,3 +36,33 @@ describe('enterprise_search/schema/chat.session.schema: isPinned', () => {
     expect(session.validateSync()).to.equal(undefined)
   })
 })
+
+// The reader check reads it, so it is declared where every build has it: an undeclared field never reaches the store.
+describe('enterprise_search/schema/chat.session.schema: projectVisibleAt', () => {
+  const newSession = (fields: Record<string, unknown> = {}) =>
+    new ChatSession({
+      userId: new Types.ObjectId(),
+      orgId: new Types.ObjectId(),
+      initiator: new Types.ObjectId(),
+      title: 'a chat',
+      ...fields,
+    })
+
+  it('is an optional date with no default', () => {
+    const path = ChatSession.schema.path('projectVisibleAt')
+
+    expect(path).to.exist
+    expect(path.instance).to.equal('Date')
+    expect(path.isRequired).to.not.equal(true)
+    expect(path.options.default).to.equal(undefined)
+    expect(newSession().toObject()).to.not.have.property('projectVisibleAt')
+  })
+
+  it('keeps the time it is set to', () => {
+    const at = new Date('2026-03-04T05:06:07.000Z')
+    const session = newSession({ projectVisibleAt: at })
+
+    expect(session.toObject().projectVisibleAt).to.deep.equal(at)
+    expect(session.validateSync()).to.equal(undefined)
+  })
+})

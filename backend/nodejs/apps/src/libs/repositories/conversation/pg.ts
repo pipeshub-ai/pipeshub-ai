@@ -31,6 +31,10 @@ import {
   unescapeRegex,
 } from '../pg-util';
 import { replaceMembers } from '../members';
+import {
+  archivedLabelHistory,
+  sealAnswerForStorage,
+} from '../../../modules/enterprise_search/services/conversation/privacy/label';
 import type { IChatAttachmentRef } from '../../../modules/enterprise_search/types/conversation.interfaces';
 import type { Tx } from '../uow';
 import {
@@ -76,11 +80,21 @@ import type {
   ErasureRequestDto,
   SessionDeletionDto,
   UserSessionDto,
+  MessageLabelRow,
+  EndedAnswerShare,
+  AnswerClosureDoc,
+  ShareMarkRow,
+  OpeningMessageDto,
 } from './types';
 import type { StoredMessage } from './pg-rows';
 import type { Importable, ImportStats, NeutralDoc } from '../import';
 import { importConversationDocs } from './pg-import';
 import { kernelTx } from '../pg';
+
+const answerSharesRefused = (): Error =>
+  new Error(
+    'Answer share requests and consents are not supported on PostgreSQL',
+  );
 
 const ACTIVE_RUN_WINDOW_MS = 10 * 60 * 1000;
 const ACTIVE_RUN_SETTLE_MS = 15_000;
@@ -94,9 +108,10 @@ const SESSION_COLS = `s.id, s.session_type, s.user_id, s.initiator, s.title, s.i
 const SHARED_WITH = `COALESCE((SELECT jsonb_agg(jsonb_build_object('userId', m.user_id, 'accessLevel', m.access_level, '_id', m.entry_id) ORDER BY m.pos)
   FROM conversation.chat_session_members m WHERE m.org_id = $1 AND m.session_id = s.id), '[]'::jsonb) AS shared_with`;
 
+// The label columns (provenance, label_history) are left out on purpose: no statement that returns rows names them.
 const MESSAGE_COLS = `m.id, m.session_id, m.seq, m.message_type, m.content, m.content_format, m.status, m.confidence,
   m.citations, m.follow_up_questions, m.feedback, m.metadata, m.model_info, m.applied_filters, m.attachments, m.reference_data,
-  m.tools, m.reasoning, m.parts, m.created_at, m.updated_at, m.sender_id, m.harness`;
+  m.tools, m.reasoning, m.parts, m.label_ver, m.created_at, m.updated_at, m.sender_id, m.harness`;
 
 const CITATION_COLS = `c.id, c.content, c.chunk_index, c.citation_type, c.metadata, c.version, c.created_at, c.updated_at`;
 
@@ -930,20 +945,25 @@ export class PgConversationRepository
 
   async findIdsByContent(
     orgId: string,
+    userId: string,
     escapedSearch: string,
     limit = 10000,
   ): Promise<ContentMatches> {
     const term = unescapeRegex(escapedSearch);
-    if (!term) return { ids: [], truncated: false };
+    const owner = oidOf(userId);
+    if (term === '' || owner === undefined)
+      return { ids: [], truncated: false };
     const text = stripNul(term, 'conversation', 'search');
     const cap = Math.min(Math.max(limit, 1), 10000);
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, orgId);
+      // Every row of a chat here is its owner's: this store keeps no turns of other members.
       const { rows } = await k.query<{ session_id: string }>(
         `/* pipeshub:conversation.search_content */ SELECT m.session_id FROM conversation.chat_messages m
-          WHERE m.org_id = $1 AND m.content ILIKE $2
-          GROUP BY m.session_id ORDER BY max(m.created_at) DESC, m.session_id DESC LIMIT $3`,
-        [k.orgId, `%${likeEscape(text)}%`, cap + 1],
+          JOIN conversation.chat_sessions s ON s.org_id = m.org_id AND s.id = m.session_id
+          WHERE m.org_id = $1 AND s.user_id = $2::text AND m.message_type <> 'tool_call' AND m.content ILIKE $3
+          GROUP BY m.session_id ORDER BY max(m.created_at) DESC, m.session_id DESC LIMIT $4`,
+        [k.orgId, owner, `%${likeEscape(text)}%`, cap + 1],
       );
       return {
         ids: rows.slice(0, cap).map((r) => r.session_id),
@@ -1195,6 +1215,32 @@ export class PgConversationRepository
         DOC_SHAPE,
       ),
     );
+  }
+
+  async replaceTitle(
+    sessionId: string,
+    orgId: string,
+    expected: string,
+    title: string,
+    tx?: Tx,
+  ): Promise<boolean> {
+    const oid = oidOf(sessionId);
+    if (!oid) return false;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        SQL(`/* pipeshub:conversation.replace_title */ UPDATE conversation.chat_sessions s SET title = $4, updated_at = $5
+          WHERE s.org_id = $1 AND s.id = $2::text AND s.title = $3`),
+        [
+          k.orgId,
+          oid,
+          expected,
+          stripNul(title, 'conversation', 'title'),
+          new Date(),
+        ],
+      );
+      return (r.rowCount ?? 0) > 0;
+    });
   }
 
   async setSharing(
@@ -1529,16 +1575,18 @@ export class PgConversationRepository
     seq: number,
     message: NewMessage,
   ): Promise<MessageDto> {
-    const m = stripNul(message, 'conversation', 'message');
+    const m = sealAnswerForStorage(
+      stripNul(message, 'conversation', 'message'),
+    );
     const s = storedMessage(m);
     const now = new Date();
     const { rows } = await k.query<MessageSqlRow>(
       SQL(`/* pipeshub:conversation.insert_message */ INSERT INTO conversation.chat_messages AS m
         (org_id, session_id, seq, id, message_type, content, content_format, status, confidence, citations,
          follow_up_questions, feedback, metadata, model_info, applied_filters, attachments, reference_data, tools, reasoning, parts,
-         created_at, updated_at, sender_id, label, harness)
+         created_at, updated_at, sender_id, label, harness, label_ver, provenance, label_history)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb,
-                $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb, $21, $22, $23, $24::jsonb, $25::jsonb)
+                $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb, $21, $22, $23, $24::jsonb, $25::jsonb, $26, $27::jsonb, $28::jsonb)
         RETURNING @{M}`),
       [
         k.orgId,
@@ -1565,6 +1613,9 @@ export class PgConversationRepository
         m.createdAt ?? now,
         m.updatedAt ?? now,
         ...harnessParams(s),
+        m.labelVer ?? null,
+        m.provenance ? JSON.stringify(m.provenance) : null,
+        JSON.stringify(m.labelHistory ?? []),
       ],
     );
     return messageDto(rows[0] as MessageSqlRow, k.orgId).dto;
@@ -1598,12 +1649,28 @@ export class PgConversationRepository
     if (!oid) return null;
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
-      const found = await k.query<{ id: string }>(
-        '/* pipeshub:conversation.message_position */ SELECT m.id FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.id = $2::text FOR UPDATE',
+      // Locked and read with its label: the label of the version being replaced is archived in the same statement.
+      const found = await k.query<{
+        id: string;
+        message_type: string;
+        label_ver: string | null;
+        provenance: unknown;
+        label_history: unknown;
+      }>(
+        '/* pipeshub:conversation.message_position */ SELECT m.id, m.message_type, m.label_ver, m.provenance, m.label_history FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.id = $2::text FOR UPDATE',
         [k.orgId, oid],
       );
-      if (!found.rows[0]) return null;
-      const stamped = stripNul(msg, 'conversation', 'message');
+      const current = found.rows[0];
+      if (!current) return null;
+      const archive = archivedLabelHistory({
+        messageType: current.message_type,
+        labelVer: current.label_ver ?? undefined,
+        provenance: current.provenance ?? undefined,
+        labelHistory: current.label_history,
+      });
+      const stamped = sealAnswerForStorage(
+        stripNul(msg, 'conversation', 'message'),
+      );
       const s = storedMessage(stamped);
       const now = new Date();
       const { rows } = await k.query<MessageSqlRow>(
@@ -1611,7 +1678,8 @@ export class PgConversationRepository
             message_type = $3, content = $4, content_format = $5, status = $6, confidence = $7, citations = $8::jsonb,
             follow_up_questions = $9::jsonb, feedback = $10::jsonb, metadata = $11::jsonb, model_info = $12::jsonb, applied_filters = $13::jsonb,
             attachments = $14::jsonb, reference_data = $15::jsonb, tools = $16::jsonb, reasoning = $17::jsonb, parts = $18::jsonb,
-            created_at = $19, updated_at = $20, sender_id = $21, label = $22::jsonb, harness = $23::jsonb
+            created_at = $19, updated_at = $20, sender_id = $21, label = $22::jsonb, harness = $23::jsonb,
+            label_ver = $24, provenance = $25::jsonb, label_history = $26::jsonb
           WHERE m.org_id = $1 AND m.id = $2::text RETURNING @{M}`),
         [
           k.orgId,
@@ -1636,6 +1704,9 @@ export class PgConversationRepository
           stamped.createdAt ?? now,
           stamped.updatedAt ?? now,
           ...harnessParams(s),
+          stamped.labelVer ?? null,
+          stamped.provenance ? JSON.stringify(stamped.provenance) : null,
+          JSON.stringify(archive ?? []),
         ],
       );
       return rows[0] ? messageDto(rows[0], k.orgId).dto : null;
@@ -1723,6 +1794,109 @@ export class PgConversationRepository
     });
   }
 
+  /**
+   * This store keeps no closures of answer versions: the reader check makes every closure it needs on each read here,
+   * from the labels, as it did before closures were stored, and hides what it cannot finish.
+   */
+  listAnswerClosures(
+    _orgId: string,
+    _keys: string[],
+  ): Promise<Map<string, AnswerClosureDoc>> {
+    return Promise.resolve(new Map<string, AnswerClosureDoc>());
+  }
+
+  saveAnswerClosures(
+    _orgId: string,
+    _closures: AnswerClosureDoc[],
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /** Shares on a message are read as absent here (`listMessageLabels`), so there are none to mark either. */
+  listShareMarks(
+    _orgId: string,
+    _sessionIds: string[],
+  ): Promise<ShareMarkRow[]> {
+    return Promise.resolve([]);
+  }
+
+  async listMessageLabels(
+    orgId: string,
+    messageIds: string[],
+  ): Promise<Map<string, MessageLabelRow>> {
+    const out = new Map<string, MessageLabelRow>();
+    const ids = oidsOf([...new Set(messageIds)]);
+    if (!ids.length) return out;
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      // This store keeps no authorship, runs or shares on a message: the reader check reads those as absent.
+      const { rows } = await k.query<{
+        id: string;
+        session_id: string;
+        seq: number;
+        message_type: string;
+        content: string;
+        parts: unknown[];
+        label_ver: string | null;
+        provenance: unknown;
+        label_history: unknown[] | null;
+        created_at: Date;
+      }>(
+        SQL(`/* pipeshub:conversation.list_message_labels */ SELECT m.id, m.session_id, m.seq, m.message_type, m.content, m.parts,
+          m.label_ver, m.provenance, m.label_history, m.created_at
+          FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.id = ANY($2::text[])`),
+        [k.orgId, ids],
+      );
+      for (const r of rows) {
+        out.set(r.id, {
+          _id: r.id,
+          sessionId: r.session_id,
+          orgId: k.orgId,
+          seq: r.seq,
+          messageType: r.message_type,
+          content: r.content,
+          parts: r.parts,
+          createdAt: r.created_at,
+          ...(r.label_ver !== null && { labelVer: r.label_ver }),
+          ...(r.provenance !== null && { provenance: r.provenance }),
+          ...(r.label_history !== null && { labelHistory: r.label_history }),
+        });
+      }
+      return out;
+    });
+  }
+
+  async listMessagesOfRuns(
+    _orgId: string,
+    _sessionIds: string[],
+    _runIds: string[],
+  ): Promise<MessageLabelRow[]> {
+    // This store keeps no run on a message, so no writer is found: a file read from another run hides what was built
+    // on it, as before runs were named.
+    return [];
+  }
+
+  async findOpeningMessage(
+    sessionId: string,
+    orgId: string,
+    tx?: Tx,
+  ): Promise<OpeningMessageDto | null> {
+    const sid = oidOf(sessionId);
+    if (!sid) return null;
+    return inUnit(tx, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      // No message here is a note (the type is not allowed), so the first question is the opening message.
+      const { rows } = await k.query<MessageSqlRow>(
+        SQL(`/* pipeshub:conversation.find_opening_message */ SELECT @{M} FROM conversation.chat_messages m
+          WHERE m.org_id = $1 AND m.session_id = $2::text AND m.message_type = 'user_query' ORDER BY m.seq LIMIT 1`),
+        [k.orgId, sid],
+      );
+      if (!rows[0]) return null;
+      const { content, appliedFilters } = messageDto(rows[0], k.orgId).dto;
+      return { content, ...(appliedFilters && { appliedFilters }) };
+    });
+  }
+
   async findMessage(
     sessionId: string,
     orgId: string,
@@ -1753,6 +1927,7 @@ export class PgConversationRepository
       order?: 'asc' | 'desc';
       withLabels?: boolean;
       afterSeq?: number;
+      maxSeq?: number;
     },
     tx?: Tx,
   ): Promise<MessageRow[]> {
@@ -1763,6 +1938,7 @@ export class PgConversationRepository
       order = 'asc',
       withLabels = false,
       afterSeq,
+      maxSeq,
     } = q;
     if (limit !== undefined && limit <= 0) return [];
     const sid = oidOf(sessionId);
@@ -1771,11 +1947,11 @@ export class PgConversationRepository
       assertOrg(k, q.orgId);
       const text =
         order === 'desc'
-          ? '/* pipeshub:conversation.list_messages_desc */ SELECT @{M}@{LABEL} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text AND ($5::int IS NULL OR m.seq > $5) ORDER BY m.seq DESC OFFSET $3 LIMIT $4'
-          : '/* pipeshub:conversation.list_messages */ SELECT @{M}@{LABEL} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text AND ($5::int IS NULL OR m.seq > $5) ORDER BY m.seq OFFSET $3 LIMIT $4';
+          ? '/* pipeshub:conversation.list_messages_desc */ SELECT @{M}@{LABEL} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text AND ($5::int IS NULL OR m.seq > $5) AND ($6::int IS NULL OR m.seq <= $6::int) ORDER BY m.seq DESC OFFSET $3 LIMIT $4'
+          : '/* pipeshub:conversation.list_messages */ SELECT @{M}@{LABEL} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text AND ($5::int IS NULL OR m.seq > $5) AND ($6::int IS NULL OR m.seq <= $6::int) ORDER BY m.seq OFFSET $3 LIMIT $4';
       const { rows } = await k.query<MessageSqlRow>(
         SQL(text, { LABEL: withLabels ? ', m.label' : '' }),
-        [k.orgId, sid, skip, limit ?? null, afterSeq ?? null],
+        [k.orgId, sid, skip, limit ?? null, afterSeq ?? null, maxSeq ?? null],
       );
       const docs = withCitations
         ? await citationDocs(k, citationIdsOf(rows))
@@ -1860,6 +2036,24 @@ export class PgConversationRepository
         }),
       })) as unknown as AttachmentsAndCitedRecords[];
     });
+  }
+
+  // ---- answer shares: refused until this store keeps change stamps, which these writes must take so the chat's feed
+  // sees them; group chats do not run on PostgreSQL yet
+  addShareRequest(): Promise<boolean> {
+    return Promise.reject(answerSharesRefused());
+  }
+
+  closeShareRequests(): Promise<string[]> {
+    return Promise.reject(answerSharesRefused());
+  }
+
+  setAnswerConsent(): Promise<string[] | null> {
+    return Promise.reject(answerSharesRefused());
+  }
+
+  clearAnswerConsent(): Promise<EndedAnswerShare | null> {
+    return Promise.reject(answerSharesRefused());
   }
 
   // ---- citations

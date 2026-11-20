@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import mongoose from 'mongoose';
 import { ChatSession } from '../../../modules/enterprise_search/schema/chat.session.schema';
 import { ChatSessionMessage } from '../../../modules/enterprise_search/schema/chat.session.message.schema';
+import { ChatAnswerClosure } from '../../../modules/enterprise_search/schema/chat.answer.closure.schema';
 import Citation from '../../../modules/enterprise_search/schema/citation.schema';
 import { CONVERSATION_STATUS } from '../../../modules/enterprise_search/constants/constants';
 import { ConflictError, NotFoundError } from '../errors';
@@ -15,25 +16,43 @@ import { InternalServerError } from '../../errors/http.errors';
 import { Logger } from '../../services/logger.service';
 import { toPlain } from '../plain';
 import { sessionOf } from '../mongo';
+import {
+  archivedLabelHistory,
+  sealAnswerForStorage,
+  withoutLabelFields,
+  type StoredLabelFields,
+} from '../../../modules/enterprise_search/services/conversation/privacy/label';
 import { asQueryFilter } from '../../utils/mongo-filter';
 import type {
   IChatAttachmentRef,
   IChatSessionDocument,
+  IChatSessionMessageDocument,
 } from '../../../modules/enterprise_search/types/conversation.interfaces';
 import type { Tx } from '../uow';
 import { withTiebreak } from '../sort';
+import { MESSAGE_LABEL_FIELDS } from './message-label-fields';
+import * as answerShares from './answer-shares/mongo';
 import type {
   AgentArchiveGroup,
+  AnswerClosureDoc,
+  AnswerConsentDto,
+  AnswerRowRef,
   ArchivedSearchResult,
   AttachmentsAndCitedRecords,
   ChatSessionDto,
   CitationDto,
+  ClosedShareRequestState,
   ConversationRepository,
+  EndedAnswerShare,
+  NewAnswerShare,
+  ShareRequestDto,
   MessageDto,
+  MessageLabelRow,
   MessageRow,
   NewCitation,
   NewMessage,
   NewSession,
+  OpeningMessageDto,
   ContentMatches,
   VisibleSummaryRow,
   RunReservation,
@@ -51,6 +70,7 @@ import type {
   ErasureRequestDto,
   SessionDeletionDto,
   UserSessionDto,
+  ShareMarkRow,
 } from './types';
 
 const logger = new Logger({ service: 'conversation-repository' });
@@ -249,7 +269,12 @@ const SUMMARY_FIELDS = {
   agentKey: 1,
 };
 
-const msgOf = (doc: unknown): MessageDto => toPlain<MessageDto>(doc);
+/** A message row as it leaves the repository: never with its label, which no caller returns to a client. */
+const msgOf = (doc: unknown): MessageDto =>
+  withoutLabelFields(toPlain<MessageDto>(doc));
+
+/** How often a replacement reads the row again after another write moved its version; then it writes anyway. */
+const LABEL_WRITE_ATTEMPTS = 3;
 
 const toRow = (dto: MessageDto): MessageRow => ({ dto });
 
@@ -695,15 +720,31 @@ export class MongoConversationRepository implements ConversationRepository {
 
   async findIdsByContent(
     orgId: string,
+    userId: string,
     escapedSearch: string,
     limit = 10000,
   ): Promise<ContentMatches> {
+    if (!mongoose.isValidObjectId(userId)) return { ids: [], truncated: false };
+    const owner = oid(userId);
+    // Their newest chats, one more than the cap, so a list of chats cut short reports itself too.
+    const own = await ChatSession.find({ orgId: oid(orgId), userId: owner })
+      .sort({ lastActivityAt: -1, _id: -1 })
+      .limit(limit + 1)
+      .select('_id')
+      .lean()
+      .exec();
+    if (own.length === 0) return { ids: [], truncated: false };
     const rows = await ChatSessionMessage.aggregate<{
       _id: mongoose.Types.ObjectId;
     }>([
       {
         $match: {
           orgId: oid(orgId),
+          sessionId: { $in: own.slice(0, limit).map((row) => row._id) },
+          // A row with no author is the owner's: only the owner added turns before authorship was stored.
+          authorUserId: { $in: [owner, null] },
+          requestedBy: { $in: [owner, null] },
+          messageType: { $ne: 'tool_call' },
           content: { $regex: escapedSearch, $options: 'i' },
         },
       },
@@ -713,7 +754,7 @@ export class MongoConversationRepository implements ConversationRepository {
     ]);
     return {
       ids: rows.slice(0, limit).map((r) => String(r._id)),
-      truncated: rows.length > limit,
+      truncated: rows.length > limit || own.length > limit,
     };
   }
 
@@ -979,6 +1020,32 @@ export class MongoConversationRepository implements ConversationRepository {
     return toPlain<ChatSessionDto>(conv);
   }
 
+  async replaceTitle(
+    sessionId: string,
+    orgId: string,
+    expected: string,
+    title: string,
+    tx?: Tx,
+  ): Promise<boolean> {
+    if (
+      !mongoose.isValidObjectId(sessionId) ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
+      return false;
+    }
+    const result = await ChatSession.updateOne(
+      asQueryFilter<IChatSessionDocument>({
+        _id: oid(sessionId),
+        orgId: oid(orgId),
+        title: expected,
+      }),
+      // Readers learn of a change by `rev`, a rename too.
+      { $set: { title }, $inc: { rev: 1 } },
+      opts(tx),
+    ).exec();
+    return result.modifiedCount > 0;
+  }
+
   async setSharing(
     scope: SessionScope,
     id: string,
@@ -1038,11 +1105,18 @@ export class MongoConversationRepository implements ConversationRepository {
     orgId: string,
     tx?: Tx,
   ): Promise<{ sessions: number; messages: number }> {
+    // row-writer-exempt: removes a fork that failed half-way, or an erased chat; nobody reads it again
     const messages = await ChatSessionMessage.deleteMany(
       { sessionId: id, orgId },
       opts(tx),
     );
     const sessions = await ChatSession.deleteOne({ _id: id, orgId }, opts(tx));
+    if (mongoose.isValidObjectId(id) && mongoose.isValidObjectId(orgId)) {
+      await ChatAnswerClosure.deleteMany(
+        { orgId: oid(orgId), sessionId: oid(id) },
+        opts(tx),
+      );
+    }
     return {
       sessions: sessions.deletedCount,
       messages: messages.deletedCount,
@@ -1305,9 +1379,10 @@ export class MongoConversationRepository implements ConversationRepository {
     if (messages.length === 0) return [];
     const endSeq = await this.allocateSeq(sessionId, messages.length, tx);
     const startSeq = endSeq - messages.length + 1;
+    // row-writer-exempt: fork copies into a new chat, or a compare adopt in the owner's own chat (refused in shared chats); the owner's view reloads after either
     const inserted = await ChatSessionMessage.insertMany(
       messages.map((message, i) => ({
-        ...message,
+        ...sealAnswerForStorage(message),
         sessionId,
         orgId,
         seq: startSeq + i,
@@ -1317,30 +1392,56 @@ export class MongoConversationRepository implements ConversationRepository {
     return inserted.map(msgOf);
   }
 
-  /** Wholesale replace, preserving `_id`/`sessionId`/`orgId`/`seq` (regeneration discards the old content). */
+  /**
+   * Wholesale replace, preserving `_id`/`sessionId`/`orgId`/`seq` (regeneration discards the old content). The
+   * label of the version it replaces is archived whole in the same write.
+   */
   async replaceMessage(
     messageId: string,
     orgId: string,
     newContent: NewMessage,
     tx?: Tx,
   ): Promise<MessageDto | null> {
-    const existing = await ChatSessionMessage.findOne(
-      { _id: messageId, orgId },
-      undefined,
-      { session: sessionOf(tx) },
-    );
-    if (!existing) return null;
-    const replaced = await ChatSessionMessage.findOneAndReplace(
-      { _id: messageId, orgId },
-      {
-        ...newContent,
-        sessionId: existing.sessionId,
-        orgId: existing.orgId,
-        seq: existing.seq,
-      },
-      { returnDocument: 'after', session: sessionOf(tx), runValidators: true },
-    );
-    return replaced ? msgOf(replaced) : null;
+    // The history comes from the stored row, never from the new content.
+    const { labelHistory: _carried, ...next } =
+      sealAnswerForStorage(newContent);
+    for (let attempt = 1; ; attempt += 1) {
+      const existing = (await ChatSessionMessage.findOne(
+        { _id: messageId, orgId },
+        '+provenance +labelHistory +consentTo',
+        { session: sessionOf(tx), lean: true },
+      )) as
+        | (StoredLabelFields & { sessionId: unknown; orgId: unknown; seq: number })
+        | null;
+      if (!existing) return null;
+      const labelHistory = archivedLabelHistory(existing);
+      const sameVersion =
+        typeof existing.labelVer === 'string'
+          ? { labelVer: existing.labelVer }
+          : { labelVer: { $exists: false } };
+      // row-writer-exempt: not called: utils.ts writes and stamps these rows; kept for the store interface
+      const replaced = await ChatSessionMessage.findOneAndReplace(
+        {
+          _id: messageId,
+          orgId,
+          ...(attempt < LABEL_WRITE_ATTEMPTS && sameVersion),
+        },
+        {
+          ...next,
+          ...(labelHistory && { labelHistory }),
+          sessionId: existing.sessionId,
+          orgId: existing.orgId,
+          seq: existing.seq,
+        },
+        {
+          returnDocument: 'after',
+          session: sessionOf(tx),
+          runValidators: true,
+        },
+      );
+      if (replaced) return msgOf(replaced);
+      if (attempt >= LABEL_WRITE_ATTEMPTS) return null;
+    }
   }
 
   async deleteMessages(
@@ -1350,6 +1451,7 @@ export class MongoConversationRepository implements ConversationRepository {
     sessionId?: string,
   ): Promise<number> {
     if (messageIds.length === 0) return 0;
+    // row-writer-exempt: a compare adopt removes the owner's own later rows in their own chat (refused in shared chats)
     const result = await ChatSessionMessage.deleteMany(
       { _id: { $in: messageIds }, orgId, ...(sessionId ? { sessionId } : {}) },
       opts(tx),
@@ -1365,6 +1467,7 @@ export class MongoConversationRepository implements ConversationRepository {
     attachments?: IChatAttachmentRef[],
     tx?: Tx,
   ): Promise<MessageDto | null> {
+    // row-writer-exempt: not called: utils.ts updateUserQueryContent writes and stamps the row; kept for the store interface
     const updated = await ChatSessionMessage.findOneAndUpdate(
       { _id: messageId, orgId, sessionId, messageType: 'user_query' },
       { $set: { content, ...(attachments ? { attachments } : {}) } },
@@ -1379,12 +1482,229 @@ export class MongoConversationRepository implements ConversationRepository {
     feedback: unknown,
     tx?: Tx,
   ): Promise<MessageDto | null> {
+    // row-writer-exempt: not called: utils.ts writes and stamps feedback; kept for the store interface
     const updated = await ChatSessionMessage.findOneAndUpdate(
       { _id: messageId, orgId },
       { $push: { feedback } },
       { returnDocument: 'after', session: sessionOf(tx), runValidators: true },
     );
     return updated ? msgOf(updated) : null;
+  }
+
+  async listMessageLabels(
+    orgId: string,
+    messageIds: string[],
+  ): Promise<Map<string, MessageLabelRow>> {
+    const out = new Map<string, MessageLabelRow>();
+    const ids = [...new Set(messageIds)].filter((id) =>
+      mongoose.isValidObjectId(id),
+    );
+    if (ids.length === 0 || !mongoose.isValidObjectId(orgId)) return out;
+    // A turn reads this for every answer of its chat: only what the reader check reads comes back. Naming a field
+    // returns it even where the schema hides it (the label, the consent) and nothing where the schema lacks it.
+    const rows = await ChatSessionMessage.find({
+      _id: { $in: oids(ids) },
+      orgId: oid(orgId),
+    })
+      .select(MESSAGE_LABEL_FIELDS.join(' '))
+      .lean()
+      .exec();
+    for (const row of rows) {
+      const plain = toPlain<MessageLabelRow>(row);
+      out.set(plain._id, plain);
+    }
+    return out;
+  }
+
+  async listAnswerClosures(
+    orgId: string,
+    keys: string[],
+  ): Promise<Map<string, AnswerClosureDoc>> {
+    const out = new Map<string, AnswerClosureDoc>();
+    const wanted = [...new Set(keys)].filter(
+      (k) => typeof k === 'string' && k !== '',
+    );
+    if (wanted.length === 0 || !mongoose.isValidObjectId(orgId)) return out;
+    const docs = await ChatAnswerClosure.find({
+      _id: { $in: wanted },
+      orgId: oid(orgId),
+    })
+      .lean()
+      .exec();
+    for (const doc of docs) {
+      out.set(doc._id, {
+        _id: doc._id,
+        orgId: String(doc.orgId),
+        ...(doc.sessionId && { sessionId: String(doc.sessionId) }),
+        rowId: doc.rowId,
+        ver: doc.ver,
+        rev: doc.rev,
+        self: doc.self,
+        add: doc.add,
+        chain: doc.chain,
+        folded: doc.folded,
+        size: doc.size,
+        spans: doc.spans,
+        pub: doc.pub,
+        shares: doc.shares,
+        digest: doc.digest,
+        at: doc.at,
+      });
+    }
+    return out;
+  }
+
+  async saveAnswerClosures(
+    orgId: string,
+    closures: AnswerClosureDoc[],
+  ): Promise<void> {
+    if (closures.length === 0 || !mongoose.isValidObjectId(orgId)) return;
+    const org = oid(orgId);
+    const ops: Parameters<typeof ChatAnswerClosure.bulkWrite>[0] = closures
+      .filter((c) => c.orgId === orgId)
+      .map((c) => ({
+        replaceOne: {
+          filter: { _id: c._id, orgId: org },
+          replacement: {
+            _id: c._id,
+            orgId: org,
+            ...(c.sessionId !== undefined &&
+              mongoose.isValidObjectId(c.sessionId) && {
+                sessionId: oid(c.sessionId),
+              }),
+            rowId: c.rowId,
+            ver: c.ver,
+            rev: c.rev,
+            self: c.self,
+            add: c.add,
+            chain: c.chain,
+            folded: c.folded,
+            size: c.size,
+            spans: c.spans,
+            pub: c.pub,
+            shares: c.shares,
+            digest: c.digest,
+            at: c.at,
+          },
+          upsert: true,
+        },
+      }));
+    await ChatAnswerClosure.bulkWrite(ops, { ordered: false });
+  }
+
+  async listShareMarks(
+    orgId: string,
+    sessionIds: string[],
+  ): Promise<ShareMarkRow[]> {
+    const sessions = [...new Set(sessionIds)].filter((id) =>
+      mongoose.isValidObjectId(id),
+    );
+    if (sessions.length === 0 || !mongoose.isValidObjectId(orgId)) return [];
+    const scope = { orgId: oid(orgId), sessionId: { $in: oids(sessions) } };
+    // One branch per kind of share, each read from its own partial index.
+    const rows = await ChatSessionMessage.find(
+      asQueryFilter<IChatSessionMessageDocument>({
+        $or: [
+          { ...scope, consent: { $type: 'object' } },
+          { ...scope, 'labelHistory.consent': { $type: 'object' } },
+        ],
+      }),
+    )
+      .select({
+        _id: 1,
+        sessionId: 1,
+        labelVer: 1,
+        consent: 1,
+        'labelHistory.ver': 1,
+        'labelHistory.consent': 1,
+      })
+      .lean()
+      .exec();
+    return rows.map((row) => {
+      const plain = row as unknown as {
+        _id: unknown;
+        sessionId: unknown;
+        labelVer?: string;
+        consent?: unknown;
+        labelHistory?: Array<{ ver?: unknown; consent?: unknown }>;
+      };
+      return {
+        _id: String(plain._id),
+        sessionId: String(plain.sessionId),
+        ...(typeof plain.labelVer === 'string' && { labelVer: plain.labelVer }),
+        ...(plain.consent !== undefined && { consent: plain.consent }),
+        ...(Array.isArray(plain.labelHistory) && {
+          labelHistory: plain.labelHistory,
+        }),
+      };
+    });
+  }
+
+  async listMessagesOfRuns(
+    orgId: string,
+    sessionIds: string[],
+    runIds: string[],
+  ): Promise<MessageLabelRow[]> {
+    const sessions = [...new Set(sessionIds)].filter((id) =>
+      mongoose.isValidObjectId(id),
+    );
+    const runs = [...new Set(runIds)].filter(
+      (id) => typeof id === 'string' && id !== '',
+    );
+    if (
+      sessions.length === 0 ||
+      runs.length === 0 ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
+      return [];
+    }
+    const rows = await ChatSessionMessage.find(
+      asQueryFilter<IChatSessionMessageDocument>({
+        orgId: oid(orgId),
+        sessionId: { $in: oids(sessions) },
+        messageType: { $in: ['bot_response', 'error'] },
+        $or: [
+          { runId: { $in: runs } },
+          { 'labelHistory.runId': { $in: runs } },
+        ],
+      }),
+    )
+      .select(MESSAGE_LABEL_FIELDS.join(' '))
+      .lean()
+      .exec();
+    return rows.map((row) => toPlain<MessageLabelRow>(row));
+  }
+
+  async findOpeningMessage(
+    sessionId: string,
+    orgId: string,
+    tx?: Tx,
+  ): Promise<OpeningMessageDto | null> {
+    if (
+      !mongoose.isValidObjectId(sessionId) ||
+      !mongoose.isValidObjectId(orgId)
+    ) {
+      return null;
+    }
+    // Removed or not: a title made from it keeps it.
+    const row = await ChatSessionMessage.findOne(
+      asQueryFilter<IChatSessionMessageDocument>({
+        sessionId: oid(sessionId),
+        orgId: oid(orgId),
+        messageType: { $in: ['user_query', 'note'] },
+      }),
+      { _id: 0, content: 1, appliedFilters: 1 },
+      opts(tx),
+    )
+      .sort({ seq: 1 })
+      .lean<Partial<OpeningMessageDto>>()
+      .exec();
+    return row
+      ? {
+          content: row.content ?? '',
+          ...(row.appliedFilters && { appliedFilters: row.appliedFilters }),
+        }
+      : null;
   }
 
   async findMessage(
@@ -1412,6 +1732,7 @@ export class MongoConversationRepository implements ConversationRepository {
       order?: 'asc' | 'desc';
       withLabels?: boolean;
       afterSeq?: number;
+      maxSeq?: number;
     },
     tx?: Tx,
   ): Promise<MessageRow[]> {
@@ -1423,12 +1744,20 @@ export class MongoConversationRepository implements ConversationRepository {
       order = 'asc',
       withLabels = false,
       afterSeq,
+      maxSeq,
     } = q;
     if (limit !== undefined && limit <= 0) return [];
     let query = ChatSessionMessage.find({
       sessionId,
       orgId,
-      ...(afterSeq !== undefined ? { seq: { $gt: afterSeq } } : {}),
+      ...(afterSeq !== undefined || maxSeq !== undefined
+        ? {
+            seq: {
+              ...(afterSeq !== undefined && { $gt: afterSeq }),
+              ...(maxSeq !== undefined && { $lte: maxSeq }),
+            },
+          }
+        : {}),
     }).sort({
       seq: order === 'desc' ? -1 : 1,
     });
@@ -1512,6 +1841,45 @@ export class MongoConversationRepository implements ConversationRepository {
       })
       .lean();
     return toPlain<AttachmentsAndCitedRecords[]>(rows);
+  }
+
+  // ---- answer shares
+  addShareRequest(
+    row: AnswerRowRef,
+    labelVer: string | undefined,
+    request: ShareRequestDto,
+    share: AnswerConsentDto | null,
+    tx?: Tx,
+  ): Promise<boolean> {
+    return answerShares.addShareRequest(row, labelVer, request, share, tx);
+  }
+
+  closeShareRequests(
+    row: AnswerRowRef,
+    asks: {
+      ver: string;
+      state: ClosedShareRequestState;
+      by?: readonly string[];
+    },
+    tx?: Tx,
+  ): Promise<string[]> {
+    return answerShares.closeShareRequests(row, asks, tx);
+  }
+
+  setAnswerConsent(
+    row: AnswerRowRef,
+    share: NewAnswerShare,
+    tx?: Tx,
+  ): Promise<string[] | null> {
+    return answerShares.setAnswerConsent(row, share, tx);
+  }
+
+  clearAnswerConsent(
+    row: AnswerRowRef,
+    onlyBy?: string,
+    tx?: Tx,
+  ): Promise<EndedAnswerShare | null> {
+    return answerShares.clearAnswerConsent(row, onlyBy, tx);
   }
 
   // ---- citations

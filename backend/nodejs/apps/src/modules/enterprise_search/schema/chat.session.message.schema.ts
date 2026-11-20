@@ -7,7 +7,17 @@ import {
   IFollowUpQuestion,
   IMessageCitation,
 } from '../types/conversation.interfaces';
-import { CONFIDENCE_LEVELS, REASONING_EFFORT_VALUES } from '../constants/constants';
+import {
+  CONFIDENCE_LEVELS,
+  REASONING_EFFORT_VALUES,
+} from '../constants/constants';
+import { unavailableToolSchema } from './unavailable-tool.schema';
+import {
+  answerConsentEntrySchema,
+  answerConsentSchema,
+  shareRequestSchema,
+} from './answer-share.schema';
+import { schemaExtensions } from '../../../edition-schemas';
 
 const toolCallItemSchema = new Schema(
   {
@@ -174,12 +184,25 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
       type: Schema.Types.ObjectId,
       required: true,
       ref: 'ChatSession',
-      index: true,
+      // No index of its own: `{sessionId, seq}` serves every lookup by session.
     },
     orgId: { type: Schema.Types.ObjectId, required: true, index: true },
     // Per-session monotonic sort key allocated from the parent session's
     // `nextSeq` counter. Gaps are legal; never treat this as a count or index.
     seq: { type: Number, required: true },
+    // The session `rev` this row was last written at (insert, in-place change or removal), one value
+    // per row, so a reader holding a `rev` can ask for exactly the rows changed after it. Absent on
+    // rows written before stamping existed.
+    changeRev: { type: Number },
+    // A removed row stays, emptied, as a marker that it changed; every read skips it (NOT_REMOVED).
+    removedAt: { type: Date },
+    removedBy: { type: Schema.Types.ObjectId },
+
+    // Authorship. Not required and no defaults: legacy rows lack them and read
+    // as authored by `session.userId`.
+    authorUserId: { type: Schema.Types.ObjectId }, // user_query
+    requestedBy: { type: Schema.Types.ObjectId }, // bot_response | error | tool_call
+    inReplyTo: { type: Schema.Types.ObjectId },
 
     messageType: {
       type: String,
@@ -208,9 +231,11 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     foreignTurn: { type: Boolean },
     // Copied from another conversation by a fork (FORKFIX): its runs stayed there, so it names none.
     copied: { type: Boolean },
-    // The durable run that wrote this answer (UX5): the activity panel finds the run after a reload.
+    // The run that wrote the row: the activity panel finds a durable run after a reload (UX5), the row's archived
+    // label keeps it, and a file the run wrote names it.
     runId: { type: String },
-    // An error answer's code (`messageType: 'error'`): the web app words it in the reader's language (ERR-UX).
+    // An error answer's code (`messageType: 'error'`): the web app words it in the reader's language (ERR-UX). A
+    // refusal only an admin can lift is one of them: trying again cannot help.
     errorCode: { type: String },
     // With errorCode `mcp_tool_withdrawn` (WP-84): the labels of the servers that withdrew a tool, which the words name.
     errorServers: { type: [String], default: undefined },
@@ -236,6 +261,7 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     label: { type: Schema.Types.Mixed, select: false },
     citations: [messageCitationSchema],
     confidence: { type: String, enum: CONFIDENCE_LEVELS },
+    answerMatchType: { type: String, enum: ['Capability Card'] },
     followUpQuestions: [followUpQuestionSchema],
     feedback: [feedbackSchema],
     metadata: {
@@ -344,6 +370,33 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     // Mixed for the same reason as the legacy schema's identical field:
     // shape varies by `type`, and `sub_agent` nests the same shape recursively.
     parts: [Schema.Types.Mixed],
+    // Tools the requester could not use on this turn (additive).
+    unavailableTools: { type: [unavailableToolSchema], default: undefined },
+    // `bot_response` / `error`: the version of the stored content, new on every write of it.
+    labelVer: { type: String },
+    // What the model calls behind the answer were given, stored whole. A read gets it only by asking for it, so a
+    // read that forgets it gets no label, and a row without a label is shown only to its asker.
+    provenance: { type: Schema.Types.Mixed, select: false },
+    // The labels of earlier versions of the row, whole, newest last.
+    labelHistory: {
+      type: [Schema.Types.Mixed],
+      select: false,
+      default: undefined,
+    },
+    // A `bot_response` shared in place: the asker's consent for one version. Who it covers and who asked stay on the server.
+    consent: { type: answerConsentSchema },
+    // A share with people only: whom it covers; never selected by default, never returned.
+    consentTo: {
+      type: [answerConsentEntrySchema],
+      default: undefined,
+      select: false,
+    },
+    // Members' asks to see one version of it; never selected by default, never returned.
+    shareRequests: {
+      type: [shareRequestSchema],
+      default: undefined,
+      select: false,
+    },
   },
   {
     timestamps: true, // parity with the old embedded messageSchema
@@ -364,6 +417,21 @@ chatSessionMessageSchema.index(
   { orgId: 1, 'attachments.recordId': 1 },
   { partialFilterExpression: { 'attachments.recordId': { $exists: true } } },
 );
+
+// A chat's shared answers, current and archived: the reader check reads them to notice a share made since a closure.
+chatSessionMessageSchema.index(
+  { sessionId: 1, 'consent.ver': 1 },
+  { partialFilterExpression: { consent: { $type: 'object' } } },
+);
+chatSessionMessageSchema.index(
+  { sessionId: 1, 'labelHistory.ver': 1 },
+  { partialFilterExpression: { 'labelHistory.consent': { $type: 'object' } } },
+);
+
+schemaExtensions.chatSessionMessage(chatSessionMessageSchema);
+
+/** Query fragment every read of rows adds, so removed rows are never shown or counted. */
+export const NOT_REMOVED = { removedAt: { $exists: false } } as const;
 
 export const ChatSessionMessage: Model<IChatSessionMessageDocument> =
   mongoose.model<IChatSessionMessageDocument>(

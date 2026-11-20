@@ -159,6 +159,9 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
      * getProjectConversations for the read-side of this rule.
      */
     projectVisibility: { type: String, enum: ['private', 'project'] },
+    // When it last became visible to its project, written by every change to `project` and cleared on `private`:
+    // the project's readers count as readers from before the privacy rules only while no such change is recorded.
+    projectVisibleAt: { type: Date },
     // Bumped on every visible change, so a reader can tell its copy is stale.
     rev: { type: Number, default: 0 },
 

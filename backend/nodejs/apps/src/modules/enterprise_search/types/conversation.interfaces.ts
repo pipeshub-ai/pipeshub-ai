@@ -512,6 +512,8 @@ export interface IChatSession {
   projectId?: Types.ObjectId;
   /** Per-conversation override of the project's default chat-sharing visibility. */
   projectVisibility?: 'private' | 'project';
+  /** When it last became visible to its project; cleared when it is not. */
+  projectVisibleAt?: Date;
   /** Compare models: set on a hidden branch, the chat it branched from. */
   compareOf?: Types.ObjectId;
   /** Compare models: the parent's `user_query` the branch re-asks. */
