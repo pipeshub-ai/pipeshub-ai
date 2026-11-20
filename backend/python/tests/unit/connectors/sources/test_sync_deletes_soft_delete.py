@@ -100,6 +100,8 @@ def _jira_store() -> _Store:
             "10004": [
                 _Rec("file-1", "att-1"),
                 _Rec("subtask-1", "10011", RecordType.TICKET.value),
+                # A comment restricted to a group or role: a record under the issue by PARENT_CHILD.
+                _Rec("comment-1", "comment_501", RecordType.COMMENT.value),
             ],
         },
     )
@@ -111,6 +113,7 @@ async def _run_jira(issue_key: str = "PA-5") -> tuple[_Store, MagicMock]:
     conn = JiraDataCenterConnector(MagicMock(), MagicMock(), MagicMock(), cs, "jdc-1", "team", "u1")
     store = _jira_store()
     processor = _wire(conn, store)
+    processor.get_records_by_parent = AsyncMock(side_effect=store.get_records_by_parent)
     datasource = MagicMock()
     datasource.get_issue_v2 = AsyncMock(return_value=MagicMock(status=HttpStatusCode.NOT_FOUND.value))
     with patch.object(conn, "_get_fresh_datasource", AsyncMock(return_value=datasource)):
@@ -123,7 +126,8 @@ class TestJiraDataCenterIssueDelete:
         store, processor = await _run_jira()
 
         ids, connector_id, kwargs = _handed_over(processor)
-        assert ids == ["issue-1"]
+        # The cascade follows ATTACHMENT edges only: the issue's comment records are named with it, its sub-tasks are not.
+        assert ids == ["issue-1", "comment-1"]
         assert connector_id == "jdc-1"
         assert kwargs == CASCADE
         assert store.hard_deleted == []

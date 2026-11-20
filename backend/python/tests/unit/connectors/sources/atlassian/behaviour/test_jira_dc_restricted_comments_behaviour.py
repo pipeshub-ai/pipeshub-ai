@@ -7,6 +7,7 @@ a record of its own under the issue (PARENT_AND_GRANT), granted to that group or
 against the oldest, a middle and the newest supported release.
 """
 
+import base64
 import json
 from typing import Any
 from unittest.mock import AsyncMock
@@ -99,7 +100,13 @@ def grants(db, ext: str) -> set[tuple[EntityType, str]]:
 
 
 def held(store) -> dict[str, int]:
+    """Issues holding the cursor (the failed-issue budget)."""
     return json.loads(store.values_for("project_ENG").get("failed_issue_attempts") or "{}")
+
+
+def to_retry(store) -> list[str]:
+    """Issues whose restricted comments the next sync writes again (no budget, the cursor moves on)."""
+    return json.loads(store.values_for("project_ENG").get("comment_retry") or "[]")
 
 
 async def test_each_restricted_comment_is_a_record_under_its_issue_granted_to_its_group_or_role(site, db, store, search) -> None:
@@ -122,7 +129,7 @@ async def test_each_restricted_comment_is_a_record_under_its_issue_granted_to_it
     assert grants(db, "comment_502") == {(EntityType.ROLE, "ENG_10002")}
     batches = [{type(r).__name__ for r in b} for b in db.record_batches]
     assert batches.index({"CommentRecord"}) > batches.index({"TicketRecord"}), "comments are written after their issue"
-    assert held(store) == {}
+    assert held(store) == {} and to_retry(store) == []
 
 
 async def test_a_comment_made_public_or_deleted_loses_its_record_and_one_restricted_again_gets_it_back(
@@ -152,7 +159,6 @@ async def test_comments_that_cannot_be_read_in_full_take_no_audience_and_the_iss
     connector, _ = await make_connector(db, store)
     await connector.run_sync()
     assert set(comment_records(db)) == {"comment_501"}
-    stored_time = tickets(db)["1001"].source_updated_at
 
     # Moved to the role, and past the embedded page, whose next page Jira refuses.
     site.on("GET", f"{API}/issue/1001/comment", json_response({"errorMessages": ["no"]}, status=403))
@@ -161,14 +167,14 @@ async def test_comments_that_cannot_be_read_in_full_take_no_audience_and_the_iss
     await connector.run_sync()
 
     assert comment_records(db) == {}, "a stored comment is not kept with an audience it may no longer have"
-    assert held(store) == {"1001": 1}, "the cursor waits at the issue"
-    assert tickets(db)["1001"].source_updated_at == stored_time, "stored as changed, so the next read rewrites it"
+    assert to_retry(store) == ["1001"] and held(store) == {}
 
+    # Nothing changes at the source: the issue is read again by id.
     site.on("GET", f"{API}/issue/1001/comment", {"comments": [comment("501", role="Developers", updated=ts(3))],
                                                  "startAt": 1, "maxResults": 100, "total": 2})
     await connector.run_sync()
     assert grants(db, "comment_501") == {(EntityType.ROLE, "ENG_10002")}
-    assert held(store) == {}
+    assert to_retry(store) == []
 
 
 @pytest.mark.parametrize("unread", ["role list", "role"])
@@ -183,12 +189,17 @@ async def test_a_role_that_cannot_be_read_grants_nobody_until_a_sync_reads_it(si
     await connector.run_sync()
 
     assert grants(db, "comment_502") == set(), "an unresolved role grants nobody"
-    assert held(store) == {"1001": 1}
+    assert to_retry(store) == ["1001"]
+
+    for _ in range(6):  # more syncs than the failed-issue budget: never given up
+        await connector.run_sync()
+        assert to_retry(store) == ["1001"] and held(store) == {}
+    assert json.loads(store.values_for("project_ENG").get("given_up_issues") or "{}") == {}
 
     site.on("GET", path, good)
     await connector.run_sync()
-    assert grants(db, "comment_502") == {(EntityType.ROLE, "ENG_10002")}
-    assert held(store) == {}
+    assert grants(db, "comment_502") == {(EntityType.ROLE, "ENG_10002")}, "back with no change at the source"
+    assert to_retry(store) == []
 
 
 async def test_a_restricted_comment_streams_alone_and_its_issue_streams_without_it(site, db, store, search) -> None:
@@ -264,7 +275,7 @@ async def test_a_comment_page_that_is_not_a_list_of_comments_is_an_unread_page(s
 
     await connector.run_sync()
 
-    assert held(store) == {"1001": 1}
+    assert to_retry(store) == ["1001"]
 
 
 async def test_on_an_unknown_version_a_visibility_of_another_shape_grants_nobody(jira, db, store, search) -> None:
@@ -281,7 +292,7 @@ async def test_on_an_unknown_version_a_visibility_of_another_shape_grants_nobody
     assert not connector._dc_profile.supported
     assert grants(db, "comment_501") == {(EntityType.GROUP, "devs")}
     assert grants(db, "comment_503") == set()
-    assert held(store) == {"1001": 1}
+    assert to_retry(store) == ["1001"]
 
 
 async def test_a_stale_comment_record_that_cannot_be_deleted_holds_its_issue_until_it_is(site, db, store, search) -> None:
@@ -302,3 +313,94 @@ async def test_a_stale_comment_record_that_cannot_be_deleted_holds_its_issue_unt
     db.on_records_deleted_cascade = delete
     await connector.run_sync()
     assert comment_records(db) == {} and held(store) == {}
+
+
+async def test_a_comment_page_that_ends_short_of_the_total_is_an_unread_list(site, db, store, search) -> None:
+    """Jira reports 3 comments, the embedded page holds 1, and the next page answers 200 with only 1 more."""
+    search.add("ENG", 0, [with_comments(ts(2), [comment("501", group="devs"), comment("502", group="devs")])])
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    assert set(comment_records(db)) == {"comment_501", "comment_502"}
+
+    site.on("GET", f"{API}/issue/1001/comment", {"comments": [comment("501", group="devs", updated=ts(3))],
+                                                 "startAt": 1, "maxResults": 100, "total": 3})
+    search.pages.clear()
+    search.add("ENG", 0, [with_comments(ts(3), [comment("500")], total=3)])
+    await connector.run_sync()
+
+    assert to_retry(store) == ["1001"], "a short list is not taken for the whole list"
+
+
+async def test_a_comment_field_of_another_shape_is_an_unread_list(site, db, store, search) -> None:
+    bad = issue("1001", "ENG-1", ts(2))
+    bad["fields"]["comment"] = "not a comment page"
+    search.add("ENG", 0, [bad])
+    connector, _ = await make_connector(db, store)
+
+    await connector.run_sync()
+
+    assert to_retry(store) == ["1001"]
+
+
+async def test_a_comment_batch_that_fails_leaves_its_issue_to_be_read_again(site, db, store, search) -> None:
+    """The comment moves to another group; the issue is written, then its comment record's write fails. The next sync,
+    nothing changed at the source since, must not skip the issue as unchanged: the record would keep the old group."""
+    search.add("ENG", 0, [with_comments(ts(2), [comment("501", group="devs")])])
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    write = db.on_new_records
+
+    async def fail_comments(items):  # noqa: ANN001, ANN202
+        if any(r.record_type == RecordType.COMMENT for r, _ in items):
+            raise RuntimeError("database unavailable")
+        await write(items)
+
+    moved = with_comments(ts(3), [comment("501", group="jira-software-users", updated=ts(3))])
+    search.pages.clear()
+    search.add("ENG", 0, [moved])
+    db.on_new_records = fail_comments
+    await connector.run_sync()  # the project's sync fails, is reported, and its cursor stays
+    assert grants(db, "comment_501") == {(EntityType.GROUP, "devs")}
+
+    db.on_new_records = write
+    await connector.run_sync()
+    assert grants(db, "comment_501") == {(EntityType.GROUP, "jira-software-users")}
+    assert tickets(db)["1001"].source_updated_at == connector._parse_jira_timestamp(ts(3)), "settled once written"
+
+
+async def test_a_restricted_comment_streams_its_inline_image_and_files_nothing(site, db, store, search) -> None:
+    search.add("ENG", 0, [with_comments(ts(2), [comment("501", group="devs")])])
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    image = {"id": "200", "filename": "diagram.png", "mimeType": "image/png", "size": 10, "created": ts(1, 9)}
+    site.on("GET", f"{API}/issue/1001", {
+        "id": "1001", "key": "ENG-1",
+        "fields": {"summary": "Crash", "attachment": [image, {**image, "id": "201", "filename": "log.txt",
+                                                              "mimeType": "text/plain"}],
+                   "project": {"id": "10000"}, "comment": {"comments": [comment("501", group="devs")], "total": 1}},
+        "renderedFields": {"comment": {"comments": [
+            {"id": "501", "body": '<p>see <img src="/secure/attachment/200/diagram.png"></p>'}]}},
+    })
+    site.on("GET", "/secure/attachment/200/diagram.png", httpx.Response(200, content=b"PNGDATA"))
+    files_before = {k for k, r in db.records.items() if r.record_type == RecordType.FILE}
+
+    response = await connector.stream_record(comment_records(db)["comment_501"])
+    body = json.loads(b"".join([c async for c in response.body_iterator]))
+
+    assert f"data:image/png;base64,{base64.b64encode(b'PNGDATA').decode()}" in json.dumps(body)
+    assert {k for k, r in db.records.items() if r.record_type == RecordType.FILE} == files_before, (
+        "the issue's stream files the attachments, not its comment's")
+
+
+async def test_a_reindex_reads_restricted_comments_given_as_a_bare_list(site, db, store, search) -> None:
+    search.add("ENG", 0, [issue("1001", "ENG-1", ts(2))])
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    stored = tickets(db)["1001"]
+    listed = issue("1001", "ENG-1", ts(3))
+    listed["fields"]["comment"] = [comment("501", group="devs", updated=ts(3))]
+    site.on("GET", f"{API}/issue/1001", listed)
+
+    await connector.reindex_records([stored])
+
+    assert tickets(db)["1001"].source_updated_at == stored.source_updated_at, "left for the sync to write the comment"
