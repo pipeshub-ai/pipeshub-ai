@@ -417,3 +417,48 @@ async def test_a_failure_releases_only_the_copy_its_own_attempt_wrote() -> None:
     await swap.release_failed("A", "o", attempt_pending="Y1")
     assert g.records["A"]["pendingVirtualRecordId"] == "Y2"
     swap._release_unheld.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_listing_still_checks_the_blocks_it_did_not_reach() -> None:
+    """A listing that stops at its bound cannot prove the set whole: the missing block ids are asked for directly."""
+    from unittest.mock import patch
+
+    g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y")})
+    swap, _ = committer(g, view=lambda vrid: ["b1"])  # the store has b1 only
+    async def truncated(ctx: object, s: object) -> tuple[set[str], bool]:
+        return {"b1"}, False  # b2 was past the bound of the listing
+
+    swap._blocks_in_store = truncated  # type: ignore[method-assign]
+    with pytest.raises(IndexingError):
+        await swap.commit(ctx_for("A", "Y", pointed=["b1", "b2"]), run(), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "X"
+    present = {"b1", "b2"}
+
+    async def ask(ctx: object, s: object, blocks: list[str]) -> set[str]:
+        return set(blocks) & present  # b2 is there when asked for by id
+
+    swap._present_among = ask  # type: ignore[method-assign]
+    assert await swap.commit(ctx_for("A", "Y", pointed=["b1", "b2"]), run(), {"indexingStatus": "COMPLETED"})
+    del patch
+
+
+@pytest.mark.asyncio
+async def test_a_failed_membership_restore_after_the_retirement_asks_for_a_repair() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({"A": rec("Y", "COMPLETED")})
+    swap, vs = committer(g)
+    vs.vector_db_service.set_payload = AsyncMock()
+    vs.collection_locator.all_collections = AsyncMock(return_value=["c1"])
+    g.update_node = AsyncMock(return_value=True)
+
+    async def attach(*_a: object, **_k: object) -> None:
+        g.records["B"] = rec("X", "COMPLETED", connectorId="k1")
+
+    vs.vector_db_service.set_payload = AsyncMock(side_effect=attach)
+    with patch("app.modules.transformers.swap_commit.org_for_filter", return_value="o"), \
+         patch("app.modules.transformers.swap_commit.mark_scope_stale", AsyncMock()), \
+         patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock(side_effect=RuntimeError("down"))):
+        await swap._retire_membership(run())
+    g.update_node.assert_any_await("k1", "apps", {"vectorMembershipBackfilled": False})

@@ -191,7 +191,33 @@ class SwapCommitter:
         if not pointed:
             return True
         seen, complete = await self._blocks_in_store(ctx, swap)
-        return bool(seen) and not (complete and pointed - seen)
+        if not seen:
+            return False
+        missing = pointed - seen
+        if missing and not complete:
+            # The listing stopped at its bound: the blocks it did not reach are asked for by id.
+            missing -= await self._present_among(ctx, swap, sorted(missing))
+        return not missing
+
+    async def _present_among(self, ctx: TransformContext, swap: keep_old_copy.SwapRun, blocks: list[str]) -> set[str]:
+        vs = self.o.vector_store
+        db = vs.vector_db_service
+        collection = vs.collection_registry.resolve_write_collection(vs._record_context(swap.org_id, ctx.record))
+        found: set[str] = set()
+        org = org_for_filter(swap.org_id, match_bound=True)
+        for start in range(0, len(blocks), 200):
+            chunk = blocks[start:start + 200]
+            flt = await db.filter_collection(must={"orgId": org, "virtualRecordId": swap.new_vrid, "blockId": chunk})
+            offset: str | None = None
+            while True:
+                page = await db.scroll(
+                    collection_name=collection, scroll_filter=flt, limit=500, offset=offset, with_payload=[VIRTUAL_RECORD_ID_FIELD, BLOCK_ID_FIELD],
+                )
+                found.update(b for p in page.points or [] if (b := VectorChunkPayload.from_dict(p.payload or {}).metadata.blockId))
+                if not page.next_offset or page.next_offset == offset:
+                    break
+                offset = page.next_offset
+        return found
 
     async def _require_points(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
         """Defense in depth: a copy is committed only with a point for every block that was given one, whatever removed the rest.
@@ -254,9 +280,24 @@ class SwapCommitter:
             await db.set_payload(collection, empty, flt)
         await mark_scope_stale(db, vs.collection_locator, swap.old_vrid, self.logger)
         # A record that attached to the old copy while its membership was being taken off keeps its own: the holders are read again after
-        # the write, and recomputing the arrays from them puts that record back.
-        if await graph.get_records_by_virtual_record_id(swap.old_vrid, raise_on_error=True):
-            await sync_vector_membership(db, vs.collection_locator, graph, swap.old_vrid, self.logger)
+        # the write, and recomputing the arrays from them puts that record back. When that does not complete the connector's membership is
+        # walked again (the backfill), as for a twin.
+        try:
+            holders = await graph.get_records_by_virtual_record_id(swap.old_vrid, raise_on_error=True)
+            if holders:
+                await sync_vector_membership(db, vs.collection_locator, graph, swap.old_vrid, self.logger)
+        except Exception as exc:
+            self.logger.warning("Membership of %s not restored after its retirement: %s", swap.old_vrid, type(exc).__name__)
+            for key in await self._holders_connectors(swap):
+                await self._request_membership_repair(None, key)
+
+    async def _holders_connectors(self, swap: keep_old_copy.SwapRun) -> set[str]:
+        try:
+            keys = await self.o.graph_provider.get_records_by_virtual_record_id(swap.old_vrid, raise_on_error=True)
+            docs = [await self.o.graph_provider.get_document(k, _RECORDS) for k in keys]
+        except Exception:
+            return set()
+        return {d["connectorId"] for d in docs if d and d.get("connectorId")}
 
     async def _repoint_twins(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
         """Move the records that held the old copy with the same bytes, and the same write collection, to the new one.

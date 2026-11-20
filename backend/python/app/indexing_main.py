@@ -1297,12 +1297,13 @@ async def _sweep_orphaned_virtual_record_mappings(
                 continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
             if (org_of[vrid], vrid) in _orphan_kept_until:
                 continue
-            retired = retired_at.get(vrid)
-            if retired is None:
-                # A copy may have been retired after this page was read: the mark is read again right before the delete.
-                with contextlib.suppress(Exception):
-                    row = await graph_provider.get_document(vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
-                    retired = (row or {}).get(keep_old_copy.RETIRED_AT_FIELD)
+            # A copy may have been retired (or retired again) after this page was read, whatever mark the page shows: the mark is read
+            # again right before the delete, and a read that fails leaves the copy for the next pass.
+            try:
+                row = await graph_provider.get_document(vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, raise_on_error=True)
+            except Exception:
+                continue
+            retired = (row or {}).get(keep_old_copy.RETIRED_AT_FIELD, retired_at.get(vrid))
             if isinstance(retired, (int, float)) and time.time() * 1000 - retired < keep_old_copy.grace_seconds() * 1000:
                 continue
             try:

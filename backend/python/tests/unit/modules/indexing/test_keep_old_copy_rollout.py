@@ -26,6 +26,11 @@ def _paged_graph(rows: list[dict]) -> AsyncMock:
         return set()  # nothing holds any of them
 
     graph.get_documents_paginated = AsyncMock(side_effect=paged)
+
+    async def one(key: str, collection: str, **_: object) -> dict | None:
+        return next((r for r in rows if r["_key"] == key), None)
+
+    graph.get_document = AsyncMock(side_effect=one)
     graph.get_virtual_record_ids_in_use = AsyncMock(side_effect=in_use)
     return graph
 
@@ -162,4 +167,20 @@ async def test_the_orphan_sweep_reads_the_retired_mark_again_before_it_deletes()
     pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="deleted")
     swept = await _sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100, org_id="o1")
     assert swept == 0
+    pipeline.rewrite_or_delete_vector_membership.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_orphan_sweep_reads_the_mark_again_even_when_the_page_shows_an_expired_one() -> None:
+    from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+    old = keep_old_copy.RETIRED_AT_FIELD
+    rows = [{"_key": "retired-again", "orgId": "o1", old: time.time() * 1000 - (keep_old_copy.grace_seconds() + 60) * 1000}]
+    graph = _paged_graph(rows)
+    graph.get_document = AsyncMock(return_value={old: time.time() * 1000})  # a swap wrote a new mark after the page was read
+    pipeline = AsyncMock()
+    pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="deleted")
+    assert await _sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100, org_id="o1") == 0
+    graph.get_document = AsyncMock(side_effect=RuntimeError("down"))  # a read that fails leaves the copy for the next pass
+    assert await _sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100, org_id="o1") == 0
     pipeline.rewrite_or_delete_vector_membership.assert_not_called()
