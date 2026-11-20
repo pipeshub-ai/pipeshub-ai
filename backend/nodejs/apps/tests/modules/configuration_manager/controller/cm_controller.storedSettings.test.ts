@@ -24,7 +24,8 @@ import * as userAdminService from '../../../../src/modules/user_management/servi
 import type { NextFunction, Response } from 'express';
 import type { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types';
 import type { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service';
-import type { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
+import { registerAppUpstreams, type AppConfig } from '../../../../src/modules/tokens_manager/config/config';
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call';
 
 // Drives the real configuration-manager handlers against an in-memory key-value
 // store, with real encryption. Only the store and the AI service's HTTP health
@@ -287,6 +288,8 @@ describe('Configuration manager stored settings', () => {
   describe('web search providers', () => {
     const aiBackend = 'http://ai.test';
     const appConfig = { aiBackend } as unknown as AppConfig;
+    beforeEach(() => registerAppUpstreams(appConfig));
+    afterEach(() => registerUpstreams({}));
     let fetchStub: sinon.SinonStub;
     let healthChecks: Array<{ provider: string; configuration: Record<string, unknown> }>;
     let healthAnswer: { status: number; body: unknown };
