@@ -40,6 +40,9 @@ on:
       - 'backend/python/tests/integration/graph_db/test_code_graph_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_accessible_containers_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
+      # postgres/test_drupal_wiki_access.py drives the connector through drupal_wiki_world.py.
+      - 'backend/python/tests/integration/graph_db/drupal_wiki_world.py'
+      - 'backend/python/app/connectors/sources/drupal_wiki/**'
       - 'backend/python/tests/integration/graph_db/fresh_org_support.py'
       # The shared drivers of the record diagnostics tests that run on every store (their PostgreSQL files are in postgres/).
       - 'backend/python/tests/integration/graph_db/record_diagnostics_*.py'
