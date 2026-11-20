@@ -822,9 +822,20 @@ class BaseConnector(ABC):
         authenticated it resolves that account's permissions for this connector instance.
         Connectors call this at the start of ``run_sync`` with the email and id of the
         source "me" account; the id must be the one their user sync stores as sourceUserId.
-        Never aborts the sync."""
+        When the current account cannot be linked (no email or id, or the write fails), the link
+        to an earlier account is removed: the credentials may now name another account, and the
+        link alone passes the connector gate. Never aborts the sync."""
         if not self.created_by:
             return
+
+        async def unlink() -> None:
+            try:
+                await self.data_entities_processor.unlink_authenticator(self.connector_id)
+            except Exception as e:
+                self.logger.warning(
+                    "Could not remove the link from the user who authenticated connector %s: %s", self.connector_id, e,
+                )
+
         if not email or not source_user_id:
             self.logger.warning(
                 "Connector %s: the authenticated source account's email or id could not be read "
@@ -832,6 +843,7 @@ class BaseConnector(ABC):
                 "email is granted",
                 self.connector_id, email, source_user_id,
             )
+            await unlink()
             return
         try:
             app_name = (
@@ -847,6 +859,7 @@ class BaseConnector(ABC):
                 "Could not link the user who authenticated connector %s to source account %s: %s",
                 self.connector_id, email, e,
             )
+            await unlink()
 
     async def authenticator_email(self) -> str | None:
         """Email of the PipesHub user whose credentials this connector runs with: the app's

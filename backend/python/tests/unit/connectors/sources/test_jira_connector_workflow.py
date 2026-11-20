@@ -740,6 +740,45 @@ class TestJiraFullSync:
         assert dep.link_authenticator_to_source_user.await_count == (1 if linked else 0)
         assert dep.unlink_authenticator.await_args_list == ([] if linked else [call("conn-jira-1")])
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("email", "linked"), [(None, False), ("b@test.com", True)], ids=["hidden_email", "email"])
+    async def test_credentials_moved_to_another_account_link_only_that_one(self, email: str | None, linked: bool) -> None:
+        """The credentials now name account b1 (with product access), not the a1 an earlier sync linked. With b1's email
+        hidden the link cannot be written, so the one to a1 goes; with it, the link is written to b1, which replaces a1's
+        (one link per connector on every store)."""
+        connector, dep, *_ = _make_connector()
+        connector.data_source = MagicMock()
+        connector._authenticated_jira_account_id, connector._authenticated_jira_email = "b1", email
+        dep.link_authenticator_to_source_user = AsyncMock()
+        dep.unlink_authenticator = AsyncMock()
+        dep.withdraw_app_user_access = AsyncMock()
+
+        async def keep(found: list[AppUser], _mapping: object) -> list[AppUser]:
+            connector._licensed_account_ids = {"b1"}
+            return found
+
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+                   new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
+            connector._fetch_users = AsyncMock(return_value=[])
+            connector._keep_licensed_users = AsyncMock(side_effect=keep)
+            connector._sync_user_groups = AsyncMock(return_value={})
+            connector._fetch_projects = AsyncMock(return_value=([], []))
+            connector._sync_project_roles = AsyncMock()
+            connector._sync_project_lead_roles = AsyncMock()
+            connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+            connector._sync_all_project_issues = AsyncMock(return_value={"total_synced": 0, "new_count": 0, "updated_count": 0})
+            connector._update_issues_sync_checkpoint = AsyncMock()
+            connector._handle_issue_deletions = AsyncMock()
+            connector.notify = AsyncMock()
+            await connector.run_sync()
+        if linked:
+            dep.link_authenticator_to_source_user.assert_awaited_once_with(
+                "conn-jira-1", "test-user-id", "b@test.com", "b1", Connectors.JIRA)
+            dep.unlink_authenticator.assert_not_awaited()
+        else:
+            dep.link_authenticator_to_source_user.assert_not_awaited()
+            dep.unlink_authenticator.assert_awaited_once_with("conn-jira-1")
+
     @staticmethod
     def _missing_from_a_complete_list(licensed: set[str] | None, *, stored: bool) -> tuple[JiraConnector, MagicMock]:
         """A connector whose user list, read in full, does not show its own account ``a1``; ``stored`` says whether

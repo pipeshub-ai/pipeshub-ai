@@ -828,6 +828,25 @@ async def test_a_project_open_to_anyone_is_read_only_by_linked_jira_accounts(wor
     assert not await _mismatches(world, public, by_key)
 
 
+async def test_credentials_moved_to_another_account_replace_the_link_to_the_earlier_one(world: dict[str, Any]) -> None:
+    """erin configured the connector as alice, then the credentials moved to dave: the link to dave replaces alice's,
+    so erin reads what dave reads and nothing only alice reads."""
+    await _sync_project(world)
+    graph, run, org_id, processor = world["graph"], world["run"], world["org_id"], world["processor"]
+    erin_id = await _org_member(world, "erin")
+    ids = list((await _ticket_ids(world)).values())
+
+    async def reads(user_id: str) -> set[str]:
+        return set(await graph.filter_accessible_record_ids(ids, user_id, org_id))
+
+    dave, alice = await reads(world["user_ids"]["dave"]), await reads(world["user_ids"]["alice"])
+    assert alice - dave, "the world must give alice a record dave cannot read"
+    await processor.link_authenticator_to_source_user(world["connector_id"], erin_id, _email("alice", run), PEOPLE["alice"], Connectors.JIRA)
+    assert await reads(erin_id) == alice
+    await processor.link_authenticator_to_source_user(world["connector_id"], erin_id, _email("dave", run), PEOPLE["dave"], Connectors.JIRA)
+    assert await reads(erin_id) == dave
+
+
 async def test_the_configuring_user_reads_through_the_connectors_jira_account_only_while_it_is_linked(
     world: dict[str, Any],
 ) -> None:
