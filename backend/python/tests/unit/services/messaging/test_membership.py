@@ -92,7 +92,7 @@ class TestChecks:
     async def test_kafka_lists_live_members_without_the_tag(self, version: int) -> None:
         """QA-05cb-1. The input is aiokafka's own response type, not an object with ``members``."""
         admin = self._admin([
-            self._described(version, (0, "g1", ["indexing/sp3-backlog", "indexing", "indexing/sp3"])),
+            self._described(version, (0, "g1", ["indexing/sp4-backlog", "indexing", "indexing/sp4"])),
             self._described(version, (0, "g2", ["older-pod-1"])),
         ])
 
@@ -130,7 +130,7 @@ class TestChecks:
         old = m.REDIS_IDLE_LIVE_MS + 1
         redis = MagicMock()
         redis.xinfo_consumers = AsyncMock(return_value=[
-            {"name": "indexing/sp3-abc", "pending": 0, "idle": 0},
+            {"name": "indexing/sp4-abc", "pending": 0, "idle": 0},
             {"name": "old-busy", "pending": 3, "idle": old},
             {"name": "old-parked", "pending": 0, "idle": 1_000},
             {"name": "old-stopped", "pending": 0, "idle": old},
@@ -308,7 +308,7 @@ class TestExpectedGroups:
         """The broker's own check, with a live member without the tag in the stage group only."""
         if broker == "kafka":
             def described(groups: list[str]) -> list[Any]:
-                members = {"records_consumer_group": ["records/sp3-1"], "pipeline_classify_group": ["old-stage"]}
+                members = {"records_consumer_group": ["records/sp4-1"], "pipeline_classify_group": ["old-stage"]}
                 return [TestChecks._described(1, *[(0, g, members[g]) for g in groups])]
 
             admin = MagicMock()
@@ -316,7 +316,7 @@ class TestExpectedGroups:
             admin.describe_consumer_groups = AsyncMock(side_effect=described)
             return lambda groups: m.kafka_untagged(lambda: admin, list(groups))
         redis = MagicMock()
-        consumers = {"record-events": [{"name": "records/sp3-1", "pending": 0, "idle": 0}],
+        consumers = {"record-events": [{"name": "records/sp4-1", "pending": 0, "idle": 0}],
                      "pipeline-classify": [{"name": "old-stage", "pending": 1, "idle": 0}]}
         redis.xinfo_consumers = AsyncMock(side_effect=lambda stream, group: consumers[stream])
         return lambda groups: m.redis_untagged(redis, groups)

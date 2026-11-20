@@ -711,6 +711,7 @@ class EventTypes(Enum):
     DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
     # The delayed second purge of a deleted record's stored model outputs.
     PURGE_PAID_RESULTS = "purgePaidResults"
+    PURGE_PAID_RESULTS_BATCH = "purgePaidResultsBatch"
     BUILD_CODE_EDGES = "buildCodeEdges"
 
 

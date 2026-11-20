@@ -31,6 +31,7 @@ const INTERNAL = {
   indexingAttempts: 2,
   pageCount: 12,
   republishCount: 3,
+  pendingVirtualRecordId: 'vrid-replacement',
   p_color: 'red',
 }
 const stored = () => ({ ...KEPT, ...INTERNAL })

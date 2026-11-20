@@ -211,6 +211,37 @@ class TestFetchUrl:
         summary = self.summarizer.summarize_result("fetch_url", {}, r)
         assert "test.dev" in summary.result_summary
 
+    @pytest.mark.parametrize(
+        ("url", "secret"),
+        [
+            (
+                "https://files-bucket.s3.us-west-2.amazonaws.com/org-1/report.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                "&X-Amz-Credential=AKIAEXAMPLE%2F20261117&X-Amz-Expires=3600&X-Amz-Signature=0123abcd",
+                "0123abcd",
+            ),
+            ("https://storage.googleapis.com/b/f.pdf?X-Goog-Credential=svc&X-Goog-Signature=abcd1234", "abcd1234"),
+            ("https://acct.blob.core.windows.net/c/f.pdf?sv=2023-11-03&sp=r&sig=c2lnbmF0dXJl", "c2lnbmF0dXJl"),
+        ],
+    )
+    def test_args_hide_a_storage_signature(self, url: str, secret: str) -> None:
+        """Everyone who can open the chat sees this label; the signed link opens the file without a sign-in."""
+        result = self.summarizer.summarize_args("dynamic__fetch_url", {"url": url})
+        assert secret not in result
+        assert "AKIAEXAMPLE" not in result
+        assert result.startswith("Reading " + url.split("?")[0])
+
+    @pytest.mark.parametrize(
+        "url",
+        ["https://docs.python.org/3/search.html?q=classes&page=2", "https://shop.example/item?code=123&state=CA&key=blue"],
+    )
+    def test_args_keep_an_ordinary_query(self, url: str) -> None:
+        assert self.summarizer.summarize_args("dynamic__fetch_url", {"url": url}) == f"Reading {url}"
+
+    def test_result_own_file(self) -> None:
+        r = _result(content=json.dumps({"ok": False, "error_type": "own_file", "error": "report.pdf is a file in PipesHub"}))
+        summary = self.summarizer.summarize_result("dynamic__fetch_url", {}, r)
+        assert summary.result_summary == "Failed to read: That's a file in PipesHub, so it's read from the knowledge base instead"
+
 
 # ---------------------------------------------------------------------------
 # sql__execute_sql_query

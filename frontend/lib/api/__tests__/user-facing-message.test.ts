@@ -80,6 +80,15 @@ describe('getUserFacingErrorMessage', () => {
     );
   });
 
+  it("shows search's out-of-credit sentence from a 503, not a retry hint", () => {
+    // The Node gateway's error body. Retrying never refills a provider balance.
+    const sentence =
+      "Search can't run because the embedding model's provider account is out of credit. An admin can add credit with the provider, or choose another embedding model in Workspace > AI Models.";
+    const error = httpError(503, { error: { code: 'SERVICE_UNAVAILABLE', message: sentence } });
+    expect(processError(error).message).toBe(sentence);
+    expect(getUserFacingErrorMessage(error, FALLBACK)).toBe(sentence);
+  });
+
   it.each([
     ['a null message', { type: ErrorType.SERVER_ERROR, message: null }],
     ['a number message', { message: 42 }],

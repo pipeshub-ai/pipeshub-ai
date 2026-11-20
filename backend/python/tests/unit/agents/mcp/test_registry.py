@@ -106,6 +106,7 @@ class TestMCPRegistry:
         assert "fireflies" in type_ids
         assert "fathom" in type_ids
         assert "miro" in type_ids
+        assert "instantly" in type_ids
 
     def test_miro_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -126,6 +127,26 @@ class TestMCPRegistry:
         assert miro.default_scopes == []
         assert miro.icon == "/icons/connectors/miro.svg"
         assert miro.documentation_url == "https://developers.miro.com/docs/mcp-intro"
+
+    def test_instantly_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        instantly = registry.get_template("instantly")
+
+        assert instantly is not None
+        assert instantly.display_name == "Instantly"
+        assert instantly.transport == MCPTransport.STREAMABLE_HTTP
+        assert instantly.default_url == "https://mcp.instantly.ai/mcp"
+        assert instantly.default_auth_mode == MCPAuthMode.OAUTH
+        assert instantly.supported_auth_modes == [MCPAuthMode.OAUTH, MCPAuthMode.API_TOKEN]
+        assert instantly.supports_dcr is True
+        assert instantly.require_oauth_client is False
+        assert instantly.url_editable is False
+        assert instantly.authorization_url == "https://api.instantly.ai/oauth/authorize"
+        assert instantly.token_url == "https://api.instantly.ai/oauth/token"
+        assert instantly.default_scopes == []
+        assert instantly.icon == "/icons/connectors/instantly.svg"
+        assert instantly.documentation_url == "https://developer.instantly.ai/mcp/introduction"
 
     def test_lucid_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -370,7 +391,7 @@ class TestMCPRegistry:
         assert template.icon == icon
         assert template.documentation_url == docs
 
-    @pytest.mark.parametrize("type_id", ["intercom", "granola", "fireflies", "fathom"])
+    @pytest.mark.parametrize("type_id", ["intercom", "granola", "fireflies", "fathom", "instantly"])
     def test_new_catalog_entry_logo_file_exists(self, type_id: str) -> None:
         """The template's `icon` path must point at a file the frontend actually serves."""
         registry = MCPRegistry()

@@ -17761,7 +17761,9 @@ components:
           type: integer
           format: int64
           nullable: true
-          description: Epoch ms when the last sync run started; absent before the first run
+          description: >-
+            Epoch ms when the last sync run started; absent before the first run. A pass that links newly added users to the
+            connector moves it too, when it starts.
         lastSyncFinishedAtTimestamp:
           type: integer
           format: int64
@@ -17777,7 +17779,8 @@ components:
           nullable: true
           additionalProperties: true
           description: >-
-            What the last run did, in the connector's own terms. For a Web connector: pagesSaved (written this run),
+            What the last run did, in the connector's own terms. Any connector: stopReason start_not_recorded when the run
+            did not start because its start could not be saved. For a Web connector: pagesSaved (written this run),
             pagesStored (kept after it, which Maximum pages caps), pagesVisited, failed, failedByStatus, robotsSkipped, noindexSkipped, skippedMaxPages,
             deferred, pruned, sitemapUrls, stopReason (max_pages, time_limit, stalled, rate_limited or null) and resumed.
         actionItems:
@@ -42362,7 +42365,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: Connector service unavailable or connection refused
+          description: |
+            Connector service unavailable or connection refused, or (with `X-Record-Content-Open: 1`)
+            the record's connector could not be read because the database was unreachable. Safe to retry.
           content:
             application/json:
               schema:
@@ -42950,6 +42955,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/stream/record/{recordId}:
+    # Response headers on this operation (ETag, Content-Range, Retry-After, ...) are described in
+    # prose only. Declaring one under `headers:` changes the TypeScript SDK's return type to
+    # {headers, result} and breaks every caller; SDK Tests' surface check fails on it.
     get:
       tags:
         - Knowledge Base
@@ -43112,6 +43120,15 @@ paths:
           description: |
             The record has no file content the connector service can fetch, for example a
             folder: `{"error": "Could not retrieve this item right now. Please try again later."}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '503':
+          description: |
+            The record, its organization or its connector could not be read because the database
+            was unreachable. The record may well exist. The response carries `Retry-After` (seconds,
+            usually 5); retry after that long.
           content:
             application/json:
               schema:

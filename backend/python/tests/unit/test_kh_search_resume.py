@@ -3,6 +3,7 @@ still has a cursor. A provider that never says so (Neo4j, ArangoDB) gives the pa
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -173,6 +174,11 @@ def test_when_every_connector_is_not_ready_the_page_is_refused() -> None:
         asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4))
 
 
+def _svc(skip_rows: int = 1000) -> SimpleNamespace:
+    """The service as ``_walk_pages`` reads it: its backend's read size for the rows before a numbered page."""
+    return SimpleNamespace(graph_provider=SimpleNamespace(kh_skip_rows=skip_rows))
+
+
 def _page(rows: list[dict], scan_cursor: str | None) -> SearchPage:
     return SearchPage(rows=rows, total=0, counts_by_type={}, start_index=0, end_index=0, next_cursor=scan_cursor or "end", prev_cursor=None, scan_cursor=scan_cursor)
 
@@ -180,12 +186,40 @@ def _page(rows: list[dict], scan_cursor: str | None) -> SearchPage:
 def test_the_service_goes_on_from_empty_pages_within_its_budget_and_returns_the_empty_page_when_it_runs_out(monkeypatch) -> None:
     seen: list[str | None] = []
 
-    async def fetch(token: str | None) -> SearchPage:
+    async def fetch(token: str | None, rows: int) -> SearchPage:
         seen.append(token)
         return _page([row("r", "r")], None) if token == "c3" else _page([], f"c{len(seen) + 1}")
-    got = asyncio.run(KnowledgeHubService._walk_pages(None, fetch, None, 1))      # type: ignore[arg-type]
+    got = asyncio.run(KnowledgeHubService._walk_pages(_svc(), fetch, None, 1, 1))      # type: ignore[arg-type]
     assert [r["id"] for r in got.rows] == ["r"] and seen == [None, "c2", "c3"]
     seen.clear()
     monkeypatch.setattr(khs, "SCAN_BUDGET_S", 0.0)
-    got = asyncio.run(KnowledgeHubService._walk_pages(None, fetch, None, 1))      # type: ignore[arg-type]
+    got = asyncio.run(KnowledgeHubService._walk_pages(_svc(), fetch, None, 1, 1))      # type: ignore[arg-type]
     assert got.rows == [] and got.next_cursor and seen == [None]
+
+
+@pytest.mark.parametrize("short", [[20, 30], [1, 1, 1, 7, 40], [99]])
+def test_a_page_number_starts_after_exactly_the_rows_before_it_however_short_the_reads_that_skip_them(short) -> None:
+    """A read that stopped early at a bound returns fewer rows than asked, with a cursor to go on from: the skip goes on until every row before the page is read."""
+    listing = [row(f"r{i:03d}", f"r{i:03d}") for i in range(400)]
+    caps = iter(short)
+
+    async def fetch(token: str | None, rows: int) -> SearchPage:
+        start = int(token or 0)
+        got = listing[start:start + min(rows, next(caps, rows))]
+        end = start + len(got)
+        return SearchPage(rows=got, total=len(listing), counts_by_type={}, start_index=start + 1, end_index=end, next_cursor=str(end) if end < len(listing) else None,
+                          prev_cursor=None)
+    got = asyncio.run(KnowledgeHubService._walk_pages(_svc(), fetch, None, 3, 50))      # type: ignore[arg-type]
+    assert [r["id"] for r in got.rows] == [f"r{i:03d}" for i in range(100, 150)]
+
+
+def test_a_skip_whose_read_finds_no_row_in_its_budget_hands_back_where_it_got_to(monkeypatch) -> None:
+    """A read before the page that finds no row before the scan budget runs out stops the skip: the empty page and its cursor are the answer, never a page from too early."""
+    monkeypatch.setattr(khs, "SCAN_BUDGET_S", 0.0)
+    seen: list[str | None] = []
+
+    async def fetch(token: str | None, rows: int) -> SearchPage:
+        seen.append(token)
+        return _page([row("a", "a")], None) if token is None else _page([], "c9")
+    got = asyncio.run(KnowledgeHubService._walk_pages(_svc(), fetch, None, 5, 1))      # type: ignore[arg-type]
+    assert got.rows == [] and got.scan_cursor == "c9" and seen == [None, "end"]

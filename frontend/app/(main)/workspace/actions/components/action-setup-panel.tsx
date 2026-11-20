@@ -51,6 +51,7 @@ import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
 import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
 import { useFrontendPublicUrl } from '@/lib/hooks/use-frontend-public-url';
 import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const NEW_OAUTH_VALUE = '__new__';
 
@@ -905,8 +906,7 @@ export function ActionSetupPanel({
                   required={!storedSecrets.includes('clientSecret')}
                   error={fieldErrors.clientSecret}
                 >
-                  <TextField.Root
-                    type="password"
+                  <SecretTextField
                     placeholder={
                       storedSecrets.includes('clientSecret') ? t('workspace.actions.manage.secretPlaceholder') : undefined
                     }

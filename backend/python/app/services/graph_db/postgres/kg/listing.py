@@ -102,6 +102,12 @@ def after(field_: str, sort_dir: str, direction: str, boundary: dict[str, Any], 
         branches = [f"{key} = {bkp} AND {id_past}", f"{key} {past} {bkp}"]
     if fwd:
         branches.append(f"{lead} IS NULL")
+    if text:
+        # One read in the order of the name index. A reader's row-level security keeps a condition on substring() (not leakproof) out of the index conditions, so each
+        # branch read alone was a scan of the organisation's rows (the planner's pick for the equal-prefix ones) or of the connector's.
+        # shortcut: the read walks the connector's name index from its start to the boundary (rows before it, not a seek); upgrade to a stored, indexed prefix column
+        # if pages deep into a large connector by name must be fast.
+        return [f"({') OR ('.join(branches)})"]
     return branches
 
 
@@ -170,7 +176,10 @@ def scan_sql(where: str, last: str) -> str:
     return f"/* pipeshub:kg.listing_scan */ SELECT r.sk, r.id, r.kind, r.folder FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE}{where} AND r.sk > {last}::bigint ORDER BY r.sk LIMIT $3"
 
 
-CLASSES = "/* pipeshub:kg.listing_classes */ SELECT id, clauses FROM kg.scope_classes WHERE org_id = $1 AND app_sk = $2 LIMIT $3"
+# The connector's classes as one JSON object (id -> clauses) beside how many there are: a listing reads tens of thousands of them per page, and one document decodes in a
+# fraction of the time a row each takes.
+CLASSES = """/* pipeshub:kg.listing_classes */ SELECT count(*) AS n, coalesce(json_object_agg(c.id, c.clauses), '{}')::text AS doc
+    FROM (SELECT id, clauses FROM kg.scope_classes WHERE org_id = $1 AND app_sk = $2 LIMIT $3) c"""
 # What kg itself decides for a row (as ``read.decide``): stamped (a path, a class), not hidden by a pending restamp and not a record of no connector. Every other row is the walk's.
 DECIDED = "r.r13 IS FALSE AND r.path IS NOT NULL AND r.class_id IS NOT NULL AND r.fence_job IS NULL"
 
