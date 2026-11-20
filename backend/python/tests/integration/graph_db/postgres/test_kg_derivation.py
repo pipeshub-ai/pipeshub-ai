@@ -211,6 +211,33 @@ async def test_has_children_reads_one_child_per_parent_not_all_of_them(pg_db) ->
         assert read <= 2, f"{state}: {read} edge rows read to learn that 2 parents have a child"
 
 
+async def test_the_children_of_a_page_of_records_are_read_by_seeks_not_by_the_orgs_relations(pg_db) -> None:
+    """A restamp page asks for the children of its 200 records: the read costs their own edges, not the org's 6,000 relations under three large folders, fresh and analysed."""
+    from .test_kg_read import _admin
+    p, org = prov(pg_db), new_org()
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("pa", "pb", "pc", "c1", "c2")], "records")
+        await p.batch_create_edges([edge("pa", "records", "c1", "records", relationshipType="PARENT_CHILD"),
+                                    edge("pb", "records", "c2", "records", relationshipType="ATTACHMENT")], "nodeRelations")
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc) SELECT $1, 'nodeRelations', 'records', 'big' || (g % 3), 'records', 'kid-' || g,
+          '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(1, 6000) g""", org)
+    page = {("records", f"leaf{i}") for i in range(200)} | {("records", "pa"), ("records", "pb"), ("records", "pc")}
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE graph.edges")
+
+        async def go(tx) -> tuple[set, int]:
+            q = "SELECT coalesce(sum(seq_tup_read + coalesce(idx_tup_fetch, 0)), 0) FROM pg_stat_xact_user_tables WHERE schemaname = 'graph' AND relname LIKE 'edges%'"
+            before = await tx.fetchval(q)
+            kids = await dependents.children_of(tx, org, page)
+            return kids, await tx.fetchval(q) - before
+        with ctx(org):
+            kids, read = await p._q(go, None)
+        assert kids == {("records", "c1"), ("records", "c2")}
+        assert read <= 50, f"{state}: {read} edge rows read for the children of 203 records"
+
+
 async def test_the_dependents_of_a_record_do_not_include_those_of_a_record_group_of_the_same_id(pg_db) -> None:
     """An edge end is matched on its collection and id: the parents, children and members of ``recordGroups/x`` are not those of ``records/x``."""
     p, org = prov(pg_db), new_org()

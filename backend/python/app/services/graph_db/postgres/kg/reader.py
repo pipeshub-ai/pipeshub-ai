@@ -114,12 +114,13 @@ async def records_after(tx: Tx, org: str, app_id: str, after: str, limit: int) -
 
 
 # One probe per parent that stops at its first child that exists: a batch costs the parents it touches, not their children, which for an app or a large folder is the whole
-# connector. LIMIT 1 keeps the lateral a loop over the parents. The parent is spelt as a range of one value in its order, as hierarchy.py spells a key: only the primary key gives
-# that order without a sort, so a leaf whose statistics do not know the org yet still seeks the parent instead of reading the org's relations.
+# connector. LIMIT 1 keeps the lateral a loop over the parents. The parent is matched in byte order (equal to the column's own equality, which is deterministic) so that the seek is
+# the relations' index by parent (edges_by_neighbour_out) on all its keys: on the default collation, a leaf whose statistics do not know the org yet picked that index on the org
+# alone and read every relation of the org for each parent.
 HAS_CHILDREN = """/* pipeshub:kg.read_has_children */ SELECT p.c AS from_coll, p.i AS from_id FROM unnest($2::text[], $3::text[]) AS p(c, i)
-    CROSS JOIN LATERAL (SELECT 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id >= p.i AND e.from_id <= p.i AND e.from_coll = p.c
+    CROSS JOIN LATERAL (SELECT 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = p.c AND e.from_id COLLATE "C" = p.i COLLATE "C"
       AND e.doc->>'relationshipType' = ANY($4::text[]) AND e.to_coll = ANY($5::text[])
-      AND EXISTS (SELECT 1 FROM graph.nodes c WHERE c.org_id = e.org_id AND c.coll = e.to_coll AND c.id = e.to_id) ORDER BY e.from_id LIMIT 1) x"""
+      AND EXISTS (SELECT 1 FROM graph.nodes c WHERE c.org_id = e.org_id AND c.coll = e.to_coll AND c.id = e.to_id) LIMIT 1) x"""
 
 
 async def load_has_children(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
