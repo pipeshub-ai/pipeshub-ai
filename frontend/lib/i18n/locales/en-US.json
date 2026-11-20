@@ -3726,7 +3726,6 @@
         "confirm": "Save and remove sign-ins"
       },
       "cta": {
-        "manage": "Manage",
         "delete": "Delete",
         "reauthenticate": "Reauthenticate",
         "reconnect": "Reconnect",
@@ -3748,6 +3747,18 @@
         "needsAuth": "Needs auth",
         "disabled": "Disabled"
       },
+      "filters": {
+        "label": "Filter by status",
+        "needsAction": "Needs action",
+        "unavailable": "Unavailable"
+      },
+      "catalog": {
+        "title": "Add more servers",
+        "description": "Ready-made servers. Add one, then sign in to it.",
+        "personalDescription": "Servers you add here are only visible to you.",
+        "added": "Added",
+        "addAnother": "Add another"
+      },
       "team": {
         "title": "MCP servers",
         "subtitle": "Connect Model Context Protocol servers to extend what your team's agents can do.",
@@ -3759,36 +3770,16 @@
         "subtitle": "Connect to the MCP servers your admin has made available, or add your own.",
         "emptyTitle": "No MCP servers available",
         "emptyDescription": "Add one of your own, or ask your admin to add one for everyone.",
-        "yourServersDescription": "Servers you added. Only you can see and use them, and they can't be added to agents shared with your organization.",
         "tabs": {
           "all": "All",
-          "connected": "Connected",
-          "notConnected": "Not connected"
+          "connected": "Connected"
         },
         "yours": "Yours",
         "noneInTab": "No MCP servers here."
       },
       "details": {
         "breadcrumbLabel": "MCP servers",
-        "refreshAll": "Refresh all",
-        "addInstance": "Add another instance",
-        "configuration": "CONFIGURATION",
-        "transport": "TRANSPORT",
-        "tools": "TOOLS",
-        "discoverTools": "Discover tools",
-        "discoveredTools_one": "{{count}} tool available",
-        "discoveredTools_other": "{{count}} tools available",
-        "discovering": "Discovering tools…",
-        "discoveryError": "Tool discovery failed",
-        "discoveryNeedsAuth": "Authenticate to discover tools",
-        "retry": "Retry",
-        "noInstances": "No instances configured",
-        "authBannerTitle": "Authentication required",
-        "authBannerDescription": "Authenticate this MCP server so your team's agents can use it.",
-        "authBannerAuthenticatedTitle": "Connected",
-        "reconnectBannerDescription": "The sign-in for this server expired or was rejected. Reconnect to keep using it.",
-        "authBannerAuthenticatedDescription": "You can reauthenticate or disconnect this MCP server.",
-        "createdBy": "Created by"
+        "tools": "TOOLS"
       },
       "deleteDialog": {
         "title": "Delete MCP server?",
@@ -3864,11 +3855,6 @@
       "configPanel": {
         "editTitle": "Edit MCP server",
         "createTitle": "New MCP server",
-        "tabs": {
-          "configuration": "Configuration",
-          "tools": "Tools & approvals",
-          "toolList": "Tools"
-        },
         "synced": "Synced {{time}}",
         "refreshTools": "Refresh the tool list",
         "signInForTools": "Sign in to see this server's tools.",
@@ -3943,7 +3929,6 @@
         "noState": "No state parameter was returned.",
         "backendRejected": "The server rejected the authorization request."
       },
-      "deleteDisabledTooltip": "This server cannot be deleted",
       "stdioPolicy": {
         "disabledTitle": "Disabled on this deployment",
         "disabledDescription": "Custom STDIO servers run a command on the PipesHub server, so they stay off unless the operator sets {{flag}}=true in the deployment environment (Docker Compose .env, or config.mcpAllowCustomStdio in Helm). Agents can't use this server's tools until then. You can delete it or switch it to a remote (HTTP) server.",
@@ -3957,8 +3942,6 @@
         "customDescription": "Any remote MCP server, by URL."
       },
       "toolRules": {
-        "open": "Tool approvals",
-        "title": "Tool approvals: {{name}}",
         "description": {
           "personal": "Choose what happens when an assistant or agent wants to use one of these tools in your chats."
         },

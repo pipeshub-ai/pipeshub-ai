@@ -3565,7 +3565,6 @@
         "confirm": "Speichern und Anmeldungen entfernen"
       },
       "cta": {
-        "manage": "Verwalten",
         "delete": "Löschen",
         "reauthenticate": "Erneut authentifizieren",
         "reconnect": "Neu verbinden",
@@ -3587,6 +3586,18 @@
         "needsAuth": "Authentifizierung erforderlich",
         "disabled": "Deaktiviert"
       },
+      "filters": {
+        "label": "Nach Status filtern",
+        "needsAction": "Aktion nötig",
+        "unavailable": "Nicht verfügbar"
+      },
+      "catalog": {
+        "title": "Weitere Server hinzufügen",
+        "description": "Vorgefertigte Server. Fügen Sie einen hinzu und melden Sie sich dann an.",
+        "personalDescription": "Server, die Sie hier hinzufügen, sehen nur Sie.",
+        "added": "Hinzugefügt",
+        "addAnother": "Weiteren hinzufügen"
+      },
       "team": {
         "title": "MCP-Server",
         "subtitle": "Verbinden Sie Model-Context-Protocol-Server, um die Fähigkeiten der Agenten Ihres Teams zu erweitern.",
@@ -3598,36 +3609,16 @@
         "subtitle": "Verbinden Sie sich mit den MCP-Servern, die Ihr Administrator bereitgestellt hat, oder fügen Sie eigene hinzu.",
         "emptyTitle": "Keine MCP-Server verfügbar",
         "emptyDescription": "Fügen Sie einen eigenen hinzu oder bitten Sie Ihren Administrator, einen für alle hinzuzufügen.",
-        "yourServersDescription": "Von Ihnen hinzugefügte Server. Nur Sie können sie sehen und verwenden, und sie können nicht zu Agenten hinzugefügt werden, die mit Ihrer Organisation geteilt sind.",
         "tabs": {
           "all": "Alle",
-          "connected": "Verbunden",
-          "notConnected": "Nicht verbunden"
+          "connected": "Verbunden"
         },
         "yours": "Ihrer",
         "noneInTab": "Hier gibt es keine MCP-Server."
       },
       "details": {
         "breadcrumbLabel": "MCP-Server",
-        "refreshAll": "Alle aktualisieren",
-        "addInstance": "Weitere Instanz hinzufügen",
-        "configuration": "KONFIGURATION",
-        "transport": "TRANSPORT",
-        "tools": "TOOLS",
-        "discoverTools": "Tools erkennen",
-        "discoveredTools_one": "{{count}} Tool verfügbar",
-        "discoveredTools_other": "{{count}} Tools verfügbar",
-        "discovering": "Tools werden erkannt…",
-        "discoveryError": "Tool-Erkennung fehlgeschlagen",
-        "discoveryNeedsAuth": "Authentifizieren, um Tools zu erkennen",
-        "retry": "Erneut versuchen",
-        "noInstances": "Keine Instanzen konfiguriert",
-        "authBannerTitle": "Authentifizierung erforderlich",
-        "authBannerDescription": "Authentifizieren Sie diesen MCP-Server, damit die Agenten Ihres Teams ihn nutzen können.",
-        "authBannerAuthenticatedTitle": "Verbunden",
-        "reconnectBannerDescription": "Die Anmeldung für diesen Server ist abgelaufen oder wurde abgelehnt. Verbinden Sie ihn neu, um ihn weiter zu nutzen.",
-        "authBannerAuthenticatedDescription": "Sie können diesen MCP-Server erneut authentifizieren oder trennen.",
-        "createdBy": "Erstellt von"
+        "tools": "TOOLS"
       },
       "deleteDialog": {
         "title": "MCP-Server löschen?",
@@ -3703,11 +3694,6 @@
       "configPanel": {
         "editTitle": "MCP-Server bearbeiten",
         "createTitle": "Neuer MCP-Server",
-        "tabs": {
-          "configuration": "Konfiguration",
-          "tools": "Tools & Freigaben",
-          "toolList": "Tools"
-        },
         "synced": "Synchronisiert {{time}}",
         "refreshTools": "Tool-Liste aktualisieren",
         "signInForTools": "Melden Sie sich an, um die Tools dieses Servers zu sehen.",
@@ -3782,7 +3768,6 @@
         "noState": "Es wurde kein State-Parameter zurückgegeben.",
         "backendRejected": "Der Server hat die Autorisierungsanfrage abgelehnt."
       },
-      "deleteDisabledTooltip": "Dieser Server kann nicht gelöscht werden",
       "stdioPolicy": {
         "disabledTitle": "In dieser Installation deaktiviert",
         "disabledDescription": "Benutzerdefinierte STDIO-Server führen einen Befehl auf dem PipesHub-Server aus und bleiben deshalb deaktiviert, bis der Betreiber {{flag}}=true in der Umgebung der Installation setzt (Docker-Compose-.env oder config.mcpAllowCustomStdio in Helm). Bis dahin können Agenten die Tools dieses Servers nicht nutzen. Sie können ihn löschen oder auf einen Remote-Server (HTTP) umstellen.",
@@ -3796,8 +3781,6 @@
         "customDescription": "Ein beliebiger Remote-MCP-Server über seine URL."
       },
       "toolRules": {
-        "open": "Tool-Freigaben",
-        "title": "Tool-Freigaben: {{name}}",
         "description": {
           "personal": "Legen Sie fest, was passiert, wenn ein Assistent oder Agent in Ihren Chats eines dieser Tools verwenden möchte."
         },

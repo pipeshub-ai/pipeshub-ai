@@ -3706,7 +3706,6 @@
         "confirm": "儲存並移除登入"
       },
       "cta": {
-        "manage": "管理",
         "delete": "刪除",
         "reauthenticate": "重新驗證",
         "reconnect": "重新連線",
@@ -3728,6 +3727,18 @@
         "needsAuth": "需要驗證",
         "disabled": "已停用"
       },
+      "filters": {
+        "label": "依狀態篩選",
+        "needsAction": "需要處理",
+        "unavailable": "無法使用"
+      },
+      "catalog": {
+        "title": "新增更多伺服器",
+        "description": "現成的伺服器。新增後登入即可使用。",
+        "personalDescription": "你在這裡新增的伺服器只有你看得到。",
+        "added": "已新增",
+        "addAnother": "再新增一個"
+      },
       "team": {
         "title": "MCP 伺服器",
         "subtitle": "連接 Model Context Protocol 伺服器，擴充團隊代理程式的能力。",
@@ -3739,36 +3750,16 @@
         "subtitle": "連接管理員提供的 MCP 伺服器，或新增您自己的伺服器。",
         "emptyTitle": "沒有可用的 MCP 伺服器",
         "emptyDescription": "新增您自己的伺服器，或請管理員為所有人新增一個。",
-        "yourServersDescription": "您新增的伺服器。只有您可以檢視和使用，且無法新增到與組織共用的代理程式中。",
         "tabs": {
           "all": "全部",
-          "connected": "已連線",
-          "notConnected": "未連線"
+          "connected": "已連線"
         },
         "yours": "我的",
         "noneInTab": "這裡沒有 MCP 伺服器。"
       },
       "details": {
         "breadcrumbLabel": "MCP 伺服器",
-        "refreshAll": "全部重新整理",
-        "addInstance": "新增另一個執行個體",
-        "configuration": "設定",
-        "transport": "傳輸方式",
-        "tools": "工具",
-        "discoverTools": "探索工具",
-        "discoveredTools_one": "{{count}} 個可用工具",
-        "discoveredTools_other": "{{count}} 個可用工具",
-        "discovering": "正在探索工具…",
-        "discoveryError": "工具探索失敗",
-        "discoveryNeedsAuth": "請驗證以探索工具",
-        "retry": "重試",
-        "noInstances": "尚未設定任何執行個體",
-        "authBannerTitle": "需要驗證",
-        "authBannerDescription": "請驗證此 MCP 伺服器，讓您團隊的代理程式可以使用它。",
-        "authBannerAuthenticatedTitle": "已連線",
-        "reconnectBannerDescription": "此伺服器的登入已過期或遭拒。請重新連線以繼續使用。",
-        "authBannerAuthenticatedDescription": "您可以重新驗證或中斷此 MCP 伺服器的連線。",
-        "createdBy": "建立者"
+        "tools": "工具"
       },
       "deleteDialog": {
         "title": "要刪除 MCP 伺服器嗎？",
@@ -3844,11 +3835,6 @@
       "configPanel": {
         "editTitle": "編輯 MCP 伺服器",
         "createTitle": "新增 MCP 伺服器",
-        "tabs": {
-          "configuration": "設定",
-          "tools": "工具與核准",
-          "toolList": "工具"
-        },
         "synced": "{{time}}同步",
         "refreshTools": "重新整理工具清單",
         "signInForTools": "登入以查看此伺服器的工具。",
@@ -3923,7 +3909,6 @@
         "noState": "未傳回 state 參數。",
         "backendRejected": "伺服器拒絕了此授權要求。"
       },
-      "deleteDisabledTooltip": "此伺服器無法刪除",
       "stdioPolicy": {
         "disabledTitle": "此部署已停用",
         "disabledDescription": "自訂 STDIO 伺服器會在 PipesHub 伺服器上執行指令，因此在維運人員於部署環境中設定 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前會保持關閉。在此之前，代理程式無法使用此伺服器的工具。你可以刪除它，或改為遠端（HTTP）伺服器。",
@@ -3937,8 +3922,6 @@
         "customDescription": "透過 URL 連接任何遠端 MCP 伺服器。"
       },
       "toolRules": {
-        "open": "工具核准",
-        "title": "工具核准：{{name}}",
         "description": {
           "personal": "選擇當助理或代理程式想在您的聊天中使用這些工具時會發生什麼。"
         },

@@ -174,11 +174,6 @@ function renderPanel(props: {
       instances={editing ? [editing] : []}
       onOpenChange={noop}
       onSaved={noop}
-      onRequestDelete={noop}
-      busyInstanceId={null}
-      onAuthenticate={noop}
-      onReauthenticate={noop}
-      onDisconnect={noop}
     />,
   );
 }

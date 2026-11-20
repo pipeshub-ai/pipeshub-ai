@@ -3832,7 +3832,6 @@
         "confirm": "Uložit a odebrat přihlášení"
       },
       "cta": {
-        "manage": "Spravovat",
         "delete": "Smazat",
         "reauthenticate": "Znovu ověřit",
         "reconnect": "Znovu připojit",
@@ -3854,6 +3853,18 @@
         "needsAuth": "Vyžaduje ověření",
         "disabled": "Zakázáno"
       },
+      "filters": {
+        "label": "Filtrovat podle stavu",
+        "needsAction": "Vyžaduje akci",
+        "unavailable": "Nedostupné"
+      },
+      "catalog": {
+        "title": "Přidat další servery",
+        "description": "Připravené servery. Přidejte jeden a pak se k němu přihlaste.",
+        "personalDescription": "Servery, které sem přidáte, uvidíte jen vy.",
+        "added": "Přidáno",
+        "addAnother": "Přidat další"
+      },
       "team": {
         "title": "MCP servery",
         "subtitle": "Připojte servery Model Context Protocol a rozšiřte možnosti agentů vašeho týmu.",
@@ -3865,38 +3876,16 @@
         "subtitle": "Připojte se k MCP serverům, které zpřístupnil váš správce, nebo si přidejte vlastní.",
         "emptyTitle": "Žádné dostupné MCP servery",
         "emptyDescription": "Přidejte si vlastní server, nebo požádejte správce, aby přidal server pro všechny.",
-        "yourServersDescription": "Servery, které jste přidali. Vidíte a používáte je pouze vy a nelze je přidat do agentů sdílených s vaší organizací.",
         "tabs": {
           "all": "Vše",
-          "connected": "Připojené",
-          "notConnected": "Nepřipojené"
+          "connected": "Připojené"
         },
         "yours": "Vaše",
         "noneInTab": "Žádné MCP servery."
       },
       "details": {
         "breadcrumbLabel": "MCP servery",
-        "refreshAll": "Obnovit vše",
-        "addInstance": "Přidat další instanci",
-        "configuration": "KONFIGURACE",
-        "transport": "TRANSPORT",
-        "tools": "NÁSTROJE",
-        "discoverTools": "Zjistit nástroje",
-        "discoveredTools_one": "{{count}} dostupný nástroj",
-        "discoveredTools_few": "{{count}} dostupné nástroje",
-        "discoveredTools_many": "{{count}} dostupného nástroje",
-        "discoveredTools_other": "{{count}} dostupných nástrojů",
-        "discovering": "Zjišťování nástrojů…",
-        "discoveryError": "Zjišťování nástrojů se nezdařilo",
-        "discoveryNeedsAuth": "Pro zjištění nástrojů se ověřte",
-        "retry": "Zkusit znovu",
-        "noInstances": "Nejsou nakonfigurovány žádné instance",
-        "authBannerTitle": "Vyžadováno ověření",
-        "authBannerDescription": "Ověřte tento MCP server, aby jej mohli agenti vašeho týmu používat.",
-        "authBannerAuthenticatedTitle": "Připojeno",
-        "reconnectBannerDescription": "Přihlášení k tomuto serveru vypršelo nebo bylo odmítnuto. Znovu se připojte, abyste jej mohli dál používat.",
-        "authBannerAuthenticatedDescription": "Tento MCP server můžete znovu ověřit nebo odpojit.",
-        "createdBy": "Vytvořil(a)"
+        "tools": "NÁSTROJE"
       },
       "deleteDialog": {
         "title": "Smazat MCP server?",
@@ -3972,11 +3961,6 @@
       "configPanel": {
         "editTitle": "Upravit MCP server",
         "createTitle": "Nový MCP server",
-        "tabs": {
-          "configuration": "Konfigurace",
-          "tools": "Nástroje a schvalování",
-          "toolList": "Nástroje"
-        },
         "synced": "Synchronizováno {{time}}",
         "refreshTools": "Obnovit seznam nástrojů",
         "signInForTools": "Přihlaste se, abyste viděli nástroje tohoto serveru.",
@@ -4055,7 +4039,6 @@
         "noState": "Nebyl vrácen žádný parametr state.",
         "backendRejected": "Server autorizační požadavek odmítl."
       },
-      "deleteDisabledTooltip": "Tento server nelze smazat",
       "stdioPolicy": {
         "disabledTitle": "V tomto nasazení zakázáno",
         "disabledDescription": "Vlastní STDIO servery spouštějí příkaz na serveru PipesHub, proto zůstávají vypnuté, dokud operátor nenastaví {{flag}}=true v prostředí nasazení (soubor .env pro Docker Compose nebo config.mcpAllowCustomStdio v Helmu). Do té doby agenti nemohou nástroje tohoto serveru používat. Můžete jej smazat nebo přepnout na vzdálený (HTTP) server.",
@@ -4069,8 +4052,6 @@
         "customDescription": "Libovolný vzdálený MCP server podle URL."
       },
       "toolRules": {
-        "open": "Schvalování nástrojů",
-        "title": "Schvalování nástrojů: {{name}}",
         "description": {
           "personal": "Zvolte, co se stane, když asistent nebo agent chce ve vašich chatech použít některý z těchto nástrojů."
         },

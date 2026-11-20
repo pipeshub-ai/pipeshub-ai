@@ -3600,7 +3600,6 @@
         "confirm": "Guardar y eliminar inicios de sesión"
       },
       "cta": {
-        "manage": "Gestionar",
         "delete": "Eliminar",
         "reauthenticate": "Reautenticar",
         "reconnect": "Volver a conectar",
@@ -3622,6 +3621,18 @@
         "needsAuth": "Requiere autenticación",
         "disabled": "Deshabilitado"
       },
+      "filters": {
+        "label": "Filtrar por estado",
+        "needsAction": "Requiere acción",
+        "unavailable": "No disponible"
+      },
+      "catalog": {
+        "title": "Añadir más servidores",
+        "description": "Servidores listos para usar. Añade uno y luego inicia sesión en él.",
+        "personalDescription": "Solo tú verás los servidores que añadas aquí.",
+        "added": "Añadido",
+        "addAnother": "Añadir otro"
+      },
       "team": {
         "title": "Servidores MCP",
         "subtitle": "Conecta servidores Model Context Protocol para ampliar lo que pueden hacer los agentes de tu equipo.",
@@ -3633,37 +3644,16 @@
         "subtitle": "Conéctate a los servidores MCP que tu administrador ha puesto a disposición o añade los tuyos.",
         "emptyTitle": "No hay servidores MCP disponibles",
         "emptyDescription": "Añade uno propio o pide a tu administrador que añada uno para todos.",
-        "yourServersDescription": "Servidores que has añadido. Solo tú puedes verlos y usarlos, y no se pueden añadir a agentes compartidos con tu organización.",
         "tabs": {
           "all": "Todos",
-          "connected": "Conectados",
-          "notConnected": "No conectados"
+          "connected": "Conectados"
         },
         "yours": "Tuyo",
         "noneInTab": "No hay servidores MCP aquí."
       },
       "details": {
         "breadcrumbLabel": "Servidores MCP",
-        "refreshAll": "Actualizar todo",
-        "addInstance": "Añadir otra instancia",
-        "configuration": "CONFIGURACIÓN",
-        "transport": "TRANSPORTE",
-        "tools": "HERRAMIENTAS",
-        "discoverTools": "Descubrir herramientas",
-        "discoveredTools_one": "{{count}} herramienta disponible",
-        "discoveredTools_other": "{{count}} herramientas disponibles",
-        "discovering": "Descubriendo herramientas…",
-        "discoveryError": "Error al descubrir herramientas",
-        "discoveryNeedsAuth": "Autentícate para descubrir herramientas",
-        "retry": "Reintentar",
-        "noInstances": "No hay instancias configuradas",
-        "authBannerTitle": "Se requiere autenticación",
-        "authBannerDescription": "Autentica este servidor MCP para que los agentes de tu equipo puedan usarlo.",
-        "authBannerAuthenticatedTitle": "Conectado",
-        "reconnectBannerDescription": "El inicio de sesión de este servidor caducó o fue rechazado. Vuelve a conectarlo para seguir usándolo.",
-        "authBannerAuthenticatedDescription": "Puedes reautenticar o desconectar este servidor MCP.",
-        "createdBy": "Creado por",
-        "discoveredTools_many": "{{count}} de herramientas disponibles"
+        "tools": "HERRAMIENTAS"
       },
       "deleteDialog": {
         "title": "¿Eliminar el servidor MCP?",
@@ -3739,11 +3729,6 @@
       "configPanel": {
         "editTitle": "Editar servidor MCP",
         "createTitle": "Nuevo servidor MCP",
-        "tabs": {
-          "configuration": "Configuración",
-          "tools": "Herramientas y aprobaciones",
-          "toolList": "Herramientas"
-        },
         "synced": "Sincronizado {{time}}",
         "refreshTools": "Actualizar la lista de herramientas",
         "signInForTools": "Inicia sesión para ver las herramientas de este servidor.",
@@ -3820,7 +3805,6 @@
         "noState": "No se devolvió ningún parámetro de estado.",
         "backendRejected": "El servidor rechazó la solicitud de autorización."
       },
-      "deleteDisabledTooltip": "Este servidor no se puede eliminar",
       "toolsCount_many": "{{count}} de herramientas",
       "stdioPolicy": {
         "disabledTitle": "Deshabilitado en esta instalación",
@@ -3835,8 +3819,6 @@
         "customDescription": "Cualquier servidor MCP remoto, mediante su URL."
       },
       "toolRules": {
-        "open": "Aprobaciones de herramientas",
-        "title": "Aprobaciones de herramientas: {{name}}",
         "description": {
           "personal": "Elige qué ocurre cuando un asistente o agente quiere usar una de estas herramientas en tus chats."
         },

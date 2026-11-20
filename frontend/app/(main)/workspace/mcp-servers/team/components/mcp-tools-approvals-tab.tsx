@@ -14,6 +14,9 @@ import { usesSharedCredential, type McpConnectionState } from '../../connection-
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { MCP_TRANSPORT_LABELS } from '../../types';
 
+// The sign-in card above already says what a refused sign-in needs.
+const SIGN_IN_STATES = new Set<McpConnectionState>(['needs_auth_mode', 'needs_reconnect', 'shared_credential_missing']);
+
 /** The tool list the tab shows: read from the cache when the tab opens, live on Refresh. */
 export type McpToolsLoad =
   | { status: 'idle' }
@@ -104,7 +107,7 @@ export function McpToolsApprovalsTab({
             </Text>
           ) : listing ? (
             <FindingTools />
-          ) : load.status === 'error' && !(state === 'needs_auth_mode' && load.code === 'reauth') ? (
+          ) : load.status === 'error' && !(load.code === 'reauth' && SIGN_IN_STATES.has(state)) ? (
             <Flex
               direction="column"
               gap="2"

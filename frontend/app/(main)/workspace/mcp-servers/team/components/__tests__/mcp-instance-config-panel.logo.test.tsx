@@ -117,11 +117,6 @@ function panel(state: PanelProps['state'], onSaved = vi.fn()) {
     customStdioAllowed: false,
     onOpenChange: vi.fn(),
     onSaved,
-    onRequestDelete: vi.fn(),
-    busyInstanceId: null,
-    onAuthenticate: vi.fn(),
-    onReauthenticate: vi.fn(),
-    onDisconnect: vi.fn(),
   } as PanelProps;
   return (
     <Theme>
