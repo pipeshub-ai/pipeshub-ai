@@ -8,7 +8,9 @@ import sinon from 'sinon'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { settle } from './chat-test-harness'
-import { RUN, delta, finalAnswer, flows, startStream } from './streaming-flows'
+import { RUN, appConfig, delta, finalAnswer, flows, startStream } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const frame = (type: string, fields: Record<string, unknown>): string =>
   `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`
@@ -38,6 +40,8 @@ const unreadableFinish = 'event: RUN_FINISHED\ndata: \n\n'
 const rootAnswer = frame('RUN_FINISHED', finalAnswer('Done.'))
 
 describe('chat stream parser behaviour baseline', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
 
   for (const flow of flows) {
