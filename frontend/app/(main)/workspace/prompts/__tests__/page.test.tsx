@@ -138,6 +138,28 @@ describe('Using the Agent prompt in the MCP server', () => {
     expect(saveSystemPrompts).not.toHaveBeenCalled();
   });
 
+  it('clears the load error once a later load succeeds', async () => {
+    getSystemPrompts.mockResolvedValueOnce(null).mockResolvedValue({
+      customSystemPrompt: '',
+      customSystemPromptWebSearch: '',
+      customSystemPromptAgent: 'Be brief.',
+      useInMcp: false,
+      mcpPromptMaxChars: 10,
+    });
+    const { rerender } = render(<PromptsPage />);
+    await waitFor(() => expect(screen.getByTestId('prompts-load-error')).toBeTruthy());
+
+    // The page loads again when the profile changes, as after a role update.
+    useUserStore.setState({ isInitialized: false });
+    rerender(<PromptsPage />);
+    signInAs(true);
+    rerender(<PromptsPage />);
+
+    await waitFor(() => expect(screen.queryByTestId('prompts-load-error')).toBeNull());
+    fireEvent.change(agentEditor(), { target: { value: 'Be briefer.' } });
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('will not save a prompt longer than the MCP server takes while it is on', async () => {
     stored('', false);
     render(<PromptsPage />);

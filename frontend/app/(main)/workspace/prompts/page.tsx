@@ -277,6 +277,7 @@ export default function PromptsPage() {
           setLoadFailed(true);
           return;
         }
+        setLoadFailed(false);
         setCustomPrompt(prompts.customSystemPrompt);
         setCustomPromptWebSearch(prompts.customSystemPromptWebSearch);
         setCustomPromptAgent(prompts.customSystemPromptAgent);
