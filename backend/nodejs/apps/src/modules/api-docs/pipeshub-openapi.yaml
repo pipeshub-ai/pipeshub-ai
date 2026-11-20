@@ -40790,6 +40790,78 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/purge-batch:
+    post:
+      tags:
+        - Internal Storage
+      summary: Remove the paid-result folders of up to 100 records in one call (service-to-service)
+      description: |
+        The same removal as `DELETE /document/internal/paid-results/{recordId}` without `before`, for many
+        records at once, so that a re-purge of a large delete costs one request per 100 records instead of
+        one per record. The organization is the scoped token's; a body that names one (or any other field)
+        is refused. Each record gets its own result, so one folder that cannot be removed never hides the
+        others: the caller repeats only the ones that failed. A record with nothing stored is a success,
+        and so is a repeat.
+      operationId: internalPaidResultsPurgeBatch
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - recordIds
+              properties:
+                recordIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  uniqueItems: true
+                  items:
+                    type: string
+                    pattern: '^[A-Za-z0-9_-]{1,128}$'
+                    not:
+                      const: org
+      responses:
+        '200':
+          description: One result per requested record, in request order. The call is 200 even when some records failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - results
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - recordId
+                        - purged
+                      properties:
+                        recordId:
+                          type: string
+                        purged:
+                          type: boolean
+                        error:
+                          type: string
+                          description: Present when `purged` is false.
+        '400':
+          description: A record id is not valid, one is repeated, there are none or more than 100, or the body has a field other than `recordIds` (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /document/internal/paid-results/{recordId}/purge-cutoff:
     post:
       tags:

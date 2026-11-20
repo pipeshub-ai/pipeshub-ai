@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from time import time as wall_clock
@@ -121,6 +121,7 @@ class ResultStore:
     async def list_files(self, org_id: str, record_id: str, prefix: str = "") -> list[ListedFile]: ...
     async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None: ...
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None: ...
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]: ...
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None: ...
     async def purge_org(self, org_id: str) -> None: ...
 
@@ -200,6 +201,9 @@ class _FencedStore:
 
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         await self._inner.purge_record(org_id, record_id, before_ms=before_ms)
+
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        return await self._inner.purge_records(org_id, record_ids)
 
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
         return await self._inner.purge_cutoff(org_id, record_id)
@@ -307,6 +311,15 @@ class PaidResultCache:
         if not valid_record_id(record_id):
             return  # no result was ever stored under such an id (see ``valid_record_id``)
         await self._store.purge_record(org_id, record_id, before_ms=before_ms)
+
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        """Removes every stored result of many records in few storage requests (a re-purge page). One entry per id:
+        ``None`` when done, else the error. An id no result can be stored under has nothing to remove (done)."""
+        valid = [r for r in record_ids if valid_record_id(r)]
+        outcomes: dict[str, BaseException | None] = dict.fromkeys(record_ids)
+        if valid:
+            outcomes.update(await self._store.purge_records(org_id, valid))
+        return outcomes
 
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
         """The store's clock now (ms): the cutoff for one refresh purge, taken once so that every DELETE of it agrees."""
@@ -863,6 +876,9 @@ class NullPaidResultCache:
 
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         return None
+
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        return dict.fromkeys(record_ids)
 
     async def read_markers(self, org_id: str, record_id: str) -> tuple[str | None, str | None] | None:
         return (None, None)

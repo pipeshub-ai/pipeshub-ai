@@ -2250,7 +2250,8 @@ class RecordEventHandler(BaseEventService):
                         )
                     elif payload.get("phase") == repurge_window.PHASE_HOP:
                         await repurge_window.handle_page_hop(
-                            self.producer, batch_org, payload, purge=paid_cache.purge_record, loop=self._producer_loop,
+                            self.producer, batch_org, payload, purge=paid_cache.purge_record, purge_many=paid_cache.purge_records,
+                            loop=self._producer_loop,
                         )
                     else:
                         raise repurge_window.BatchPayloadError("purgePaidResultsBatch has no known phase")
