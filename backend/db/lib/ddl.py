@@ -96,7 +96,10 @@ def _build(conn: Connection, table: str, schema: str, idx: str, cols: str, u: st
         plain = f"CREATE {u}INDEX IF NOT EXISTS {idx} ON {table} {using}({cols}){w}"
         if blocking:
             conn.exec_driver_sql(plain)
-        elif not (conn.exec_driver_sql("SELECT pg_relation_size(%s::regclass) = 0", (table,)).scalar() and _retry(conn, lambda: _plain_if_empty(conn, table, plain))):
+        # An invalid index of that name (a stopped concurrent build) goes to ensure_index, which drops and rebuilds it, whatever the leaf holds now:
+        # the plain build's IF NOT EXISTS would keep it.
+        elif _index_valid(conn, f"{schema}.{idx}") is False or not (
+                conn.exec_driver_sql("SELECT pg_relation_size(%s::regclass) = 0", (table,)).scalar() and _retry(conn, lambda: _plain_if_empty(conn, table, plain))):
             ensure_index(conn, f"{schema}.{idx}", f"CREATE {u}INDEX CONCURRENTLY {idx} ON {table} {using}({cols}){w}")
 
 
