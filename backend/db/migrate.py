@@ -18,7 +18,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, Engine, create_engine
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.pool import NullPool
 
 from db import surface
@@ -187,7 +187,16 @@ def _build_online(c: Connection, modules: list, started: list[str]) -> None:
         started.append(qname)
         t0 = time.monotonic()
         log(f"index {qname}: building online")
-        ddl.ensure_partitioned_index(c, **ix, blocking=False)
+        try:
+            ddl.ensure_partitioned_index(c, **ix, blocking=False)
+        except DBAPIError as exc:
+            # A column, function or operator class the index names comes from an earlier pending revision (a database several releases behind).
+            # The first statement failed, so nothing was built: the revision builds it in its transaction, as before this step existed.
+            if getattr(exc.orig, "sqlstate", None) not in ("42703", "42883", "42704"):
+                raise
+            log(f"index {qname}: built in the upgrade's transaction instead (an earlier pending revision changes {ix['table']}: "
+                f"{str(exc.orig).strip().splitlines()[0]})")
+            continue
         log(f"index {qname}: built in {time.monotonic() - t0:.1f}s")
 
 
