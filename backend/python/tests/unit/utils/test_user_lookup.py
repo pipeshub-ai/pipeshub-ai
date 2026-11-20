@@ -23,6 +23,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import TokenScopes, config_node_constants
 from app.core.org_context import OrgContext, bind
 from app.utils import error_class, user_lookup
+from app.utils.logger import log_record_fields
 from app.utils.user_lookup import (
     USER_NODE_ENSURE_PATH,
     check_record_access_or_503,
@@ -34,6 +35,12 @@ from app.utils.user_lookup import (
     get_user_or_503,
 )
 from app.utils.user_messages import DATABASE_UNREACHABLE
+from tests.support.graph_read_errors import (
+    GRAPH_KEY,
+    SENTINELS,
+    marked_internal,
+    unmarked,
+)
 from tests.support.log_capture import assert_text_free
 
 
@@ -449,3 +456,104 @@ class TestQueryServiceCallerSites:
                          else ArtifactGalleryService(graph)._resolve_user_key(actor))
         assert key == "k1"
         ensurer.assert_awaited_once_with("org-1", "u1")
+
+
+# ---- The request log of a 503: the graph cause's class and type, never its text ------------------------------------
+
+def _helper_app(read: Any) -> Any:  # noqa: ANN401
+    from fastapi import FastAPI
+
+    from app.api.middlewares.request_log import install_request_logging
+
+    api = FastAPI()
+    install_request_logging(api)
+
+    @api.get("/api/v1/records/{record_id}")
+    async def record(record_id: str) -> dict:
+        return await read(record_id) or {}
+
+    return api
+
+
+async def _request_end(api: Any, caplog: pytest.LogCaptureFixture) -> tuple[int, Any]:  # noqa: ANN401
+    import asyncio
+    import logging
+
+    async def call() -> httpx.Response:
+        transport = httpx.ASGITransport(app=api, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/api/v1/records/rec-1")
+
+    with caplog.at_level(logging.DEBUG):
+        response = await asyncio.create_task(call())
+    (end,) = [r for r in caplog.records if r.getMessage() == "http.request.end"]
+    return response.status_code, end
+
+
+def _failing_graph(error: Exception) -> MagicMock:
+    graph = MagicMock()
+    for name in ("get_user_by_user_id", "get_document", "get_record_by_id", "check_record_access_with_details"):
+        setattr(graph, name, AsyncMock(side_effect=error))
+    return graph
+
+
+HELPERS = {
+    "get_user_or_503": lambda g: lambda rid: get_user_or_503(g, "u1"),
+    "get_org_or_503": lambda g: lambda rid: get_org_or_503(g, "org-1"),
+    "get_document_or_503": lambda g: lambda rid: get_document_or_503(g, rid, CollectionNames.RECORDS.value),
+    "get_record_or_503": lambda g: lambda rid: get_record_or_503(g, rid),
+    "check_record_access_or_503": lambda g: lambda rid: check_record_access_or_503(g, "u1", "org-1", rid),
+}
+
+
+class TestTheRequestLogOfA503:
+    # Only the unrecorded arm guards the helper's stamp: a client-recorded error is text-hidden already.
+    @pytest.mark.parametrize(("error", "error_class"), [(unmarked, "unavailable"), (marked_internal, "internal")],
+                             ids=["unrecorded", "client_recorded"])
+    @pytest.mark.parametrize("helper", HELPERS)
+    async def test_carries_the_class_and_type_never_the_text(
+        self, helper: str, error: Any, error_class: str, caplog: pytest.LogCaptureFixture,  # noqa: ANN401
+    ) -> None:
+        cause = error()
+        status, end = await _request_end(_helper_app(HELPERS[helper](_failing_graph(cause))), caplog)
+        assert status == 503
+        fields = log_record_fields(end)
+        assert (fields["error_class"], fields["cause_type"]) == (error_class, type(cause).__name__)
+        assert "error_message" not in fields
+        assert_text_free([end], *SENTINELS)
+
+    async def test_an_arango_strict_read_that_failed_names_no_graph_key(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The real client's own GraphQueryError ("Could not read records/<key>: …") is raised after its record."""
+        import logging
+
+        from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
+
+        client = ArangoHTTPClient("http://localhost:8529", "root", "pw", "db", logging.getLogger("test.user_lookup.arango"))
+        resp = MagicMock(status=503)
+        resp.text = AsyncMock(return_value="restarting")
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=resp)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        session = MagicMock()
+        session.get.return_value = ctx
+        client._get_session = AsyncMock(return_value=session)
+        graph = MagicMock()
+
+        async def get_document(
+            key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+        ) -> dict | None:
+            return await client.get_document(collection, GRAPH_KEY, transaction, raise_on_error=raise_on_error)
+
+        graph.get_document = get_document
+        status, end = await _request_end(_helper_app(HELPERS["get_document_or_503"](graph)), caplog)
+        assert status == 503
+        assert log_record_fields(end)["cause_type"] == "GraphQueryError"
+        assert_text_free([end], GRAPH_KEY)
+
+    async def test_the_503_keeps_its_cause_and_headers(self) -> None:
+        cause = unmarked()
+        with pytest.raises(HTTPException) as raised:
+            await get_document_or_503(_failing_graph(cause), "rec-1", CollectionNames.RECORDS.value)
+        assert raised.value.__cause__ is cause
+        assert (raised.value.status_code, raised.value.detail) == (503, DATABASE_UNREACHABLE)
+        assert raised.value.headers["Retry-After"] == "5"

@@ -235,6 +235,20 @@ def is_stamped(exc: BaseException) -> bool:
     return "log_error_class" in getattr(exc, "__dict__", {})
 
 
+def chain_stamped(exc: BaseException) -> bool:
+    """A lower layer recorded ``exc``, or an exception it was raised ``from``: :func:`mark_error` gave a link its class (a
+    client wrapper wrote ``db.query.failed``). Explicit causes only: an error raised while handling a recorded one, without
+    ``from``, is a new failure (a fallback that failed in turn)."""
+    seen: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        if is_stamped(link):
+            return True
+        seen.add(id(link))
+        link = link.__cause__
+    return False
+
+
 def _hides_text(exc: BaseException) -> bool:
     """A link of the chain, or a member of an exception group in it, was stamped as able to quote sent values."""
     # every member, not only the first (first_leaf): the stamped one may be any of them
