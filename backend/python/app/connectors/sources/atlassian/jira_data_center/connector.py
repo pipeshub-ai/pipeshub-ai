@@ -1072,7 +1072,8 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger
             )
 
-            users = await self.data_entities_processor.get_all_active_users()
+            # A failed read raises: read as none, the sync would stop as if the org had no users, and nobody be told.
+            users = await self.data_entities_processor.get_all_active_users(raise_on_error=True)
 
             if not users:
                 self.logger.info("ℹ️ No users found")
@@ -1701,7 +1702,8 @@ class JiraDataCenterConnector(BaseConnector):
         # A failed read raises: read as no links, it would link no one while product access is unknown.
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
         self._stored_app_users = cached_app_users
-        pipeshub_users = await self.data_entities_processor.get_all_active_users()
+        # A failed read raises, not "no one to look hidden-email accounts up by": those accounts would go unlinked.
+        pipeshub_users = await self.data_entities_processor.get_all_active_users(raise_on_error=True)
 
         cached_key_to_email: dict[str, str] = {
             u.source_user_id: u.email
