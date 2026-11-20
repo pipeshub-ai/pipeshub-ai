@@ -922,6 +922,43 @@ class TestShutdownContainerResources:
 class TestLifespan:
     """Tests for lifespan() context manager."""
 
+    @pytest.mark.parametrize("exit_with", [None, RuntimeError("serving failed"), asyncio.CancelledError()])
+    async def test_loop_lag_monitor_runs_while_serving_and_always_stops(self, exit_with: BaseException | None) -> None:
+        """Started before the app serves; stopped however the lifespan exits, as its watchdog is a thread."""
+        from app.connectors_main import lifespan
+
+        mock_container = _make_container()
+        mock_container.data_store = AsyncMock(return_value=_make_data_store(_make_graph_provider()))
+        mock_app = MagicMock()
+        registry = MagicMock()
+        registry._connectors = {}
+        toolsets = MagicMock()
+        toolsets.list_toolsets.return_value = []
+        monitor = MagicMock()
+
+        with (
+            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=registry),
+            patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
+            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
+            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
+            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
+            patch("os.getenv", side_effect=_mock_os_getenv("arangodb")),
+            patch("app.connectors_main.get_toolset_registry", return_value=toolsets),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=MagicMock()),
+            patch("app.connectors_main.loop_lag_monitor_from_env", return_value=monitor) as from_env,
+        ):
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                async with lifespan(mock_app):
+                    monitor.start.assert_called_once()
+                    monitor.stop.assert_not_called()
+                    if exit_with is not None:
+                        raise exit_with
+
+        assert from_env.call_args.args[1] == "connector-main"
+        monitor.stop.assert_called_once()
+
     async def test_startup_and_shutdown_arangodb(self):
         """Full lifespan cycle with arangodb data store."""
         from app.connectors_main import lifespan

@@ -1285,10 +1285,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if loop_lag_monitor is not None:
         loop_lag_monitor.start()
 
-    yield
-
-    if loop_lag_monitor is not None:
-        loop_lag_monitor.stop()
+    try:
+        yield
+    finally:
+        # Also on cancellation: the monitor's task is detached and its watchdog is a thread.
+        if loop_lag_monitor is not None:
+            loop_lag_monitor.stop()
 
     # Ensure background startup work has settled before tearing things down.
     if not post_startup_task.done():
