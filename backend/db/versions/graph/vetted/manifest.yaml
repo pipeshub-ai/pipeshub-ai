@@ -607,7 +607,8 @@ functions:
 
   # Every record of the org whose webUrl is one of the addresses (index nodes_record_weburl, keyed by md5 of the address). The callers apply their own
   # filters (live, link records, the record's orgId) to the rows; an address holds a record, the attachments sharing its address and a link record per connector.
-  # shortcut: an address held by more than 10,000 records of the org answers from 10,000 of them; order the probe if one ever holds that many.
+  # At most 10,000 records per address (the hard limit a vetted read has), in no order: a caller that gets 10,000 for an address reads the addresses
+  # with its plain statement instead, in the same statement (lookups.py), so no answer depends on which 10,000 came back.
   - name: graph.records_by_weburl
     class: read
     scope: org

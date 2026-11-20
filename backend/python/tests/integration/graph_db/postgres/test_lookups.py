@@ -20,6 +20,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.core import org_context
+from app.core.db.uow import Tx
 from app.core.org_context import MissingOrgContext, SystemContextNotAllowed
 from app.models.entities import (
     FileRecord,
@@ -384,7 +385,7 @@ NO_ORG_CALLS = {
 }
 NO_ORG_KW = {"find_file_by_name_in_parent": {"kb_id": "kb", "file_name": "f", "mime_type": "m"}, "link_record_to_group": {"inherit": True},
              "remove_nodes_by_field": {"field_value": 1}}
-LOOKUP_METHODS = {n for n, f in vars(LookupsMixin).items() if not n.startswith("__") and callable(f)} - {"_lrows", "_permitted", "_records_page", "_page_ids", "_key_by_external"}
+LOOKUP_METHODS = {n for n, f in vars(LookupsMixin).items() if not n.startswith("__") and callable(f)} - {"_lrows", "_at_addresses", "_permitted", "_records_page", "_page_ids", "_key_by_external"}
 
 
 def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
@@ -620,3 +621,51 @@ async def test_the_address_lookups_answer_what_the_plain_statements_answered(pg_
     assert (await a.get_record_by_weburl(LONG_URL, a.org)).id == "long"
     assert await a.get_records_linking_to_weburls([w, w + "/"], a.org, ["SLACK WORKSPACE", "SLACK"]) == ["m0", "m1", "m2"]
     assert await a.get_issue_sites(a.org, ["JIRA", "JIRA DATA CENTER"]) == sorted(["https://x.atlassian.net", "https://jira.corp.example/jira", "https://h.example/browse/x"])
+
+
+async def test_an_address_held_by_more_records_than_the_probe_returns_is_still_read_whole(pg_db) -> None:
+    """graph.records_by_weburl returns at most 10,000 records per address, in no order. At an address that holds more (here 10,050 link records,
+    some trashed or placeholders, inserted before the ones that matter), the eligible record and the link holder are still found, as the plain
+    statements found them."""
+    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    u = "https://crowded.example/p"
+    await p._lrows("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'crowd-' || lpad(i::text, 5, '0'), jsonb_build_object('orgId', $1::text,
+        'webUrl', $2::text, 'recordType', 'LINK', 'connectorName', 'GITHUB', 'isDeleted', i % 7 = 0, 'isPlaceholder', i % 11 = 0) FROM generate_series(1, 10050) i""",
+                   p.org, u, write=True)
+    await p.batch_upsert_nodes([raw(p.org, "zz-page", webUrl=u), raw(p.org, "zz-link", webUrl=u, recordType="LINK", connectorName="SLACK WORKSPACE"),
+                                raw(p.org, "zz-holder", recordType="MESSAGE")], "records")
+    await p.batch_create_edges([{"from_id": "zz-holder", "from_collection": "records", "to_id": "zz-link", "to_collection": "records",
+                                 "relationshipType": "PARENT_CHILD"}], "nodeRelations")
+    assert (await p.get_record_by_weburl(u, p.org)).id == "zz-page"
+    assert [r["id"] for r in await p.get_records_by_weburls([u], p.org, 50, include_deleted=True)] == ["zz-page"]
+    assert await p.get_records_linking_to_weburls([u, "https://other.example/"], p.org, ["SLACK WORKSPACE"]) == ["zz-holder"]
+    old = await p._lrows(OLD_BY_WEBURLS, p.org, [u], p.org, 50, True)
+    assert [dict(r) for r in old] == await p.get_records_by_weburls([u], p.org, 50, include_deleted=True)
+    assert [r["id"] for r in await p._lrows(OLD_LINKING, p.org, [u], p.org, ["SLACK WORKSPACE", "GITHUB"], None, 100)] == \
+        await p.get_records_linking_to_weburls([u], p.org, ["SLACK WORKSPACE", "GITHUB"])
+
+
+async def test_more_addresses_than_one_probe_takes_are_read_in_one_statement(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """graph.records_by_weburl takes 1,000 addresses a call. 2,502 are read by one statement, so from one snapshot, outside a transaction and inside
+    the caller's (whose separate statements would each read their own snapshot)."""
+    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    await _seed_web(p, new_org())
+    w = "https://w.example/p"
+    batch = [f"https://miss.example/{i}" for i in range(2500)] + [w, w + "/"]
+    want = sorted(map(tuple, (dict(r).values() for r in await p._lrows(OLD_BY_WEBURLS, p.org, batch, p.org, 50, False))))
+    sent: list[str] = []
+    real = Tx.fetch
+
+    async def spy(self: Tx, sql: str, *args: object) -> list:
+        if "pipeshub:graph.get_records_by_weburls" in sql:
+            sent.append(sql)
+        return await real(self, sql, *args)
+    monkeypatch.setattr(Tx, "fetch", spy)
+    outside = await p.get_records_by_weburls(batch, p.org, 50)
+    t = await p.begin_transaction([], [])
+    try:
+        inside = await p.get_records_by_weburls(batch, p.org, 50, transaction=t)
+    finally:
+        await p.rollback_transaction(t)
+    assert len(sent) == 2, len(sent)
+    assert sorted(map(tuple, (r.values() for r in outside))) == sorted(map(tuple, (r.values() for r in inside))) == want and want
