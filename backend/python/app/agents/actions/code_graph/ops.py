@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.modules.code_graph.synced_commit import LAST_SYNCED_COMMIT
 from app.modules.parsers.code_parser.lang_config import LANGUAGES
+from app.utils.error_class import log_failure
 
 from .results import saw_commit
 
@@ -534,7 +535,7 @@ async def _user_can_read(
             user_id=user_id, org_id=org_id, record_id=record_id
         )
     except Exception as exc:
-        logger.warning("Access check failed for record %s: %s", record_id, exc)
+        log_failure(logger, "code_graph.access_check.failed", exc, record_id=record_id, include_error_text=False)
         return False
     return bool(access)
 
