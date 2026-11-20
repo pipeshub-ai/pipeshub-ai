@@ -172,6 +172,16 @@ def test_compare_names_what_makes_runs_incomparable() -> None:
     assert any(m.startswith("docs:") for m in mismatches)
 
 
+def test_registered_extra_rows_replace_the_failure_row(monkeypatch) -> None:
+    rows, _ = compare.compare(_result(100, 20), _result(100, 20, failures=1))
+    assert "Failed or unfinished records" in _regressed(rows)
+    extra = compare.Row("Custom count", 0, 1, None, True, "", "", False)
+    monkeypatch.setitem(compare.EXTRA_ROWS, "indexing", lambda base_m, cur_m: [extra])
+    rows, _ = compare.compare(_result(100, 20), _result(100, 20, failures=1))
+    assert rows[-1] == extra
+    assert "Failed or unfinished records" not in {r.name for r in rows}
+
+
 def test_placeholder_baseline_reports_without_judging(tmp_path, monkeypatch, capsys) -> None:
     baseline = tmp_path / "baseline.json"
     baseline.write_text('{"placeholder": true, "note": "No CI run yet."}', encoding="utf-8")

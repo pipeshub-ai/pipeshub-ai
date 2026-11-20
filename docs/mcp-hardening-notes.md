@@ -1069,6 +1069,24 @@ the next task.
     account link;
   - `chat-response-stream-error.test.tsx`: card instead of text; other errors unchanged.
 
+### UX-7 — a missing connection no longer stops a normal agent's chat
+- **What:** an agent that is not a service account now runs with the toolsets and MCP servers
+  the person has connected and leaves the rest out, instead of refusing the whole question.
+  - `app/modules/agents/readiness.py` checks toolsets and MCP servers in one place and returns
+    one `UnavailableTool` per missing one (`kind`, `instanceId`, `displayName`, `problem`,
+    `authMode`, `sharedCredential`, `userCanConnect`; no credentials). `GET
+    /agent/{id}/readiness` returns them as `unavailableTools`, with `serviceAccount`; `canSend`
+    is false only for a service-account agent missing one.
+  - The chat route sends a non-fatal `tools_unavailable` custom event (`{agentId,
+    serviceAccount, items}`), passes the items to the run (a per-turn `unavailable_tools`
+    prompt section names them and tells the model not to pretend), and the completion carries
+    them as `unavailableTools`, so the saved answer keeps them.
+  - A service-account agent still stops, with `details.items` (and the old `details.servers`
+    for MCP) and a message that asks an admin to connect them.
+- **Why:** an unconnected Gmail blocked even questions that needed no tool.
+- **Security:** credentials are still read only as the sender (normal agents), the agent key
+  (service accounts) or the configured shared slot; every run re-checks.
+
 ### RUN-10 + UX-7 (part) — one reason code for every MCP failure; failed calls look failed
 - **What:**
   - `app/agents/mcp/failure.py` adds `classify_mcp_failure(exc)`, returning `auth_expired`,
