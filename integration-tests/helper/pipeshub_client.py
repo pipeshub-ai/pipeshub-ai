@@ -399,7 +399,14 @@ class PipeshubClient:
         is_admin: bool = True,
         auth_type: str | None = None,
     ) -> ConnectorInstance:
-        """Create a connector instance via /api/v1/connectors/."""
+        """Create a connector instance via /api/v1/connectors/.
+
+        Skips the test when this build does not offer ``connector_type``
+        (helper/connectors_offered.py).
+        """
+        from helper.connectors_offered import skip_if_not_offered
+
+        skip_if_not_offered(connector_type)
         payload: Dict[str, Any] = {
             "connectorType": connector_type,
             "instanceName": instance_name,

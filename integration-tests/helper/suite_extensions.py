@@ -15,6 +15,10 @@ finds there:
   its ``WORLD_GROUPS`` -> a function that takes the ``World`` and makes it;
 * ``schemas/edges/<file>.yaml`` adds fields to the edge schema of that name
   (``validation/graph_edge_validator.py``).
+* ``openapi_overlays.py`` may define ``OVERLAYS``: spec files merged into
+  ``pipeshub-openapi.yaml`` (``helper/openapi_spec.py``);
+* ``connectors_not_offered.py`` may define ``NOT_OFFERED``: connector types the
+  build leaves out of its registry (``helper/connectors_offered.py``).
 
 An extension only adds. A row, key or group that is already there is an error,
 not an override, so an extension cannot drop or loosen a check made here.
