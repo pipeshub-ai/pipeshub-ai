@@ -73444,7 +73444,7 @@ paths:
         deleted model, and the empty store is rebuilt for the replacement model.
 
         The agent usage check is fail-closed: when it cannot be made, the model is not
-        deleted (500). Role assignments that point at the deleted model are removed. The
+        deleted (503). Role assignments that point at the deleted model are removed. The
         request body and the query string are not read.
       operationId: deleteAIModelProvider
       security:
@@ -73569,10 +73569,18 @@ paths:
                 error:
                   code: HTTP_CONFLICT
                   message: "Cannot delete model 'gpt-4o-mini': currently in use by agent 'Research Assistant'. Remove it from the agent first."
+        '503':
+          description: |
+            The agent usage check could not be made or did not succeed (unreachable, timed out, a non-200
+            answer, or an answer that is not a list of agents), so the model is kept: `HTTP_SERVICE_UNAVAILABLE`,
+            "We couldn't check which agents use this model, so it wasn't deleted. Please try again in a few seconds."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The agent usage check could not be made or did not succeed, so the model is kept
-            (`Cannot delete this model: unable to verify if it is in use by agents...`).
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -74362,6 +74370,15 @@ paths:
                         creatorName:
                           type: string
                           nullable: true
+        '503':
+          description: |
+            The agent usage check could not be made or did not succeed (unreachable, timed out, a non-200
+            answer, or an answer that is not a list of agents), so the provider is kept: `HTTP_SERVICE_UNAVAILABLE`,
+            "We couldn't check which agents use this web search provider, so it wasn't deleted. Please try again in a few seconds."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error.
@@ -80082,8 +80099,9 @@ paths:
 
         The provider is trimmed and lower-cased before matching. A provider
         that is not one of the supported ones (`duckduckgo`, `serper`,
-        `tavily`, `exa`) is not an error: the list is simply empty. The list
-        is also empty when the AI backend answers with a non-200 status.
+        `tavily`, `exa`) is not an error: the list is simply empty. A check
+        that fails is an error, never an empty list: the AI backend's `4xx` is
+        passed on with its words, a `5xx` is a `500`, and a `503` stays a `503`.
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
@@ -80137,9 +80155,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The AI backend could not be reached.
+            The AI backend could not read which agents use it.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The AI backend could not be reached or is temporarily unavailable. Try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The AI backend did not answer in time. Try again.
           content:
             application/json:
               schema:
@@ -80156,8 +80186,9 @@ paths:
 
         An agent matches when one of its model entries equals `model_key` or
         starts with `model_key` followed by `_`. An unknown key is not an
-        error: the list is simply empty. The list is also empty when the AI
-        backend answers with a non-200 status.
+        error: the list is simply empty. A check that fails is an error, never
+        an empty list: the AI backend's `4xx` is passed on with its words, a
+        `5xx` is a `500`, and a `503` stays a `503`.
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
@@ -80210,9 +80241,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The AI backend could not be reached.
+            The AI backend could not read which agents use it.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The AI backend could not be reached or is temporarily unavailable. Try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The AI backend did not answer in time. Try again.
           content:
             application/json:
               schema:
