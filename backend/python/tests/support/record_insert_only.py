@@ -1,0 +1,198 @@
+"""One set of cases for the insert-only record fields (G-55), run against each graph store.
+
+``createdAtTimestamp`` is written when a record's vertex is inserted and never by an update; ``incarnationId`` is minted by the
+store at insert and changed only by a restore from the trash. A placeholder replaced by a real record takes the earlier positive
+date and keeps its id. The thin test modules hand each case an adapter for their store (``StoreAdapter``).
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any, Protocol
+
+from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes
+from app.models.entities import FileRecord, RecordType
+
+RECORDS = CollectionNames.RECORDS.value
+
+
+class StoreAdapter(Protocol):
+    name: str
+
+    async def upsert(self, records: list[FileRecord]) -> None: ...
+    async def upsert_nodes(self, docs: list[dict[str, Any]]) -> None: ...
+    async def doc(self, key: str) -> dict[str, Any] | None: ...
+    async def type_doc(self, key: str, collection: str) -> dict[str, Any] | None: ...
+    async def trash(self, key: str, connector_id: str) -> str: ...
+    async def restore(self, key: str, connector_id: str, batch_id: str) -> list[str]: ...
+    async def merge_like_an_older_process(self, key: str, doc: dict[str, Any]) -> None: ...
+
+
+def new_key() -> str:
+    return f"g55-{uuid.uuid4().hex[:12]}"
+
+
+def make_record(key: str, *, created_at: int, connector_id: str = "g55-conn", placeholder: bool = False, name: str = "a.txt",
+                known_new: bool = False, promotes: bool = False) -> FileRecord:
+    record = FileRecord(
+        id=key, org_id="g55-org", record_name=name, record_type=RecordType.FILE, external_record_id=f"ext-{key}",
+        version=0, origin=OriginTypes.CONNECTOR, connector_name=Connectors.KNOWLEDGE_BASE, connector_id=connector_id,
+        created_at=created_at, updated_at=created_at, is_file=True, extension="txt", is_placeholder=placeholder,
+    )
+    record._known_new = known_new
+    record._promotes_stub = promotes
+    return record
+
+
+def minted(doc: dict[str, Any] | None) -> str | None:
+    return None if doc is None else doc.get("incarnationId")
+
+
+# ---- the cases ------------------------------------------------------------------------------------------------------
+
+async def resync_keeps_created_at(store: StoreAdapter, flag: bool) -> None:
+    """S1, S2, S3, S5: a first insert writes both fields (the id only with the flag); every later write of the record keeps them."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100, known_new=True)])
+    first = await store.doc(key)
+    assert first is not None and first["createdAtTimestamp"] == 100
+    assert (minted(first) is not None) is flag
+    for created in (999, 5, 1):
+        await store.upsert([make_record(key, created_at=created, name=f"renamed-{created}")])
+    again = await store.doc(key)
+    assert again["createdAtTimestamp"] == 100
+    assert minted(again) == minted(first)
+    assert again["recordName"] == "renamed-1"          # the rest of the document is still updated
+
+
+async def nodes_path_keeps_both_fields(store: StoreAdapter, flag: bool) -> None:
+    """S4, S7: the dict writers' path (``batch_upsert_nodes``) is insert-only too, and a null cannot remove a stored value."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100)])
+    before = await store.doc(key)
+    patch = {"id": key, "orgId": "g55-org", "recordName": "from-nodes", "externalRecordId": f"ext-{key}", "recordType": "FILE",
+             "origin": "CONNECTOR", "connectorName": "KB", "connectorId": "g55-conn", "createdAtTimestamp": 7,
+             "incarnationId": None, "version": 0}
+    await store.upsert_nodes([patch])
+    after = await store.doc(key)
+    assert after["createdAtTimestamp"] == 100
+    assert minted(after) == minted(before)
+    assert after["recordName"] == "from-nodes"
+
+
+async def a_new_key_through_nodes_gets_an_id(store: StoreAdapter, flag: bool) -> None:
+    """S24: a dict writer that mints a new key gets an incarnation id at the store insert (flag on), none with it off."""
+    key = new_key()
+    await store.upsert_nodes([{"id": key, "orgId": "g55-org", "recordName": "dict", "externalRecordId": f"ext-{key}", "recordType": "FILE",
+                               "origin": "CONNECTOR", "connectorName": "KB", "connectorId": "g55-conn", "createdAtTimestamp": 42, "version": 0}])
+    doc = await store.doc(key)
+    assert doc["createdAtTimestamp"] == 42
+    assert (minted(doc) is not None) is flag
+
+
+async def stub_then_real(store: StoreAdapter, flag: bool, *, hinted: bool) -> None:
+    """S23: the stub's date becomes the earlier positive one when the real record replaces it, its id stays, and the cycle stub,
+    full, stub, full keeps the original. An unhinted promotion on ArangoDB keeps the stub's date (the processor marks promotions)."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=500, placeholder=True, known_new=True)])
+    stub = await store.doc(key)
+    assert stub["createdAtTimestamp"] == 500
+    await store.upsert([make_record(key, created_at=300, promotes=hinted)])
+    real = await store.doc(key)
+    expected = 300 if (hinted or store.name != "arangodb") else 500
+    assert real["createdAtTimestamp"] == expected, f"{store.name}: promotion date"
+    assert minted(real) == minted(stub), "a promotion never changes the id"
+    assert real["isPlaceholder"] is False
+    await store.upsert([make_record(key, created_at=700, placeholder=True)])          # demoted: a stub again, frozen
+    assert (await store.doc(key))["createdAtTimestamp"] == expected
+    await store.upsert([make_record(key, created_at=1000, promotes=hinted)])          # promoted again: min(stored, 1000)
+    again = await store.doc(key)
+    assert again["createdAtTimestamp"] == expected
+    assert minted(again) == minted(stub)
+    await store.upsert([make_record(key, created_at=1)])                              # a real record is frozen
+    assert (await store.doc(key))["createdAtTimestamp"] == expected
+
+
+async def a_promotion_ignores_an_unreal_date(store: StoreAdapter, flag: bool) -> None:
+    """R3-3: a date that is not a positive number never replaces the stored one."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=500, placeholder=True, known_new=True)])
+    await store.upsert([make_record(key, created_at=0, promotes=True)])
+    assert (await store.doc(key))["createdAtTimestamp"] == 500
+
+
+async def restore_resets_the_id(store: StoreAdapter, flag: bool) -> None:
+    """S11: a restore from the trash gives a new id (flag on) and keeps the date; an upsert onto a trashed vertex neither untrashes
+    it nor changes the id."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100, known_new=True)])
+    first = await store.doc(key)
+    batch = await store.trash(key, "g55-conn")
+    trashed = await store.doc(key)
+    assert trashed["isDeleted"] is True
+    await store.upsert([make_record(key, created_at=555, name="written-while-trashed")])
+    still = await store.doc(key)
+    assert still["isDeleted"] is True, "an upsert must not take a record out of the trash"
+    assert minted(still) == minted(first)
+    restored = await store.restore(key, "g55-conn", batch)
+    assert restored == [key]
+    after = await store.doc(key)
+    assert after["isDeleted"] is False
+    assert after["createdAtTimestamp"] == 100
+    if flag:
+        assert minted(after) is not None and minted(after) != minted(first)
+    else:
+        assert minted(after) == minted(first)
+
+
+async def an_id_sent_through_the_upsert_is_ignored(store: StoreAdapter, flag: bool) -> None:
+    """S11: the reset is never written by the upsert."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100, known_new=True)])
+    first = await store.doc(key)
+    forged = make_record(key, created_at=100)
+    forged.incarnation_id = "forged-" + key
+    await store.upsert([forged])
+    assert minted(await store.doc(key)) == minted(first)
+
+
+async def an_older_process_leaves_the_id(store: StoreAdapter, flag: bool) -> None:
+    """S13: a writer that does not know the field merges its document: it may overwrite the date, never the id."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100, known_new=True)])
+    first = await store.doc(key)
+    await store.merge_like_an_older_process(key, {"recordName": "old-writer", "createdAtTimestamp": 31337})
+    after = await store.doc(key)
+    assert minted(after) == minted(first)
+    assert after["recordName"] == "old-writer"
+
+
+async def concurrent_first_inserts_agree(store: StoreAdapter, flag: bool) -> None:
+    """S12: writers racing to insert one key leave one document whose fields are those one of them wrote and that stay put."""
+    import asyncio
+
+    key = new_key()
+    await asyncio.gather(*(store.upsert([make_record(key, created_at=100 + n, known_new=(n % 2 == 0))]) for n in range(6)))
+    doc = await store.doc(key)
+    assert doc["createdAtTimestamp"] in {100 + n for n in range(6)}
+    assert (minted(doc) is not None) is flag
+    await store.upsert([make_record(key, created_at=9999)])
+    after = await store.doc(key)
+    assert after["createdAtTimestamp"] == doc["createdAtTimestamp"] and minted(after) == minted(doc)
+
+
+async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None:
+    """S6: only the ``records`` document is insert-only; the type document (``files``) is written as before."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100, known_new=True)])
+    await store.upsert([make_record(key, created_at=999, name="second.txt")])
+    assert (await store.doc(key))["createdAtTimestamp"] == 100
+    type_doc = await store.type_doc(key, CollectionNames.FILES.value)
+    assert type_doc is not None and type_doc["name"] == "second.txt", "the type document is merged as before"
+
+
+ALL_CASES = (
+    type_documents_keep_the_merge,
+    resync_keeps_created_at, nodes_path_keeps_both_fields, a_new_key_through_nodes_gets_an_id, a_promotion_ignores_an_unreal_date,
+    restore_resets_the_id, an_id_sent_through_the_upsert_is_ignored, an_older_process_leaves_the_id, concurrent_first_inserts_agree,
+)

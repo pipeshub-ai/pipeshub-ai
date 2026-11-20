@@ -978,6 +978,97 @@ class ArangoHTTPClient:
         }
 
 
+    @_record_schema_guarded
+    @_sends_per_item
+    @_logged("batch_upsert_documents")
+    async def batch_upsert_documents(
+        self,
+        collection: str,
+        rows: list[dict[str, Any]],
+        txn_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Upsert documents whose update must not carry some keys (G-55: a record's insert-only fields).
+
+        Each row is ``{"key", "insert", "patch", "new"}``: ``insert`` is the whole document, written when the key does not exist;
+        ``patch`` is what an existing document may be changed by; ``new`` says the caller knows the key is not stored.
+
+        The order of calls follows what the caller knows. A row that is known to be new is inserted first
+        (``overwriteMode=conflict``) and is patched only when the insert finds the key stored. Any other row is patched first
+        (``PATCH``, update only, one bulk call) and is inserted only when the patch answers 1202 (not found). So a re-sync is one
+        call and a first ingest is one call. AQL ``UPSERT`` is not used: it ran a re-sync at 0.39 of this shape.
+
+        Only the answers each call is meant to give are acted on: 1202 from a patch, and 1210 from an insert. Everything else
+        raises (``_check_response_for_errors``), a write conflict (1200) inside a stream transaction included: the winner's
+        uncommitted insert is invisible to the loser, so sending it through the patch would return 1202 and the insert 1200 again,
+        and the write would loop or be lost while the transaction commits. The owner of the transaction runs it again. Outside a
+        transaction 1200 is sent again by ``_send_until_landed``, a bounded number of times.
+        """
+        if not rows:
+            return {"created": 0, "updated": 0, "errors": 0}
+        base = f"{self.base_url}/_db/{self.database}/_api/document/{collection}"
+        headers = {"x-arango-trx-id": txn_id} if txn_id else {}
+
+        def sender(method: str, params: dict[str, str]) -> Callable[[list[dict[str, Any]]], Awaitable[_Reply]]:
+            async def send(batch: list[dict[str, Any]]) -> _Reply:
+                session = await self._get_session()
+                async with session.request(method, base, json=batch, params=params, headers=headers) as resp:
+                    if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
+                        return await resp.json()
+                    error = await resp.text()
+                    raise Exception(f"Batch {method} failed (status={resp.status}): {error}")
+            return send
+
+        send_insert = sender("POST", {"overwriteMode": "conflict"})
+        send_patch = sender("PATCH", {"keepNull": "true", "mergeObjects": "true", "ignoreRevs": "true"})
+
+        async def run(docs: list[dict[str, Any]], send: Callable[[list[dict[str, Any]]], Awaitable[_Reply]]) -> list[Any]:
+            answers = await _send_until_landed(docs, txn_id, send)
+            if not isinstance(answers, list):
+                raise Exception(f"Batch upsert: an unexpected reply: {answers}")
+            guard = self.record_guard
+            if guard is not None and not txn_id:
+                refused = [i for i, a in enumerate(answers) if isinstance(a, dict) and a.get("error") and is_record_schema_error(str(a))]
+                if refused:
+                    guard.note_narrow()
+                    await guard.ensure_wide("1620")
+                    again = await _send_until_landed([docs[i] for i in refused], txn_id, send)
+                    if isinstance(again, list) and len(again) == len(refused):
+                        for i, a in zip(refused, again):
+                            answers[i] = a
+            return answers
+
+        def unexpected(answers: list[Any], expected: int | None) -> list[Any]:
+            return [a for a in answers if not (isinstance(a, dict) and a.get("error") and a.get("errorNum") == expected)]
+
+        by_key = {r["key"]: r for r in rows}
+        insert_keys = [r["key"] for r in rows if r.get("new")]
+        patch_keys = [r["key"] for r in rows if not r.get("new")]
+        created = updated = 0
+        for _round in range(3):
+            lost: list[str] = []          # inserts that found the key stored
+            missed: list[str] = []        # patches that found nothing
+            if insert_keys:
+                answers = await run([by_key[k]["insert"] for k in insert_keys], send_insert)
+                self._check_response_for_errors(unexpected(answers, ARANGO_UNIQUE_CONSTRAINT_VIOLATED), "Batch upsert")
+                for k, a in zip(insert_keys, answers):
+                    if isinstance(a, dict) and a.get("error"):
+                        lost.append(k)
+                    else:
+                        created += 1
+            to_patch = patch_keys + lost
+            if to_patch:
+                answers = await run([{"_key": k, **by_key[k]["patch"]} for k in to_patch], send_patch)
+                self._check_response_for_errors(unexpected(answers, ARANGO_ERROR_DOCUMENT_NOT_FOUND), "Batch upsert")
+                for k, a in zip(to_patch, answers):
+                    if isinstance(a, dict) and a.get("error"):
+                        missed.append(k)
+                    else:
+                        updated += 1
+            if not missed:
+                return {"created": created, "updated": updated, "errors": 0}
+            insert_keys, patch_keys = missed, []
+        raise Exception(f"Batch upsert did not settle after 3 rounds for keys {insert_keys[:5]}")
+
     @_logged("batch_delete_documents")
     async def batch_delete_documents(
         self,

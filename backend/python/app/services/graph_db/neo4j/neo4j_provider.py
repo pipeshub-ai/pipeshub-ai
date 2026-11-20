@@ -188,7 +188,9 @@ from app.services.graph_db.common.utils import (
     is_full_address,
     jira_issue_browse_url_regex,
     person_query_ref,
+    record_insert_doc,
     record_taxonomy_refs,
+    record_update_doc,
     restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
@@ -531,6 +533,20 @@ _KH_STATE_LABELS = (Neo4jLabel.RECORDS.value, Neo4jLabel.RECORD_GROUPS.value)
 # Properties the listing keeps on those nodes; never part of a document handed out.
 _KH_INTERNAL_PROPERTIES = frozenset({"khSortName", "khScope"})
 _KH_TREE_TYPES = (Neo4jRelationshipType.NODE_RELATIONS.value, Neo4jRelationshipType.INHERIT_PERMISSIONS.value)
+
+
+# G-55: a record's insert-only fields (createdAtTimestamp, incarnationId) are written by ``ON CREATE SET`` from the full document;
+# ``SET n += rest`` then merges the document without them (and without the trash state), so a re-sync keeps the stored values and
+# a null cannot delete them. A placeholder replaced by a real record takes the earlier positive date (the id is never touched).
+# ``full`` is the document to insert, ``rest`` the document to merge.
+_CYPHER_RECORD_INSERT_ONLY = """
+            ON CREATE SET n += full
+            SET n += CASE
+                WHEN coalesce(n.isPlaceholder, false) AND NOT coalesce(full.isPlaceholder, false) AND full.createdAtTimestamp > 0
+                THEN {createdAtTimestamp: CASE WHEN n.createdAtTimestamp > 0 THEN CASE WHEN n.createdAtTimestamp < full.createdAtTimestamp THEN n.createdAtTimestamp ELSE full.createdAtTimestamp END ELSE full.createdAtTimestamp END}
+                ELSE {} END
+            SET n += rest
+"""
 
 
 def _cypher_kh_node_state(v: str) -> str:
@@ -2226,6 +2242,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
 
         # Use UNWIND for batch upsert
+        if collection == CollectionNames.RECORDS.value:
+            query = f"""
+        UNWIND $nodes AS row
+        WITH row.full AS full, row.rest AS rest
+        MERGE (n:{label} {{id: full.id}}){_CYPHER_RECORD_INSERT_ONLY}
+        {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+        RETURN n.id
+        """
+            rows = [{"full": record_insert_doc(n), "rest": record_update_doc(n)} for n in neo4j_nodes]
+            await self.client.execute_query(
+                query, parameters={"nodes": _in_lock_order(rows, lambda r: _by_id(r["full"]))}, txn_id=transaction
+            )
+            return True
         query = f"""
         UNWIND $nodes AS node
         MERGE (n:{label} {{id: node.id}})
@@ -2289,13 +2318,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  if collection else [None] * len(records))
         parameters: dict[str, Any] = {
             "rows": _in_lock_order(
-                [{"node": b, "type_node": t} for b, t in zip(bases, types)], lambda row: _by_id(row["node"])
+                [{"node": record_insert_doc(b), "rest": record_update_doc(b), "type_node": t} for b, t in zip(bases, types)],
+                lambda row: _by_id(row["node"]),
             ),
             "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
         }
         # Each record releases only holders other than itself, as when records were written one at a time.
         release = """
-            WITH node, type_node, COLLECT {
+            WITH node, rest, type_node, COLLECT {
                 MATCH (holder:Record {externalRecordId: node.externalRecordId, connectorId: node.connectorId})
                 WHERE holder.isDeleted = true AND holder.id <> node.id
                 RETURN holder
@@ -2318,10 +2348,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
         return f"""
             UNWIND $rows AS row
-            WITH row.node AS node, row.type_node AS type_node
+            WITH row.node AS node, row.rest AS rest, row.type_node AS type_node
             {release}
-            MERGE (n:Record {{id: node.id}})
-            SET n += node
+            WITH node AS full, rest, type_node
+            MERGE (n:Record {{id: full.id}}){_CYPHER_RECORD_INSERT_ONLY}
             {_cypher_kh_node_state("n")}
             {typed}""", parameters
 

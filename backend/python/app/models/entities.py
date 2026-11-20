@@ -346,6 +346,7 @@ class Record(BaseModel):
     # Epoch Timestamps
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record update")
+    incarnation_id: str | None = Field(default=None, description="Names the life of the stored vertex: minted by the graph store at insert, changed only by a restore from the trash. None for a record stored before it existed.")
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
     source_timestamp_origin: str | None = Field(default=None, description="Knowledge-base uploads only: what set the source timestamps (app.models.source_dates.SourceTimestampOrigin)")
@@ -356,6 +357,10 @@ class Record(BaseModel):
     # What the stored document said about the record's current run when it was read. Never serialised: it only lets the
     # save path decide, from the stored values, whether a write continues the run or starts a new one.
     _stored_run: dict | None = PrivateAttr(default=None)
+    # Write hints from the processor, never stored (G-55). ``_known_new``: the vertex is known not to exist, so the ArangoDB
+    # store inserts first. ``_promotes_stub``: the stored row is a placeholder this record replaces, so its date is the earlier.
+    _known_new: bool = PrivateAttr(default=False)
+    _promotes_stub: bool = PrivateAttr(default=False)
 
     # Source information
     weburl: str | None = None
@@ -533,6 +538,9 @@ class Record(BaseModel):
         }
         # Omitted rather than null: the Neo4j upsert is `SET n +=`, where a null
         # key deletes the stored value, and most writers never set this field.
+        # The id is the store's to mint, and a null would delete it on Neo4j and PostgreSQL: written only when held.
+        if self.incarnation_id is not None:
+            base["incarnationId"] = self.incarnation_id
         if self.queued_at is not None:
             base["queuedAtTimestamp"] = self.queued_at
         if self.first_queued_at is not None:
@@ -621,6 +629,7 @@ class Record(BaseModel):
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record.get("webUrl"),
             created_at=arango_base_record.get("createdAtTimestamp"),
+            incarnation_id=arango_base_record.get("incarnationId"),
             updated_at=arango_base_record.get("updatedAtTimestamp"),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),

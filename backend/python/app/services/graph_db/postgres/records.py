@@ -20,7 +20,11 @@ from app.models.entities import Record
 from app.modules.indexing.record_diagnostics import WriteKind, sql_patch, with_run_patch
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
-from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
+from app.services.graph_db.common.utils import (
+    TRASHED_EXTERNAL_ID_PREFIX,
+    record_insert_doc,
+    record_update_doc,
+)
 from app.services.graph_db.interface.graph_db_provider import UNSUPPORTED_PAGE_FIELDS
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
@@ -67,6 +71,32 @@ async def _upsert_docs(tx: Tx, org: str, coll: str, docs: list[dict]) -> None:
         INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
         ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(graph.nodes.doc || (SELECT x2.doc FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
                      org, coll, _j([{"id": i, "doc": by_id[i]} for i in sorted(by_id)]))
+
+
+async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
+    """``_upsert_docs`` for the ``records`` collection, with the insert-only fields (G-55).
+
+    A new record is written whole, with an incarnation id minted when ``RECORD_INCARNATION_WRITE`` is on. An existing record is
+    merged from the document without ``createdAtTimestamp``, ``incarnationId`` and the trash state, so a re-sync keeps its stored
+    values and a null cannot remove them. The one exception is a placeholder replaced by a real record (the stored row says
+    ``isPlaceholder``, the incoming one does not): its date becomes the earlier of the two positive values, decided here from the
+    stored row, so two writers that both read the stub cannot both overwrite it. The id is never touched."""
+    by_id: dict[str, dict] = {}
+    for d in docs:
+        by_id[d["id"]] = {**by_id.get(d["id"], {}), **d}
+    if not by_id:
+        return
+    rows = [{"id": i, "doc": record_insert_doc(by_id[i]), "upd": record_update_doc(by_id[i])} for i in sorted(by_id)]
+    await tx.execute("""/* pipeshub:graph.records_upsert_record_docs */ WITH x AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb, upd jsonb))
+        INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
+        ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(
+            (graph.nodes.doc || (SELECT x2.upd FROM x x2 WHERE x2.id = EXCLUDED.id)) || (SELECT CASE
+                WHEN coalesce((graph.nodes.doc->>'isPlaceholder')::boolean, false) AND NOT coalesce((x2.doc->>'isPlaceholder')::boolean, false)
+                     AND jsonb_typeof(x2.doc->'createdAtTimestamp') = 'number' AND (x2.doc->>'createdAtTimestamp')::numeric > 0
+                THEN jsonb_build_object('createdAtTimestamp', CASE WHEN jsonb_typeof(graph.nodes.doc->'createdAtTimestamp') = 'number' AND (graph.nodes.doc->>'createdAtTimestamp')::numeric > 0
+                    THEN LEAST((graph.nodes.doc->>'createdAtTimestamp')::numeric, (x2.doc->>'createdAtTimestamp')::numeric) ELSE (x2.doc->>'createdAtTimestamp')::numeric END)
+                ELSE '{}'::jsonb END FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
+                     org, _RECORDS, _j(rows))
 
 
 _RECORD_BY_EXTERNAL_PAGE = 100       # the function's LIMIT
@@ -299,7 +329,7 @@ class RecordsMixin(PgBase):
                     WHERE h.org_id = $1 AND h.coll = 'records' AND x.ext IS NOT NULL AND h.doc->>'connectorId' = x.cid AND h.doc->>'externalRecordId' = x.ext
                       AND h.id <> x.id AND coalesce((h.doc->>'isDeleted')::boolean, false)""",
                                  org, _j([{"id": b["id"], "ext": b.get("externalRecordId"), "cid": b.get("connectorId")} for b in all_bases]), TRASHED_EXTERNAL_ID_PREFIX)
-            await _upsert_docs(tx, org, _RECORDS, all_bases)
+            await _upsert_record_docs(tx, org, all_bases)
             for coll in sorted(c for c in by_type if c):
                 types = types_by_type[coll]
                 await _upsert_docs(tx, org, coll, types)
