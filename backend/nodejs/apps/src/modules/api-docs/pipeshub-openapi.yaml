@@ -25554,8 +25554,9 @@ components:
           maxItems: 10
           description: >-
             Only these kinds. Omitted or empty means all. Where named-entity extraction is on,
-            `person` and `organization` also find named entities of that kind (for `organization`,
-            products filed under the same name too).
+            `organization` also finds organization and product named entities, unless
+            `named_entity` is listed too, which then searches named entities of every kind.
+            `person` finds people only: named people are never indexed for search.
           items:
             $ref: '#/components/schemas/EntitySearchResultType'
         namedEntityKinds:
