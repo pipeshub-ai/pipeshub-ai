@@ -294,6 +294,7 @@ from app.services.graph_db.vector_membership_queries import (
 from app.telemetry.backend import METRICS_BACKEND
 from app.utils.env_config import env_int, env_seconds
 from app.utils.env_utils import env_bool
+from app.utils.logging_fields import log_event
 from app.utils.request_deadline import seconds_left
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed, folder_in_trash
@@ -1112,8 +1113,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             else:
                 self.logger.info("✅ All departments already exist, skipping initialization")
 
-        except Exception as e:
-            self.logger.error(f"❌ Error initializing departments: {str(e)}")
+        except Exception:
             raise
 
     # ==================== Transaction Management ====================
@@ -2424,8 +2424,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             deleted_count = results[0]["deleted"] if results else 0
             return deleted_count == len(keys)
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete nodes failed: {str(e)}")
+        except Exception:
             raise
 
     async def update_node(
@@ -2468,8 +2467,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return len(results) > 0
 
-        except Exception as e:
-            self.logger.error(f"❌ Update node failed: {str(e)}")
+        except Exception:
             raise
 
     async def write_attempt_start(
@@ -2542,8 +2540,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
             return bool(results)
-        except Exception as e:
-            self.logger.error("❌ Conditional node update failed: %s", str(e))
+        except Exception:
             raise
 
     async def batch_update_nodes(
@@ -2604,8 +2601,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             
             return False
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch update nodes failed: {str(e)}")
+        except Exception:
             raise
 
     # ==================== Edge Operations ====================
@@ -2961,8 +2957,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return created_total if count_created else True
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch create edges failed: {str(e)}")
+        except Exception:
             raise
 
     async def create_edges_if_absent(
@@ -3011,8 +3006,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     created_total += len(made) // 2
             return created_total if count_created else None
 
-        except Exception as e:
-            self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_create_entity_relations(
@@ -3122,8 +3116,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return True
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch entity relation creation failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_edge(
@@ -3218,8 +3211,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return results[0]["deleted"] > 0 if results else False
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete edge failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_delete_edges(
@@ -3297,8 +3289,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return total_deleted
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch delete edges failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_edges_from(
@@ -3327,8 +3318,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return results[0]["deleted"] if results else 0
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges from failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_edges_to(
@@ -3357,8 +3347,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return results[0]["deleted"] if results else 0
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges to failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_edges_to_groups(
@@ -3387,8 +3376,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return results[0]["deleted"] if results else 0
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges to groups failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_edges_between_collections(
@@ -3419,8 +3407,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return results[0]["deleted"] if results else 0
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges between collections failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_nodes_and_edges(
@@ -3458,8 +3445,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete nodes and edges failed: {str(e)}")
+        except Exception:
             raise
 
     async def update_edge(
@@ -3494,8 +3480,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return len(results) > 0
 
-        except Exception as e:
-            self.logger.error(f"❌ Update edge failed: {str(e)}")
+        except Exception:
             raise
 
     # ==================== Query Operations ====================
@@ -3526,8 +3511,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
                 **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
             )
-        except Exception as e:
-            self.logger.error(f"❌ Query execution failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_nodes_by_filters(
@@ -3912,8 +3896,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
             return int(rows[0].get("deleted", 0)) if rows else 0
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges touching nodes failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_edge_rollup_by_file_prefix(
@@ -4229,8 +4212,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, parameters=parameters, txn_id=transaction
             )
             return int(rows[0].get("deleted", 0)) if rows else 0
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges by source keys failed: {str(e)}")
+        except Exception:
             raise
 
     async def count_nodes_by_filters(
@@ -4253,11 +4235,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, parameters=parameters, txn_id=transaction
             )
             return int(rows[0].get("count", 0)) if rows else 0
-        except Exception as e:
+        except Exception:
             # Callers gate on the count (build_code_graph_edges only builds when
             # nothing is still indexing), so a swallowed failure reading as 0
             # would let them act on a repo that has not drained.
-            self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
             raise
 
     async def has_nodes_by_filters(
@@ -4281,8 +4262,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, parameters=parameters, txn_id=transaction
             )
             return bool(rows)
-        except Exception as e:
-            self.logger.error(f"❌ Node existence check failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_nodes_updated_since(
@@ -4363,8 +4343,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return results[0]["deleted"] if results else 0
 
-        except Exception as e:
-            self.logger.error(f"❌ Remove nodes by field failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_edges_to_node(
@@ -4665,7 +4644,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 for row in results or []
             ]
         except Exception as e:
-            self.logger.error(f"❌ Get records by file path failed: {str(e)}")
             raise GraphQueryError(f"Could not look up records at path {path}: {e}") from e
 
     async def get_record_by_external_id(
@@ -4714,7 +4692,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             raise GraphQueryError(
                 f"Could not look up record {external_id}: {e}"
             ) from e
@@ -4958,7 +4935,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return results[0]["result"]
             return None
         except Exception as e:
-            self.logger.error(f"❌ Get record by path failed: {str(e)}")
             raise GraphQueryError(f"Could not look up the record at path {path}: {e}") from e
 
     async def get_records_by_status(
@@ -5031,7 +5007,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
         except Exception as e:
-            self.logger.error(f"❌ Get records by status failed: {str(e)}")
             raise GraphQueryError(
                 f"Could not list records for connector {connector_id}: {e}"
             ) from e
@@ -5402,13 +5377,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {field: record[field] if field in record else None for field in PAGE_RECORD_FIELDS}
                 for record in results
             ]
-        except Exception as e:
-            self.logger.error(
-                "Failed to page records for vector membership backfill "
-                "connector %s: %s",
-                connector_id,
-                str(e),
-            )
+        except Exception:
             # Must not degrade to []: the backfill scanner reads an empty page as
             # "this connector is finished" and sets vectorMembershipBackfilled,
             # so a swallowed error would permanently mark it done having
@@ -5530,9 +5499,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             else:
                 raise ValueError(f"Invalid record type: {record_type}")
         except Exception as e:
-            self.logger.warning(
-                f"Failed to create typed record for {record_type}: {str(e)}"
-            )
             raise ValueError(
                 f"Failed to create typed record for {record_type}"
             ) from e
@@ -5583,8 +5549,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"✅ Retrieved {len(records)} child records for parent {parent_external_record_id}")
             return records
 
-        except Exception as e:
-            self.logger.error(f"❌ Get records by parent failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_records_by_record_type(
@@ -5626,11 +5591,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 len(records), record_type, connector_id,
             )
             return records
-        except Exception as e:
-            self.logger.error(
-                "Get records by record type failed for connector %s type %s: %s",
-                connector_id, record_type, e,
-            )
+        except Exception:
             raise
 
     async def get_records_by_record_group(
@@ -6340,7 +6301,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
         except Exception as e:
-            self.logger.error(f"❌ Get record group by external ID failed: {str(e)}")
             raise GraphQueryError(
                 f"Could not look up record group {external_id}: {e}"
             ) from e
@@ -6386,7 +6346,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return FileRecord.from_arango_record(file, record)
 
         except Exception as e:
-            self.logger.error(f"❌ Get file record by ID failed: {str(e)}")
             raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
 
     # ==================== User Operations ====================
@@ -7483,8 +7442,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.info(f"Recreated {migrated} edge(s) as '{current}'")
             return {"migrated": migrated, "already_current": False}
 
-        except Exception as e:
-            self.logger.error(f"❌ Legacy relation edge migration failed: {str(e)}")
+        except Exception:
             raise
 
     async def migrate_legacy_kb_to_app(
@@ -8396,8 +8354,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     apps.append(self._neo4j_to_arango_node(app_dict, CollectionNames.APPS.value))
 
             return apps
-        except Exception as e:
-            self.logger.error(f"Failed to get user apps: {str(e)}")
+        except Exception:
             raise
 
     async def _get_user_app_ids(self, user_id: str, org_id: str | None = None) -> list[str]:
@@ -8409,8 +8366,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             user_apps = [app.get('id') or app.get('_key') for app in user_app_docs if app and (app.get('id') or app.get('_key'))]
             self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
             return user_apps
-        except Exception as e:
-            self.logger.error(f"Failed to get user app ids: {str(e)}")
+        except Exception:
             raise
 
     @staticmethod
@@ -9622,8 +9578,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self.client.execute_query(
                     f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
                 )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert records failed: {str(e)}")
+        except Exception:
             raise
 
     async def create_record_relation(
@@ -9835,8 +9790,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"Successfully upserted {len(edge_data)} record relation edges.")
             return created_total if count_created else True
 
-        except Exception as e:
-            self.logger.error(f"Batch record relation upsert failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_child_record_ids_by_relation_type(
@@ -10084,8 +10038,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 collection=CollectionNames.RECORD_GROUPS.value,
                 transaction=transaction
             )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert record groups failed: {str(e)}")
+        except Exception:
             raise
 
     async def create_record_group_relation(
@@ -10197,8 +10150,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction
             )
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert record permissions failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_first_user_with_permission_to_node(
@@ -10450,8 +10402,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self.client.execute_query(query, parameters, txn_id=transaction)
             return True
 
-        except Exception as e:
-            self.logger.error(f"❌ Upsert sync point failed: {str(e)}")
+        except Exception:
             raise
 
     async def backfill_block_name_folded(self, limit: int = 5000) -> int:
@@ -10528,8 +10479,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-        except Exception as e:
-            self.logger.error(f"❌ Remove sync point failed: {str(e)}")
+        except Exception:
             raise
 
     # ==================== Batch/Bulk Operations ====================
@@ -10659,8 +10609,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     transaction=transaction
                 )
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
+        except Exception:
             raise
 
     async def ensure_all_team_with_users(self, org_id: str) -> None:
@@ -10765,8 +10714,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 self.logger.debug(f"✅ Added user {user_key} to All team with role {role}")
 
-        except Exception as e:
-            self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
+        except Exception:
             raise
 
     async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
@@ -10856,8 +10804,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             self.logger.debug(f"Added user {user_key} to All team with role {role}")
 
-        except Exception as e:
-            self.logger.error(f"add_user_to_all_team failed for org {org_id}, user {user_key}: {e}", exc_info=True)
+        except Exception:
             raise
 
     async def ensure_team_app_edge(
@@ -10892,8 +10839,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
             self.logger.debug(f"Ensured team->app edge: Teams {team_id} -> App {connector_id}")
-        except Exception as e:
-            self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
+        except Exception:
             raise
 
     async def upsert_authenticated_as(
@@ -10958,8 +10904,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 collection=CollectionNames.GROUPS.value,
                 transaction=transaction
             )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert user groups failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_upsert_app_roles(
@@ -10975,8 +10920,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 collection=CollectionNames.ROLES.value,
                 transaction=transaction
             )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert app roles failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_upsert_orgs(
@@ -10995,8 +10939,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction
             )
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert orgs failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_create_user_app_edges(
@@ -11014,8 +10957,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return len(edges)
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch create user-app edges failed: {str(e)}")
+        except Exception:
             raise
 
     # ==================== Entity ID Operations ====================
@@ -11168,8 +11110,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return bool(rows and rows[0].get("deleted"))
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete records and relations failed: {str(e)}")
+        except Exception:
             raise
 
     async def _attachments_to_delete(
@@ -11446,8 +11387,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise Exception(f"Deletion failed: {result.get('reason', 'Unknown error')}")
             return result
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete record by external ID failed: {str(e)}")
+        except Exception:
             raise
 
     async def remove_user_access_to_record(
@@ -11476,8 +11416,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction
             )
 
-        except Exception as e:
-            self.logger.error(f"❌ Remove user access to record failed: {str(e)}")
+        except Exception:
             raise
 
     async def remove_user_access_to_connector(
@@ -12588,7 +12527,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             except Exception as tx_error:
                 if created_transaction:
-                    self.logger.error(f"🔄 Rolling back transaction due to error: {str(tx_error)}")
                     await self.rollback_transaction(transaction)
                 raise tx_error
 
@@ -13757,8 +13695,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "permissions": permissions,
             }
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to check record access: {str(e)}")
+        except Exception:
             raise
 
     async def get_account_type(
@@ -14678,8 +14615,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"No permission found for user {user_id} on KB {kb_id}")
             return None
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get user KB permission: {str(e)}")
+        except Exception:
             raise
 
     async def kb_exists(self, kb_id: str) -> bool:
@@ -14769,8 +14705,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.warning("⚠️ Knowledge base not found")
                 return None
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
+        except Exception:
             raise
 
     @staticmethod
@@ -14931,8 +14866,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"✅ Found {len(kbs)} knowledge bases out of {total_count} total (including team-based access)")
             return kbs, total_count, available_filters
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list knowledge bases with pagination: {str(e)}")
+        except Exception:
             # An empty list would read as "you have no collections".
             raise
 
@@ -14970,8 +14904,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.warning("⚠️ Knowledge base not found")
             return None
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
+        except Exception:
             raise
 
 
@@ -15107,8 +15040,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if total_deleted:
                 self.logger.debug(f"🗑️ Deleted {total_deleted} block(s)")
             return total_deleted
-        except Exception as e:
-            self.logger.error(f"❌ Delete blocks failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_blocks_for_records(
@@ -15562,10 +15494,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 found = rows[0] if rows else found
             if transaction is None:
                 await self.commit_transaction(txn_id)
-        except Exception as e:
+        except Exception:
             if transaction is None and txn_id:
                 await self.rollback_transaction(txn_id)
-            self.logger.error("❌ Failed to move records to the trash: %s", e)
             raise
         return soft_delete_result(record_ids, found.get("root_keys") or [], found.get("marked") or [], batch_id)
 
@@ -16777,15 +16708,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 parameters=parameters,
                 txn_id=transaction,
             )
-        except Exception as e:
+        except Exception:
             # Must not be swallowed: the rebuild drops the vector collection
             # straight after this, and a connector whose records kept their old
             # statuses is never re-indexed, so search stays silently empty.
-            self.logger.error(
-                "❌ Failed to reset indexing status for connector %s: %s",
-                connector_id,
-                str(e),
-            )
             raise
 
     @override
@@ -16953,13 +16879,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 len(updated_keys), len(unique_ids), expected, new_status,
             )
             return updated_keys
-        except Exception as e:
+        except Exception:
             # Raised, not answered as "no row matched": that answer reads as "the record moved on", and the caller then
             # drops the write for good (the final-attempt FAILED marking left the record in its old status).
-            self.logger.error(
-                "❌ Failed compare-and-set (%s -> %s): %s",
-                expected, new_status, str(e),
-            )
             raise
 
     async def list_unsupported_page(
@@ -17493,8 +17415,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
             }
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
+        except Exception:
             raise
 
 
@@ -17938,8 +17859,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in count_results or []:
                 counts["mine" if row.get("owned") else "shared"] += int(row.get("total") or 0)
             return records, counts
-        except Exception as e:
-            self.logger.error("❌ Failed to list accessible artifacts: %s", str(e))
+        except Exception:
             raise
 
     async def get_artifact_detail(
@@ -17969,8 +17889,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
             row = results[0]
             return row.get("result", row)
-        except Exception as e:
-            self.logger.error("❌ Failed to get artifact detail: %s", str(e))
+        except Exception:
             raise
 
     async def list_kb_records(
@@ -18208,8 +18127,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"✅ Listed {len(records)} KB records out of {total_count} total")
             return records, total_count, available_filters
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list KB records: {str(e)}")
+        except Exception:
             raise
 
     async def get_kb_children(
@@ -18862,8 +18780,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
             self.logger.debug(f"Upserted {len(people)} people records")
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert people failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_person_by_email(
@@ -19056,8 +18973,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 },
                 txn_id=transaction,
             )
-        except Exception as e:
-            self.logger.error(f"❌ Ensure app membership failed: {str(e)}")
+        except Exception:
             raise
 
     def _external_grant_exists_cypher(self, principal_var: str, app_var: str) -> str:
@@ -19202,8 +19118,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return row.get("mode")
 
-        except Exception as e:
-            self.logger.error("Migrate person to user failed for user %s in org %s: %s", user_key, org_id, e)
+        except Exception:
             raise
 
     async def reap_stale_external_app_relations(
@@ -19413,10 +19328,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
             return results[0].get("deleted", False) if results else False
-        except Exception as e:
+        except Exception:
             # Raised, not answered False: a caller that went on to write the new parent
             # edge after a swallowed failure left the record under two parents.
-            self.logger.error(f"❌ Delete parent-child edge failed: {str(e)}")
             raise
 
     async def _get_user_accessible_team_app_ids(
@@ -19662,8 +19576,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 elif label == team_label or r.get("type") == "TEAM":
                     result["teams"][eid] = None
             return result
-        except Exception as e:
-            self.logger.error(f"❌ Get KB permissions failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_record_by_external_revision_id(
@@ -19767,8 +19680,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
             return [dict(row) for row in rows or []]
-        except Exception as e:
-            self.logger.error(f"❌ get_records_by_weburls failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_address_links_batch(
@@ -19807,8 +19719,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 row["id"]: {"mentioned_in": row.get("mentioned_in") or [], "links_to": row.get("links_to") or []}
                 for row in rows or []
             }
-        except Exception as e:
-            self.logger.error(f"❌ get_address_links_batch failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_issue_sites(
@@ -19841,8 +19752,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
             return [row["site"] for row in rows or [] if row.get("site")]
-        except Exception as e:
-            self.logger.error(f"❌ get_issue_sites failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_records_linking_to_weburls(
@@ -19884,8 +19794,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
             return [row["id"] for row in rows or [] if row.get("id")]
-        except Exception as e:
-            self.logger.error(f"❌ get_records_linking_to_weburls failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_record_parent_info(
@@ -20521,12 +20430,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self._kh_query(
                 query, parameters=params, txn_id=transaction
             )
-        except Exception as e:
+        except Exception:
             # Raised, not swallowed: an empty listing is indistinguishable from
             # "you may see nothing", so a failed permission query would read as
             # a correct answer.
-            self.logger.error(f"❌ get_knowledge_hub_root_nodes_v2 failed: {str(e)}")
-            self.logger.error(traceback.format_exc())
             raise
 
         rows = results[0].get("rows") or [] if results else []
@@ -20641,8 +20548,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, parameters={"user_key": user_key, "org_id": org_id},
                 txn_id=transaction, plain=True,
             )
-        except Exception as e:
-            self.logger.error(f"❌ get_knowledge_hub_access_context_v2 failed: {str(e)}")
+        except Exception:
             raise
         payload = results[0] if results else {}
         return {
@@ -20732,8 +20638,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 parameters={"user_key": user_key, "org_id": org_id},
                 txn_id=transaction, plain=True,
             )
-        except Exception as e:
-            self.logger.error(f"❌ get_knowledge_hub_access_v3 failed: {str(e)}")
+        except Exception:
             raise
         payload = rows[0] if rows else {}
         grantee_ids = [x for x in (payload.get("grantees") or []) if x]
@@ -23360,12 +23265,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not (flatten and busy.out_of_memory):
                     raise
                 elapsed = busy.ran_s if busy.ran_s is not None else time.monotonic() - walk_started
-                self.logger.warning(f"kh listing for {app_id} ran out of transaction memory after {elapsed:.1f}s")
+                # The only record of which listing hit the memory limit, and after how long; no driver text.
+                log_event(self.logger, "kh.listing.out_of_memory", level=logging.WARNING,
+                          connector_id=app_id or None, duration_ms=round(elapsed * 1000))
                 raise self._kh_walk_refusal(elapsed) from busy
-            except Exception as e:
-                self.logger.error(
-                    f"❌ get_knowledge_hub_connector_page_v3 failed: {str(e)}"
-                )
+            except Exception:
                 raise
         payload = rows[0] if rows else {}
         access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids}, "probe": probe, "cross": cross}
@@ -25523,8 +25427,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
             return [r["app_id"] for r in results if r.get("app_id")] if results else []
-        except Exception as e:
-            self.logger.error(f"❌ Get user app IDs failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_user_permission_app_ids(
@@ -25559,8 +25462,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
             return [r["app_id"] for r in results if r.get("app_id")] if results else []
-        except Exception as e:
-            self.logger.error(f"❌ Get user permission app IDs failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_knowledge_hub_context_permissions(
@@ -26994,8 +26896,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-        except Exception as e:
-            self.logger.error(f"Error in delete_all_team_permissions: {str(e)}", exc_info=True)
+        except Exception:
             raise
 
     async def get_team_owner_removal_info(
@@ -27047,8 +26948,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "total_owner_count": total_owner_count
             }
 
-        except Exception as e:
-            self.logger.error(f"Error in get_team_owner_removal_info: {str(e)}", exc_info=True)
+        except Exception:
             raise
 
     async def get_team_permissions_and_owner_count(
@@ -27115,8 +27015,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "owner_count": owner_count
             }
 
-        except Exception as e:
-            self.logger.error(f"Error in get_team_permissions_and_owner_count: {str(e)}", exc_info=True)
+        except Exception:
             raise
 
     # ==================== User Operations ====================
@@ -27276,8 +27175,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return count
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete all edges for node failed: {str(e)}")
+        except Exception:
             raise
 
 
@@ -27318,8 +27216,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return dedupe_agents_by_id(results)
 
-        except Exception as e:
-            self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
+        except Exception:
             raise
 
     async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
@@ -27356,8 +27253,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return dedupe_agents_by_id(results)
 
-        except Exception as e:
-            self.logger.error(f"Failed to check MCP server instance usage: {str(e)}")
+        except Exception:
             raise
 
     async def check_connector_in_use(self, connector_id: str, transaction: str | None = None) -> list[str]:
@@ -27397,8 +27293,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return dedupe_agents_by_id(results)
 
-        except Exception as e:
-            self.logger.error(f"Failed to check connector usage: {str(e)}")
+        except Exception:
             raise
 
     async def _get_documents_by_ids(

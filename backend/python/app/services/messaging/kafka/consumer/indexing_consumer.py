@@ -76,6 +76,7 @@ from app.services.messaging.scheduling.interface import (
     FairnessKey,
     FairnessKeyExtractor,
     FairSchedulerConfig,
+    IndexingFairness,
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import (
@@ -298,7 +299,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         stage_admission: "concurrency.StageAdmission | None" = None,
         priority_lane: "concurrency.PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
+        fairness: IndexingFairness | None = None,
     ) -> None:
+        self._fairness = fairness
         self.logger = logger
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
@@ -364,6 +367,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         from app import edition_services
 
         self.admission_backlog = edition_services.admission_backlog()
+        if fairness is not None and fairness.observer is not None:
+            self.admission_backlog.observer = fairness.observer
         self._suspects_waiting = 0
         # Held by a record whose last attempt never finished, so such records
         # run one at a time: when the process dies again, the record that
@@ -467,14 +472,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._offset_fetcher: OffsetFetcher | None = None
         self._remembered_budget_logged = False
         self._fetch_back_task: asyncio.Task | None = None
+        self._fetch_turns = 0
         self._fetch_back_plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
         # Each connector's records in flight per index slot pool, so that
         # while another connector is waiting no one connector can hold more
         # than its share of the slots (see scheduling.slot_share).
         self._slot_share: SlotShare | None = None
         if self.fair_scheduler_config.enabled:
-            self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider)
-            self._slot_share = SlotShare(
+            room = (lambda key: fairness.buffer_room(key, self._scheduler)) if fairness and fairness.buffer_room else None
+            self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider, room=room)
+            self._slot_share = (fairness.planner if fairness and fairness.planner else SlotShare)(  # type: ignore[assignment]
                 self.fair_scheduler_config.entity_depth, self.weight_provider
             )
             self._offset_tracker = PartitionOffsetTracker(logger=logger)
@@ -2477,17 +2484,31 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             - self.__held_beside_scheduler()
         )
         plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
-        for entity in remembered.entities():
+        planned: dict[object, int] = {}
+        buffer_room = self._fairness.buffer_room if self._fairness else None
+        entities = remembered.entities()
+        if buffer_room and entities:  # entities sharing a bucket take turns at being first
+            self._fetch_turns += 1
+            entities = entities[self._fetch_turns % len(entities):] + entities[: self._fetch_turns % len(entities)]
+        for entity in entities:
             free = cap - scheduler.pending_count_for(entity)
+            shared = buffer_room(entity, scheduler) if buffer_room else None
+            chunk = min(cap // 2, remembered.count(entity))
+            if shared is not None:
+                # Less what this plan took from its bucket; a chunk is never more than the bucket has left to give.
+                left = shared[1] - planned.get(shared[0], 0)
+                free, chunk = min(free, left), min(chunk, left)
             # Refilled in chunks, not a message at a time as the connector's
             # buffered work is dispatched: each fetch is a broker round trip.
-            if free < max(1, min(cap // 2, remembered.count(entity))):
+            if free < max(1, chunk):
                 continue
             take = min(free, room, _FETCH_BACK_BATCH)
             if take <= 0:
                 continue
             plan[entity] = remembered.peek(entity, take)
             room -= len(plan[entity])
+            if shared is not None:
+                planned[shared[0]] = planned.get(shared[0], 0) + len(plan[entity])
             if room <= 0:
                 break
         if not plan:

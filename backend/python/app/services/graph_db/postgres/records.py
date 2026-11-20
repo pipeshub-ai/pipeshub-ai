@@ -96,7 +96,6 @@ class RecordsMixin(PgBase):
         except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.error("Get record by external ID failed: %s", e)
             raise GraphQueryError(f"Could not look up record {external_id}: {e}") from e
 
     async def get_record_by_id(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
@@ -444,7 +443,6 @@ class RecordsMixin(PgBase):
         try:
             await self._q(go, transaction, write=True)
         except Exception:
-            self.logger.exception("Upsert sync point failed")
             raise
         return True
 

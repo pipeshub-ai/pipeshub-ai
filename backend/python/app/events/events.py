@@ -310,6 +310,36 @@ class EventProcessor:
             await replay_set.note_record_completed(record_id, completed_at, self.logger)
         return True
 
+    async def _restore_indexed_fields(
+        self,
+        record: Mapping[str, Any],
+        record_id: str,
+        content: bytes | str | None,
+        content_rev: str,
+    ) -> None:
+        """After a same-bytes skip, put back ``parsingStatus`` and ``md5Checksum`` when the write that sent the update
+        reset them: a Collection file replaced with the same bytes is saved again with neither (``NOT_STARTED``, no
+        checksum), and the skip runs no parse to set them. The record stays in duplicate detection only with its checksum.
+
+        Only while the record is still COMPLETED at this revision, so a run of other bytes that started meanwhile keeps its
+        own values. Not the delivery's business: a failure is logged and the update is still settled."""
+        try:
+            fields: dict[str, Any] = {}
+            if record.get("parsingStatus") != ProgressStatus.COMPLETED.value:
+                fields["parsingStatus"] = ProgressStatus.COMPLETED.value
+            if content:  # as `_check_duplicate_by_md5`: no bytes, no checksum
+                data = content.encode("utf-8") if isinstance(content, str) else content
+                md5 = await offload_if_large(self._hash_for_dedup, data, record.get("recordType"), record.get("mimeType"))
+                if record.get("md5Checksum") != md5:
+                    fields["md5Checksum"] = md5
+            if not fields:
+                return
+            match = {"contentRev": content_rev, "indexingStatus": ProgressStatus.COMPLETED.value}
+            if await self.graph_provider.update_node_fields_if_match(record_id, CollectionNames.RECORDS.value, fields, match):
+                self.logger.info("Record %s: restored %s after a same-bytes skip", record_id, ", ".join(sorted(fields)))
+        except Exception as exc:
+            self.logger.warning("Record %s: could not restore the parsing status and checksum after a same-bytes skip: %s", record_id, exc)
+
     async def _rewrite_or_delete_vrid_vectors(self, virtual_record_id: str) -> None:
         if not virtual_record_id or not isinstance(virtual_record_id, str):
             return
@@ -1856,6 +1886,7 @@ class EventProcessor:
                 is_sql=mime_type in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value)
                 or (dispatch is not None and dispatch.route in (Route.SQL_TABLE, Route.SQL_VIEW)),
             ) and await self._skip_same_bytes(record, record_id):
+                await self._restore_indexed_fields(record, record_id, file_content, content_rev)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return

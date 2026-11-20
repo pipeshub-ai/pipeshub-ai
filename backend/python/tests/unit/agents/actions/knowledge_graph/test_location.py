@@ -18,12 +18,8 @@ from app.agents.actions.knowledge_graph.location import (
 from app.models.entities import Connectors, OriginTypes, Record, RecordType
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
-from tests.support.graph_read_errors import (
-    CASES,
-    GRAPH_KEY,
-    assert_text_free,
-    failure_line,
-)
+from tests.support.graph_read_errors import CASES, GRAPH_KEY, SENTINELS
+from tests.support.log_capture import assert_text_free, failure_line
 
 
 def _adj(
@@ -382,7 +378,7 @@ async def test_resolve_warns_when_no_ancestor_accessible(
     assert [r.getMessage() for r in caplog.records] == [
         "resolve_ancestor_locations: 0/2 ancestors accessible despite ACL-filtered hits — check user_key wiring"
     ]
-    assert_text_free(caplog.records)  # the graph key is no identity support can match
+    assert_text_free(caplog.records, *SENTINELS)  # the graph key is no identity support can match
 
 
 _LOCATION_LOGGER = "app.agents.actions.knowledge_graph.location"
@@ -400,9 +396,9 @@ async def test_a_failed_access_check_is_one_text_free_line_and_trails_lose_names
         locs = await resolve_ancestor_locations(["story"], graph_provider=mock_provider, org_id="org", user_key=GRAPH_KEY)
 
     assert locs["story"] == "Jira (App ID: app1)"
-    assert_text_free(caplog.records)
-    line = failure_line(caplog.records, "search.location_access_failed", "resolve_ancestor_locations")
-    assert (line.error_class, line.levelno) == (error_class, level)
+    assert_text_free(caplog.records, *SENTINELS)
+    failure_line(caplog.records, "search.location_access_failed", error_class, level, *SENTINELS,
+                 handler="resolve_ancestor_locations")
 
 
 @pytest.mark.asyncio
@@ -419,9 +415,9 @@ async def test_a_failed_adjacency_read_is_one_text_free_line_and_the_app_only_fa
         )
 
     assert locs == {"story": "Jira (App ID: app1)"}
-    assert_text_free(caplog.records)
-    line = failure_line(caplog.records, "search.location_failed", "resolve_ancestor_locations")
-    assert (line.error_class, line.levelno) == (error_class, level)
+    assert_text_free(caplog.records, *SENTINELS)
+    failure_line(caplog.records, "search.location_failed", error_class, level, *SENTINELS,
+                 handler="resolve_ancestor_locations")
 
 
 @pytest.mark.asyncio
