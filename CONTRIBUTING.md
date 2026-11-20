@@ -304,7 +304,7 @@ If the `license/cla` check is still failing after you signed:
   # Rewrite only the commits authored with your old email (replace old@example.com); other people's commits keep their author
   git rebase --exec 'if [ "$(git log -1 --format=%ae)" = "old@example.com" ]; then git commit --amend --no-edit --reset-author; fi' upstream/main
   git log --format="%h %ae %s" upstream/main..HEAD   # check your commits now show the new email
-  git push --force-with-lease origin feature/your-feature-name   # the branch your pull request comes from
+  git push --force-with-lease origin HEAD:feature/your-feature-name   # your pull request's branch
   ```
 
 ## Code Style Guidelines
