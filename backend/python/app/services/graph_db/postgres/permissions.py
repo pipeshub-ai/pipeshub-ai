@@ -173,15 +173,34 @@ class PermissionsMixin(PgBase):
             for cid, ids in (await access_sql.granted_targets(tx, org, grantees, list(ORG_SHARE_PERMISSION_TYPES))).items():
                 if cid in by_conn:
                     by_conn[cid].extend(ids)
-            for lk in links:  # a source account the user authenticated as adds its own grants, and its badges', inside that connector
-                if not lk["cid"] or lk["cid"] not in by_conn:
-                    continue
-                badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
-                    AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"])]
+            for cid, holders in (await self._linked_holders(tx, org, links, gated)).items():
                 # not from an organization here: the edges are read for the account and its groups only
-                by_conn[lk["cid"]].extend((await access_sql.granted_targets(tx, org, [lk["to_id"], *badges], []))
-                                          .get(lk["cid"], []))
+                by_conn[cid].extend((await access_sql.granted_targets(tx, org, holders, [])).get(cid, []))
             return {"grantee_ids": grantees, "gated_app_ids": gated, "by_connector": {k: list(dict.fromkeys(v)) for k, v in by_conn.items()}}
+        return await self._q(go, transaction)
+
+    async def _linked_holders(self, tx: Tx, org: str, links: list[Any], gated: list[str]) -> dict[str, list[str]]:
+        """Per gated connector, the source accounts the user authenticated it as and their groups, roles and teams: their grants count inside that connector only."""
+        out: dict[str, list[str]] = {}
+        for lk in links:
+            if not lk["cid"] or lk["cid"] not in gated:
+                continue
+            badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
+                AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"])]
+            out.setdefault(lk["cid"], []).extend([lk["to_id"], *badges])
+        return out
+
+    async def _check_gate(self, user_key: str, transaction: str | None) -> dict[str, Any]:
+        """The access a check reads when the caller holds none: the gate of ``get_knowledge_hub_access_v3`` without its grants (``linked`` instead), so the check reads the grants
+        of the nodes it decides (``access.Grants``), not every grant the user holds."""
+        org = current_org_id()
+
+        async def go(tx: Tx) -> dict[str, Any]:
+            gate = await self._gate(tx, org, user_key)
+            if gate is None:
+                return dict(_NO_ACCESS)
+            grantees, gated, links = gate
+            return {"grantee_ids": grantees, "gated_app_ids": gated, "linked": await self._linked_holders(tx, org, links, gated)}
         return await self._q(go, transaction)
 
     async def _kh_v3_accessible_rows(self, user_key: str, org_id: str, node_ids: list[str], virtual_record_ids: list[str], *,
@@ -193,7 +212,7 @@ class PermissionsMixin(PgBase):
         if (not ids and not vrids) or org_id != org:
             return []
         if access is None:
-            access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+            access = await self._check_gate(user_key, transaction)
 
         async def walk(i: list[str], v: list[str], acc: dict[str, Any]) -> list[dict[str, Any]]:
             return await self._q(lambda tx: access_sql.accessible_rows(tx, org, i, v, acc), transaction)

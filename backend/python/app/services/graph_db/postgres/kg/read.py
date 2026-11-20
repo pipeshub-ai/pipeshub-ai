@@ -9,7 +9,8 @@ inside an explicit transaction, for the system role or failing, takes the walk. 
 - every virtual record id (kg has no index for them yet);
 - a node whose class names a literal that kg itself cannot vouch for (see :func:`class_verdicts`).
 
-The viewer is the walk's own description (``get_knowledge_hub_access_v3``: the principals, the gated connectors and the grants per connector). What differs between the two answers is how
+The viewer is the walk's own description (``get_knowledge_hub_access_v3``: the principals, the gated connectors and the grants per connector, or a gate whose grants are read per node:
+``access.grants_of``). What differs between the two answers is how
 a node is decided: the walk follows the hierarchy of each node, kg evaluates the node's class (``kg.scope_classes``) against those grants.
 """
 from __future__ import annotations
@@ -99,6 +100,8 @@ async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], 
     was = await tx.fetchval(SORTS_OFF) if lits else None
     for k in range(0, len(lits), CHUNK):
         r = await tx.fetchrow(LITERALS, org, lits[k:k + CHUNK])
+        if isinstance(granted, access_sql.Grants):
+            await granted.see(tx, org, r["ids"])
         seen.update(r["sks"])
         live.update(sk for sk, i in zip(r["sks"], r["ids"], strict=True) if i in granted)
     if was is not None:
@@ -130,7 +133,7 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
     """Classify the asked nodes: admitted by kg, denied by kg, or left to the walk (module docstring). Runs in one snapshot."""
     d = Decision()
     gated = set(access["gated_app_ids"])
-    granted = {g for gs in access["by_connector"].values() for g in gs}
+    granted = access_sql.grants_of(access)
     ids = list(dict.fromkeys(ids))
     by_id: dict[str, list[Any]] = {}
     for i in range(0, len(ids), CHUNK):
@@ -176,6 +179,7 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
     if need:
         classes = {c["id"]: (json.loads(c["clauses"]) if isinstance(c["clauses"], str) else list(c["clauses"])) for c in await tx.fetch(CLASSES, org, sorted(set(need.values())))}
         by_class = await class_verdicts(tx, org, classes, granted)
+        await granted.see(tx, org, list(need))
         for i, c in need.items():
             if by_class.get(c) is None:                                # no class row, or a literal kg cannot vouch for: never decide from it
                 to_walk(i, "legacy" if c not in classes else "stale_literal")

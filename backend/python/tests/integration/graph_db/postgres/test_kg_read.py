@@ -153,6 +153,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
     over: list[str] = []
     under: list[str] = []
     rows: list[str] = []
+    per_node: list[str] = []
     pairs = 0
     for i, w in enumerate(worlds):
         ns = await layer._ns(w)
@@ -162,8 +163,12 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
             uid = ns.id(viewer)
             with _bound(org):
                 access = await prov.get_knowledge_hub_access_v3(uid, org)
+                gate = await prov._check_gate(uid, None)      # the access a check reads when given none: grants read per node
             walk = await _ask(prov, org, uid, ids, access, "0")
             got = await _ask(prov, org, uid, ids, access, None)
+            for switch in ("0", None):
+                probed = await _ask(prov, org, uid, ids, gate, switch)
+                per_node += [f"{tag}{i} {viewer} {switch} {x}" for x in sorted({*probed, *walk}) if probed.get(x) != walk.get(x)]
             pairs += len(ids)
             over += [f"{tag}{i} {viewer} {x}" for x in sorted(set(got) - set(walk))]
             under += [f"{tag}{i} {viewer} {x}" for x in sorted(set(walk) - set(got))]
@@ -177,6 +182,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
     assert over == [], over[:10]
     assert under == [], under[:10]
     assert rows == [], rows[:10]
+    assert per_node == [], per_node[:10]
     assert pairs > 0
     assert not need_kg or (decided["admit"] > 0 and decided["denied"] > 0), f"kg decided too little to prove anything: {dict(decided)}"
 

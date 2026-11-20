@@ -656,7 +656,7 @@ class IdentityMixin(PgBase):
     async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list:
         """The apps this user passes the connector gate for (the access check's gate, in the user's own org)."""
         org = current_org_id()
-        gated = (await self.get_knowledge_hub_access_v3(user_id, org, transaction=transaction))["gated_app_ids"]
+        gated = (await self.get_knowledge_hub_access_context_v2(user_id, org, transaction=transaction))["gated_app_ids"]      # the gate alone: no grant is read
         if not gated:
             return []
         rows = await self._id_rows("/* pipeshub:graph.get_user_apps */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", [org, gated], transaction)

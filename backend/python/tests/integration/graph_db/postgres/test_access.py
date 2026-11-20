@@ -351,3 +351,48 @@ async def test_a_null_in_a_document_is_a_missing_field_for_the_rule_and_the_flag
     await pg_db.run(lambda tx: set_null(tx, "nullDeleted", "isDeleted"), write=True)
     await pg_db.run(lambda tx: set_null(tx, "nullOrigin", "origin"), write=True)
     assert await w.allowed("u", "nullRule", "nullDeleted", "nullOrigin") == {"nullRule", "nullDeleted", "nullOrigin"}
+
+
+async def test_a_check_given_no_access_reads_the_grants_of_the_nodes_it_decides_not_every_grant(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A check with no ``access`` reads the gate and then the permission edges of the nodes it meets, never every grant the user holds; it admits exactly
+    what the same check does with every grant listed (``get_knowledge_hub_access_v3``), over grants to the user, a group, a team, the organization (of a sharing
+    type and not), a source account and its group, on records of a gated and an ungated connector, deleted, under a seed and of RESTRICTED, PARENT_AND_GRANT and STRICT rules."""
+    await w.nodes("users", {"_key": "src"})
+    await w.nodes("groups", {"_key": "grp"}, {"_key": "srcgrp"})
+    await w.nodes("teams", {"_key": "tm"})
+    await w.nodes("organizations", {"_key": "o1"})
+    await w.nodes("apps", {"_key": "shut", "type": "CONNECTOR"})
+    await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
+    await w.nodes("records", rec("seed"), rec("belowSeed"), rec("pag", accessRule="PARENT_AND_GRANT"), rec("pagUngranted", accessRule="PARENT_AND_GRANT"),
+                  rec("restricted", accessRule="RESTRICTED"), rec("strict", accessRule="STRICT"), rec("byTeam"), rec("orgShared"), rec("orgOther"),
+                  rec("viaSrc"), rec("viaSrcGrp"), rec("gone", isDeleted=True), rec("plain"), {"_key": "elsewhere", "connectorId": "shut"})
+    await w.member("u", "grp")
+    await w.member("u", "tm", "teams")
+    await w.edge("belongsTo", ("users", "u"), ("organizations", "o1"), entityType="ORGANIZATION")
+    await w.edge("authenticatedAs", ("users", "u"), ("users", "src"), connectorId=APP)
+    await w.member("src", "srcgrp")
+    await w.child(("recordGroups", "g"), ("records", "seed"))          # g does not reach the app: only grants open what hangs under it
+    for k in ("belowSeed", "pag", "pagUngranted", "restricted"):
+        await w.child(("records", "seed"), ("records", k))
+    await w.edge("permission", ("groups", "grp"), ("records", "seed"), type="GROUP", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "pag"), type="USER", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "strict"), type="USER", role="READER")
+    await w.edge("permission", ("teams", "tm"), ("records", "byTeam"), type="TEAM", role="READER")
+    await w.edge("permission", ("organizations", "o1"), ("records", "orgShared"), type="ORG", role="READER")
+    await w.edge("permission", ("organizations", "o1"), ("records", "orgOther"), type="USER", role="READER")
+    await w.edge("permission", ("users", "src"), ("records", "viaSrc"), type="USER", role="READER")
+    await w.edge("permission", ("groups", "srcgrp"), ("records", "viaSrcGrp"), type="GROUP", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "gone"), type="USER", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "elsewhere"), type="USER", role="READER")
+    ids = ["seed", "belowSeed", "pag", "pagUngranted", "restricted", "strict", "byTeam", "orgShared", "orgOther", "viaSrc", "viaSrcGrp", "gone", "plain", "elsewhere"]
+    want = {"seed", "belowSeed", "pag", "byTeam", "orgShared", "viaSrc", "viaSrcGrp"}      # strict: granted, but STRICT is no seed and it reaches no app
+    listed = await w.p.get_knowledge_hub_access_v3("u", w.org)
+    assert await w.allowed("u", *ids, access=listed) == want
+
+    async def every_grant(*_a: object, **_k: object) -> None:
+        raise AssertionError("a check given no access read every grant the user holds")
+    monkeypatch.setattr("app.services.graph_db.postgres.access.granted_targets", every_grant)
+    for one in ids:      # one node at a time too: each is decided from its own edges and its ancestors'
+        assert await w.allowed("u", one) == {one} & want, one
+    assert await w.allowed("u", *ids) == want
+    assert await w.allowed("other", *ids) == set()
