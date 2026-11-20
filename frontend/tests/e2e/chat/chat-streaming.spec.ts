@@ -775,11 +775,8 @@ test.describe('Chat — stop streaming (assistant)', () => {
       .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'refresh' }) })
       .first();
     await expect(regenBtn).toBeVisible({ timeout: 8_000 });
+    // One click regenerates: a reply without a question card is asked again at once, with no confirm in the composer.
     await regenBtn.click();
-    // Regenerating locks the textarea (`readOnly`); confirm via the send button
-    // so the keypress does not depend on focusing a non-editable field.
-    await expect(sendButton(page)).toBeVisible({ timeout: 5_000 });
-    await sendButton(page).click();
 
     const stopBtn = page.locator('[data-testid="chat-stop-button"]');
     await expect(stopBtn).toBeVisible({ timeout: 10_000 });
