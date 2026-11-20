@@ -31,8 +31,8 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 12 TC-GH-CODE-HIER-001    — folder PARENT_CHILD chain + folder inventory
   order 13 TC-GH-CODE-TS-001      — code/folder source timestamps (polled)
   order 14 TC-GH-PERM-001         — private repo ACL, role mapping, 2-hop inheritance
-  order 15 TC-GH-PERM-002         — public repo ORG grant + one team→app gate edge (its own connector)
-  order 15 TC-GH-PERM-003         — a colleague with no GitHub account: private refused + unlisted, public opens + listed
+  order 15 TC-GH-PERM-002         — public repo ORG grant, no team→app gate edge (its own connector)
+  order 15 TC-GH-PERM-003         — a colleague with no GitHub account: private and public refused, neither listed
   order 16 TC-GH-IDX-001          — indexing reaches COMPLETED / AUTO_INDEX_OFF
   order 17 TC-GH-CKPT-001         — issue / PR / code checkpoints at their exact values
   order 18 TC-INCR-ISSUE-001      — new issues (one pre-closed → DONE), then edit + not_planned close
@@ -1343,8 +1343,8 @@ class TestGitHubTeamsPermissions:
     ) -> None:
         """TC-GH-PERM-002: public repo — the visibility-derived ORG grant.
 
-        A public repo is readable by anyone with a GitHub account, so mirroring it as
-        readable by the whole PipesHub org matches reality.
+        A public repo is readable by anyone with a GitHub account, so the ORG grant
+        reaches the PipesHub users linked to a GitHub account, and no one else.
 
         The org group *does* legitimately carry an ORG edge — it accumulates the union
         of every repo's grants. What keeps that union from leaking is that nothing
