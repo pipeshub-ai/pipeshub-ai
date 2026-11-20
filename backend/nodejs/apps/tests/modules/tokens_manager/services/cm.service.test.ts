@@ -18,6 +18,7 @@ import {
   DefaultStorageConfig,
 } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { envGuard } from '../../../helpers/env-guard'
+import { DefaultMcpScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
 
 describe('tokens_manager/services/cm.service', () => {
   afterEach(() => {
@@ -1234,6 +1235,14 @@ describe('tokens_manager/services/cm.service', () => {
         process.env.MCP_SCOPES = 'scope1,,scope2,'
         const result = await configService.getMcpScopes()
         expect(result).to.deep.equal(['scope1', 'scope2'])
+      })
+
+      // The device login app and dynamic client registration treat an empty list as no cap at all.
+      it('falls back to the default scopes when the value holds no scope, never to an empty cap', async () => {
+        for (const blank of ['', ' ', ',', ' , ,']) {
+          process.env.MCP_SCOPES = blank
+          expect(await configService.getMcpScopes(), JSON.stringify(blank)).to.deep.equal(DefaultMcpScopes)
+        }
       })
     })
 
