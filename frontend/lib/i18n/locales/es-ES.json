@@ -3118,7 +3118,8 @@
             "max_pages": "Alcanzó el límite de páginas",
             "time_limit": "Alcanzó su límite de tiempo; la próxima sincronización continúa",
             "stalled": "El sitio dejó de responder; la próxima sincronización continúa",
-            "rate_limited": "El sitio pidió repetidamente menos solicitudes; la próxima sincronización continúa"
+            "rate_limited": "El sitio pidió repetidamente menos solicitudes; la próxima sincronización continúa",
+            "start_not_recorded": "La sincronización no pudo guardar su inicio, así que no se ejecutó; la próxima sincronización lo vuelve a intentar"
           },
           "pagesSaved": "{{count}} páginas guardadas",
           "failed": "{{count}} páginas con error",
@@ -4365,6 +4366,9 @@
           "label": "Servicio de extracción",
           "description": "Clasificación de documentos y extracción de metadatos basada en LLM"
         }
+      },
+      "healthWarnings": {
+        "title": "Requiere atención"
       },
       "vectorDbMemory": {
         "title": "El índice de búsqueda no cabe en la memoria de la base de datos vectorial",

@@ -112,7 +112,7 @@ async def snapshot(svc, col) -> dict[str, tuple]:
 
 def _store(svc: IVectorDBService, col: str, dim: int, salt: str) -> VectorStore:
     store = make_store(svc, dim=dim, collection=col)
-    store._embed_documents_with_retry = AsyncMock(side_effect=lambda ts, _rid: [vec(t, dim, salt) for t in ts])
+    store._embed_documents_with_retry = AsyncMock(side_effect=lambda ts, _rid, witness_out=None: [vec(t, dim, salt) for t in ts])
     return store
 
 

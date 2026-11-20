@@ -878,6 +878,12 @@ LISTED = """CALL () {{
 _KH_SPLIT_COMPARE = "split-compare"
 
 
+@lru_cache(maxsize=8)
+def _warn_unknown_kh_browse_mode(value: str) -> None:
+    # Once per value: the mode is read on every browse.
+    logging.getLogger(__name__).warning("KH_BROWSE_MODE=%r is not legacy, split or shadow; browsing with split", value)
+
+
 class _KhSplitUndecided(Exception):
     """The split browse cannot decide a row within its bounds: a node with more children than it reads and none admitted among
     those it read, or stubs below stubs past the depth cap. The page is answered by legacy, which decides in the database, so
@@ -8789,8 +8795,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See :meth:`IGraphDBProvider.get_entity_access_context`.
 
         App paths mirror `get_user_apps` plus the KB paths, and RecordGroup
-        paths mirror Paths 1-4 and the nested step of
-        `_build_permission_paths_cypher`.
+        paths mirror Paths 1-4 of `_build_permission_paths_cypher`. Unlike its
+        nested step, the inheritance walk here stays inside the seed's connector.
         """
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
@@ -8905,14 +8911,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         // unlabelled with its filters after the WITH, or the planner seeks
         // child record groups by index and checks paths back to the seed
         // (VarLengthExpand(Into)), three times the cost. The whole-path
-        // predicate still requires child to be a RecordGroup.
+        // predicate still requires child to be a RecordGroup, and keeps the
+        // walk inside the seed's connector (a null connectorId matches none).
         CALL {
             WITH seed_rgs, record_level_app_ids
             UNWIND seed_rgs AS seed
             WITH seed, record_level_app_ids
             WHERE coalesce(seed.hideChildren, false) = false
             MATCH p = (seed)<-[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]-(child)
-            WHERE all(n IN nodes(p) WHERE n:RecordGroup)
+            WHERE all(n IN nodes(p) WHERE n:RecordGroup AND n.connectorId = seed.connectorId)
             WITH child, record_level_app_ids
             WHERE child.orgId = $org_id
               AND coalesce(child.isDeleted, false) = false
@@ -21972,10 +21979,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
         return list(rows[0].get("ids") or []) if rows else []
 
-    # A browse (``flatten=False``) decides what it lists in one of two ways (``KH_BROWSE_MODE``):
-    # - ``legacy``: one statement evaluates the browse rule at every hop, for the listing, each row's arrow and the stubs. It
-    #   grew to 62-104 KB and 262 EXISTS subqueries, which Neo4j takes minutes to plan (docs/knowledge-hub-browse.md).
-    # - ``split``: the definition the Knowledge Hub conformance layer holds both to (tests/permissions/kh_layer.py), computed
+    # A browse (``flatten=False``) decides what it lists in one of two ways (``KH_BROWSE_MODE``, unset or unknown: ``split``):
+    # - ``legacy`` (opt-out): one statement evaluates the browse rule at every hop, for the listing, each row's arrow and the
+    #   stubs. It grew to 62-104 KB and 262 EXISTS subqueries, which Neo4j takes minutes to plan (docs/knowledge-hub-browse.md).
+    # - ``split`` (the default): the definition the Knowledge Hub conformance layer holds both to (tests/permissions/kh_layer.py), computed
     #   from small fixed statements. A browse of N lists N's hierarchy children of N's App that the batch check admits and no
     #   group that hides its children holds or lies above, the chain-tops placed under N, and a stub child only where opening
     #   it lists something. A row's arrow is on exactly where opening the row lists something. The page statement then lists
@@ -21999,8 +22006,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     @staticmethod
     def kh_browse_mode() -> str:
-        mode = os.getenv("KH_BROWSE_MODE", "legacy").strip().lower()
-        return mode if mode in Neo4jProvider.KH_BROWSE_MODES else "legacy"
+        mode = os.getenv("KH_BROWSE_MODE", "").strip().lower() or "split"
+        if mode not in Neo4jProvider.KH_BROWSE_MODES:
+            _warn_unknown_kh_browse_mode(mode)
+            return "split"
+        return mode
 
     @staticmethod
     def _kh_shadow_sample() -> float:

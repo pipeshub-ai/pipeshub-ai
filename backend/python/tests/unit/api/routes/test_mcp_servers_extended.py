@@ -299,7 +299,10 @@ class TestRefreshOAuthToken:
             assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_refresh_token_invalid_marks_unauthenticated_and_raises_409(self) -> None:
+    @pytest.mark.parametrize("code", ["invalid_grant", "invalid_scope"])
+    async def test_a_rejected_refresh_token_is_409_and_the_route_signs_nobody_out(self, code: str) -> None:
+        """The shared refresh counts grant refusals toward a sign-out (token_refresh); a refused request shape is
+        no sign-out at all. Either way the route writes nothing itself."""
         from app.agents.mcp.oauth_client import MCPRefreshTokenInvalidError
         from app.api.routes.mcp_servers import refresh_oauth_token
 
@@ -321,15 +324,13 @@ class TestRefreshOAuthToken:
             mock_oauth.MCPRefreshTokenInvalidError = MCPRefreshTokenInvalidError
             mock_oauth.MCPOAuthError = Exception
             mock_refresh.refresh_credential_record = AsyncMock(
-                side_effect=MCPRefreshTokenInvalidError("token rejected"))
+                side_effect=MCPRefreshTokenInvalidError("token rejected", error_code=code))
 
             with pytest.raises(HTTPException) as exc_info:
                 await refresh_oauth_token(request, "inst-1")
             assert exc_info.value.status_code == 409
 
-        mock_config.set_config.assert_awaited_once()
-        saved_record = mock_config.set_config.call_args[0][1]
-        assert saved_record["isAuthenticated"] is False
+        mock_config.set_config.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_refresh_token_invalid_no_record(self):

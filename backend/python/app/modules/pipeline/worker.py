@@ -54,6 +54,7 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
 )
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+from app.services.messaging.precision_flip import precision_flip_in
 from app.services.spend_guard.retry_policy import clamp_retry_after
 from app.utils.error_class import log_failure, quotes_content
 from app.utils.indexing_timing import note
@@ -89,6 +90,16 @@ class StageHeldForDelete(StagePaused):
     IN_PROGRESS, which the redelivery takes over like a crashed run's.
 
     Only this message waits: the other connectors' jobs on the stage keep running.
+    """
+
+    pauses_consumer = False
+
+
+class StageWaitsForPrecision(StagePaused):
+    """A write of the stage met an index that holds another weight precision than the server serves.
+
+    Handed back to the queue with no delivery attempt counted. The run's claim is settled as QUEUED, so the
+    redelivery claims it again. Only this message waits; the read-time check holds back new work.
     """
 
     pauses_consumer = False
@@ -161,7 +172,16 @@ class StageJobHandler:
         job, stage = self._parse(message)
         # The delivery's index.end is the job's one line; the stage's steps time themselves on it.
         note(stage=job.stage, job=job.job_id, record_id=job.record_ids[0])
-        await self._handle(job, stage)
+        try:
+            await self._handle(job, stage)
+        except (StagePaused, StageRetry):
+            raise
+        except Exception as exc:
+            # A flip of the weight precision may sit under any wrapper the stage put around it.
+            flip = precision_flip_in(exc)
+            if flip is None:
+                raise
+            raise StageWaitsForPrecision(str(flip), delay_s=flip.delay_s) from exc
         # The consumer releases the job's permit on INDEXING_COMPLETE; nothing held a parse slot.
         data = PipelineEventData(record_id=job.job_id)
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=data)

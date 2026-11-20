@@ -3226,7 +3226,8 @@
             "max_pages": "已達到最大頁數限制",
             "time_limit": "已達到時間限制；下次同步將繼續",
             "stalled": "網站停止回應；下次同步將繼續",
-            "rate_limited": "網站一再要求減少請求；下次同步將繼續"
+            "rate_limited": "網站一再要求減少請求；下次同步將繼續",
+            "start_not_recorded": "同步無法儲存其開始記錄，因此未執行；下次同步將重試"
           },
           "pagesSaved": "已儲存 {{count}} 個頁面",
           "failed": "{{count}} 個頁面失敗",
@@ -4615,6 +4616,9 @@
           "label": "Extraction 服務",
           "description": "基於 LLM 的文件分類與中繼資料擷取"
         }
+      },
+      "healthWarnings": {
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜尋索引超出了向量資料庫的記憶體",

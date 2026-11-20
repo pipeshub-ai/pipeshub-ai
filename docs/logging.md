@@ -542,6 +542,9 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   turn's. `toolset.route.failed op=load_instances` also appears on agent chat requests (`get_authenticated_toolsets`). An OAuth
   callback's failure is on the line with `outcome=failure` and the body's `error` code as `reason`; a provider's `error=` is
   `reason=provider_error` with `oauth_error` (a code RFC 6749 or OpenID Connect defines, else `other`) and is never ERROR.
+  The connector OAuth callback (`connectors/api/router.py`) does the same for its token exchange (`reason=server_error`, no text:
+  the error can quote the token URL's query or the provider's answer), a provider's `error=`, and an unknown connector
+  (`reason=instance_not_found`).
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
   duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line.
@@ -636,9 +639,9 @@ refresh of one credential reads the same everywhere:
 | `credential_refresh.start` | DEBUG | |
 | `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `no_access_token`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
 | `credential_refresh.check_failed` | the failure's level; DEBUG when the attempt's `end` already logged it | as a failed `end` |
-| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated), the cause's `error_class` and `oauth_error` |
-| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`), `path` (MCP: `background` after 3 rejections, `route` after one) |
-| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone |
+| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated; MCP adds `reason`: `rotated`, `within_window`, `not_saved`), the cause's `error_class` and `oauth_error` |
+| `credential_refresh.deauthenticated` | WARNING | `reason` (`refresh_token_invalid`; MCP also `oauth_client_rejected`), `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`) |
+| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone; MCP adds `strike` |
 | `credential_refresh.skipped` | WARNING | `outcome=skipped`, `reason` (`lock_wait_timeout`: another refresh of the same credential holds its lock) |
 
 Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), `trigger` (`scan`, `scheduled`, `on_demand`), the
@@ -656,6 +659,10 @@ or `scheduled`, and `on_demand` only on the `scheduled` line written when a sign
 
 Every MCP refresh, whoever starts it (the background service, the refresh route, tool listing or discovery, an agent's 401), goes
 through `app/agents/mcp/token_refresh.py`, which writes its `end`; `duration_ms` includes waiting for another process's refresh lock.
+A refusal that says the sign-in can't be renewed (a dead grant, or the provider refusing our client) is a strike on the
+credential record, whichever path saw it, at most one per 5 minutes; the third signs it out with `deauthReason`, and a
+success clears the count. A refused request shape (`invalid_request`, `invalid_scope`, `unsupported_grant_type`) is no
+such strike; only the background service counts it, in process. The refresh route signs nobody out itself.
 The tool call and discovery lines of the same failure carry the same `error_class` and keep their own level. Per-turn MCP lines
 classed `misconfigured` share one hourly ERROR per server and class (`tool_call.end`, `mcp.discover.end` turn and listing); the
 others in that hour are DEBUG. A token host that does not resolve is `host_unresolved` (`unavailable`, WARNING); only a URL the

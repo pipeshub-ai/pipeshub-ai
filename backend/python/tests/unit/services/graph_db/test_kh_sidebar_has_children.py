@@ -20,6 +20,12 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 NEO4J_CONTAINER_FILTER = "(node.hasChildren = true"
 
 
+@pytest.fixture(autouse=True)
+def _legacy_browse(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The Neo4j browse statements pinned here are the legacy browse's; split is the default (docs/knowledge-hub-browse.md).
+    monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
+
+
 def _neo4j() -> Neo4jProvider:
     provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
     provider.client = AsyncMock()
