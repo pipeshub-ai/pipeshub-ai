@@ -19,7 +19,9 @@ const connectorAccountConnectTemplate = loadTemplate(
   'src/modules/mail/views/layouts/connectors/connectAccount.hbs',
 );
 const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layouts/org/orgEmailVerification.hbs');
-const sandboxCapacityAlertTemplate = loadTemplate('src/modules/mail/views/layouts/system/sandboxCapacityAlert.hbs');
+const sandboxCapacityAlertTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/system/sandboxCapacityAlert.hbs',
+);
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
 const footerTemplate = loadTemplate('src/modules/mail/views/partials/footer.hbs');
 const headTemplate = loadTemplate('src/modules/mail/views/partials/head.hbs');
