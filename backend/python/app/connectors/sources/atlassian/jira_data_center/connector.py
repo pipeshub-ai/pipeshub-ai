@@ -113,6 +113,10 @@ from app.connectors.sources.atlassian.core.read_outcome import (
     StoredAccessReadError,
     is_inconclusive_status,
 )
+from app.connectors.sources.atlassian.jira_cloud.comment_access import (
+    COMMENT_RECORD_PREFIX,
+    is_restricted_comment,
+)
 from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
@@ -130,6 +134,7 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
+    CommentRecord,
     FileRecord,
     MimeTypes,
     OriginTypes,
@@ -202,7 +207,7 @@ ISSUE_SEARCH_FIELDS: list[str] = [
     "summary", "description", "status", "priority",
     "creator", "reporter", "assignee", "created", "updated",
     "issuetype", "project", "parent", "attachment", "security",
-    "issuelinks",
+    "issuelinks", "comment",
     # When the issue was resolved, and when it is due: shown with its status.
     "resolutiondate", "duedate",
 ]
@@ -600,6 +605,8 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_refused: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
+        # Project role name -> id, from this sync's role lists: a restricted comment names its role by name.
+        self._role_ids: dict[str, str] = {}
         self._stored_app_users: list[AppUser] = []  # read by _fetch_users
         self._newly_listed_user_keys: set[str] = set()
         self._own_key: str | None = None  # the account the connector authenticates as
@@ -1082,6 +1089,7 @@ class JiraDataCenterConnector(BaseConnector):
             # Fetch and sync users
             self._kept_unread_access = False
             self._kept_after_refusal = []
+            self._role_ids = {}  # no role list read this sync: a comment restricted to a role grants nobody
             jira_users = await self._fetch_users()
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
@@ -1641,10 +1649,11 @@ class JiraDataCenterConnector(BaseConnector):
                 issue_key, issue_record.id, issue_record.external_record_id,
             )
 
-            # Attachments hang off the issue by ATTACHMENT edges and go with it;
+            # Attachments hang off the issue by ATTACHMENT edges and go with it, and so do its comment records;
             # sub-tasks survive and are re-pointed at what the issue hung under.
+            comments = await self._stored_comment_records(issue_record.external_record_id)
             result = await self.data_entities_processor.on_records_deleted_cascade(
-                [issue_record.id], self.connector_id, cascade_children=False,
+                [issue_record.id, *(c.id for c in comments)], self.connector_id, cascade_children=False,
                 include_trashed_roots=True,
             )
             if not (result or {}).get("success", False):
@@ -1652,7 +1661,7 @@ class JiraDataCenterConnector(BaseConnector):
                 raise RuntimeError(f"delete failed: {(result or {}).get('reason')}")
 
             self.logger.info(
-                "🗑️ %s issue %s (%s direct attachments)",
+                "🗑️ %s issue %s (%s direct attachments and comment records)",
                 "Moved to the trash" if result.get("softDeleted") else "Deleted",
                 issue_key, max(len(result.get("deleted_records") or []) - 1, 0),
             )
@@ -3003,6 +3012,8 @@ class JiraDataCenterConnector(BaseConnector):
                 role_detail_failed = False
                 for role_name, role_url in roles_dict.items():
                     try:
+                        # Project roles are defined for the whole site; each project names them all.
+                        self._role_ids[role_name] = role_url.rstrip('/').split('/')[-1]
                         # Skip app-only roles
                         if role_name == "atlassian-addons-project-access":
                             continue
@@ -4309,16 +4320,23 @@ class JiraDataCenterConnector(BaseConnector):
             records_with_permissions,
             key=lambda x: (x[0].parent_external_record_id is not None, x[0].parent_external_record_id or "")
         )
+        # Comment records go in batches of their own, after every issue: the write gives an issue a stub's id when an
+        # earlier record left one for it, and a comment must name the id its issue was written under.
+        comments = [x for x in sorted_records if isinstance(x[0], CommentRecord)]
+        issues = {r.external_record_id: r for r, _ in sorted_records if isinstance(r, TicketRecord)}
 
         batch_size = BATCH_PROCESSING_SIZE
+        others = [x for x in sorted_records if not isinstance(x[0], CommentRecord)]
+        batches = [part[i:i + batch_size] for part in (others, comments) for i in range(0, len(part), batch_size)]
 
-        for i in range(0, len(sorted_records), batch_size):
-            batch = sorted_records[i:i + batch_size]
+        for i, batch in enumerate(batches):
             # An issue stored already whose level could not be read keeps its grants: on_new_records
             # would replace them with none on the first write of a full sync, and a holder would lose
             # the issue until the level is read again.
             rest = []
             for item in batch:
+                if isinstance(item[0], CommentRecord) and item[0].parent_external_record_id in issues:
+                    item[0].parent_node_id = issues[item[0].parent_external_record_id].id
                 if await self._keeps_stored_grants(item[0]):
                     # Here to keep its grants: no reindex unless the save sees a new revision.
                     await self.data_entities_processor.on_record_content_update(item[0], content_changed=False)
@@ -4336,7 +4354,7 @@ class JiraDataCenterConnector(BaseConnector):
             issues_count = sum(1 for r, _ in batch if isinstance(r, TicketRecord))
             files_count = sum(1 for r, _ in batch if isinstance(r, FileRecord))
             self.logger.info(
-                f"📦 Batch {i//batch_size + 1}: {issues_count} issues, "
+                f"📦 Batch {i + 1}: {issues_count} issues, "
                 f"{files_count} attachments ({new_in_batch} new, {len(batch) - new_in_batch} updated)"
             )
 
@@ -5697,6 +5715,12 @@ class JiraDataCenterConnector(BaseConnector):
                     # a full read reaches every child itself, and a parent that never had one changes none.
                     self._batch_parents[str(issue_id)] = issue_key if issue_data["is_epic"] else None
 
+                if self._enforces_issue_security:
+                    all_records.extend(await self._restricted_comment_records(
+                        issue, issue_record,
+                        existing_record if existing_record is not None and not existing_record.is_placeholder else None,
+                    ))
+
                 # Attachments follow their issue
                 permissions = []
 
@@ -5724,6 +5748,107 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.debug(f"⏭️ Skipped {skipped_unchanged_count} unchanged issue(s)")
 
         return all_records
+
+    async def _stored_comment_records(self, issue_id: str) -> list[Record]:
+        return await self.data_entities_processor.get_records_by_parent(
+            self.connector_id, issue_id, RecordType.COMMENT.value,
+        )
+
+    def _comment_grants(self, comment: dict[str, Any], project_key: str) -> list[Permission]:
+        """Who Jira shows a restricted comment to, among the readers of its issue: the members of the group, or of the
+        project role in the issue's project, that its ``visibility`` names. Data Center names both by name
+        (VisibilityJsonBean: ``type`` group|role and ``value``, in the 10.2, 10.7, 11.0 and 11.3 specifications); a group's
+        name is its id here, and a role's name resolves through this sync's role lists. Anything else grants nobody."""
+        visibility = comment.get("visibility")
+        kind, value = (visibility.get("type"), str(visibility.get("value") or "")) if isinstance(visibility, dict) else (None, "")
+        if kind == "group" and value:
+            return [Permission(entity_type=EntityType.GROUP, external_id=value, type=PermissionType.READ)]
+        if kind == "role" and (role_id := self._role_ids.get(value)):
+            return [Permission(entity_type=EntityType.ROLE, external_id=f"{project_key}_{role_id}", type=PermissionType.READ)]
+        return []
+
+    async def _restricted_comment_records(
+        self, issue: dict[str, Any], issue_record: TicketRecord, stored: Record | None,
+    ) -> list[tuple[Record, list[Permission]]]:
+        """A record under the issue for each comment restricted to a group or a project role. The issue's content holds
+        only the comments everyone who opens it may read; each of these is PARENT_AND_GRANT: read by whoever reads the
+        issue, by any path, and is in the group or role it names, as Jira shows it.
+
+        The stored ones that are gone or now public are deleted. When the comments cannot be read in full, every stored
+        one is deleted; then, and when a role cannot be resolved (that comment is written with no grant), the issue is
+        held for the next sync, which reads it again.
+        """
+        issue_id = issue_record.external_record_id
+        fields = issue.get("fields") or {}
+        project_key = (fields.get("project") or {}).get("key") or str(issue.get("key") or "").rsplit("-", 1)[0]
+        stored_by_id = {r.external_record_id: r for r in await self._stored_comment_records(issue_id)} if stored else {}
+        failure: Exception | None = None
+        comment_field = fields.get("comment")
+        comments = comment_field if isinstance(comment_field, list) else []
+        if isinstance(comment_field, dict):
+            comments = list(comment_field.get("comments") or [])
+            total = comment_field.get("total")
+            try:
+                if isinstance(total, int) and not isinstance(total, bool) and total > len(comments):
+                    comments = await self._fetch_all_issue_comments(issue_id, comments, total, raise_on_error=True)
+            except Exception as e:
+                comments, failure = [], e  # unknown, so none is taken for public or kept with an old audience
+        out: list[tuple[Record, list[Permission]]] = []
+        for comment in comments:
+            if not isinstance(comment, dict) or not comment.get("id") or not is_restricted_comment(comment):
+                continue
+            external_id = f"{COMMENT_RECORD_PREFIX}{comment['id']}"
+            existing = stored_by_id.pop(external_id, None)
+            created = self._parse_jira_timestamp(comment.get("created") or "")
+            updated = self._parse_jira_timestamp(comment.get("updated") or "") or created
+            author = comment.get("author") if isinstance(comment.get("author"), dict) else {}
+            record = CommentRecord(
+                id=existing.id if existing else new_record_id(self.connector_id, external_id),
+                org_id=self.data_entities_processor.org_id,
+                record_name=f"Comment by {author.get('displayName') or 'Unknown'} on {issue.get('key') or issue_id}",
+                record_type=RecordType.COMMENT,
+                external_record_id=external_id,
+                external_revision_id=str(updated) if updated else None,
+                version=0 if existing is None else existing.version + int(existing.source_updated_at != updated),
+                origin=OriginTypes.CONNECTOR,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                mime_type=MimeTypes.BLOCKS.value,
+                parent_external_record_id=issue_id,
+                parent_record_type=RecordType.TICKET,
+                external_record_group_id=issue_record.external_record_group_id,
+                record_group_type=RecordGroupType.PROJECT,
+                source_created_at=created,
+                source_updated_at=updated,
+                created_at=created,
+                updated_at=updated,
+                weburl=f"{issue_record.weburl}?focusedCommentId={comment['id']}" if issue_record.weburl else None,
+                author_source_id=str(author.get("key") or author.get("name") or ""),
+                preview_renderable=False,
+                is_dependent_node=True,
+                parent_node_id=issue_record.id,
+                inherit_permissions=True,
+                rewrite_permissions=True,
+                access_rule=AccessRule.PARENT_AND_GRANT,
+            )
+            record.indexing_status = issue_record.indexing_status
+            grants = self._comment_grants(comment, project_key)
+            if not grants and failure is None:
+                failure = ValueError(f"comment {comment['id']} names a group or role that could not be resolved")
+            out.append((record, grants))
+        if stored_by_id:
+            result = await self.data_entities_processor.on_records_deleted_cascade(
+                [r.id for r in stored_by_id.values()], self.connector_id, cascade_children=False,
+            )
+            if not isinstance(result, dict) or not result.get("success", False):
+                # Left behind, a comment made public or moved to another role or group keeps its old audience.
+                raise RuntimeError(f"could not delete the stale comment records of issue {issue_id}: {result}")
+        if failure is not None:
+            self._note_failed_issue(issue, failure)  # holds the cursor at this issue: the next sync reads it again
+            # Stored as changed, or the next sync would skip it as unchanged.
+            kept = stored.source_updated_at if stored is not None else None
+            issue_record.source_updated_at = kept if kept and kept != issue_record.updated_at else 0
+        return out
 
     # ============================================================================
     # Attachments
@@ -5894,9 +6019,12 @@ class JiraDataCenterConnector(BaseConnector):
         attachment_children_map: Optional[dict[str, ChildRecord]] = None,
         attachment_mime_types: Optional[dict[str, str]] = None,
         rendered_fields: Optional[dict[str, Any]] = None,
+        restricted: bool = False,
     ) -> BlocksContainer:
         """
         Parse Jira issue data into BlocksContainer with BlockGroups and Blocks.
+
+        ``restricted`` keeps comments restricted to a role or group: only for a comment record's own content.
 
         Uses rendered HTML from ``renderedFields`` (via ``?expand=renderedFields``)
         for description and comments. Images are fetched via authenticated API and
@@ -5959,8 +6087,8 @@ class JiraDataCenterConnector(BaseConnector):
         comments_data = issue_data.get("comments", [])
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
-        # A comment restricted to a role or group would reach everyone who can open the issue.
-        comments_data = [c for c in comments_data or [] if not c.get("visibility")]
+        # A comment restricted to a role or group would reach everyone who can open the issue: it is a record of its own.
+        comments_data = [c for c in comments_data or [] if restricted or not c.get("visibility")]
 
         # 1. Description BlockGroup (index=0) — rendered HTML
         if isinstance(rendered_description_html, str) and rendered_description_html.strip():
@@ -6334,7 +6462,7 @@ class JiraDataCenterConnector(BaseConnector):
         5. Serializes BlocksContainer to JSON bytes for streaming
 
         Args:
-            record: TicketRecord to stream
+            record: TicketRecord to stream, or a restricted comment's CommentRecord: its issue's title, then the comment
 
         Returns:
             bytes: Serialized BlocksContainer as JSON bytes
@@ -6342,7 +6470,8 @@ class JiraDataCenterConnector(BaseConnector):
         Raises:
             Exception: If issue data cannot be fetched or processed
         """
-        issue_id = record.external_record_id
+        is_comment = record.record_type == RecordType.COMMENT
+        issue_id = str(record.parent_external_record_id or "") if is_comment else record.external_record_id
 
         # Fetch issue with comments. ``"comments"`` is not a valid v2 ``expand`` value
         # (valid expands: ``renderedFields``, ``names``, ``schema``, ``transitions``,
@@ -6406,11 +6535,21 @@ class JiraDataCenterConnector(BaseConnector):
                     issue_id_or_key=issue_id,
                     already_fetched=comments_data,
                     expected_total=embedded_total,
+                    raise_on_error=is_comment,
                 )
         elif isinstance(comments_field, list):
             comments_data = list(comments_field)
         else:
             comments_data = []
+        if is_comment:
+            comment_id = record.external_record_id.removeprefix(COMMENT_RECORD_PREFIX)
+            comments_data = [c for c in comments_data if isinstance(c, dict) and str(c.get("id")) == comment_id]
+            if not comments_data:
+                raise not_found_at_source(self.display_name)
+            # The issue's description and files are its own record's content.
+            fields = {k: v for k, v in fields.items() if k in ("summary", "project")}
+            issue_data["fields"] = fields
+            rendered_fields = {"comment": (rendered_fields or {}).get("comment")}
 
         # Resolve project for new attachment FileRecords. Prefer the stored ticket
         # group id; fall back to Jira ``fields.project`` when legacy rows have an
@@ -6455,6 +6594,7 @@ class JiraDataCenterConnector(BaseConnector):
             attachment_children_map=attachment_children_map if attachment_children_map else None,
             attachment_mime_types=attachment_mime_types if attachment_mime_types else None,
             rendered_fields=rendered_fields,
+            restricted=is_comment,
         )
 
         # Serialize BlocksContainer to JSON bytes
@@ -6809,8 +6949,12 @@ class JiraDataCenterConnector(BaseConnector):
         issue_id_or_key: str,
         already_fetched: list[dict[str, Any]],
         expected_total: int,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """Page out the remaining comments for an issue using DC v2.
+
+        ``raise_on_error`` raises on a page that cannot be read instead of returning what was read.
 
         ``fields.comment`` embedded in ``get_issue_v2`` returns only the server's
         default first page; this paginates ``/rest/api/2/issue/{idOrKey}/comment``
@@ -6840,6 +6984,8 @@ class JiraDataCenterConnector(BaseConnector):
                 expand="renderedBody",
             )
             if response.status != HttpStatusCode.OK.value:
+                if raise_on_error:
+                    raise JiraReadError(response.status, f"comment listing of issue {issue_id_or_key} returned HTTP {response.status}")
                 self.logger.warning(
                     "⚠️ Comment pagination stopped for issue %s at startAt=%s: HTTP %s",
                     issue_id_or_key,
@@ -6850,6 +6996,8 @@ class JiraDataCenterConnector(BaseConnector):
 
             payload = response.json() or {}
             batch = payload.get("comments", []) if isinstance(payload, dict) else []
+            if raise_on_error and not (isinstance(batch, list) and all(isinstance(c, dict) for c in batch)):
+                raise JiraReadError(response.status, f"comment listing of issue {issue_id_or_key} is not a list of comments")
             if not isinstance(batch, list) or not batch:
                 break
 
@@ -6941,7 +7089,7 @@ class JiraDataCenterConnector(BaseConnector):
                     connector=self.display_name,
                 )
 
-            if record.record_type == RecordType.TICKET:
+            if record.record_type in (RecordType.TICKET, RecordType.COMMENT):
                 # Stream BlocksContainer as JSON
                 content_bytes = await self._process_issue_blockgroups_for_streaming(record)
 
@@ -7128,10 +7276,12 @@ class JiraDataCenterConnector(BaseConnector):
     ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch record from source and return data for reindexing.
 
-        Note: Comments are no longer separate records - they are processed as Blocks
-        within the issue's BlocksContainer during streaming.
+        Only a restricted comment is a record of its own; the others are Blocks within the issue's
+        BlocksContainer. An issue's reindex leaves its comment records to the next sync.
         """
         try:
+            if record.record_type == RecordType.COMMENT:
+                return None  # re-indexed as stored: its issue's sync keeps it current
             if record.record_type == RecordType.TICKET:
                 return await self._check_and_fetch_updated_issue(record, synced_users, security_by_project)
             elif record.record_type == RecordType.FILE:
@@ -7296,6 +7446,18 @@ class JiraDataCenterConnector(BaseConnector):
             # _process_record deletes and rewrites every link edge from this list,
             # so a reindexed issue without it would lose its links and mentions.
             issue_record.related_external_records = self._related_records(issue)
+
+            comment_field = fields.get("comment")
+            comments = (comment_field.get("comments") or []) if isinstance(comment_field, dict) else []
+            if self._enforces_issue_security and (
+                any(isinstance(c, dict) and is_restricted_comment(c) for c in comments)
+                or (isinstance(comment_field, dict) and (comment_field.get("total") or 0) > len(comments))
+                or await self._stored_comment_records(issue_id)
+            ):
+                # A reindex does not rebuild comment records (it has not read the role lists a sync reads). The issue
+                # keeps its stored time, so the next sync reads it as changed and writes them: a comment given to
+                # another role or group meanwhile does not keep its old audience.
+                issue_record.source_updated_at = getattr(record, "source_updated_at", None) or 0
 
             permissions, skipped_holders, settled = apply_issue_access_settled(
                 issue_record,

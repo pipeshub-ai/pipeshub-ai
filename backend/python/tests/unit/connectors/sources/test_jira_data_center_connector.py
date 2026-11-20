@@ -44,6 +44,7 @@ def _make_deps():
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])
+    dep.get_records_by_parent = AsyncMock(return_value=[])  # no comment records stored
 
     dsp = MagicMock()
     dsp.transaction.return_value.__aenter__.return_value.get_sync_point = AsyncMock(return_value=None)  # nothing stored yet
@@ -820,6 +821,8 @@ class TestJiraDataCenterDeletionAudit:
 
         conn.data_entities_processor = MagicMock()
         conn.data_entities_processor.get_record_by_issue_key = AsyncMock(return_value=issue_record)
+        # A restricted comment's record hangs under the issue by PARENT_CHILD, which this delete does not follow.
+        conn.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[MagicMock(id="comment-1")])
         conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(
             return_value={
                 "success": True,
@@ -832,8 +835,9 @@ class TestJiraDataCenterDeletionAudit:
 
         # include_trashed_roots: an issue the source deleted goes even when it is in the trash.
         conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
-            ["internal-issue-1"], conn.connector_id, cascade_children=False, include_trashed_roots=True,
+            ["internal-issue-1", "comment-1"], conn.connector_id, cascade_children=False, include_trashed_roots=True,
         )
+        conn.data_entities_processor.get_records_by_parent.assert_awaited_once_with(conn.connector_id, "10004", "COMMENT")
 
 
 class _AsyncContext:

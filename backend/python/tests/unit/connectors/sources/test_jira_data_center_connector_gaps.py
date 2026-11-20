@@ -39,6 +39,7 @@ def _make_connector() -> JiraDataCenterConnector:
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[MagicMock(email="admin@example.com")])
     dep.get_all_app_users = AsyncMock(return_value=[])
+    dep.get_records_by_parent = AsyncMock(return_value=[])  # no comment records stored
 
     dsp = MagicMock()
     dsp.transaction.return_value.__aenter__.return_value.get_sync_point = AsyncMock(return_value=None)  # nothing stored yet
@@ -243,6 +244,7 @@ class TestIssueDeletionGaps:
         conn.data_entities_processor.get_record_by_issue_key = AsyncMock(
             side_effect=lambda connector_id, issue_key: issues[issue_key]
         )
+        conn.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
 
         async def cascade(record_ids: list[str], *_a: object, **_k: object) -> dict:
             if record_ids == ["issue-1"]:
