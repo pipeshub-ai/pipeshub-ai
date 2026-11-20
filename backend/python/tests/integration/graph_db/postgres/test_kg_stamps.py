@@ -522,13 +522,22 @@ async def test_the_stampers_facts_are_read_by_key_on_an_org_the_statistics_do_no
     """The graph is analysed before this org's 20,000 records, 200 groups and 2,000 users are written (its first load, before autovacuum reaches it), so
     the planner puts the org at a row. Each fact the stamper reads for 500 records is read by the record's key and each edge's other end by its own: joined,
     the planner read every node of the org's collections once per edge (2.2 s for these 500 records). Plans as the connectors service runs them, under
-    reader.seeks as the stamper does; and the facts read are the graph's."""
+    reader.seeks as the stamper does; and the facts read are the graph's. The org's rows are removed after, as other tests read every org's apps."""
     org, n = new_org(), 20_000
+    try:
+        await _stamper_plans(pg_db, org, n)
+    finally:
+        await _admin("DELETE FROM graph.edges WHERE org_id = $1", org)
+        await _admin("DELETE FROM graph.nodes WHERE org_id = $1", org)
+        await _admin("DELETE FROM kg.graph_changes WHERE org_id = $1", org)       # the capture of these writes: no drainer has this org to read
+
+
+async def _stamper_plans(pg_db, org: str, n: int) -> None:
     await _admin("ANALYZE graph.nodes; ANALYZE graph.edges")
-    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'r' || g, jsonb_build_object('orgId', $1::text, 'connectorId', 'app1') FROM generate_series(1, $2) g", org, n)
-    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'recordGroups', 'g' || g, jsonb_build_object('orgId', $1::text, 'connectorId', 'app1') FROM generate_series(1, 200) g", org)
-    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'users', 'u' || g, '{}'::jsonb FROM generate_series(1, 2000) g", org)
-    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'apps', 'app1', '{}'::jsonb)", org)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'r' || g, jsonb_build_object('id', 'r' || g, 'orgId', $1::text, 'connectorId', 'app1') FROM generate_series(1, $2) g", org, n)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'recordGroups', 'g' || g, jsonb_build_object('id', 'g' || g, 'orgId', $1::text, 'connectorId', 'app1') FROM generate_series(1, 200) g", org)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'users', 'u' || g, jsonb_build_object('id', 'u' || g, 'orgId', $1::text) FROM generate_series(1, 2000) g", org)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'apps', 'app1', jsonb_build_object('id', 'app1', 'orgId', $1::text, 'type', 'DRIVE'))", org)
     await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'records', 'r' || (g / 10 + 1), 'records', 'r' || g, '',
         '{"relationshipType": "PARENT_CHILD"}'::jsonb FROM generate_series(11, $2) g""", org, n)
     await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'belongsTo', 'records', 'r' || g, 'recordGroups', 'g' || (g % 200 + 1), '',

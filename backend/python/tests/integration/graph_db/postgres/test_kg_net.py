@@ -637,7 +637,7 @@ async def test_the_verify_checks_seek_every_key_on_an_org_the_statistics_do_not_
             assert await pg_db.run(found) == [[(m + 10, 3, "moved", m + 99), (m + 11, 3, "keyless", None)], [(m, 1, m + 1)], [(0, m + 5, "USER")], [(m + 5,)]]
     finally:
         for o in (org, *others):
-            for t in ("records", "links", "node_keys", "scopes", "scope_members"):
+            for t in ("records", "links", "node_keys", "scopes", "scope_members", "counts"):
                 await _admin(f"DELETE FROM kg.{t} WHERE org_id = $1", o)
         await _admin("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys; ANALYZE kg.scopes; ANALYZE kg.scope_members")
 
