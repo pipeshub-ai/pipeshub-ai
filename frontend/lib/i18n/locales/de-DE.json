@@ -3657,7 +3657,6 @@
         "confirm": "Speichern und Anmeldungen entfernen"
       },
       "cta": {
-        "manage": "Verwalten",
         "delete": "Löschen",
         "reauthenticate": "Erneut authentifizieren",
         "reconnect": "Neu verbinden",
@@ -3679,6 +3678,18 @@
         "needsAuth": "Authentifizierung erforderlich",
         "disabled": "Deaktiviert"
       },
+      "filters": {
+        "label": "Nach Status filtern",
+        "needsAction": "Aktion nötig",
+        "unavailable": "Nicht verfügbar"
+      },
+      "catalog": {
+        "title": "Weitere Server hinzufügen",
+        "description": "Vorgefertigte Server. Fügen Sie einen hinzu und melden Sie sich dann an.",
+        "personalDescription": "Server, die Sie hier hinzufügen, sehen nur Sie.",
+        "added": "Hinzugefügt",
+        "addAnother": "Weiteren hinzufügen"
+      },
       "team": {
         "title": "MCP-Server",
         "subtitle": "Verbinden Sie Model-Context-Protocol-Server, um die Fähigkeiten der Agenten Ihres Teams zu erweitern.",
@@ -3690,36 +3701,16 @@
         "subtitle": "Verbinden Sie sich mit den MCP-Servern, die Ihr Administrator bereitgestellt hat, oder fügen Sie eigene hinzu.",
         "emptyTitle": "Keine MCP-Server verfügbar",
         "emptyDescription": "Fügen Sie einen eigenen hinzu oder bitten Sie Ihren Administrator, einen für alle hinzuzufügen.",
-        "yourServersDescription": "Von Ihnen hinzugefügte Server. Nur Sie können sie sehen und verwenden, und sie können nicht zu Agenten hinzugefügt werden, die mit Ihrer Organisation geteilt sind.",
         "tabs": {
           "all": "Alle",
-          "connected": "Verbunden",
-          "notConnected": "Nicht verbunden"
+          "connected": "Verbunden"
         },
         "yours": "Ihrer",
         "noneInTab": "Hier gibt es keine MCP-Server."
       },
       "details": {
         "breadcrumbLabel": "MCP-Server",
-        "refreshAll": "Alle aktualisieren",
-        "addInstance": "Weitere Instanz hinzufügen",
-        "configuration": "KONFIGURATION",
-        "transport": "TRANSPORT",
-        "tools": "TOOLS",
-        "discoverTools": "Tools erkennen",
-        "discoveredTools_one": "{{count}} Tool verfügbar",
-        "discoveredTools_other": "{{count}} Tools verfügbar",
-        "discovering": "Tools werden erkannt…",
-        "discoveryError": "Tool-Erkennung fehlgeschlagen",
-        "discoveryNeedsAuth": "Authentifizieren, um Tools zu erkennen",
-        "retry": "Erneut versuchen",
-        "noInstances": "Keine Instanzen konfiguriert",
-        "authBannerTitle": "Authentifizierung erforderlich",
-        "authBannerDescription": "Authentifizieren Sie diesen MCP-Server, damit die Agenten Ihres Teams ihn nutzen können.",
-        "authBannerAuthenticatedTitle": "Verbunden",
-        "reconnectBannerDescription": "Die Anmeldung für diesen Server ist abgelaufen oder wurde abgelehnt. Verbinden Sie ihn neu, um ihn weiter zu nutzen.",
-        "authBannerAuthenticatedDescription": "Sie können diesen MCP-Server erneut authentifizieren oder trennen.",
-        "createdBy": "Erstellt von"
+        "tools": "TOOLS"
       },
       "deleteDialog": {
         "title": "MCP-Server löschen?",
@@ -3779,27 +3770,28 @@
         "tokenUrl": "Token-URL",
         "scopes": "Berechtigungen",
         "scopesPlaceholder": "Berechtigung hinzufügen",
-        "useAdminAuth": "Gemeinsame Admin-Authentifizierung für alle Benutzer verwenden",
         "headerValue": "{{headerName}}",
         "apiToken": "API-Token",
         "credentialsHeading": "Anmeldedaten (optional)",
-        "credentialsHint": "Fügen Sie jetzt Anmeldedaten hinzu oder überspringen Sie dies und verbinden Sie sich später über den Tab \"Verbindung & Tools\".",
+        "credentialsHint": "Fügen Sie sie jetzt hinzu oder melden Sie sich später auf der Seite des Servers an.",
         "multiEnvIncomplete": "Füllen Sie jede erforderliche Umgebungsvariable aus, oder lassen Sie alle leer, um später zu verbinden.",
         "oauthPairRequired": "Geben Sie sowohl die Client-ID als auch das Client-Secret ein, oder lassen Sie beide leer.",
-        "connectAfterCreateHint": "Speichern Sie diesen Server und öffnen Sie dann erneut \"Verwalten\", um ihn zu verbinden.",
         "timeoutsHeading": "Zeitlimits",
         "connectTimeout": "Verbindungszeitlimit (Sekunden)",
         "callTimeout": "Zeitlimit für Tool-Aufrufe (Sekunden)",
-        "timeoutRange": "Geben Sie eine Zahl von {{min}} bis {{max}} ein oder lassen Sie das Feld für den Standardwert leer."
+        "timeoutRange": "Geben Sie eine Zahl von {{min}} bis {{max}} ein oder lassen Sie das Feld für den Standardwert leer.",
+        "whoSignsIn": "Wie sich Personen anmelden",
+        "signIn": {
+          "personal": "Jede Person nutzt eigene Zugangsdaten",
+          "personalHint": "Personen melden sich mit ihren eigenen Zugangsdaten an und erhalten nur deren Zugriff.",
+          "shared": "Gemeinsame Zugangsdaten für alle",
+          "sharedHint": "Sie fügen sie einmal unten hinzu. Alle handeln mit deren Zugriff."
+        },
+        "advanced": "Erweitert"
       },
       "configPanel": {
         "editTitle": "MCP-Server bearbeiten",
         "createTitle": "Neuer MCP-Server",
-        "tabs": {
-          "configuration": "Konfiguration",
-          "tools": "Tools & Freigaben",
-          "toolList": "Tools"
-        },
         "synced": "Synchronisiert {{time}}",
         "refreshTools": "Tool-Liste aktualisieren",
         "signInForTools": "Melden Sie sich an, um die Tools dieses Servers zu sehen.",
@@ -3839,7 +3831,8 @@
           "remove": "Server löschen",
           "removeHint": "Löscht ihn für alle.",
           "removeHintPersonal": "Löscht ihn und Ihre Anmeldung."
-        }
+        },
+        "addTemplateTitle": "{{name}} hinzufügen"
       },
       "oauthConfig": {
         "saved": "OAuth-App gespeichert",
@@ -3874,7 +3867,6 @@
         "noState": "Es wurde kein State-Parameter zurückgegeben.",
         "backendRejected": "Der Server hat die Autorisierungsanfrage abgelehnt."
       },
-      "deleteDisabledTooltip": "Dieser Server kann nicht gelöscht werden",
       "stdioPolicy": {
         "disabledTitle": "In dieser Installation deaktiviert",
         "disabledDescription": "Benutzerdefinierte STDIO-Server führen einen Befehl auf dem PipesHub-Server aus und bleiben deshalb deaktiviert, bis der Betreiber {{flag}}=true in der Umgebung der Installation setzt (Docker-Compose-.env oder config.mcpAllowCustomStdio in Helm). Bis dahin können Agenten die Tools dieses Servers nicht nutzen. Sie können ihn löschen oder auf einen Remote-Server (HTTP) umstellen.",
@@ -3888,8 +3880,6 @@
         "customDescription": "Ein beliebiger Remote-MCP-Server über seine URL."
       },
       "toolRules": {
-        "open": "Tool-Freigaben",
-        "title": "Tool-Freigaben: {{name}}",
         "description": {
           "personal": "Legen Sie fest, was passiert, wenn ein Assistent oder Agent in Ihren Chats eines dieser Tools verwenden möchte."
         },
@@ -3942,6 +3932,12 @@
         "orgRulesDescription": "Legen Sie für alle in Ihrer Organisation fest, welche Tools laufen, zuerst nachfragen oder nie laufen. Hier legt jede Person ihre eigenen Regeln auf ihrer MCP-Server-Seite fest.",
         "userServersTitle": "Eigene MCP-Server der Mitglieder",
         "userServersDescription": "Prüfen und entfernen Sie die MCP-Server, die Mitglieder Ihrer Organisation für sich selbst hinzufügen."
+      },
+      "added": {
+        "ready": "{{name}} wurde hinzugefügt und ist einsatzbereit.",
+        "signIn": "{{name}} wurde hinzugefügt. Melden Sie sich unten an, damit seine Tools laufen können.",
+        "other": "{{name}} wurde hinzugefügt, funktioniert aber noch nicht. Den Grund finden Sie unten.",
+        "dismiss": "Fertig"
       }
     },
     "bots": {

@@ -13,7 +13,7 @@ const toasts = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 vi.mock('../api', () => ({ McpServersApi: api }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: toasts }));
 
-import { McpToolRulesDialog } from '../components/mcp-tool-rules-dialog';
+import { McpToolRulesList, useToolRulesEditor } from '../components/mcp-tool-rules-editor';
 
 const TOOLS: McpRuleTool[] = [
   { name: 'search', title: 'Search issues', kind: 'read', kindSource: 'server' },
@@ -21,10 +21,27 @@ const TOOLS: McpRuleTool[] = [
   { name: 'delete_issue', kind: 'destructive', kindSource: 'name' },
 ];
 
+/** The rules as the server page shows them: the list, and a save that reports whether it worked. */
+function RulesHarness({ tools, onSaved }: { tools: McpRuleTool[]; onSaved: () => void }) {
+  const editor = useToolRulesEditor('inst-1', tools);
+  return (
+    <>
+      <McpToolRulesList editor={editor} />
+      <button
+        type="button"
+        disabled={editor.loading || Boolean(editor.loadError) || editor.changes === 0}
+        onClick={() => void editor.save().then((ok) => ok && onSaved())}
+      >
+        Save
+      </button>
+    </>
+  );
+}
+
 function open(tools: McpRuleTool[] = TOOLS) {
-  const onOpenChange = vi.fn();
-  renderInTheme(<McpToolRulesDialog open onOpenChange={onOpenChange} instanceId="inst-1" serverName="Jira" tools={tools} />);
-  return onOpenChange;
+  const onSaved = vi.fn();
+  renderInTheme(<RulesHarness tools={tools} onSaved={onSaved} />);
+  return onSaved;
 }
 
 function ruleRow(name: string) {
@@ -49,7 +66,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('McpToolRulesDialog', () => {
+describe('the tool rules editor', () => {
   it('shows each tool where it starts, or the rule saved for it', async () => {
     api.getMyToolRules.mockResolvedValue({ tools: { search: 'block' } });
     open();
@@ -70,8 +87,8 @@ describe('McpToolRulesDialog', () => {
     expect(within(screen.getByTestId('tool-group-destructive')).getByText('Review these first')).toBeTruthy();
   });
 
-  it('saves only what differs from the starting rules, then closes', async () => {
-    const onOpenChange = open();
+  it('saves only what differs from the starting rules', async () => {
+    const onSaved = open();
 
     await screen.findByRole('radiogroup', { name: 'create_issue' });
     expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
@@ -80,20 +97,21 @@ describe('McpToolRulesDialog', () => {
     fireEvent.click(ruleRow('search').getByRole('radio', { name: 'Pre-approved' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(api.updateMyToolRules).toHaveBeenCalledWith('inst-1', { tools: { create_issue: 'allow', delete_issue: 'ask' } });
     expect(toasts.success).toHaveBeenCalledWith('Tool approvals saved');
   });
 
-  it('keeps the dialog open when saving fails', async () => {
+  it('reports a failed save and keeps the changes', async () => {
     api.updateMyToolRules.mockRejectedValue(new Error('boom'));
-    const onOpenChange = open();
+    const onSaved = open();
 
     fireEvent.click(ruleRow((await screen.findByRole('radiogroup', { name: 'search' })).getAttribute('aria-label')!).getByRole('radio', { name: 'Deny' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(toasts.error).toHaveBeenCalled());
-    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(onSaved).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('says so when the rules cannot be loaded, and offers no save', async () => {

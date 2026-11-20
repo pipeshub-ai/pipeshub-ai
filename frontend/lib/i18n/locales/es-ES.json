@@ -3696,7 +3696,6 @@
         "confirm": "Guardar y eliminar inicios de sesión"
       },
       "cta": {
-        "manage": "Gestionar",
         "delete": "Eliminar",
         "reauthenticate": "Reautenticar",
         "reconnect": "Volver a conectar",
@@ -3718,6 +3717,18 @@
         "needsAuth": "Requiere autenticación",
         "disabled": "Deshabilitado"
       },
+      "filters": {
+        "label": "Filtrar por estado",
+        "needsAction": "Requiere acción",
+        "unavailable": "No disponible"
+      },
+      "catalog": {
+        "title": "Añadir más servidores",
+        "description": "Servidores listos para usar. Añade uno y luego inicia sesión en él.",
+        "personalDescription": "Solo tú verás los servidores que añadas aquí.",
+        "added": "Añadido",
+        "addAnother": "Añadir otro"
+      },
       "team": {
         "title": "Servidores MCP",
         "subtitle": "Conecta servidores Model Context Protocol para ampliar lo que pueden hacer los agentes de tu equipo.",
@@ -3729,37 +3740,16 @@
         "subtitle": "Conéctate a los servidores MCP que tu administrador ha puesto a disposición o añade los tuyos.",
         "emptyTitle": "No hay servidores MCP disponibles",
         "emptyDescription": "Añade uno propio o pide a tu administrador que añada uno para todos.",
-        "yourServersDescription": "Servidores que has añadido. Solo tú puedes verlos y usarlos, y no se pueden añadir a agentes compartidos con tu organización.",
         "tabs": {
           "all": "Todos",
-          "connected": "Conectados",
-          "notConnected": "No conectados"
+          "connected": "Conectados"
         },
         "yours": "Tuyo",
         "noneInTab": "No hay servidores MCP aquí."
       },
       "details": {
         "breadcrumbLabel": "Servidores MCP",
-        "refreshAll": "Actualizar todo",
-        "addInstance": "Añadir otra instancia",
-        "configuration": "CONFIGURACIÓN",
-        "transport": "TRANSPORTE",
-        "tools": "HERRAMIENTAS",
-        "discoverTools": "Descubrir herramientas",
-        "discoveredTools_one": "{{count}} herramienta disponible",
-        "discoveredTools_other": "{{count}} herramientas disponibles",
-        "discovering": "Descubriendo herramientas…",
-        "discoveryError": "Error al descubrir herramientas",
-        "discoveryNeedsAuth": "Autentícate para descubrir herramientas",
-        "retry": "Reintentar",
-        "noInstances": "No hay instancias configuradas",
-        "authBannerTitle": "Se requiere autenticación",
-        "authBannerDescription": "Autentica este servidor MCP para que los agentes de tu equipo puedan usarlo.",
-        "authBannerAuthenticatedTitle": "Conectado",
-        "reconnectBannerDescription": "El inicio de sesión de este servidor caducó o fue rechazado. Vuelve a conectarlo para seguir usándolo.",
-        "authBannerAuthenticatedDescription": "Puedes reautenticar o desconectar este servidor MCP.",
-        "createdBy": "Creado por",
-        "discoveredTools_many": "{{count}} de herramientas disponibles"
+        "tools": "HERRAMIENTAS"
       },
       "deleteDialog": {
         "title": "¿Eliminar el servidor MCP?",
@@ -3819,27 +3809,28 @@
         "tokenUrl": "URL del token",
         "scopes": "Ámbitos",
         "scopesPlaceholder": "Añadir un ámbito",
-        "useAdminAuth": "Usar autenticación de administrador compartida para todos los usuarios",
         "headerValue": "{{headerName}}",
         "apiToken": "Token de API",
         "credentialsHeading": "Credenciales (opcional)",
-        "credentialsHint": "Añade las credenciales ahora, o sáltalo y conéctate más tarde desde la pestaña Conexión y herramientas.",
+        "credentialsHint": "Añádelas ahora o inicia sesión más tarde desde la página del servidor.",
         "multiEnvIncomplete": "Completa todas las variables de entorno obligatorias, o déjalas todas en blanco para conectar más tarde.",
         "oauthPairRequired": "Introduce tanto el ID de cliente como el secreto de cliente, o deja ambos vacíos.",
-        "connectAfterCreateHint": "Guarda este servidor y luego vuelve a abrir Gestionar para conectarlo.",
         "timeoutsHeading": "Tiempos de espera",
         "connectTimeout": "Tiempo de espera de conexión (segundos)",
         "callTimeout": "Tiempo de espera de las llamadas a herramientas (segundos)",
-        "timeoutRange": "Introduce un número entre {{min}} y {{max}}, o déjalo en blanco para usar el valor predeterminado."
+        "timeoutRange": "Introduce un número entre {{min}} y {{max}}, o déjalo en blanco para usar el valor predeterminado.",
+        "whoSignsIn": "Cómo inician sesión las personas",
+        "signIn": {
+          "personal": "Cada persona usa las suyas",
+          "personalHint": "Cada persona inicia sesión con sus propias credenciales y solo obtiene el acceso que estas tienen.",
+          "shared": "Una credencial compartida para todos",
+          "sharedHint": "La añades una vez, abajo. Todos actúan con su acceso."
+        },
+        "advanced": "Avanzado"
       },
       "configPanel": {
         "editTitle": "Editar servidor MCP",
         "createTitle": "Nuevo servidor MCP",
-        "tabs": {
-          "configuration": "Configuración",
-          "tools": "Herramientas y aprobaciones",
-          "toolList": "Herramientas"
-        },
         "synced": "Sincronizado {{time}}",
         "refreshTools": "Actualizar la lista de herramientas",
         "signInForTools": "Inicia sesión para ver las herramientas de este servidor.",
@@ -3881,7 +3872,8 @@
           "remove": "Eliminar servidor",
           "removeHint": "Lo elimina para todos.",
           "removeHintPersonal": "Lo elimina junto con tu inicio de sesión."
-        }
+        },
+        "addTemplateTitle": "Añadir {{name}}"
       },
       "oauthConfig": {
         "saved": "App de OAuth guardada",
@@ -3916,7 +3908,6 @@
         "noState": "No se devolvió ningún parámetro de estado.",
         "backendRejected": "El servidor rechazó la solicitud de autorización."
       },
-      "deleteDisabledTooltip": "Este servidor no se puede eliminar",
       "toolsCount_many": "{{count}} de herramientas",
       "stdioPolicy": {
         "disabledTitle": "Deshabilitado en esta instalación",
@@ -3931,8 +3922,6 @@
         "customDescription": "Cualquier servidor MCP remoto, mediante su URL."
       },
       "toolRules": {
-        "open": "Aprobaciones de herramientas",
-        "title": "Aprobaciones de herramientas: {{name}}",
         "description": {
           "personal": "Elige qué ocurre cuando un asistente o agente quiere usar una de estas herramientas en tus chats."
         },
@@ -3987,6 +3976,12 @@
         "orgRulesDescription": "Decide qué herramientas se ejecutan, piden aprobación o nunca se ejecutan para toda tu organización. Aquí, cada persona define sus propias reglas desde su página de servidores MCP.",
         "userServersTitle": "Servidores MCP propios de las personas",
         "userServersDescription": "Revisa y elimina los servidores MCP que las personas de tu organización añaden para sí mismas."
+      },
+      "added": {
+        "ready": "{{name}} se ha añadido y está listo para usar.",
+        "signIn": "{{name}} se ha añadido. Inicia sesión abajo para que sus herramientas puedan funcionar.",
+        "other": "{{name}} se ha añadido, pero aún no funciona. Abajo verás por qué.",
+        "dismiss": "Listo"
       }
     },
     "bots": {

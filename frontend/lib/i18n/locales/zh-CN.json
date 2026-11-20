@@ -3794,7 +3794,6 @@
         "confirm": "保存并移除登录"
       },
       "cta": {
-        "manage": "管理",
         "delete": "删除",
         "reauthenticate": "重新认证",
         "reconnect": "重新连接",
@@ -3816,6 +3815,18 @@
         "needsAuth": "需要认证",
         "disabled": "已禁用"
       },
+      "filters": {
+        "label": "按状态筛选",
+        "needsAction": "需要处理",
+        "unavailable": "不可用"
+      },
+      "catalog": {
+        "title": "添加更多服务器",
+        "description": "现成的服务器。添加后登录即可使用。",
+        "personalDescription": "你在这里添加的服务器只有你能看到。",
+        "added": "已添加",
+        "addAnother": "再添加一个"
+      },
       "team": {
         "title": "MCP 服务器",
         "subtitle": "连接 Model Context Protocol 服务器，扩展团队智能体的能力。",
@@ -3827,36 +3838,16 @@
         "subtitle": "连接管理员提供的 MCP 服务器，或添加您自己的服务器。",
         "emptyTitle": "没有可用的 MCP 服务器",
         "emptyDescription": "添加您自己的服务器，或请管理员为所有人添加一个。",
-        "yourServersDescription": "您添加的服务器。只有您可以查看和使用，且不能添加到与组织共享的智能体中。",
         "tabs": {
           "all": "全部",
-          "connected": "已连接",
-          "notConnected": "未连接"
+          "connected": "已连接"
         },
         "yours": "我的",
         "noneInTab": "这里没有 MCP 服务器。"
       },
       "details": {
         "breadcrumbLabel": "MCP 服务器",
-        "refreshAll": "全部刷新",
-        "addInstance": "添加另一个实例",
-        "configuration": "配置",
-        "transport": "传输方式",
-        "tools": "工具",
-        "discoverTools": "发现工具",
-        "discoveredTools_one": "{{count}} 个可用工具",
-        "discoveredTools_other": "{{count}} 个可用工具",
-        "discovering": "正在发现工具…",
-        "discoveryError": "工具发现失败",
-        "discoveryNeedsAuth": "请先认证以发现工具",
-        "retry": "重试",
-        "noInstances": "未配置任何实例",
-        "authBannerTitle": "需要认证",
-        "authBannerDescription": "认证此 MCP 服务器，让您团队的智能体可以使用它。",
-        "authBannerAuthenticatedTitle": "已连接",
-        "reconnectBannerDescription": "此服务器的登录已过期或被拒绝。请重新连接以继续使用。",
-        "authBannerAuthenticatedDescription": "您可以重新认证或断开此 MCP 服务器的连接。",
-        "createdBy": "创建者"
+        "tools": "工具"
       },
       "deleteDialog": {
         "title": "删除 MCP 服务器？",
@@ -3916,27 +3907,28 @@
         "tokenUrl": "Token URL",
         "scopes": "权限范围",
         "scopesPlaceholder": "添加权限范围",
-        "useAdminAuth": "为所有用户使用共享的管理员认证",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "凭证（可选）",
-        "credentialsHint": "现在添加凭证，或跳过并稍后在“连接与工具”标签页中连接。",
+        "credentialsHint": "现在添加，或稍后在服务器页面登录。",
         "multiEnvIncomplete": "请填写所有必需的环境变量，或全部留空以便稍后连接。",
         "oauthPairRequired": "请同时输入客户端 ID 和客户端密钥，或两者都留空。",
-        "connectAfterCreateHint": "保存此服务器，然后重新打开“管理”进行连接。",
         "timeoutsHeading": "超时",
         "connectTimeout": "连接超时（秒）",
         "callTimeout": "工具调用超时（秒）",
-        "timeoutRange": "请输入 {{min}} 到 {{max}} 之间的数字，或留空以使用默认值。"
+        "timeoutRange": "请输入 {{min}} 到 {{max}} 之间的数字，或留空以使用默认值。",
+        "whoSignsIn": "成员如何登录",
+        "signIn": {
+          "personal": "每人使用自己的凭据",
+          "personalHint": "每个人用自己的凭据登录，只获得这些凭据拥有的权限。",
+          "shared": "所有人共用一个凭据",
+          "sharedHint": "你在下方添加一次。所有人都以它的权限操作。"
+        },
+        "advanced": "高级"
       },
       "configPanel": {
         "editTitle": "编辑 MCP 服务器",
         "createTitle": "新建 MCP 服务器",
-        "tabs": {
-          "configuration": "配置",
-          "tools": "工具与审批",
-          "toolList": "工具"
-        },
         "synced": "{{time}}同步",
         "refreshTools": "刷新工具列表",
         "signInForTools": "登录以查看此服务器的工具。",
@@ -3976,7 +3968,8 @@
           "remove": "删除服务器",
           "removeHint": "为所有人删除它。",
           "removeHintPersonal": "删除它及您的登录信息。"
-        }
+        },
+        "addTemplateTitle": "添加 {{name}}"
       },
       "oauthConfig": {
         "saved": "OAuth 应用已保存",
@@ -4011,7 +4004,6 @@
         "noState": "未返回 state 参数。",
         "backendRejected": "服务器拒绝了授权请求。"
       },
-      "deleteDisabledTooltip": "此服务器无法删除",
       "stdioPolicy": {
         "disabledTitle": "此部署已禁用",
         "disabledDescription": "自定义 STDIO 服务器会在 PipesHub 服务器上运行命令，因此在运维人员于部署环境中设置 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前保持关闭。在此之前，智能体无法使用此服务器的工具。你可以删除它，或将其改为远程（HTTP）服务器。",
@@ -4025,8 +4017,6 @@
         "customDescription": "通过 URL 连接任意远程 MCP 服务器。"
       },
       "toolRules": {
-        "open": "工具审批",
-        "title": "工具审批：{{name}}",
         "description": {
           "personal": "选择当助手或智能体想在您的聊天中使用这些工具时会发生什么。"
         },
@@ -4079,6 +4069,12 @@
         "orgRulesDescription": "为组织中的所有人决定哪些工具直接运行、先询问或从不运行。在这里，每个人在自己的 MCP 服务器页面设置自己的规则。",
         "userServersTitle": "成员自己的 MCP 服务器",
         "userServersDescription": "查看并移除组织成员为自己添加的 MCP 服务器。"
+      },
+      "added": {
+        "ready": "{{name}} 已添加，可以使用了。",
+        "signIn": "{{name}} 已添加。请在下方登录，以便运行它的工具。",
+        "other": "{{name}} 已添加，但还不能使用。原因见下方。",
+        "dismiss": "完成"
       }
     },
     "bots": {
