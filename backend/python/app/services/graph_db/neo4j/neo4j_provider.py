@@ -8213,33 +8213,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not updated_records:
                 return 0
 
-            # Same batch as the promotion: a crash after it would otherwise
-            # leave the duplicates COMPLETED with no taxonomy and nothing to
-            # trigger the copy, since a redelivery finds nothing QUEUED. Only
-            # an indexed primary has anything to copy.
+            # The reference's bookkeeping goes first: a crash between the two writes leaves a pending marker that finds no
+            # copies, never copies promoted with nothing to trigger their taxonomy. Only an indexed primary has anything to copy.
             if new_indexing_status in _RECONCILED_STATUSES:
-                updated_records.append({
+                bookkeeping_ok = await self.batch_update_nodes([{
                     "id": record_id,
                     DUPLICATE_RECONCILE_PENDING_FIELD: True,
                     DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
                     DUPLICATE_RECONCILE_DUE_AT_FIELD: current_timestamp + DUPLICATE_RECONCILE_GRACE_MS,
-                })
+                }], CollectionNames.RECORDS.value, transaction)
+                if not bookkeeping_ok:
+                    return -1
 
-            success = await self.batch_update_nodes(
-                updated_records, CollectionNames.RECORDS.value, transaction
-            )
-            if not success:
-                self.logger.warning(
-                    "⚠️ Failed to update queued duplicate records for %s - some records may not exist",
-                    record_id,
-                )
-                return -1
-
+            promoted = await self._promote_queued_copies(updated_records, transaction)
             self.logger.debug(
-                f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
+                f"✅ Updated {promoted} of {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
             )
 
-            return len(queued_records)
+            return promoted
 
         except SchemaValidationError:
             raise
@@ -8248,6 +8239,29 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"❌ Failed to update queued duplicates status: {str(e)}"
             )
             return -1
+
+    async def _promote_queued_copies(self, updates: list[dict], transaction: str | None) -> int:
+        """Write each copy's new status only while it is still QUEUED and holds no Force reindex request, in the statement that
+        checks it (a request stored after the copies were read is not overwritten). Returns how many copies were written."""
+        if not updates:
+            return 0
+        collection = CollectionNames.RECORDS.value
+        for node in updates:
+            self.validator.validate_node_update(collection, node)
+        nodes = [self._arango_to_neo4j_node(node, collection) for node in updates]
+        label = collection_to_label(collection)
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $nodes AS node_data
+            MATCH (n:{label} {{id: node_data.id}})
+            WHERE n.indexingStatus = 'QUEUED' AND n.refreshIntentId IS NULL
+            SET n += node_data
+            RETURN n.id AS id
+            """,
+            parameters={"nodes": _in_lock_order(nodes, _by_id)},
+            txn_id=transaction,
+        )
+        return len(rows or [])
 
     async def copy_document_relationships(
         self,
@@ -16717,6 +16731,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except SchemaValidationError:
             raise
         except Exception as e:
+            if fields:
+                raise        # with ``fields`` (a Force reindex's request) a lost write must not be read as a request that was made
             self.logger.error(f"❌ Failed to update records to {status}: {str(e)}")
 
     async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:

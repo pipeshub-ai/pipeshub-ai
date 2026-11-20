@@ -70,6 +70,14 @@ def test_a_request_lives_up_to_24_hours_from_its_time() -> None:
     assert ri.live_intent({}, 5) is None and not ri.expired_intent({}, 5)
 
 
+def test_a_request_stamped_ahead_of_this_clock_stays_live() -> None:
+    """The walk and the sweep run on different hosts: a time a little ahead of this process's clock is not an expired request."""
+    record = {ri.ID_FIELD: "i", ri.AT_FIELD: 10_000_000}
+    assert ri.live_intent(record, 10_000_000 - 5 * 60 * 1000) == "i"
+    assert not ri.expired_intent(record, 10_000_000 - 5 * 60 * 1000)
+    assert ri.live_intent(record, 10_000_000 + ri.INTENT_LIFE_MS) is None          # only age expires it
+
+
 def test_a_row_that_holds_a_request_is_never_a_parked_duplicate_and_its_event_is_the_refresh() -> None:
     row = {"md5Checksum": "m", "virtualRecordId": "v", "version": 1, "recordName": "r", "origin": "CONNECTOR"}
     assert is_parked_duplicate(row)
@@ -236,6 +244,15 @@ async def test_a_request_made_during_a_run_longer_than_the_life_is_still_served(
     assert any(m["payload"].get(ri.PAYLOAD_ID_KEY) for m in w.msgs), w.msgs
 
 
+async def test_a_request_stamped_ahead_of_the_sweeps_clock_is_neither_cleared_nor_sent_early(w: World) -> None:
+    w.row.update(ri.intent_fields("ahead", w.now_ms + 5 * MINUTE_MS))                   # the walk's host runs 5 minutes ahead
+    await w.intent_sweep()
+    assert w.row[ri.ID_FIELD] == "ahead" and w.row.get("reason") is None and not w.msgs
+    w.now_ms += HOUR_MS + 6 * MINUTE_MS                                                # its time is past: the first send follows
+    await w.intent_sweep()
+    assert len(w.msgs) == 1
+
+
 async def test_an_expired_request_on_a_waiting_row_says_so_in_its_reason(w: World) -> None:
     w.row.update(ri.intent_fields("old", w.now_ms - 25 * HOUR_MS), indexingStatus=FAILED)
     await w.intent_sweep()
@@ -361,6 +378,8 @@ async def test_a_sweep_that_lost_the_claim_to_another_sends_nothing(w: World) ->
     async def another_sweep_claims_after_the_read(key: str, collection: str, **kw: object) -> dict | None:
         nonlocal reads
         doc = await real(key, collection, **kw)
+        if collection != "records":
+            return doc
         reads += 1
         if reads == 1:                                         # the re-read under the lease
             w.row["lastRepublishedAt"] = w.now_ms               # the other sweep's claim lands right after it
@@ -470,6 +489,15 @@ async def test_a_forced_walk_publishes_a_record_whose_run_ended_in_between(monke
     assert sorted(r.id for r in connector.reindex_records.await_args.args[0]) == ["idle", "running"]
 
 
+async def test_a_forced_walk_does_not_publish_a_batch_whose_request_did_not_land(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFRESH_INTENT_WRITE", "true")
+    service, graph, connector = _walk_service([_records()[1]], COMPLETED)
+    graph.update_indexing_status_for_record_ids = AsyncMock(side_effect=RuntimeError("store down"))
+    with forced_by_user(forced=True), pytest.raises(RuntimeError, match="store down"):
+        await _walk(service, connector)
+    connector.reindex_records.assert_not_awaited()
+
+
 async def test_the_walk_is_today_s_while_the_flag_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REFRESH_INTENT_WRITE", raising=False)
     service, graph, connector = _walk_service([_records()[1]], IN_PROGRESS)
@@ -490,3 +518,81 @@ async def test_an_event_upgraded_by_a_request_reaches_the_pipeline_as_a_forced_r
     plain = {"recordId": KEY, "orgId": ORG}
     await w.handler._settle_refresh_intent(EventTypes.UPDATE_RECORD.value, plain, dict(w.row), KEY, parse_now=False)
     assert refresh_requested(plain) and plain["forceReindex"] is True
+
+
+# ---- review round: what the sweep and the settle do beyond the first design
+
+async def test_a_restored_upload_that_holds_a_request_is_sent_as_the_full_refresh_not_a_vector_rebuild() -> None:
+    row = {
+        "md5Checksum": "m", "virtualRecordId": "v", "version": 1, "recordName": "r", "origin": "UPLOAD",
+        "indexingStatus": COMPLETED, "hasIndexedCopy": True, "externalRevisionId": "1000", "lastIndexTimestamp": 1000,
+    }
+    with patch("app.modules.indexing.record_republish.get_epoch_timestamp_in_ms", lambda: 2_000):
+        _, plain = record_event(row, record_key="k", connector_id="c", restored_upload=True)
+        _, held = record_event({**row, **ri.intent_fields("i1", 1_500)}, record_key="k", connector_id="c", restored_upload=True)
+    assert plain.get("vectorDbOnly") is True and "refreshPaidOutputs" not in plain
+    assert "vectorDbOnly" not in held and held["refreshPaidOutputs"] is True
+
+
+async def test_the_sweep_ends_the_request_of_a_record_whose_connector_is_off_or_gone_and_leaves_one_it_cannot_read(w: World) -> None:
+    for app in ({"_key": "c1", "isActive": False}, {"_key": "c1", "isActive": True, "status": "DELETING"}, None):
+        w.msgs.clear()
+        w.graph.docs.pop("c1", None)
+        if app is not None:
+            w.graph.docs["c1"] = app
+        w.row.update(ri.intent_fields("i1", w.now_ms - 2 * HOUR_MS))
+        await w.intent_sweep()
+        assert not w.msgs and ri.ID_FIELD not in w.row, app
+    # a connector that cannot be read this pass: nothing is sent and the request stays for the next pass
+    w.row.update(ri.intent_fields("i2", w.now_ms - 2 * HOUR_MS))
+    real = w.graph.get_document
+
+    async def unreadable(key: str, collection: str, **kw: object) -> dict | None:
+        if collection == "apps":
+            raise RuntimeError("graph down")
+        return await real(key, collection, **kw)
+
+    w.graph.get_document = unreadable                                                    # type: ignore[method-assign]
+    await w.intent_sweep()
+    assert not w.msgs and w.row[ri.ID_FIELD] == "i2"
+
+
+async def test_a_retry_of_an_older_refresh_that_finds_a_newer_request_runs_as_the_newer_one(w: World) -> None:
+    w.row.update(ri.intent_fields("B", w.now_ms))
+    older = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "A"}
+    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, older, dict(w.row), KEY, parse_now=False)
+    assert run is not None and run.intent_id == "B" and run.seen == "B" and run.superseded == ("A",)
+    assert older[ri.PAYLOAD_ID_KEY] == "B"                                                # B's token keys the purge and the paid results
+    w.active = {"run": run, "payload": older, "start": 1, "derived": False}
+    await w.finish(allow_crash=False)
+    assert ri.ID_FIELD not in w.row
+    assert {(ORG, KEY, "A"), (ORG, KEY, "B")} <= w.cache.done                            # A is done with it: no later event of A runs
+
+
+async def test_the_marker_is_written_before_the_request_is_cleared_and_a_marker_that_failed_keeps_it(w: World) -> None:
+    w.row.update(ri.intent_fields("A", w.now_ms))
+    order: list[str] = []
+    real_mark = w.cache.mark_refresh_done
+
+    async def mark(org: str, record: str, intent_id: str) -> bool:
+        order.append("marker" + ("+held" if w.row.get(ri.ID_FIELD) == "A" else "+gone"))
+        return await real_mark(org, record, intent_id)
+
+    w.cache.mark_refresh_done = mark                                                      # type: ignore[method-assign]
+    run = await w.handler._settle_refresh_intent(
+        EventTypes.UPDATE_RECORD.value, {"recordId": KEY, "orgId": ORG}, dict(w.row), KEY, parse_now=False,
+    )
+    await w.handler._end_refresh_run(KEY, run, {"recordId": KEY, "orgId": ORG})
+    assert order == ["marker+held"] and ri.ID_FIELD not in w.row                         # marker first, then the clear
+
+    w.row.update(ri.intent_fields("C", w.now_ms))
+    run = await w.handler._settle_refresh_intent(
+        EventTypes.UPDATE_RECORD.value, {"recordId": KEY, "orgId": ORG}, dict(w.row), KEY, parse_now=False,
+    )
+
+    async def refused(*_a: object) -> bool:
+        return False
+
+    w.cache.mark_refresh_done = refused                                                   # type: ignore[method-assign]
+    await w.handler._end_refresh_run(KEY, run, {"recordId": KEY, "orgId": ORG})
+    assert w.row[ri.ID_FIELD] == "C", "a request whose marker could not be written stays for the sweep"

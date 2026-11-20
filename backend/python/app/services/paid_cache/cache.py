@@ -347,15 +347,17 @@ class PaidResultCache:
             raise RefreshPurgeInProgress("the purge lease was lost before the delete; another delivery owns it")
         await self.purge_record(org_id, record_id, before_ms=cutoff)
 
-    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> None:
-        """Records that a refresh run under ``event_id`` has ended, for ``DELETED_TTL_MS``. Best effort: without a lock
-        backend that can be asked, nothing is recorded and a second event of the refresh runs again (compute only: it
-        reuses what the first stored, under the refresh's own marker)."""
+    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
+        """Records that a refresh run under ``event_id`` has ended, for ``DELETED_TTL_MS``. True when the marker is written; False
+        when it could not be (the caller then keeps the request on the record: a second event of the refresh is deduped by the
+        marker or, with the request still stored, by the clear that follows a later marker)."""
         try:
             backend = await self._backend()
             await backend.mark(refresh_done_name(org_id, record_id, event_id), DELETED_TTL_MS)
+            return True
         except Exception:
             self.logger.debug("Paid-result refresh-done marker not written", exc_info=True)
+            return False
 
     async def refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
         """Whether a refresh run under ``event_id`` has ended. False when that cannot be asked."""
@@ -922,8 +924,8 @@ class NullPaidResultCache:
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         return "unclaimed"
 
-    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> None:
-        return None
+    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
+        return True                  # no marker store to keep a record in: nothing is lost by clearing
 
     async def refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
         return False

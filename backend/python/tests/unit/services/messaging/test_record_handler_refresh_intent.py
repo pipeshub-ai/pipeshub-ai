@@ -43,8 +43,9 @@ class _Cache:
     async def refresh_done(self, org: str, record: str, intent_id: str) -> bool:
         return (org, record, intent_id) in self.done
 
-    async def mark_refresh_done(self, org: str, record: str, intent_id: str) -> None:
+    async def mark_refresh_done(self, org: str, record: str, intent_id: str) -> bool:
         self.done.add((org, record, intent_id))
+        return True
 
     @asynccontextmanager
     async def refresh_purge(self, org: str, record: str, event_id: str) -> AsyncIterator[bool]:
@@ -272,6 +273,83 @@ async def test_a_run_that_outlasts_the_life_still_hands_over_the_request_made_wh
         await _drive(handler, {**_PAYLOAD, "is_final_failure": False}, EventTypes.UPDATE_RECORD.value)
     sent = [c.kwargs.get("payload") for c in handler.producer.send_event.await_args_list]
     assert any(p and p.get(ri.PAYLOAD_ID_KEY) == "B" for p in sent), sent
+
+
+async def test_an_independent_update_that_adopted_a_refresh_that_ran_is_still_processed(env) -> None:
+    """The clear of A did not land and a connector update arrives: it clears A and goes on as a plain update (not acknowledged unseen)."""
+    handler, record = _world(status=ProgressStatus.COMPLETED.value, intent="A")
+    env.done.add((ORG, "r1", "A"))
+    seen: dict = {}
+
+    async def on_event(event_data, *_a, **_k):  # noqa: ANN202
+        seen.update(event_data["payload"])
+        record["indexingStatus"] = ProgressStatus.COMPLETED.value
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+    handler.event_processor.on_event = on_event
+    with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"):
+        await _drive(handler, {**_PAYLOAD, "is_final_failure": False}, EventTypes.UPDATE_RECORD.value)
+    assert seen and "refreshPaidOutputs" not in seen and "forceReindex" not in seen, seen
+    assert ri.ID_FIELD not in record
+
+
+async def test_a_retry_of_an_older_refresh_runs_under_the_newer_requests_token(env) -> None:
+    handler, record = _world(intent="B")
+    handler.event_processor.on_event = _on_event_that(record)
+    with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"):
+        await _drive(handler, _refresh("A", is_final_failure=False))
+    assert env.purges == ["B"], env.purges
+    assert ri.ID_FIELD not in record and {(ORG, "r1", "A"), (ORG, "r1", "B")} <= env.done
+
+
+async def test_a_terminal_status_write_that_did_not_land_keeps_the_request(env) -> None:
+    handler, record = _world()
+    handler.event_processor.on_event = _on_event_that(record, ends=None, error=ConnectionError("store down"))
+    with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"), patch.object(
+        type(handler), "_RecordEventHandler__update_document_status", AsyncMock(return_value=None),
+    ), pytest.raises(ConnectionError):
+        await _drive(handler, _refresh(is_final_failure=True))
+    assert record.get(ri.ID_FIELD) == "A" and (ORG, "r1", "A") not in env.done
+
+
+@pytest.mark.parametrize(("ended", "kept"), [(True, False), (False, True)], ids=["ended", "left-for-recovery"])
+async def test_a_resumed_enrichment_that_fails_ends_the_request_only_when_the_run_ended(env, ended: bool, kept: bool) -> None:
+    handler, record = _world()
+    handler.event_processor.on_event = _on_event_that(record, ends=None, error=ConnectionError("store down"))
+    with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"), patch.object(
+        handler, "_enrichment_still_cut_short", AsyncMock(return_value=True),
+    ), patch.object(handler, "_fail_resumed_enrichment", AsyncMock(return_value=ended)), pytest.raises(ConnectionError):
+        await _drive(handler, _refresh(is_final_failure=True))
+    assert (record.get(ri.ID_FIELD) == "A") is kept
+
+
+@pytest.mark.parametrize(("ended", "kept"), [(True, False), (False, True)], ids=["ended", "left-for-recovery"])
+async def test_recovery_giving_up_on_a_resumed_enrichment_clears_the_request_only_when_the_run_ended(
+    env, ended: bool, kept: bool,
+) -> None:
+    handler, record = _world(status=ProgressStatus.COMPLETED.value)
+    with patch.object(handler, "_fail_resumed_enrichment", AsyncMock(return_value=ended)):
+        await handler.on_recovery_exhausted("r1", resume_enrichment=True, intent_id="A")
+    assert (record.get(ri.ID_FIELD) == "A") is kept
+
+
+@pytest.mark.parametrize("connector", [{"_key": "c1", "isActive": False}, None], ids=["off", "removed"])
+async def test_a_delivery_for_a_record_whose_connector_is_off_or_gone_ends_the_request_and_writes_no_done_marker(
+    env, connector: dict | None,
+) -> None:
+    """No refresh ran, so nothing is marked done; the request ends (sweep, recovery and handler agree)."""
+    handler, record = _world()
+    record.update(origin=OriginTypes.CONNECTOR.value, connectorId="c1", connectorName="web")
+    real_get = handler.event_processor.graph_provider.get_document
+
+    async def get_document(key: str, collection: str, **kw: object) -> dict | None:
+        return connector if collection == "apps" else await real_get(key, collection, **kw)
+
+    handler.event_processor.graph_provider.get_document = AsyncMock(side_effect=get_document)
+    handler.event_processor.on_event = AsyncMock(side_effect=AssertionError("must not run"))
+    await _drive(handler, _refresh(is_final_failure=False))
+    assert ri.ID_FIELD not in record
+    assert (ORG, "r1", "A") not in env.done
 
 
 def test_the_record_module_still_imports_unpatched() -> None:

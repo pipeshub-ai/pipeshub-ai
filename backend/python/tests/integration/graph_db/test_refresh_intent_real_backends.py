@@ -225,3 +225,16 @@ async def test_a_cleared_or_never_requested_record_stays_writable_under_the_prev
     for name in ("cleared", "never"):
         doc = await store.doc(name)
         assert ri.ID_FIELD not in doc and ri.AT_FIELD not in doc and doc["reason"] == "an older image's write"
+
+
+async def test_a_promotion_checks_each_copy_in_the_statement_that_writes_it(store: _Store) -> None:
+    """A request stored after the copies were read (or a copy that left QUEUED) is not overwritten by the promotion."""
+    plain = await store.add("p1", status=QUEUED)
+    held = await store.add("p2", status=QUEUED, **ri.intent_fields("late", 1))
+    moved = await store.add("p3", status=COMPLETED)
+    updates = [{"id": key, "indexingStatus": COMPLETED, "reason": "promoted"} for key in (plain, held, moved)]
+    assert await store.graph._promote_queued_copies(updates, None) == 1  # type: ignore[attr-defined]
+    assert (await store.doc("p1"))["reason"] == "promoted"
+    left = await store.doc("p2")
+    assert left["indexingStatus"] == QUEUED and left[ri.ID_FIELD] == "late" and left.get("reason") != "promoted"
+    assert (await store.doc("p3")).get("reason") != "promoted"

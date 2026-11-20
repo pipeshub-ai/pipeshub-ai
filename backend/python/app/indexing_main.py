@@ -1696,6 +1696,25 @@ async def _republish_refresh_intents(
                 key, record.get("indexingStatus"),
             )
 
+    connector_state: dict[str, bool | None] = {}
+
+    async def _connector_can_run(record: dict[str, Any]) -> bool | None:
+        """True when the record's connector is on, False when it is confirmed off, removed or being deleted, None when it
+        could not be read (the record is left for the next pass). A record with no connector is always fine."""
+        connector_id = record.get("connectorId")
+        if not connector_id or record.get("origin") != OriginTypes.CONNECTOR.value:
+            return True
+        cid = str(connector_id)
+        if cid not in connector_state:
+            try:
+                app = await graph_provider.get_document(cid, CollectionNames.APPS.value, raise_on_error=True)
+            except Exception as exc:
+                logger.warning("Could not read connector %s for the refresh sweep; leaving its requests for the next pass: %s", cid, exc)
+                connector_state[cid] = None
+            else:
+                connector_state[cid] = bool(app and app.get("isActive", False) and app.get("status") != APP_STATUS_DELETING)
+        return connector_state[cid]
+
     async def _send(record: dict[str, Any], key: str, intent_id: str) -> bool:
         owner = f"refresh-intent:{uuid4().hex}"
         pool = f"record:{key}"
@@ -1767,6 +1786,16 @@ async def _republish_refresh_intents(
                 _clock_or(record.get("lastRepublishedAt"), 0),
             )
             if pass_started_ms - touched < _intent_resend_wait_ms(record, after_seconds):
+                continue
+            can_run = await _connector_can_run(record)
+            if can_run is None:
+                continue
+            if can_run is False:
+                # A Force reindex of a record whose connector is off, removed or being deleted cannot run: the request ends
+                # here, as it does when stale recovery parks the record, and the record's own state says why it did not.
+                if await refresh_intent.clear_intent(graph_provider, str(key), intent_id):
+                    refresh_intent.REFRESH_INTENT_EVENTS.inc("connector_off")
+                    logger.info("The Force reindex of record %s ended: its connector is off or removed", key)
                 continue
             lanes = await _lanes()
             if lanes is not None:

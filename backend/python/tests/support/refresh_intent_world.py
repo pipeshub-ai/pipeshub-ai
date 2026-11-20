@@ -43,7 +43,7 @@ class IntentGraph:
     """The record store, with the semantics the three stores give: a compare-and-set where null matches absent."""
 
     def __init__(self, doc: dict[str, Any]) -> None:
-        self.docs = {KEY: doc}
+        self.docs = {KEY: doc, "c1": {"_key": "c1", "isActive": True}}      # the record and its connector
 
     async def get_document(self, key: str, collection: str, **_kw: object) -> dict | None:
         doc = self.docs.get(key)
@@ -95,7 +95,7 @@ class IntentGraph:
     async def get_records_with_refresh_intent(self, org_id: str, *, after_key: str | None = None, limit: int = 100) -> list[dict]:
         rows = [
             dict(d, _key=k) for k, d in sorted(self.docs.items())
-            if d.get(ri.ID_FIELD) and d.get("orgId") == org_id and d.get("isDeleted") is not True
+            if k != "c1" and d.get(ri.ID_FIELD) and d.get("orgId") == org_id and d.get("isDeleted") is not True
             and (after_key is None or k > after_key)
         ]
         return rows[:limit]
@@ -129,8 +129,9 @@ class _Cache:
     async def refresh_done(self, org: str, record: str, intent_id: str) -> bool:
         return (org, record, intent_id) in self.done
 
-    async def mark_refresh_done(self, org: str, record: str, intent_id: str) -> None:
+    async def mark_refresh_done(self, org: str, record: str, intent_id: str) -> bool:
         self.done.add((org, record, intent_id))
+        return True
 
 
 class World:

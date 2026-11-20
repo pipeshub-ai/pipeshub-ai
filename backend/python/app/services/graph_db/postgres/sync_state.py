@@ -175,6 +175,21 @@ class SyncStateMixin(PgBase):
         except Exception:
             raise
 
+    async def _promote_queued_copies(self, updates: list[dict], transaction: str | None) -> int:
+        """Write each copy's new status only while it is still QUEUED and holds no Force reindex request, in the statement that
+        checks it (a request stored after the copies were read is not overwritten). Returns how many copies were written."""
+        org = current_org_id()
+        items = [{"id": u["id"], "doc": {f: v for f, v in u.items() if f != "id"}} for u in updates]
+        for it in items:
+            _VALIDATOR.validate_node_update("records", it["doc"])
+        if not items:
+            return 0
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.promote_queued_copies */ UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
+            FROM jsonb_to_recordset($2::jsonb) AS x(id text, doc jsonb)
+            WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = x.id AND n.doc->>'indexingStatus' = 'QUEUED' AND n.doc->>'refreshIntentId' IS NULL
+            RETURNING n.id""", org, _j(items)), transaction, write=True)
+        return len(rows or [])
+
     async def update_queued_duplicates_status(self, record_id: str, new_indexing_status: str, virtual_record_id: str | None = None,
                                               transaction: str | None = None, reason: str | None = None) -> int:
         """Give the QUEUED live records of the same org with the reference record's md5 (and size, when it has one) its new status. The count
@@ -201,11 +216,10 @@ class SyncStateMixin(PgBase):
                         "isDirty": False, "virtualRecordId": virtual_record_id, "extractionStatus": extraction_status, **({"reason": reason} if reason else {}),
                         **reference({}, WriteKind.STATUS_VAR, now, status=new_indexing_status)}
                        for r in rows]
-            if new_indexing_status in _RECONCILED_STATUSES:     # in the same batch as the promotion, so a crash cannot leave copies with nothing to trigger their taxonomy
-                updates.append({"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
-                                DUPLICATE_RECONCILE_DUE_AT_FIELD: now + DUPLICATE_RECONCILE_GRACE_MS})
-            await self.batch_update_nodes(updates, "records", transaction)
-            return len(rows)
+            if new_indexing_status in _RECONCILED_STATUSES:     # first: a crash between the writes leaves a marker that finds no copies, never promoted copies with nothing to trigger their taxonomy
+                await self.batch_update_nodes([{"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
+                                                DUPLICATE_RECONCILE_DUE_AT_FIELD: now + DUPLICATE_RECONCILE_GRACE_MS}], "records", transaction)
+            return await self._promote_queued_copies(updates, transaction)
         except Exception as e:
             self.logger.error(f"❌ Failed to update queued duplicates status: {e}")
             return -1

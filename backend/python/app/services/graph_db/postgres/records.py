@@ -405,6 +405,8 @@ class RecordsMixin(PgBase):
                   AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)""", run),
                                                  org, ids, status, get_epoch_timestamp_in_ms(), _j(fields or {})), None, write=True)
         except Exception as e:
+            if fields:
+                raise        # with ``fields`` (a Force reindex's request) a lost write must not be read as a request that was made
             self.logger.error("Failed to update records to %s: %s", status, e)
 
     async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:

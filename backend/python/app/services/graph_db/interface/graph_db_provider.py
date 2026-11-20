@@ -2790,7 +2790,8 @@ class IGraphDBProvider(ABC):
             record_ids: List of record IDs to update
             status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
             fields: Further fields set in the same statement (a Force reindex's refresh intent); a null value
-                clears the field
+                clears the field. With ``fields`` a failed statement **raises** (a lost write must not be read as a
+                request that was made); without it errors are logged and swallowed
         """
         pass
 

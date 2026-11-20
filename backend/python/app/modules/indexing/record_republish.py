@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import EventTypes, OriginTypes, ProgressStatus
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
-from app.modules.indexing.refresh_intent import stored_intent, with_intent
+from app.modules.indexing.refresh_intent import live_intent, stored_intent, with_intent
 from app.services.graph_db.common.record_visibility import (
     is_live_record,
     is_searchable_record,
@@ -81,10 +81,16 @@ def record_event(
         if (version > 0 or restored_upload) and payload.get("virtualRecordId")
         else EventTypes.NEW_RECORD.value
     )
-    if restored_upload and event_type == EventTypes.REINDEX_RECORD.value and reembeds_from_storage(record):
+    now_ms = get_epoch_timestamp_in_ms()
+    # A restored upload that holds a live Force reindex request runs as the full refresh: a vector-only rebuild would leave the
+    # request unserved (the handler gives a vector rebuild no refresh), and it would age out.
+    if (
+        restored_upload and event_type == EventTypes.REINDEX_RECORD.value and reembeds_from_storage(record)
+        and live_intent(record, now_ms) is None
+    ):
         payload["vectorDbOnly"] = True
     # A record that holds a live Force reindex request is re-sent as that refresh, whatever built the event.
-    with_intent(payload, record, get_epoch_timestamp_in_ms())
+    with_intent(payload, record, now_ms)
     return event_type, payload
 
 

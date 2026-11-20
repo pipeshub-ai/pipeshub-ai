@@ -104,12 +104,12 @@ def _intent_sweep_gated_by_status() -> Iterator[None]:
 
 
 @contextmanager
-def _clear_own_id_not_the_one_seen() -> Iterator[None]:
-    async def settle(self, *args, **kwargs):  # noqa: ANN202
-        run = await _settle(self, *args, **kwargs)
-        return RefreshRun(seen=run.intent_id, intent_id=run.intent_id, refresh=run.refresh) if run is not None else run
+def _clear_whatever_is_stored() -> Iterator[None]:
+    async def clear(self, record_id, intent_id):  # noqa: ANN202
+        stored = (await self.event_processor.graph_provider.get_document(record_id, "records")) or {}
+        return await ri.clear_intent(self.event_processor.graph_provider, record_id, stored.get(ri.ID_FIELD) if intent_id else None)
 
-    with patch.object(RecordEventHandler, "_settle_refresh_intent", settle):
+    with patch.object(RecordEventHandler, "_clear_intent", clear):
         yield
 
 
@@ -144,7 +144,7 @@ MUTANTS: dict[str, Callable[[], object]] = {
     "walk skips running records": _walk_skips_running_records,
     "no intent sweep": _no_intent_sweep,
     "intent sweep gated by status": _intent_sweep_gated_by_status,
-    "clear the run's own id, not the one it saw": _clear_own_id_not_the_one_seen,
+    "clear whatever request is stored, not the one it saw": _clear_whatever_is_stored,
     "events do not say they came from a request (and no done-marker)": _no_origin_marker,
     "backstop writes for a stamped payload": _backstop_on_a_stamped_payload,
 }

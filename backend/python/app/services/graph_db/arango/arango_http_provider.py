@@ -3171,8 +3171,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if updated:
                 self.logger.debug("✅ Updated %s record(s) indexing status to %s", len(updated), status)
         except Exception as e:
-            if isinstance(e, RecordSchemaNarrowError):
-                raise
+            if isinstance(e, RecordSchemaNarrowError) or fields:
+                raise        # with ``fields`` (a Force reindex's request) a lost write must not be read as a request that was made
             self.logger.error("❌ Failed to update records to %s: %s", status, str(e))
 
     async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
@@ -10808,39 +10808,48 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not updated_records:
                 return 0
 
-            # Same batch as the promotion: a crash after it would otherwise
-            # leave the duplicates COMPLETED with no taxonomy and nothing to
-            # trigger the copy, since a redelivery finds nothing QUEUED. Only
-            # an indexed primary has anything to copy.
+            # The reference's bookkeeping goes first: a crash between the two writes leaves a pending marker that finds no
+            # copies, never copies promoted with nothing to trigger their taxonomy. Only an indexed primary has anything to copy.
             if new_indexing_status in _RECONCILED_STATUSES:
-                updated_records.append({
+                bookkeeping_ok = await self.batch_update_nodes([{
                     "id": record_id,
                     DUPLICATE_RECONCILE_PENDING_FIELD: True,
                     DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
                     DUPLICATE_RECONCILE_DUE_AT_FIELD: current_timestamp + DUPLICATE_RECONCILE_GRACE_MS,
-                })
+                }], CollectionNames.RECORDS.value, transaction)
+                if not bookkeeping_ok:
+                    return -1
 
-            success = await self.batch_update_nodes(
-                updated_records, CollectionNames.RECORDS.value, transaction
-            )
-            if not success:
-                self.logger.warning(
-                    "⚠️ Failed to update queued duplicate records for %s - some records may not exist",
-                    record_id,
-                )
-                return -1
-
+            promoted = await self._promote_queued_copies(updated_records, transaction)
             self.logger.debug(
-                f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
+                f"✅ Updated {promoted} of {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
             )
 
-            return len(queued_records)
+            return promoted
 
         except Exception as e:
             self.logger.error(
                 f"❌ Failed to update queued duplicates status: {str(e)}"
             )
             return -1
+
+    async def _promote_queued_copies(self, updates: list[dict], transaction: str | None) -> int:
+        """Write each copy's new status only while it is still QUEUED and holds no Force reindex request, in the statement that
+        checks it (a request stored after the copies were read is not overwritten). Returns how many copies were written."""
+        if not updates:
+            return 0
+        rows = await self.http_client.execute_aql(
+            """
+            FOR doc IN @nodes
+                FOR cur IN @@collection
+                    FILTER cur._key == doc._key AND cur.indexingStatus == "QUEUED" AND cur.refreshIntentId == null
+                    UPDATE cur WITH UNSET(doc, "_key") IN @@collection
+                    RETURN 1
+            """,
+            {"nodes": self._translate_nodes_to_arango(updates), "@collection": CollectionNames.RECORDS.value},
+            txn_id=transaction,
+        )
+        return len(rows or [])
 
     async def batch_upsert_record_permissions(
         self,

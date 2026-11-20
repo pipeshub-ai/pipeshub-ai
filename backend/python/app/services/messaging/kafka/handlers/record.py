@@ -236,17 +236,25 @@ class RefreshRun:
     """What a delivery knows of the Force reindex request it serves (see ``refresh_intent``).
 
     ``seen`` is the request the record held when the run started: the run clears exactly that one when it ends, so a
-    request made while it ran survives. ``intent_id`` names the refresh the run is, when it is one.
+    request made while it ran survives. ``intent_id`` names the refresh the run is, when it is one (it keys the purge and
+    the paid results). ``superseded`` are the ids of requests this run took over (a retry of an older refresh that met a
+    newer request runs as the newer one and marks both done). ``adopted`` says the event was a plain one that the record's
+    request turned into a refresh.
     """
 
-    __slots__ = ("intent_id", "refresh", "seen", "started_ms")
+    __slots__ = ("adopted", "intent_id", "refresh", "seen", "started_ms", "superseded")
 
-    def __init__(self, *, seen: str | None, intent_id: str | None, refresh: bool, started_ms: int = 0) -> None:
+    def __init__(
+        self, *, seen: str | None, intent_id: str | None, refresh: bool, started_ms: int = 0,
+        superseded: tuple[str, ...] = (), adopted: bool = False,
+    ) -> None:
         self.seen = seen
         self.intent_id = intent_id
         self.refresh = refresh
         #: When the run began: a request made after this was made while it ran, however long it ran.
         self.started_ms = started_ms
+        self.superseded = superseded
+        self.adopted = adopted
 
 
 def is_parse_now(event_type: str | None, payload: dict) -> bool:
@@ -790,8 +798,10 @@ class RecordEventHandler(BaseEventService):
         """
         if resume_enrichment:
             # Searchable already: only the enrichment fails, and the copies
-            # take the record's indexing with it.
-            await self._fail_resumed_enrichment(record_id)
+            # take the record's indexing with it. The request this recovery served ends with it, unless the helper left
+            # more work to stale recovery (then the request is still needed).
+            if await self._fail_resumed_enrichment(record_id):
+                await self._clear_intent(record_id, intent_id)
             return
         record = await self.event_processor.graph_provider.get_document(
             record_id, CollectionNames.RECORDS.value, raise_on_error=True
@@ -1223,12 +1233,13 @@ class RecordEventHandler(BaseEventService):
             and current.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
         )
 
-    async def _fail_resumed_enrichment(self, record_id: str) -> None:
+    async def _fail_resumed_enrichment(self, record_id: str) -> bool:
         """End a resumed enrichment whose attempts all failed as FAILED and release its copies.
 
         Never raises: the attempt's own exception is already on its way out.
         If the copies cannot be released, the enrichment is put back as
         running with a fresh start time, so stale recovery tries again later.
+        Returns True when the run ended, False when more work was left to stale recovery.
         """
         try:
             await self._end_enrichment_without_running(
@@ -1237,7 +1248,7 @@ class RecordEventHandler(BaseEventService):
             await self._release_queued_copies(record_id)
             # Best effort and nested: a failed write must not change the retry path below.
             await self._end_provider_rate_limit_total(record_id, {RATE_LIMITED_SINCE_MS_FIELD: 1})
-            return
+            return True
         except Exception as e:
             self.logger.error(
                 "Could not end the failed enrichment of record %s or release its copies; "
@@ -1254,6 +1265,7 @@ class RecordEventHandler(BaseEventService):
             )
         except Exception as e:
             self.logger.error("Could not hand record %s back to stale recovery: %s", record_id, e)
+        return False
 
     async def _release_queued_copies(self, record_id: str) -> None:
         """Promote the QUEUED copies of a record that has just finished.
@@ -2023,6 +2035,7 @@ class RecordEventHandler(BaseEventService):
             return None
         now_ms = get_epoch_timestamp_in_ms()
         stored = refresh_intent.live_intent(record, now_ms)
+        sent_as_refresh = paid_cache_run.refresh_requested(payload)
         stamped = payload.get(refresh_intent.PAYLOAD_ID_KEY)
         stamped = stamped if isinstance(stamped, str) and stamped else None
         if paid_cache_run.refresh_requested(payload) and stamped is None and refresh_intent.write_enabled() and _event_org(record, payload):
@@ -2039,12 +2052,23 @@ class RecordEventHandler(BaseEventService):
                 payload.pop(key, None)
             stamped = None
             refresh_intent.REFRESH_INTENT_EVENTS.inc("demoted")
+        superseded: tuple[str, ...] = ()
+        if (
+            paid_cache_run.refresh_requested(payload) and payload.get(refresh_intent.FROM_INTENT_KEY) is not True
+            and stamped is not None and stored is not None and stamped != stored
+        ):
+            # A retry of an older refresh that finds a newer request on the record: it runs as the newer one (its token keys the
+            # purge and the paid results, so nothing paid for before that request is reused), and the older id is done with it.
+            superseded = (stamped,)
+            payload.update(refresh_intent.intent_flags(stored, from_intent=True))
+            stamped = stored
         if stored is not None and not paid_cache_run.refresh_requested(payload):
             payload.update(refresh_intent.intent_flags(stored, from_intent=True))
             stamped = stored
         refresh = paid_cache_run.refresh_requested(payload)
         return RefreshRun(
             seen=stored if refresh else None, intent_id=stamped if refresh else None, refresh=refresh, started_ms=now_ms,
+            superseded=superseded, adopted=refresh and not sent_as_refresh,
         )
 
     async def _store_intent(self, record_id: str, record: dict, intent_id: str, now_ms: int) -> None:
@@ -2067,6 +2091,13 @@ class RecordEventHandler(BaseEventService):
             f"Could not store the refresh request of record {record_id}", details={"record_id": record_id},
         )
 
+    async def _end_request_unserved(self, record_id: str, run: RefreshRun | None) -> None:
+        """The record's connector is off or gone, so no run will serve the request it holds: it ends here (as it does in the intent
+        sweep and in stale recovery), and no done marker is written, because no refresh ran. Turning the connector on re-queues the
+        record's parked rows as plain reindexes. Returns None: the delivery has no refresh bookkeeping left."""
+        if run is not None and run.seen:
+            await self._clear_intent(record_id, run.seen)
+
     async def _refresh_already_ran(self, run: RefreshRun, record: dict, payload: dict) -> bool:
         """Whether a refresh run under this event's id has already ended (a second event of one request is a no-op)."""
         if not run.refresh or not run.intent_id:
@@ -2086,16 +2117,20 @@ class RecordEventHandler(BaseEventService):
         """A run that has reached its end: clear the request it saw, record that its refresh has run, and hand over a request
         made while it ran. Never raises: the run's own outcome is what the broker is told."""
         try:
-            if run.seen and await self._clear_intent(record_id, run.seen):
+            bound = peek_org_context()
+            org_id = bound.org_id if bound is not None else None
+            # The marker first, then the clear: a worker that stops between them leaves the request (the dedupe finds the marker
+            # and clears it), never a cleared request with no marker, which a queued duplicate would run again. A marker that
+            # could not be written leaves the request on the record for the sweep.
+            marked = True
+            if run.refresh and org_id:
+                cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
+                for done_id in dict.fromkeys(i for i in (run.intent_id, *run.superseded) if i):
+                    marked = await cache.mark_refresh_done(str(org_id), record_id, done_id) and marked
+            if run.seen and marked and await self._clear_intent(record_id, run.seen):
                 refresh_intent.REFRESH_INTENT_EVENTS.inc("cleared")
             graph = self.event_processor.graph_provider
             row = await graph.get_document(record_id, CollectionNames.RECORDS.value)
-            bound = peek_org_context()
-            org_id = bound.org_id if bound is not None else None
-            if run.refresh and run.intent_id and org_id:
-                await paid_cache_access.paid_cache_for(self.config_service, self.logger).mark_refresh_done(
-                    str(org_id), record_id, run.intent_id
-                )
             now_ms = get_epoch_timestamp_in_ms()
             waiting = refresh_intent.waiting_intent(row, now_ms, run.started_ms) if row is not None and is_live_record(row) else None
             if waiting is None or waiting == run.seen or self.producer is None:
@@ -2601,16 +2636,22 @@ class RecordEventHandler(BaseEventService):
             # still leaves it on the record; and a request the record holds makes this event a refresh.
             refresh_run = await self._settle_refresh_intent(event_type, payload, record, record_id, parse_now=parse_now)
             if refresh_run is not None and await self._refresh_already_ran(refresh_run, record, payload):
-                # A second event of a refresh that has run: nothing is left to do for it.
-                note(outcome="skipped", reason="refresh_already_ran")
                 refresh_intent.REFRESH_INTENT_EVENTS.inc("deduped")
                 # The refresh ran: a stored copy of its id (a clear that did not land) goes now, so the sweep does not send it
                 # again and it does not age out as a request that was never served.
                 await self._clear_intent(record_id, refresh_run.intent_id)
-                refresh_run = None
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                return
+                if refresh_run.adopted:
+                    # An independent update that adopted the request: its own work is still owed, so it goes on as a plain one.
+                    for key in _INTENT_PAYLOAD_KEYS:
+                        payload.pop(key, None)
+                    refresh_run = RefreshRun(seen=None, intent_id=None, refresh=False, started_ms=refresh_run.started_ms)
+                else:
+                    # A second event of a refresh that has run: nothing is left to do for it.
+                    note(outcome="skipped", reason="refresh_already_ran")
+                    refresh_run = None
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
             if (remaining := self._handback_remaining_s(record)) is not None:
                 # A duplicate delivery during a provider's wait: the wait is kept and the delivery is handed back for the rest
                 # of it, without an attempt. Clearing it here would let this event call the provider early.
@@ -2785,10 +2826,12 @@ class RecordEventHandler(BaseEventService):
                             if state is ConnectorState.OFF
                             else ENRICHMENT_STOPPED_CONNECTOR_REMOVED,
                         )
+                        refresh_run = await self._end_request_unserved(record_id, refresh_run)
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         return
                     if state is ConnectorState.REMOVED:
+                        refresh_run = await self._end_request_unserved(record_id, refresh_run)
                         note(outcome="skipped", reason="connector_missing")
                         self.logger.debug(
                             f"Skipping indexing for record {record_id}: "
@@ -2812,6 +2855,7 @@ class RecordEventHandler(BaseEventService):
                             extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
                             reason=CONNECTOR_OFF,
                         )
+                        refresh_run = await self._end_request_unserved(record_id, refresh_run)
                         note(outcome="skipped", reason="connector_inactive")
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -3309,8 +3353,8 @@ class RecordEventHandler(BaseEventService):
                     # record; a first-time indexing failure takes the branch
                     # below unchanged.
                     note(phase="enrichment")
-                    await self._fail_resumed_enrichment(record_id)
-                    run_terminal = True
+                    # Terminal only when it ended the run: a release that failed leaves the record to stale recovery.
+                    run_terminal = await self._fail_resumed_enrichment(record_id)
                 elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
@@ -3352,14 +3396,16 @@ class RecordEventHandler(BaseEventService):
                         if last_exception is not None:
                             raise last_exception from status_exc
                         raise
-                    run_terminal = True
+                    # Terminal only when the status write landed: a write that did not leaves the record to stale recovery, which
+                    # needs the request (it sends the record as that refresh).
+                    run_terminal = record is not None
                     if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
                         if keep_old_copy.pending_of(record):
                             await self._release_pending_copy(record_id, RecordContext.from_graph_document(record).org_id)
 
                         # Decide duplicate handling based on error type
-                        if (last_exception and 
+                        if (last_exception and
                             MessageErrorClassifier.classify_by_exception(last_exception)
                             == MessageErrorType.TERMINAL):
                             # Terminal error → content issue → fail ALL duplicates

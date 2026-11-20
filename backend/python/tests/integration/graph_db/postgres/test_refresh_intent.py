@@ -113,3 +113,16 @@ async def test_the_partial_index_exists_and_serves_the_sweeps_read(w: World, pg_
     rows = await pg_db.run(lambda tx: tx.fetch("SELECT indexdef FROM pg_indexes WHERE schemaname = 'graph' AND indexname LIKE 'nodes_record_refresh_intent%'"))
     assert rows, "graph_0015 did not build the index"
     assert all("refreshIntentId" in r["indexdef"] for r in rows)
+
+
+async def test_a_promotion_checks_each_copy_in_the_statement_that_writes_it(w: World) -> None:
+    """A request stored after the copies were read (or a copy that left QUEUED) is not overwritten by the promotion."""
+    await record(w, "p1", indexingStatus="QUEUED")
+    await record(w, "p2", indexingStatus="QUEUED", **ri.intent_fields("late", 1))
+    await record(w, "p3", indexingStatus="COMPLETED")
+    updates = [{"id": key, "indexingStatus": "COMPLETED", "reason": "promoted"} for key in ("p1", "p2", "p3")]
+    assert await w.p._promote_queued_copies(updates, None) == 1
+    assert (await doc(w, "p1"))["reason"] == "promoted"
+    left = await doc(w, "p2")
+    assert left["indexingStatus"] == "QUEUED" and left[ri.ID_FIELD] == "late" and "reason" not in left
+    assert "reason" not in await doc(w, "p3")

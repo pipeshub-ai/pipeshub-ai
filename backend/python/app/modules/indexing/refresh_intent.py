@@ -73,7 +73,9 @@ def live_intent(record: Mapping[str, Any] | None, now_ms: int) -> str | None:
     held = stored_intent(record)
     if held is None or held[1] is None:
         return None
-    return held[0] if 0 <= now_ms - held[1] < INTENT_LIFE_MS else None
+    # A time ahead of this process's clock stays live: the request was stamped by another host (the walk's), and the sweep's wait
+    # already holds the send until the time has passed. Only a request older than its life is expired.
+    return held[0] if now_ms - held[1] < INTENT_LIFE_MS else None
 
 
 def waiting_intent(record: Mapping[str, Any] | None, now_ms: int, run_started_ms: int) -> str | None:
