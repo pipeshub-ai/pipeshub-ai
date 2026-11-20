@@ -6,6 +6,10 @@ import * as controller from '../../../../src/modules/enterprise_search/controlle
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import * as chatUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import {
+  conversationExtensions,
+  useConversationExtensions,
+} from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
 import { FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
@@ -92,6 +96,49 @@ describe('fork route: the artifacts of a forked chat', () => {
 
   afterEach(() => {
     sinon.restore()
+  })
+
+  describe('what the conversation extensions hear of it', () => {
+    let forked: sinon.SinonStub
+    beforeEach(() => {
+      forked = sinon.stub().resolves()
+      useConversationExtensions({ events: { ...conversationExtensions().events, conversationForked: forked } })
+    })
+    afterEach(() => useConversationExtensions(undefined))
+
+    it('once the fork commits: the chat forked, the new chat, the fork point, and how many rows and files it took', async () => {
+      seed(`Done\n\n${card}`)
+      fetchStub.resolves(reply(200, { copies: [copied], failed: [] }))
+
+      const out = await fork()
+
+      expect(out.status).to.equal(201)
+      expect(forked.calledOnce).to.equal(true)
+      const [req, event] = forked.firstCall.args as [{ context?: { requestId?: string } }, Record<string, unknown>]
+      expect(req.context?.requestId).to.equal('req-fork-artifacts')
+      expect(event).to.deep.equal({ orgId: ORG, userId: OWNER, sourceId: chatId, messageId: botMessageId, forkId: out.body?.id, messages: 2, artifacts: 1 })
+    })
+
+    it('nothing of a fork that failed', async () => {
+      seed(`Done\n\n${card}`)
+      fetchStub.resolves(reply(500, { detail: 'boom' }))
+
+      const out = await fork()
+
+      expect(out.error).to.be.instanceOf(Error)
+      expect(forked.called).to.equal(false)
+    })
+
+    it('an extension that fails never fails the fork', async () => {
+      seed('Plain answer')
+      forked.rejects(new Error('audit store down'))
+
+      const out = await fork()
+
+      expect(out.status).to.equal(201)
+      expect(out.error).to.equal(undefined)
+      expect(forked.calledOnce).to.equal(true)
+    })
   })
 
   it('copies them under the id of the fork it then creates, and keeps them', async () => {

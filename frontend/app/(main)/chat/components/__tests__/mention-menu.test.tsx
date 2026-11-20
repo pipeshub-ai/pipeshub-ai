@@ -223,6 +223,21 @@ describe('@ menu — the bare Sources group', () => {
 });
 
 describe('@ menu — keyboard', () => {
+  it('the active option is the list\'s one tab stop, so the list that scrolls can be reached by keyboard', async () => {
+    // axe's scrollable-region-focusable: a scrolling list needs keyboard access. The composer keeps focus and moves the
+    // active option with the arrows; that option is the list's one tab stop, and moves with it.
+    const handle = React.createRef<MentionMenuHandle>();
+    render(<Menu handle={handle} />);
+    await screen.findByText('Slow app', undefined, WAIT);
+    const stops = () => screen.getAllByRole('option').map((o) => o.getAttribute('tabindex'));
+    expect(stops().length).toBeGreaterThan(2);
+    expect(stops()).toEqual(['0', ...stops().slice(1).map(() => '-1')]);
+    act(() => {
+      handle.current?.keyDown(key('ArrowDown'), true);
+    });
+    expect(stops()).toEqual(['-1', '0', ...stops().slice(2).map(() => '-1')]);
+  });
+
   it('wraps with the arrows, and Tab picks as Enter does', async () => {
     const onPick = vi.fn();
     const handle = React.createRef<MentionMenuHandle>();

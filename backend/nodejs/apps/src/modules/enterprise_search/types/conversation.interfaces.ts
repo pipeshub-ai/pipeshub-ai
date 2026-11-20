@@ -192,6 +192,8 @@ export interface IMessagePart {
   approved?: boolean;
   /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  /** Why an allowed call didn't run, which its card says (Python `tool_approvals.Outcome.reason`). */
+  approvalReason?: 'access_lost';
   /** `approval` parts: `pending`, `approved`, `denied`, `closed` or `expired`. */
   status?:
     | 'running'

@@ -295,6 +295,7 @@ export const matchesFilter = (doc: Doc, filter: Filter): boolean =>
   Object.entries(filter).every(([key, condition]) => {
     if (key === '$or') return (condition as Filter[]).some((f) => matchesFilter(doc, f))
     if (key === '$and') return (condition as Filter[]).every((f) => matchesFilter(doc, f))
+    if (key === '$nor') return !(condition as Filter[]).some((f) => matchesFilter(doc, f))
     if (key === '$expr') return isTruthy(evalExpr(condition, doc))
     if (key.startsWith('$')) throw new Error(`The in-memory store does not understand ${key}`)
     const path = key.split('.')

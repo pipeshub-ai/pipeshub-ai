@@ -139,12 +139,35 @@ export interface ConversationDetailExtension {
     rows: readonly object[],
     context: { users: IUserDirectory; ownerId: string },
   ): Promise<R>;
+  /**
+   * The detail's rows as the reader check shows them (`shown`), beside the same rows as they were handed to it
+   * (`before`, in the same order): an extension gives back what the check's per-record view cleared and the reader may
+   * read. The default keeps `shown`.
+   */
+  afterReaderCheck<M extends object>(before: readonly M[], shown: M[]): M[];
 }
 
 /** How earlier turns are retold to the AI backend. */
 export interface HistoryExtension {
   /** Replaces what the AI backend is told about one earlier tool call; undefined keeps the default. */
   toolResult(part: IMessagePart): PreviousToolResult | undefined;
+}
+
+/** A fork that committed: the chat forked, the new chat, and what the new chat took from it. */
+export interface ConversationForkEvent {
+  orgId: string;
+  /** Who forked; the new chat is theirs. */
+  userId: string;
+  /** The chat forked. */
+  sourceId: string;
+  /** The message the fork was cut at. */
+  messageId: string;
+  /** The new chat. */
+  forkId: string;
+  /** How many rows the new chat holds. */
+  messages: number;
+  /** How many files were copied into it. */
+  artifacts: number;
 }
 
 /** Things that happened to a conversation, for an extension that reacts to them. */
@@ -160,6 +183,11 @@ export interface ConversationEventsExtension {
     req: AuthenticatedUserRequest,
     grant: ConversationAccessGrant,
     session?: ClientSession,
+  ): Promise<void>;
+  /** After the fork commits; the caller does not wait on it. Fire and forget; never throws. */
+  conversationForked(
+    req: AuthenticatedUserRequest,
+    fork: ConversationForkEvent,
   ): Promise<void>;
 }
 
@@ -283,11 +311,15 @@ const defaults = (): ConversationExtensions => ({
     setOwn: () => Promise.resolve(false),
     ownIds: () => Promise.resolve(undefined),
   },
-  details: { decorate: (_req, response) => Promise.resolve(response) },
+  details: {
+    decorate: (_req, response) => Promise.resolve(response),
+    afterReaderCheck: (_before, shown) => shown,
+  },
   history: { toolResult: () => undefined },
   events: {
     turnCompleted: () => Promise.resolve(),
     conversationDeleted: () => Promise.resolve(),
+    conversationForked: () => Promise.resolve(),
   },
   acl: { versionBump: () => ({}), bumpDocument: () => undefined },
   content: new RecordPermissionChatContentAccess(),

@@ -39,6 +39,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         uow: scopedUow(),
         transactional: true,
         stripsNul: true,
+        answerShares: false,
         newId,
       });
     });

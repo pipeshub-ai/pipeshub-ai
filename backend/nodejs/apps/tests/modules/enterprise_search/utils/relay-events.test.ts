@@ -80,6 +80,14 @@ describe('stream relay: what reaches the browser', () => {
     })
   })
 
+  it("forwards how a settled card's call was answered, and why an approved one didn't run", () => {
+    const relay = new StreamRelay()
+    const start = { type: 'TOOL_CALL_START', toolCallId: 'c1', toolCallName: 'mcp_jira_create_issue', runId: RUN }
+    expect(relayed(relay, 'TOOL_CALL_START', { ...start, approvalAnswer: 'allowed', approvalReason: 'access_lost' })).to.deep.equal({
+      ...start, approvalAnswer: 'allowed', approvalReason: 'access_lost',
+    })
+  })
+
   it('sends the final snapshot as a bare "the answer is settled", never the answer data it carried', () => {
     const relay = new StreamRelay()
     const snapshot = { final: true, answer: 'Revenue grew.', citations: [], provenance: LABEL, modelRouting: { escalated: false } }

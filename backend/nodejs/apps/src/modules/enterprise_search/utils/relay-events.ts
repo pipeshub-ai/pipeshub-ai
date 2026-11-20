@@ -37,6 +37,7 @@ const FIELDS: Record<string, readonly string[]> = {
     'displayName',
     'approved',
     'approvalAnswer',
+    'approvalReason',
   ],
   TOOL_CALL_ARGS: ['toolCallId', 'delta', 'argsSummary', 'argsPreview'],
   TOOL_CALL_END: ['toolCallId'],

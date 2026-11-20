@@ -453,6 +453,9 @@ function ItemRow({
       gap="2"
       id={id}
       role="option"
+      // The active option is the list's one tab stop (a list that scrolls needs a way in by keyboard: axe
+      // scrollable-region-focusable). The composer keeps focus and takes Tab to pick, so focus never moves here.
+      tabIndex={active ? 0 : -1}
       aria-selected={active}
       aria-disabled={item.disabled || undefined}
       aria-label={item.ariaLabel}
@@ -569,6 +572,7 @@ function MoreRow({
       gap="2"
       id={id}
       role="option"
+      tabIndex={active ? 0 : -1}
       aria-selected={active}
       data-mention-active={active ? '' : undefined}
       data-mention-more=""

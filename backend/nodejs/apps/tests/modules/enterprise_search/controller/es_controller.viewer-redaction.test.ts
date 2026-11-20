@@ -21,6 +21,7 @@ import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.se
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
 import { chatArchivesScope, withListScope } from '../helpers/list-scope'
 
 /**
@@ -1398,5 +1399,67 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
     expect(first.answerHidden).to.deep.equal(unconfirmed)
     expect(second.answerHidden).to.deep.equal(unconfirmed)
     expect(JSON.stringify([first, second])).to.not.contain(SECRET)
+  })
+})
+
+describe('the detail hands the rows the reader check shaped to the detail extension', () => {
+  afterEach(() => {
+    sinon.restore()
+    useConversationExtensions(undefined)
+  })
+
+  const turn = () => [
+    { messageType: 'user_query', content: 'question' },
+    { messageType: 'tool_call', content: SECRET, tools: [{ toolName: 'ask_user_question', toolResult: SECRET }] },
+    { messageType: 'bot_response', content: 'Plain answer', citations: [] },
+  ]
+  /** An extension that records what it is given and marks every row it gives back. */
+  const recording = () => {
+    const seen: Array<{ before: any[]; shown: any[] }> = []
+    useConversationExtensions({
+      details: {
+        decorate: (_req, response) => Promise.resolve(response),
+        afterReaderCheck: (before, shown) => {
+          seen.push({ before: [...before] as any[], shown: [...shown] as any[] })
+          return shown.map((m) => ({ ...(m as object), marked: true }) as typeof m)
+        },
+      },
+    })
+    return seen
+  }
+  const expectHandedOver = (seen: Array<{ before: any[]; shown: any[] }>, rows: any[]) => {
+    expect(seen).to.have.length(1)
+    expect(seen[0]!.before.map((m) => m.messageType)).to.deep.equal(['user_query', 'tool_call', 'bot_response'])
+    // What it is handed is the reader check's view: another person's card without its tool output.
+    expect(seen[0]!.shown[1].tools).to.deep.equal([])
+    expect(rows.map((m) => m.marked)).to.deep.equal([true, true, true])
+  }
+
+  it('a chat: the rows it was given and the rows as shown, in order; the response is what it gives back', async () => {
+    const seen = recording()
+    stubAccess([])
+    stubConversation(turn())
+    const r = res()
+    await getChat()(req(VIEWER, { params: { conversationId: SESSION } }), r, sinon.stub())
+
+    expectHandedOver(seen, r.json.firstCall.args[0].conversation.messages)
+  })
+
+  it('an agent conversation the same way', async () => {
+    const seen = recording()
+    stubAccess([])
+    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
+    sinon.stub(Users, 'find').returns(chain([]))
+    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, userId: OWNER, agentKey: 'agent-1', title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }))
+    sinon.stub(ChatSession, 'find').returns(chain([]))
+    sinon.stub(ChatSessionMessage, 'countDocuments').resolves(3)
+    sinon.stub(ChatSessionMessage, 'find').returns(chain(turn()))
+    const r = res()
+    const next = sinon.stub()
+    await getAgentChat()(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+
+    sinon.assert.notCalled(next)
+    expectHandedOver(seen, r.json.firstCall.args[0].conversation.messages)
   })
 })

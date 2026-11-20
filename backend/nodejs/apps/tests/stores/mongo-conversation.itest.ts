@@ -56,6 +56,7 @@ describe('MongoConversationRepository against a real MongoDB', function () {
     repo: new MongoConversationRepository(),
     uow: new MongoUnitOfWork(rsAvailable),
     transactional: rsAvailable,
+    answerShares: true,
     readsEveryOrg: true,
     newId: () => new mongoose.Types.ObjectId().toHexString(),
   });

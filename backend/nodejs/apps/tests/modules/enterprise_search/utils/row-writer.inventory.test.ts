@@ -3,13 +3,14 @@ import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative, sep } from 'path'
 
 /**
- * Only the row writer writes message rows.
+ * Only the row writers write message rows.
  *
  * Every row write must take a change stamp from its session's `rev`, or a reader that asks
  * what changed after a `rev` misses it for good. The row writer (`appendMessages`,
- * `updateMessageById`, `setMessageFields`, `retireMessagesById`) does that; a direct model
- * write elsewhere would not. This walks the source, because such a write reads as harmless
- * where it is made.
+ * `updateMessageById`, `setMessageFields`, `retireMessagesById`) does that, and so do the
+ * conversation repository's answer-share writes, which the row writer cannot host (it imports
+ * the repository); a direct model write elsewhere would not. This walks the source, because
+ * such a write reads as harmless where it is made.
  *
  * A write that must not be stamped says so on the line above it, with a reason:
  * `// row-writer-exempt: <why>`.
@@ -19,6 +20,7 @@ import { join, relative, sep } from 'path'
 
 const SRC = join(__dirname, '..', '..', '..', '..', 'src')
 const ROW_WRITER = join('modules', 'enterprise_search', 'utils', 'utils.ts')
+const ROW_WRITERS = [ROW_WRITER, join('libs', 'repositories', 'conversation', 'answer-shares', 'mongo.ts')]
 
 const WRITE =
   /\bChatSessionMessage\s*\.\s*(?:collection\b|insertMany|insertOne|create|updateOne|updateMany|replaceOne|findOneAndUpdate|findByIdAndUpdate|findOneAndReplace|findOneAndDelete|findByIdAndDelete|deleteOne|deleteMany|bulkWrite)\b|\bnew\s+ChatSessionMessage\s*\(|collection\(\s*['"`]chatSessionMessages['"`]\s*\)/g
@@ -44,7 +46,7 @@ const directWrites = (): Array<{ at: string; allowed: boolean }> =>
       // A mention in a comment writes nothing.
       if (/^\s*(?:\*|\/\/|\/\*)/.test(lines[line - 1] ?? '')) return []
       const above = lines[line - 2] ?? ''
-      return [{ at: `${path.split(sep).join('/')}:${String(line)}`, allowed: path === ROW_WRITER || EXEMPT.test(above) }]
+      return [{ at: `${path.split(sep).join('/')}:${String(line)}`, allowed: ROW_WRITERS.includes(path) || EXEMPT.test(above) }]
     })
   })
 
@@ -66,7 +68,7 @@ describe('row writer inventory', () => {
     expect(
       offenders,
       'Write message rows through appendMessages, updateMessageById, setMessageFields or retireMessagesById ' +
-        '(utils.ts), which stamp each row; or mark a write that must stay unstamped with ' +
+        '(utils.ts), or the repository writes listed in ROW_WRITERS, which stamp each row; or mark a write that must stay unstamped with ' +
         '`// row-writer-exempt: <why>` on the line above:\n  ' +
         offenders.join('\n  '),
     ).to.deep.equal([])
