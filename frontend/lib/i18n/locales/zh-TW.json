@@ -1850,8 +1850,8 @@
         "accessLost": "此操作未執行，因為你已無權存取它使用的某些內容。"
       },
       "restricted": {
-        "notice": "This may include content from sources not everyone can open. Anyone who can read {{destination}} will see it.",
-        "goesTo": "Goes to"
+        "notice": "其中可能包含並非所有人都能開啟的來源中的內容。能閱讀 {{destination}} 的任何人都會看到它。",
+        "goesTo": "傳送到"
       }
     },
     "selectedAlone": "{{name}}（僅此項目）",

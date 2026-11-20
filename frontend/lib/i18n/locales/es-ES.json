@@ -1793,8 +1793,8 @@
         "accessLost": "No se ejecutó porque ya no tienes acceso a algo que usaba."
       },
       "restricted": {
-        "notice": "This may include content from sources not everyone can open. Anyone who can read {{destination}} will see it.",
-        "goesTo": "Goes to"
+        "notice": "Esto puede incluir contenido de fuentes que no todos pueden abrir. Cualquiera que pueda leer {{destination}} lo verá.",
+        "goesTo": "Se envía a"
       }
     },
     "selectedAlone": "{{name}} (solo este elemento)",

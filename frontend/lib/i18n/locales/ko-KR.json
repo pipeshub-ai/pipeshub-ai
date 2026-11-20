@@ -1850,8 +1850,8 @@
         "accessLost": "사용한 항목에 더 이상 접근할 수 없어 실행되지 않았습니다."
       },
       "restricted": {
-        "notice": "This may include content from sources not everyone can open. Anyone who can read {{destination}} will see it.",
-        "goesTo": "Goes to"
+        "notice": "모든 사람이 열 수 있는 것은 아닌 출처의 콘텐츠가 포함될 수 있습니다. {{destination}}을(를) 읽을 수 있는 사람은 누구나 이 내용을 보게 됩니다.",
+        "goesTo": "전송 대상"
       }
     },
     "selectedAlone": "{{name}} (이 항목만)",

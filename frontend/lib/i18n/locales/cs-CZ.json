@@ -1932,8 +1932,8 @@
         "accessLost": "Nespustilo se to, protože již nemáte přístup k něčemu, co to používalo."
       },
       "restricted": {
-        "notice": "This may include content from sources not everyone can open. Anyone who can read {{destination}} will see it.",
-        "goesTo": "Goes to"
+        "notice": "Může to obsahovat obsah ze zdrojů, které nemůže otevřít každý. Uvidí to každý, kdo může číst {{destination}}.",
+        "goesTo": "Odešle se na"
       }
     },
     "selectedAlone": "{{name}} (pouze tato položka)",

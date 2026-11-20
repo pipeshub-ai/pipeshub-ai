@@ -1850,8 +1850,8 @@
         "accessLost": "此操作未运行，因为你已无权访问它使用的某些内容。"
       },
       "restricted": {
-        "notice": "This may include content from sources not everyone can open. Anyone who can read {{destination}} will see it.",
-        "goesTo": "Goes to"
+        "notice": "其中可能包含并非所有人都能打开的来源中的内容。能阅读 {{destination}} 的任何人都会看到它。",
+        "goesTo": "发送到"
       }
     },
     "selectedAlone": "{{name}}（仅此项目）",
