@@ -217,7 +217,7 @@ def drop_online(c: Connection, qname: str) -> None:
 
 
 def _retiring(cfg: Config, conn: psycopg.Connection) -> frozenset[str]:
-    """``ONLINE_DROPS`` of every revision of this tree: indexes a contract revision retires. They are dropped after the upgrade commits, never
+    """``ONLINE_DROPS`` of every revision of this tree: indexes a revision retires. They are dropped after the upgrade commits, never
     inside it, and a run that could not drop one drops it the next time."""
     return frozenset(q for m in _modules(cfg, conn, pending=False) for q in getattr(m, "ONLINE_DROPS", ()))
 
@@ -245,7 +245,7 @@ def _has_revisions(conn: psycopg.Connection) -> bool:
 def _report(conn: psycopg.Connection, retiring: frozenset[str] = frozenset()) -> None:
     """The epochs and the catalog and surface checks. On an installed database they run inside the upgrade's transaction (see
     env.py): a violation raises before COMMIT, so nothing the run applied stays. On an empty one they run after the revisions.
-    ``retiring``: indexes a contract revision retires; they are dropped after the commit, so until then their lines are not unexpected."""
+    ``retiring``: indexes a revision retires; they are dropped after the commit, so until then their lines are not unexpected."""
     for branch, epoch, min_code in conn.execute("SELECT branch, epoch, min_code_epoch FROM kernel.schema_epoch ORDER BY 1"):
         log(f"epoch {branch}={epoch} min_code={min_code}")
     rows: list[tuple[str, str]] = []
@@ -348,7 +348,7 @@ def run(argv: list[str]) -> None:
                     _upgrade_with_retries(cfg, "heads")
                     retiring = _retiring(cfg, conn)
                     _report(conn, retiring)
-                _drop_all(engine, retiring, "retired by a contract revision", "the next run drops it")
+                _drop_all(engine, retiring, "retired by a revision", "the next run drops it")
             finally:
                 engine.dispose()
             if kv_mode:

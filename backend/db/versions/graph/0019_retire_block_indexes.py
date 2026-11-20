@@ -9,11 +9,11 @@ revision = "graph_0019"
 down_revision = "graph_0018"
 branch_labels = None
 depends_on = None
-# A contract, as every index drop is. Nothing reads these two since graph_0018: its vetted reads seek the hash indexes, and a service role's own
-# statements cannot use an index keyed by doc->> under row security (->> is not leakproof, so it is never an index condition there). Code built
-# from graph_0018 on runs against this schema. nodes_codefile_path stays: the prefix read of a path is written for it (under row security it
-# cannot reach it either, but a vetted prefix read would).
-min_code_epoch = 18
+# Not a contract: a dropped index changes no answer, and nothing of any release plans with these two, so a rollback to an earlier build keeps working.
+# nodes_codefile_path stays: the prefix read of a path is written for it (under row security it cannot reach it either, but a vetted prefix read would).
+older_code_compatible = ("drops two indexes nothing reads: the vetted block reads (graph_0003's functions, whose bodies graph_0018 replaced in the "
+                         "database whatever code runs) seek the hash indexes, and every service role's own statements run under row security, where "
+                         "doc->> is not leakproof and is never an index condition, so their plans read the org's leaf with or without them")
 
 # Dropped by db.migrate after the upgrade commits: a partitioned index cannot be dropped CONCURRENTLY, and a DROP inside the upgrade would keep
 # every reader of graph.nodes out until the commit.

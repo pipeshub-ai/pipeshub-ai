@@ -1646,7 +1646,7 @@ def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_dro
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in ONLINE)
         assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (19, 18)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (19, 0)
 
 
 def test_an_online_build_a_stopped_run_left_invalid_is_rebuilt(db):
@@ -1707,7 +1707,8 @@ def test_the_indexes_built_for_an_upgrade_that_did_not_commit_are_dropped(db, tm
 
 def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_done_by_the_next_run(db):
     """graph_0019 retires two graph_0001 indexes: a new install ends without them, a downgrade brings them back as graph_0001 made them, and an
-    upgrade whose drop waits on a reader still commits (exit 0, a warning); the next run drops them."""
+    upgrade whose drop waits on a reader still commits (exit 0, a warning); the next run drops them. No min_code_epoch: nothing reads them, so a
+    rollback to an earlier build keeps working."""
     from .conftest import run_migrate
     cluster, name = db
     url = cluster.url(name, "pipeshub_migrate")
@@ -1729,11 +1730,11 @@ def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_do
         assert f"WARNING index graph.{index} was not dropped" in r.stdout, r.stdout
     with connect(cluster, name) as c:
         assert all(_exists(c, i) for i in RETIRED)
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (19, 18)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (19, 0)
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout + r.stderr
     for index in RETIRED:
-        assert f"index graph.{index}: dropped (retired by a contract revision)" in r.stdout
+        assert f"index graph.{index}: dropped (retired by a revision)" in r.stdout
     with connect(cluster, name) as c:
         assert not any(_exists(c, i) for i in RETIRED)
     r = run_migrate(url)                                                # the surface without them is the expected one

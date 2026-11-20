@@ -392,10 +392,12 @@ def lint_file(path: Path) -> list[str]:
 
 
 def retiring_violations() -> list[str]:
-    """Indexes a revision lists in ``ONLINE_DROPS`` are dropped by db.migrate, so no SQL of the revision shows the DROP: such a revision is a
-    contract like any other that drops an index."""
-    return [f"{f.name}: ONLINE_DROPS drops indexes: set min_code_epoch" for d in version_locations() for f in sorted(Path(d).glob("*.py"))
-            if _module_assign(t := f.read_text(encoding="utf-8"), "ONLINE_DROPS") is not None and not _contract(t)]
+    """Indexes a revision lists in ``ONLINE_DROPS`` are dropped by db.migrate, so no SQL of the revision shows the DROP. The revision says which
+    it is: ``min_code_epoch`` when older code plans with an index it drops, ``older_code_compatible = "<why>"`` when nothing does (a dropped
+    index changes no answer, so a rollback keeps working)."""
+    return [f"{f.name}: ONLINE_DROPS drops indexes: set min_code_epoch (older code plans with them) or older_code_compatible = \"<why nothing reads them>\""
+            for d in version_locations() for f in sorted(Path(d).glob("*.py"))
+            if _module_assign(t := f.read_text(encoding="utf-8"), "ONLINE_DROPS") is not None and not _marked(t)]
 
 
 def main(argv: list[str]) -> int:
