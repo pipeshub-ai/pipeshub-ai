@@ -596,7 +596,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                     timing.note(outcome="skipped", reason="duplicate_envelope")
                     return True, False, None, ""
                 except EnvelopeRejected as e:
-                    timing.note(reason="envelope_rejected", code=e.reason)
+                    timing.note(reason="envelope_rejected", code=e.reason, **e.facts())
                     return False, True, None, f"envelope rejected: {e.reason}"
                 if parsed is None:
                     timing.note(reason="unparseable")
