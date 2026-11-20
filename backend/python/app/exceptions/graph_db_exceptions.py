@@ -31,8 +31,12 @@ class PermissionVerificationUnavailableError(Exception):
 
     Raise it ``from`` the failure with the default message, never ``str(exc)``:
     a driver's text (host, query, values) would travel in it to every log line
-    and tool result that prints this error. The cause keeps type and text.
+    and tool result that prints this error. The cause keeps type and text, and
+    its chain is logged without messages (``log_failure`` and any ``exc_info``
+    record), whether or not the graph client stamped the cause.
     """
+
+    log_hide_text = True
 
     def __init__(self, message: str = "The graph could not verify access.") -> None:
         super().__init__(message)

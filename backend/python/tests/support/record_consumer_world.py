@@ -482,6 +482,8 @@ async def run_pg(
         topic = topic_list[i % len(topic_list)]
         runtime.rows.setdefault(topic, []).append({
             "topic": topic, "message_id": i + 1, "attempts": 1, "msg_key": m.record_id,
+            # a delivery no consumer has opened yet: the claim returns its admission columns empty, as the real statement does
+            "admission_ms": None, "admission_mac": None,
             "value": json.dumps({"eventType": "newRecord", "payload": m.envelope()["payload"], "requestId": f"req-{i}"}),
         })
     saved_ordered = os.environ.get("PG_QUEUE_ORDERED_TOPICS")

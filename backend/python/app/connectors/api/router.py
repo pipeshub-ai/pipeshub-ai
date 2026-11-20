@@ -66,6 +66,11 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
 )
+from app.api.middlewares.request_log import (
+    add_request_log_fields,
+    bind_request_log_fields,
+    mark_request_failure,
+)
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -158,6 +163,7 @@ from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildConflictError,
     acquire_rebuild_lock,
     assert_no_indexing_in_flight,
+    precision_wait_in_force,
     list_rebuild_apps,
     release_rebuild_lock,
     schedule_vector_store_job_async,
@@ -220,12 +226,14 @@ from app.utils.oauth_config import (
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
+from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import (
+    check_record_access_or_503,
     get_document_or_503,
     get_org_or_503,
     get_record_or_503,
@@ -870,7 +878,7 @@ async def get_record_content_internal(
             )
 
         # Independent ACL check — never trust the caller.
-        access = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
+        access = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
         if not access:
             logger.warning(
                 "get_record_content_internal: access denied user=%s record=%s", user_id, record_id,
@@ -1486,9 +1494,7 @@ async def get_signed_url(
 
         mint_user = caller_user or path_user
         if not is_scoped:
-            access = await graph_provider.check_record_access_with_details(
-                mint_user, caller_org, record_id
-            )
+            access = await check_record_access_or_503(graph_provider, mint_user, caller_org, record_id)
             if not access:
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
@@ -1713,9 +1719,7 @@ async def download_file(
             )
 
         if not is_scoped:
-            access = await graph_provider.check_record_access_with_details(
-                user_id, record_org, record_id
-            )
+            access = await check_record_access_or_503(graph_provider, user_id, record_org, record_id)
             if not access:
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
@@ -1796,7 +1800,7 @@ async def stream_record(
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
 
-        access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
+        access_check = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
         if not access_check:
             logger.warning(f"User {user_id} does not have access to record {record_id}")
             raise HTTPException(
@@ -2104,11 +2108,7 @@ async def get_record_by_id(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        has_access = await graph_provider.check_record_access_with_details(
-            user_id=user_id,
-            org_id=org_id,
-            record_id=record_id,
-        )
+        has_access = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
         logger.debug(f"🚀 has_access: {has_access}")
         if has_access:
             doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
@@ -2594,11 +2594,7 @@ async def delete_record(
             )
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
-        has_access = await graph_provider.check_record_access_with_details(
-            user_id=user_id,
-            org_id=org_id,
-            record_id=record_id,
-        )
+        has_access = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
         if not has_access:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
@@ -3169,7 +3165,10 @@ async def _accept_vector_store_job(
     # the same VRID can interleave delete-then-upsert into duplicates.
     try:
         apps = await list_rebuild_apps(graph_provider, org_id=org_id)
-        await assert_no_indexing_in_flight(graph_provider, apps)
+        # A cleanup is how an index is moved to another weight precision: while indexing is waiting for the
+        # embedding precision its queued records are not work in flight, so only IN_PROGRESS ones are counted.
+        waiting_for_precision = operation == "cleanup" and await precision_wait_in_force(config_service)
+        await assert_no_indexing_in_flight(graph_provider, apps, waiting_for_precision=waiting_for_precision)
     except VectorStoreRebuildConflictError as exc:
         await release_rebuild_lock(lock, redis)
         raise HTTPException(
@@ -3190,6 +3189,7 @@ async def _accept_vector_store_job(
         if operation == "cleanup":
             job = start_vector_store_cleanup(
                 logger=logger,
+                config_service=config_service,
                 graph_provider=graph_provider,
                 kafka_service=kafka_service,
                 lock=lock,
@@ -3197,6 +3197,7 @@ async def _accept_vector_store_job(
                 org_id=org_id,
                 user_id=user_id,
                 apps=apps,
+                waiting_for_precision=waiting_for_precision,
             )
         else:
             data_store = await container.data_store()
@@ -7265,7 +7266,9 @@ async def handle_oauth_callback(
             error = None
 
         if error:
-            logger.error(f"OAuth error: {error}")
+            # The raw parameter is anyone's input: only a code a spec defines goes on the line.
+            add_request_log_fields(request, oauth_error=authorization_error_code(error))
+            mark_request_failure(request, None, error_class=authorization_error_class(error), reason="provider_error")
             return {
                 "success": False,
                 "error": error,
@@ -7307,6 +7310,18 @@ async def handle_oauth_callback(
                 "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=invalid_state"
             }
 
+        # A user signing in with their own account to a per-user connector, not the connector's own sign-in.
+        from app.connectors.api.user_access_router import (
+            complete_user_sign_in,
+            is_user_sign_in_state,
+        )
+
+        if is_user_sign_in_state(state_data):
+            return await complete_user_sign_in(
+                request, graph_provider, connector_id=connector_id, state=original_state, code=code,
+                base_url=base_url, settings_url=f"{base_url}{settings_base_path}",
+            )
+
         # ============================================================
         # 3. Authorization & Configuration Retrieval
         # ============================================================
@@ -7318,7 +7333,8 @@ async def handle_oauth_callback(
             is_admin=is_admin
         )
         if not instance:
-            logger.error(f"Instance {connector_id} not found or access denied")
+            # connector_id comes from the caller's state: kept off the line.
+            mark_request_failure(request, None, error_class="not_found", reason="instance_not_found")
             return {
                 "success": False,
                 "error": "instance_not_found",
@@ -7342,13 +7358,16 @@ async def handle_oauth_callback(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can handle OAuth callback for this connector"
             )
+        # Bound only after the checks above (stricter than the toolset callback): a state naming a connector the
+        # caller may not use never puts its id on a line.
+        bind_request_log_fields(request, connector_id=connector_id, connector_type=connector_type)
 
         # Get configuration
         config_path = _get_config_path_for_instance(connector_id)
         config = await config_service.get_config(config_path)
 
         if not config or not config.get(OAuthConfigKeys.AUTH):
-            logger.error(f"No OAuth config for instance {connector_id}")
+            mark_request_failure(request, None, error_class="misconfigured", reason="config_not_found")
             return {
                 "success": False,
                 "error": "config_not_found",
@@ -7371,6 +7390,8 @@ async def handle_oauth_callback(
                 registry_type=instance.get("type", ""),
             )
         except HTTPException:
+            # Only its shared-config lookup logs a cause; the line says which step failed.
+            mark_request_failure(request, None, error_class="misconfigured", reason="oauth_config_fetch_error")
             return {
                 "success": False,
                 "error": "oauth_config_fetch_error",
@@ -7395,30 +7416,16 @@ async def handle_oauth_callback(
             await oauth_provider.close()
 
         if not token or not token.access_token:
-            logger.error(f"Invalid token received for instance {connector_id}")
+            mark_request_failure(request, None, error_class="internal", reason="invalid_token")
             return {
                 "success": False,
                 "error": "invalid_token",
                 "redirect_url": f"{base_url}{settings_base_path}?oauth_error=invalid_token"
             }
 
-        # Log token information after OAuth callback completes
-        logger.info(
-            f"OAuth token exchange completed for instance {connector_id} (connector_type: {connector_type}). "
-            f"Token details - has_access_token: {bool(token.access_token)}, "
-            f"has_refresh_token: {bool(token.refresh_token)}, "
-            f"token_type: {token.token_type}, "
-            f"expires_in: {token.expires_in}, "
-            f"refresh_token_expires_in: {token.refresh_token_expires_in}, "
-            f"scope: {token.scope}, "
-            f"has_id_token: {bool(token.id_token)}, "
-            f"uid: {token.uid}, "
-            f"account_id: {token.account_id}, "
-            f"team_id: {token.team_id}, "
-            f"created_at: {token.created_at}"
-        )
-
-        logger.info(f"OAuth tokens stored successfully for instance {connector_id}")
+        # The provider's token fields (scopes, uid, account_id, team_id) stay off the logs: this route serves every
+        # connector and can't tell an opaque id from a login.
+        add_request_log_fields(request, has_refresh_token=bool(token.refresh_token))
 
         # ============================================================
         # 6. Post-Processing: Cache, Token Refresh, Status Update
@@ -7481,7 +7488,8 @@ async def handle_oauth_callback(
         }
 
     except Exception as e:
-        logger.error(f"Error handling OAuth callback: {e}", exc_info=True)
+        # Text-free: the exchange's errors quote the token URL with its query and the provider's answer.
+        mark_request_failure(request, e, reason="server_error", include_error_text=False)
 
         # Update instance authentication status on error
         if connector_id:

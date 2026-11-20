@@ -13,7 +13,9 @@ import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.se
 import { InternalServerError } from '../../../../src/libs/errors/http.errors'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { oid, settle } from './chat-test-harness'
-import { AGENT_KEY, RUN, delta, finalAnswer, flows, startStream, Flow } from './streaming-flows'
+import { AGENT_KEY, RUN, delta, finalAnswer, flows, startStream, Flow, appConfig } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const ANSWER = 'nightjar answer text'
 const ERROR_TEXT = 'nightjar provider said no'
@@ -26,10 +28,7 @@ const onlyEnd = (): Rec => {
   expect(ends(), 'exactly one chat_stream.end').to.have.length(1)
   return ends()[0] as Rec
 }
-// Another file's app can leave the outbox dispatcher running in this process; its failures are not this stream's.
-const BACKGROUND_LINES = new Set(['Outbox dispatcher pass failed'])
-const atLeastWarn = (): Rec[] =>
-  recs.filter((r) => (r.level === 'warn' || r.level === 'error') && !BACKGROUND_LINES.has(r.message))
+const atLeastWarn = (): Rec[] => recs.filter((r) => r.level === 'warn' || r.level === 'error')
 
 const finish = async (run: Awaited<ReturnType<typeof startStream>>): Promise<void> => {
   run.ai.finish()
@@ -38,6 +37,9 @@ const finish = async (run: Awaited<ReturnType<typeof startStream>>): Promise<voi
 }
 
 describe('N3: chat stream end line', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   beforeEach(() => {
     recs = []
     for (const level of ['error', 'warn', 'info', 'debug'] as const) {
@@ -196,6 +198,72 @@ describe('N3: chat stream end line', () => {
         const end = onlyEnd()
         expect(end.level).to.equal('warn')
         expect(end.meta).to.include({ outcome: 'failure', reason: 'upstream_error', error_class: 'upstream_5xx', code: 'no_response' })
+      })
+
+      it('a stream that ends after only a sub-agent finished: one WARN end line, code no_response', async () => {
+        const run = await startStream(flow)
+        run.ai.send('RUN_FINISHED', { runId: 'run-child', parentRunId: RUN })
+        await finish(run)
+
+        const end = onlyEnd()
+        expect(end.level).to.equal('warn')
+        expect(end.meta).to.include({ outcome: 'failure', reason: 'upstream_error', error_class: 'upstream_5xx', code: 'no_response' })
+      })
+
+      it("a stream that ends after a sub-agent failed: code no_response, not the sub-agent's code", async () => {
+        const run = await startStream(flow)
+        run.ai.send('RUN_ERROR', { runId: 'run-child', parentRunId: RUN, message: ERROR_TEXT, code: 'agent_error' })
+        await finish(run)
+
+        const end = onlyEnd()
+        expect(end.level).to.equal('warn')
+        expect(end.meta).to.include({ outcome: 'failure', reason: 'upstream_error', code: 'no_response' })
+        expect(JSON.stringify(recs)).to.not.contain('nightjar')
+      })
+
+      it('a sub-agent that fails while the agent still answers: one INFO completed end line', async () => {
+        const run = await startStream(flow)
+        run.ai.send('RUN_ERROR', { runId: 'run-child', parentRunId: RUN, message: ERROR_TEXT, code: 'agent_error' })
+        run.ai.send('RUN_FINISHED', finalAnswer(ANSWER))
+        await finish(run)
+
+        const end = onlyEnd()
+        expect(end.level).to.equal('info')
+        expect(end.meta).to.include({ outcome: 'success', reason: 'completed' })
+        expect(atLeastWarn()).to.deep.equal([])
+      })
+
+      it('a RUN_ERROR with no data is logged as a bad frame and the stream ends no_response', async () => {
+        const run = await startStream(flow)
+        run.ai.sendRaw('event: RUN_ERROR\ndata: null\n\n')
+        await finish(run)
+
+        expect(recs.filter((r) => r.message === 'chat_stream.bad_frame').map((r) => [r.level, r.meta.frame])).to.deep.equal([
+          ['warn', 'RUN_ERROR'],
+        ])
+        expect(onlyEnd().meta).to.include({ outcome: 'failure', reason: 'upstream_error', code: 'no_response' })
+      })
+
+      it('a RUN_ERROR with an empty data line is logged as a bad frame and the stream ends no_response', async () => {
+        const run = await startStream(flow)
+        run.ai.sendRaw('event: RUN_ERROR\ndata:\n\n')
+        await finish(run)
+
+        expect(recs.filter((r) => r.message === 'chat_stream.bad_frame').map((r) => [r.level, r.meta.frame, r.meta.bytes])).to.deep.equal([
+          ['warn', 'RUN_ERROR', 0],
+        ])
+        expect(onlyEnd().meta).to.include({ outcome: 'failure', reason: 'upstream_error', code: 'no_response' })
+      })
+
+      it('a RUN_FINISHED with no data is logged as a bad frame and the stream ends no_response', async () => {
+        const run = await startStream(flow)
+        run.ai.sendRaw('event: RUN_FINISHED\ndata: null\n\n')
+        await finish(run)
+
+        expect(recs.filter((r) => r.message === 'chat_stream.bad_frame').map((r) => [r.level, r.meta.frame])).to.deep.equal([
+          ['warn', 'RUN_FINISHED'],
+        ])
+        expect(onlyEnd().meta).to.include({ outcome: 'failure', reason: 'upstream_error', code: 'no_response' })
       })
 
       it('the cap firing while the open is still pending: exactly one abandoned end line', async () => {

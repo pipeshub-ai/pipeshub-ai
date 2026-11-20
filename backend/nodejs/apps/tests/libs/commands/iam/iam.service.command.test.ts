@@ -6,8 +6,12 @@ import {
   IAMCommandOptions,
 } from '../../../../src/libs/commands/iam/iam.service.command'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 describe('IAMServiceCommand', () => {
+  beforeEach(() => registerUpstreams({ nodejs: ['http://iam.local'] }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {

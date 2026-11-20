@@ -902,7 +902,7 @@ class Neo4jClient:
                     f"not rebuilding within {self._rebuild_cooldown:.0f}s"
                 ) from cause
             self.logger.warning(
-                "Neo4j driver unreachable — rebuilding its connection pool: %s", cause
+                "Neo4j driver unreachable — rebuilding its connection pool: %s", type(cause).__name__  # its text names hosts
             )
             with self._drivers_lock:
                 self._rebuilt_at[loop] = now

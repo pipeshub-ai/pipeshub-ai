@@ -22,6 +22,7 @@ from .test_kg_backfill import run_in, shadowed
 from .test_kg_derivation import ctx, edge, held, prov
 from .test_kg_projection import add_edge, delete_edge, delete_node, update_node
 from .test_kg_projection_races import OPS, drop_only, world2
+from .test_kg_read import _decide, _switch, flip
 from .test_kg_stamps import dry_diffs, held_scopes, held_stamps
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
@@ -292,6 +293,59 @@ async def test_a_connector_with_a_fenced_job_is_not_current_and_serves_nothing_u
     assert await run_in(pg_db, org, ask) == (False, False)
     assert await restamp.run_jobs(pg_db, org, "w1") == 1
     assert await run_in(pg_db, org, ask) == (True, True)
+
+
+async def test_a_rows_job_keeps_its_connector_served_and_the_reader_hands_exactly_the_rows_it_hides_to_the_walk(pg_db) -> None:
+    """Only a job that hides the connector whole takes it off the readers. A rows job hides the rows it marks, and those are the ones whose stamps are outdated: the reader
+    takes each of them to the walk, decides the others from their stamps, and answers what the walk answers, before the job and after it."""
+    p, org = prov(pg_db), new_org()
+    await fat(p, org)
+    assert (await flip(pg_db, org))[0] == 1
+
+    async def ask(tx) -> tuple:
+        return await drainer.is_current(tx, org, "app1"), await drainer.serves(tx, org, "app1")
+    ids = ["F", *[f"r{i:02d}" for i in range(12)]]
+
+    async def answers(switch: str | None) -> set[str]:
+        with _switch(switch), ctx(org):
+            access = await p.get_knowledge_hub_access_v3("u1", org)
+            return {r["id"] for r in await p._kh_v3_accessible_rows("u1", org, ids, [], access=access, transaction=None)}
+    assert await answers(None) == await answers("0") == set(ids)
+    await narrow(p, org)
+    await drain_org(pg_db, org)
+    assert [j.kind for j in await jobs(pg_db, org)] == ["rows"] and await marks(p, org) == 12
+    assert await run_in(pg_db, org, ask) == (True, True)
+    with ctx(org):
+        access = await p.get_knowledge_hub_access_v3("u1", org)
+    want = await answers("0")
+    assert want < set(ids)                                                      # the narrowing shut records whose outdated stamps still open them
+    d = await _decide(pg_db, org, ids, access)
+    assert set(d.walk) == await hidden_ids(p, org) == stale(await dry_diffs(p, org, "app1")) == set(ids) - {"F"}
+    assert d.admit | d.deny == {"F"} and d.admit == want & {"F"}
+    assert await answers(None) == want
+    assert await restamp.run_jobs(pg_db, org, "w1", batch=5) == 1
+    d = await _decide(pg_db, org, ids, access)
+    assert d.walk == [] and d.admit == want and await answers(None) == want
+
+
+async def test_a_job_that_hides_the_whole_connector_still_takes_it_off_the_readers(pg_db) -> None:
+    p, org = await shadowed(pg_db)
+    await bf.promote(pg_db, org, "app1")
+
+    async def ask(tx) -> tuple:
+        return await drainer.is_current(tx, org, "app1"), await drainer.fenced(tx, org, "app1")
+
+    async def mark(tx) -> None:
+        await restamp.enqueue_rows(tx, org, {("records", "f1")}, "reach", org_wide=True)
+    await run_in(pg_db, org, mark, write=True)
+    assert await run_in(pg_db, org, ask) == (True, {"rows"})
+
+    async def queue(tx) -> None:
+        await restamp.enqueue_app(tx, org, (await tx.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)), "app")
+    await run_in(pg_db, org, queue, write=True)
+    assert await run_in(pg_db, org, ask) == (False, {"rows", "app"})
+    assert await restamp.run_jobs(pg_db, org, "w1") == 2
+    assert await run_in(pg_db, org, ask) == (True, set())
 
 
 async def test_a_flip_and_a_promotion_wait_for_the_queued_job(pg_db) -> None:

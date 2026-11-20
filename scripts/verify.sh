@@ -130,6 +130,14 @@ run shell "release tooling tests" \
   'exists deployment/docker-compose/tests/release_tooling_test.sh' \
   bash deployment/docker-compose/tests/release_tooling_test.sh
 
+run shell "native launcher tests" \
+  'have node && node -e "const [a,b]=process.versions.node.split(\".\").map(Number); process.exit(a>24||(a===24&&b>=12)?0:1)" || { echo "needs Node 24.12 or later"; false; }' \
+  bash -c "cd deployment/native/launcher && npm test --silent"
+
+run shell "native bundle signing tests" \
+  'exists deployment/native/tests/sign_test.sh' \
+  bash deployment/native/tests/sign_test.sh
+
 run shell "omnigent helper tests" \
   'exists integrations/omnigent/tests/scripts_test.sh' \
   bash integrations/omnigent/tests/scripts_test.sh
