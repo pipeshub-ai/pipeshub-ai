@@ -84,8 +84,6 @@ class BrowseRequestError(Exception):
 # A page number re-traverses: every page walked is one listing query, however
 # few rows it holds, so the bound counts pages. Cursors have no such cost.
 MAX_PAGE_WALK = 50
-# Rows before a page number one read takes at most (``_walk_pages``): the rows of up to this many default pages.
-SKIP_ROWS = 1000
 
 # Filter options list the user's sources, and a tenant with more Apps and
 # collections than this has a filter dropdown nobody can use anyway.
@@ -340,15 +338,19 @@ class KnowledgeHubService:
                 f"Use the cursor from a previous response.",
                 400,
             )
-        # The rows before the page are read SKIP_ROWS at a time rather than a page at a time: every read pays the listing's fixed cost (per
-        # connector: its state, its access classes), whatever its size. A read that stopped early at a bound is continued from where it stopped.
+        # The rows before the page are read as many at a time as the backend takes (``kh_skip_rows``; a page's worth unless it says more): on a backend whose every
+        # read pays the listing's fixed cost (per connector: its state, its access classes), page N is then about two reads, not N. A read that stopped early at a
+        # bound is continued from where it stopped until every row before the page is read; one that found no row within the scan budget is handed back as it is
+        # (no rows, its cursor), never a page from too early.
+        step = getattr(self.graph_provider, "kh_skip_rows", 0)
+        step = step if type(step) is int and step > limit else limit      # exactly an int: a spec'd test double passes isinstance
         token, left = None, (page - 1) * limit
-        for _ in range(page - 1):
-            if left <= 0:
-                break
-            got = await fetch(token, min(left, SKIP_ROWS))
+        while left > 0:
+            got = await fetch(token, min(left, step))
             if not got.next_cursor:
                 return replace(got, rows=[], start_index=0, end_index=0, next_cursor=None, prev_cursor=None)
+            if not got.rows:
+                return got
             left -= len(got.rows)
             token = got.next_cursor
         return await fetch(token)
