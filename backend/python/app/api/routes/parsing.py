@@ -40,6 +40,7 @@ from app.exceptions.indexing_exceptions import (
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.pipeline.fingerprint import content_revision
+from app.services.docling.client import DoclingNotServing
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.services.paid_cache import access as paid_cache_access
@@ -59,6 +60,7 @@ from app.services.paid_cache.orphan import (
     orphan_check_enabled,
 )
 from app.services.parsing.interface import (
+    DOCLING_UNAVAILABLE_REASON,
     ParseError,
     ParseErrorCode,
     ParserProvider,
@@ -629,6 +631,22 @@ async def _parse_file(
                         "code": ParseErrorCode.PARSE_FAILED.value,
                         "message": "Parsing took longer than the service allows",
                         "details": {"requestId": message_id},
+                    },
+                },
+            )
+        except DoclingNotServing:
+            # Docling never received the file: the caller's record waits for it. 424, not 5xx, as extraction answers a
+            # provider outage: a 5xx is retried and counted by the caller's breaker, which then fails every parse type.
+            # PARSE_BACKPRESSURE, not a new code: an older client reads an unknown code as PARSE_FAILED, a verdict.
+            logger.info("Parse deferred: provider=%s Docling is not serving", provider_enum.value)
+            return JSONResponse(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
+                        "message": "Docling is not serving; retry later",
+                        "details": {"requestId": message_id, "reason": DOCLING_UNAVAILABLE_REASON},
                     },
                 },
             )
