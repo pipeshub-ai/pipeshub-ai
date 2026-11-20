@@ -174,8 +174,10 @@ class SQLTableParser:
         # avoiding spurious hash changes from Pydantic-added None defaults.
         fk_dicts = [fk.model_dump(exclude_none=True) for fk in data.foreign_keys]
 
-        # Intentional schema-only hash: excludes table_summary (which includes
-        # row count) so reconciliation only detects actual schema changes.
+        # The hash covers the schema and the row count, the two things the embedded
+        # summary text states ("N columns and M rows"): a table that gained or lost
+        # rows must re-embed its summary. It leaves out the summary string itself and
+        # the rows' content, which the row blocks hash on their own.
         schema_hash_content = json.dumps({
             "ddl": ddl,
             "schema_row": schema_row,
@@ -183,6 +185,7 @@ class SQLTableParser:
             "column_headers": column_names,
             "primary_keys": data.primary_keys,
             "foreign_keys": fk_dicts,
+            "row_count": len(data.rows),
         }, sort_keys=True)
         schema_content_hash = self._calculate_content_hash(schema_hash_content)
 
