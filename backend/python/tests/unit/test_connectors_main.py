@@ -986,6 +986,9 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock) as mock_shutdown,
             patch("os.getenv", side_effect=_mock_os_getenv("arangodb")),
+            # Where the lifespan reads them: connectors_main binds both at import. Swapping their modules in
+            # sys.modules missed that, and its restore dropped every module the lifespan imported (about 700),
+            # so the next import of each made a second copy beside the first.
             patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
             patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):

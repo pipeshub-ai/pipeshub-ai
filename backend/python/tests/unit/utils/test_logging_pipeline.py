@@ -40,6 +40,9 @@ def logging_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     root = logging.getLogger()
     loggers = [root, *(lg for lg in logging.Logger.manager.loggerDict.values() if isinstance(lg, logging.Logger))]
     levels = {lg: lg.level for lg in loggers}
+    # Put back with Logger.setLevel as it is now: a test may replace it, and monkeypatch undoes that only after this
+    # fixture's teardown, so levels set through the replacement would stay as the test left them.
+    set_level = logging.Logger.setLevel
     handlers = root.handlers[:]
     synced, services = dict(L._synced), set(L._SERVICE_LOGGERS)
     for name in ("LOG_LEVEL", "LOG_LEVELS", "LOG_FORMAT", "DATA_STORE"):
@@ -55,7 +58,7 @@ def logging_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for lg in [root, *(lg for lg in logging.Logger.manager.loggerDict.values() if isinstance(lg, logging.Logger))]:
         level = levels.get(lg, logging.NOTSET)
         if lg.level != level:
-            lg.setLevel(level)
+            set_level(lg, level)
     # A level left set (say by a setLevel patch still in place) slows every later test in this worker that logs.
     assert {lg.name: lg.level for lg in levels if lg.level != levels[lg]} == {}
     L._synced.clear()

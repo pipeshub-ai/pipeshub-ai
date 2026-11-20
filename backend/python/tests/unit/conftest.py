@@ -74,6 +74,52 @@ def _no_registered_caller_node_ensurer() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _toolset_registry_as_found() -> Iterator[None]:
+    """The toolset registry is one per process. A test that discovered toolsets into it (a service's lifespan, a
+    token refresh reading the real registry) left them all there, and an agent built later in the worker then held
+    every toolset: past the lazy-tools threshold, so the tools it showed depended on which files ran before it. What a
+    test adds or swaps is put back; what was registered while the suite was collected stays."""
+    module = sys.modules.get("app.agents.registry.toolset_registry")
+    registry = module.ToolsetRegistry._instance if module is not None else None
+    toolsets = dict(registry._toolsets) if registry is not None else None
+    yield
+    module = sys.modules.get("app.agents.registry.toolset_registry")
+    if module is None:
+        return
+    module.ToolsetRegistry._instance = registry
+    if registry is not None:
+        registry._toolsets.clear()
+        registry._toolsets.update(toolsets)
+
+
+@pytest.fixture(autouse=True)
+def _connector_classes_as_found() -> Iterator[None]:
+    """The connector classes are one registry per process. A test that ran the connector service's registry setup
+    applied the build's overrides to it (a subclass swapped in, or a connector removed), and a later test then looked
+    a connector up and found another class or none. It is put back after each test."""
+    module = sys.modules.get("app.connectors.core.factory.connector_factory")
+    classes = dict(module.ConnectorFactory._connector_registry) if module is not None else None
+    yield
+    module = sys.modules.get("app.connectors.core.factory.connector_factory")
+    if module is not None and classes is not None:
+        module.ConnectorFactory._connector_registry.clear()
+        module.ConnectorFactory._connector_registry.update(classes)
+
+
+@pytest.fixture(autouse=True)
+def _scope_generation_as_found() -> Iterator[None]:
+    """The scope generation is resolved once per process, as a service starts. A test that ran a service's lifespan
+    against a mocked config resolved it as unavailable (-2), and every stamp written later in the worker was then
+    untrusted. It is put back after each test."""
+    module = sys.modules.get("app.services.permissions.scope_fields")
+    previous = module._resolved["generation"] if module is not None else None
+    yield
+    module = sys.modules.get("app.services.permissions.scope_fields")
+    if module is not None:
+        module.set_resolved_generation(previous)
+
+
+@pytest.fixture(autouse=True)
 def _service_container_leaves_no_wiring() -> Iterator[None]:
     """Unwire the connector service's container after each test.
 
