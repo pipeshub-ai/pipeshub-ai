@@ -17761,7 +17761,9 @@ components:
           type: integer
           format: int64
           nullable: true
-          description: Epoch ms when the last sync run started; absent before the first run
+          description: >-
+            Epoch ms when the last sync run started; absent before the first run. A pass that links newly added users to the
+            connector moves it too, when it starts and when it ends.
         lastSyncFinishedAtTimestamp:
           type: integer
           format: int64

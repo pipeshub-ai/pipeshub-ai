@@ -14,7 +14,10 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
 )
-from app.connectors.core.base.connector.connector_service import connector_sync_lock
+from app.connectors.core.base.connector.connector_service import (
+    connector_sync_lock,
+    syncs_started,
+)
 from app.connectors.core.sync.sync_runner import _run_sync_alone
 from app.core.org_context import for_org
 from app.exceptions.non_retryable import NonRetryableError
@@ -1920,6 +1923,36 @@ class TestUserAddedConnectorLink:
         async with connector_sync_lock("c1"):
             assert await svc._link_connector("c1") is False
         c.link_new_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_pass_moves_the_sync_start_time_before_and_after_it(self, no_debounce: None) -> None:
+        """A reindex sees a sync by its start time, and a pass writes access too: it moves a pseudo-group's grants onto its user."""
+        events: list[str] = []
+        c = _connector(link=AsyncMock(side_effect=lambda: events.append("link")))
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(
+            side_effect=lambda nodes, collection: events.append(f"{collection}: {sorted(nodes[0])}"),
+        )
+        before = syncs_started("c1")
+        assert await svc._link_connector("c1") is True
+        stamp = f"{CollectionNames.APPS.value}: ['id', 'lastSyncStartedAtTimestamp']"
+        assert events == [stamp, "link", stamp]
+        assert syncs_started("c1") == before + 1      # a reindex in this process sees it even when the store refuses both writes
+
+    @pytest.mark.asyncio
+    async def test_a_pass_whose_start_is_not_recorded_does_not_run(self, no_debounce: None) -> None:
+        c = _connector()
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("rejected"))
+        assert await svc._link_connector("c1") is True
+        c.link_new_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_pass_that_fails_partway_still_moves_the_start_time_after_it(self, no_debounce: None) -> None:
+        c = _connector(link=AsyncMock(side_effect=RuntimeError("source down")))
+        svc = _link_service({"c1": c})
+        assert await svc._link_connector("c1") is True
+        assert svc.graph_provider.batch_upsert_nodes.await_count == 2
 
     @pytest.mark.asyncio
     async def test_a_sync_admitted_during_a_pass_runs_after_it(self, no_debounce: None) -> None:

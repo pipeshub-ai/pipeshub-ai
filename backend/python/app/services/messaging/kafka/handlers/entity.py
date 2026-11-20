@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.connector.connector_service import (
     connector_sync_lock,
+    note_sync_started,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import (
@@ -579,7 +580,19 @@ class EntityEventService(BaseEventService):
                 app = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
                 if not app or not app.get("isActive", False) or app.get("status") == APP_STATUS_DELETING:
                     return True
-                await connector.link_new_users()
+                # A reindex sees this pass as it sees a sync (`unless_synced_since`), since the pass writes access too: it moves a
+                # stand-in group's grants onto the user it stood for, which a reindex that read the source earlier would take back.
+                # So a pass whose start time is not recorded does not run, and the time moves again once it ends.
+                # shortcut: a reindex in another process that both begins and writes while the pass runs is not seen; close it
+                # with a store-wide running mark if user-link passes ever run beside reindexes in separate processes.
+                note_sync_started(connector_id)
+                stamp = {"id": connector_id, ConnectorStateKeys.LAST_SYNC_STARTED_AT: get_epoch_timestamp_in_ms()}
+                await self.graph_provider.batch_upsert_nodes([stamp], CollectionNames.APPS.value)
+                try:
+                    await connector.link_new_users()
+                finally:
+                    stamp[ConnectorStateKeys.LAST_SYNC_STARTED_AT] = get_epoch_timestamp_in_ms()
+                    await self.graph_provider.batch_upsert_nodes([stamp], CollectionNames.APPS.value)
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.step_failed", e, step="link_users")
         return True
