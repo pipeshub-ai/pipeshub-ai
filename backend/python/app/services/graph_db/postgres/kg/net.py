@@ -55,7 +55,7 @@ VERIFY_TICK_S = 5.0              # how often the verify task looks for a connect
 # verify otherwise kept a database connection busy without a break (about 0.8 s of database time a second at 10M records); each page still checks what it checked, the cycle is longer.
 VERIFY_SHARE = 0.2
 SKIP_RETRY_S = 30.0              # a verify that found a change waiting in the log starts again this much later, from the beginning
-VERIFY_BUDGET_S = 20.0           # seconds one connector's chunks run per pass; the next pass goes on from the cursor
+VERIFY_BUDGET_S = 4.0            # seconds one connector's chunks run per pass (at least one page); the next pass goes on from the cursor. Short, so that the turns go round the connectors often
 VERIFY_TIMEOUT = "30s"           # one chunk of a verify (a page of a connector), in a snapshot of its own
 OVERDUE_INTERVALS = 24           # a full verify not completed within this many intervals is logged as an error and raised on the gauge
 MARKER = "3:@demote"             # the one key of a demotion request in the change log, a record that is not there. The drain never takes a row that holds it (drainer.py), so it stays until the worker has acted
