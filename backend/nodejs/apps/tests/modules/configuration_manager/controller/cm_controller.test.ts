@@ -2137,6 +2137,8 @@ describe('ConfigurationManager Controller', () => {
         customSystemPrompt: '',
         customSystemPromptWebSearch: '',
         customSystemPromptAgent: '',
+        useInMcp: false,
+        mcpPromptMaxChars: 500,
       })
     })
 
@@ -2157,7 +2159,31 @@ describe('ConfigurationManager Controller', () => {
         customSystemPrompt: 'Be helpful',
         customSystemPromptWebSearch: '',
         customSystemPromptAgent: '',
+        useInMcp: false,
+        mcpPromptMaxChars: 500,
       })
+    })
+
+    it('returns whether the Agent prompt is sent to MCP clients', async () => {
+      mockEncService.decrypt.returns(JSON.stringify({ customSystemPromptAgent: 'Cite sources', useInMcp: true }))
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
+      const res = createMockResponse()
+
+      await getCustomSystemPrompt(kvs)(createMockRequest(), res, createMockNext())
+
+      expect(res.json.firstCall.args[0]).to.include({ customSystemPromptAgent: 'Cite sources', useInMcp: true })
+    })
+
+    it('never sends prompts saved in the AI models configuration to MCP clients', async () => {
+      mockEncService.decrypt.returns(JSON.stringify({ customSystemPromptAgent: 'Old', useInMcp: true }))
+      const get = sinon.stub()
+      get.withArgs('/services/systemPrompts').resolves(null)
+      get.withArgs('/services/aiModels').resolves('encrypted:ai')
+      const res = createMockResponse()
+
+      await getCustomSystemPrompt(createMockKeyValueStore({ get }))(createMockRequest(), res, createMockNext())
+
+      expect(res.json.firstCall.args[0]).to.include({ customSystemPromptAgent: 'Old', useInMcp: false })
     })
   })
 
@@ -2216,6 +2242,7 @@ describe('ConfigurationManager Controller', () => {
         customSystemPrompt: 'Internal prompt',
         customSystemPromptWebSearch: 'Web prompt',
         customSystemPromptAgent: 'Agent prompt',
+        useInMcp: false,
       })
     })
 
@@ -2236,6 +2263,75 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].customSystemPromptAgent).to.equal('')
+    })
+
+    describe('sending the Agent prompt to MCP clients', () => {
+      const save = async (body: Record<string, unknown>, stored: Record<string, unknown> = {}) => {
+        mockEncService.decrypt.returns(JSON.stringify(stored))
+        mockEncService.encrypt.callsFake((v: string) => `enc(${v})`)
+        const compareAndSet = sinon.stub().resolves(true)
+        const kvs = createMockKeyValueStore({
+          get: sinon.stub().resolves('encrypted:data'),
+          compareAndSet,
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+        await setCustomSystemPrompt(kvs)(
+          createMockRequest({ body: { customSystemPrompt: '', customSystemPromptWebSearch: '', ...body } }),
+          res,
+          next,
+        )
+        const written = compareAndSet.called
+          ? JSON.parse(String(compareAndSet.firstCall.args[2]).slice(4, -1))
+          : undefined
+        return { res, next, written }
+      }
+
+      it('stores the switch the admin sets', async () => {
+        const { res, written } = await save({ customSystemPromptAgent: 'Cite sources', useInMcp: true })
+        expect(written).to.include({ customSystemPromptAgent: 'Cite sources', useInMcp: true })
+        expect(res.json.firstCall.args[0].useInMcp).to.equal(true)
+      })
+
+      it('keeps the stored switch when a client leaves it out', async () => {
+        const { written } = await save({ customSystemPromptAgent: 'New text' }, { useInMcp: true })
+        expect(written.useInMcp).to.equal(true)
+      })
+
+      it('turns it off when asked, even with a prompt too long to send', async () => {
+        const { written } = await save({ customSystemPromptAgent: 'x'.repeat(900), useInMcp: false }, { useInMcp: true })
+        expect(written.useInMcp).to.equal(false)
+      })
+
+      it('refuses a switch that is not true or false', async () => {
+        const { next, written } = await save({ customSystemPromptAgent: 'Hi', useInMcp: 'yes' })
+        expect(next.firstCall.args[0].message).to.equal('useInMcp must be true or false')
+        expect(written).to.equal(undefined)
+      })
+
+      it('refuses an Agent prompt longer than MCP clients are sent, and stores nothing', async () => {
+        const { next, written } = await save({ customSystemPromptAgent: 'x'.repeat(501), useInMcp: true })
+        expect(next.firstCall.args[0].message).to.equal(
+          'customSystemPromptAgent is 501 characters, and MCP clients are sent at most 500. Shorten it, or set useInMcp to false.',
+        )
+        expect(written).to.equal(undefined)
+      })
+
+      it('refuses it too when the switch was already on', async () => {
+        const { next, written } = await save({ customSystemPromptAgent: 'x'.repeat(501) }, { useInMcp: true })
+        expect(next.firstCall.args[0].message).to.match(/^customSystemPromptAgent is 501 characters/)
+        expect(written).to.equal(undefined)
+      })
+
+      it('counts the prompt without the space around it, which is not sent', async () => {
+        const { written } = await save({ customSystemPromptAgent: `  ${'x'.repeat(500)}\n\n`, useInMcp: true })
+        expect(written.useInMcp).to.equal(true)
+      })
+
+      it('allows any length while the switch is off', async () => {
+        const { written } = await save({ customSystemPromptAgent: 'x'.repeat(5000) })
+        expect(written).to.include({ useInMcp: false })
+      })
     })
   })
 

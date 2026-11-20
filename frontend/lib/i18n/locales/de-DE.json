@@ -4047,11 +4047,15 @@
       "resetToDefault": "Auf Standard zurücksetzen",
       "customInstructionsTitle": "Prompts",
       "customInstructionsDescription": "Fügen Sie eigene Anweisungen für den Chat-Assistenten hinzu, etwa zur Antwortsprache, zur Formatierung oder zum gewünschten Verhalten. Jeder der folgenden Modi hat eigene Anweisungen, da sie Fragen unterschiedlich beantworten.",
-      "scopeHint": "Diese Anweisungen gelten nur für den <bold>Chat-Assistenten</bold> (Agentenmodus unten). Eigene Agenten aus dem <bold>Agent Builder</bold> sind davon nicht betroffen. Jeder Agent verwendet den direkt bei ihm konfigurierten System-Prompt und seine eigenen Anweisungen.",
+      "scopeHint": "Diese Anweisungen gelten nur für den <bold>Chat-Assistenten</bold> (Agentenmodus unten) und, wenn Sie es aktivieren, für den <bold>PipesHub-MCP-Server</bold>. Eigene Agenten aus dem <bold>Agent Builder</bold> sind davon nicht betroffen. Jeder Agent verwendet den direkt bei ihm konfigurierten System-Prompt und seine eigenen Anweisungen.",
       "agentTitle": "Agent",
       "agentDescription": "Gilt für Chats im Agentenmodus. Der Assistent entscheidet für jede Frage, ob er internes Wissen, die Websuche oder beides verwendet.",
       "agentPlaceholder": "z. B. Bevorzugen Sie internes Wissen bei unternehmensspezifischen Fragen. Beginnen Sie immer mit einer Zusammenfassung, bevor Sie Details nennen.",
-      "agentHelperText": "Dieser Prompt leitet die KI an, wenn sie frei zwischen internem Wissen und Websuche wählen kann. Änderungen gelten sofort für neue Unterhaltungen."
+      "agentHelperText": "Dieser Prompt leitet die KI an, wenn sie frei zwischen internem Wissen und Websuche wählen kann. Änderungen gelten sofort für neue Unterhaltungen.",
+      "mcpToggleLabel": "Auch im PipesHub-MCP-Server verwenden",
+      "mcpToggleDescription": "MCP-Clients wie Claude und Cursor erhalten diesen Prompt beim Verbinden vor den eigenen Anweisungen von PipesHub. Sie behalten nur einen Teil der Anweisungen eines Servers, daher darf der Prompt bei aktivierter Option höchstens {{max}} Zeichen lang sein.",
+      "mcpCharCount": "{{length}} / {{max}} Zeichen",
+      "mcpTooLong": "{{length}} / {{max}} Zeichen. Kürzen Sie den Prompt oder deaktivieren Sie die Verwendung im MCP-Server, um zu speichern."
     },
     "webSearch": {
       "loading": "Websuche-Einstellungen werden geladen…",

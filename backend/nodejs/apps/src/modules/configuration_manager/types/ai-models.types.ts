@@ -64,5 +64,7 @@ export interface SystemPromptsConfig {
   customSystemPrompt?: string;
   customSystemPromptWebSearch?: string;
   customSystemPromptAgent?: string;
+  /** Also send `customSystemPromptAgent` to every MCP client of the workspace. */
+  useInMcp?: boolean;
 }
 

@@ -9,7 +9,7 @@
 
 import { NextFunction, Request, Response, Router } from 'express';
 import { Container } from 'inversify';
-import { AuthMiddleware } from '../../../config';
+import { AuthMiddleware, systemPromptsStoreForOrg } from '../../../config';
 import { BaseError } from '../../../libs/errors/base.error';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Logger } from '../../../libs/services/logger.service';
@@ -52,7 +52,11 @@ export function createMCPRouter(container: Container): Router {
    * POST /
    * Handles all MCP JSON-RPC requests (initialize, tool calls, etc.)
    */
-  router.post('/', ...guard, handleMCPRequest(appConfig));
+  router.post(
+    '/',
+    ...guard,
+    handleMCPRequest(appConfig, systemPromptsStoreForOrg),
+  );
 
   /**
    * GET /

@@ -48,6 +48,8 @@ export { createKnowledgeBaseRouter } from './modules/knowledge_base/routes/kb.ro
 export { ConfigurationManagerContainer } from './modules/configuration_manager/container/cm_container';
 export { createConfigurationManagerRouter } from './modules/configuration_manager/routes/cm_routes';
 export { MigrationService } from './modules/configuration_manager/services/migration.service';
+// Where an org's chat prompts are read from; /mcp sends its Agent prompt to MCP clients.
+export { systemPromptsStoreForOrg } from './modules/configuration_manager/utils/system-prompts';
 
 // --- Tokens manager ---
 export { TokenManagerContainer } from './modules/tokens_manager/container/token-manager.container';

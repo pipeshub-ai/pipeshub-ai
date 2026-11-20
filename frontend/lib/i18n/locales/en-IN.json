@@ -4038,11 +4038,15 @@
       "resetToDefault": "Reset to default",
       "customInstructionsTitle": "Prompts",
       "customInstructionsDescription": "Add custom instructions for the Chat Assistant — e.g. respond in a specific language, follow a formatting style, or apply any behaviour you want. Each mode below has its own instructions since they answer questions differently.",
-      "scopeHint": "These instructions apply only to the <bold>Chat Assistant</bold> (Agent mode below). Custom agents created in <bold>Agent Builder</bold> are unaffected — each agent uses its own system prompt and instructions configured on the agent itself.",
+      "scopeHint": "These instructions apply only to the <bold>Chat Assistant</bold> (Agent mode below) and, when you turn it on, the <bold>PipesHub MCP server</bold>. Custom agents created in <bold>Agent Builder</bold> are unaffected — each agent uses its own system prompt and instructions configured on the agent itself.",
       "agentTitle": "Agent",
       "agentDescription": "Applied when a user chats in Agent mode — the assistant decides per-question whether to use internal knowledge, web search, or both.",
       "agentPlaceholder": "e.g. Prefer internal knowledge for company-specific questions. Always summarize before providing details.",
-      "agentHelperText": "This prompt guides the AI when it can freely choose between internal knowledge and web search. Changes take effect immediately for new conversations."
+      "agentHelperText": "This prompt guides the AI when it can freely choose between internal knowledge and web search. Changes take effect immediately for new conversations.",
+      "mcpToggleLabel": "Also use in the PipesHub MCP server",
+      "mcpToggleDescription": "MCP clients such as Claude and Cursor get this prompt ahead of PipesHub's own instructions when they connect. They keep only so much of a server's instructions, so the prompt can be at most {{max}} characters while this is on.",
+      "mcpCharCount": "{{length}} / {{max}} characters",
+      "mcpTooLong": "{{length}} / {{max}} characters. Shorten the prompt, or turn off using it in the MCP server, to save."
     },
     "webSearch": {
       "loading": "Loading web search settings…",

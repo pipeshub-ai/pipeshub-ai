@@ -4480,11 +4480,15 @@
       "resetToDefault": "Obnovit výchozí",
       "customInstructionsTitle": "Prompty",
       "customInstructionsDescription": "Přidejte vlastní pokyny pro chatového asistenta — např. odpovídat v určitém jazyce, dodržovat styl formátování nebo uplatňovat jakékoli chování, které si přejete. Každý z níže uvedených režimů má vlastní pokyny, protože na otázky odpovídá jinak.",
-      "scopeHint": "Tyto pokyny platí pouze pro <bold>chatového asistenta</bold> (režim Agent níže). Vlastní agenti vytvoření v <bold>Tvůrci agentů</bold> nejsou ovlivněni — každý agent používá vlastní systémový prompt a pokyny nastavené přímo u agenta.",
+      "scopeHint": "Tyto pokyny platí pouze pro <bold>chatového asistenta</bold> (režim Agent níže) a po zapnutí také pro <bold>MCP server PipesHub</bold>. Vlastní agenti vytvoření v <bold>Tvůrci agentů</bold> nejsou ovlivněni — každý agent používá vlastní systémový prompt a pokyny nastavené přímo u agenta.",
       "agentTitle": "Agent",
       "agentDescription": "Použije se, když uživatel chatuje v režimu Agent — asistent se u každé otázky sám rozhodne, zda použít interní znalosti, vyhledávání na webu, nebo obojí.",
       "agentPlaceholder": "např. U otázek týkajících se firmy upřednostňuj interní znalosti. Před uvedením podrobností vždy nejprve shrň.",
-      "agentHelperText": "Tento prompt řídí AI, když si může volně vybírat mezi interními znalostmi a vyhledáváním na webu. Změny se projeví okamžitě u nových konverzací."
+      "agentHelperText": "Tento prompt řídí AI, když si může volně vybírat mezi interními znalostmi a vyhledáváním na webu. Změny se projeví okamžitě u nových konverzací.",
+      "mcpToggleLabel": "Použít také v MCP serveru PipesHub",
+      "mcpToggleDescription": "MCP klienti jako Claude a Cursor dostanou tento prompt při připojení před vlastními pokyny PipesHubu. Z pokynů serveru si ponechají jen omezenou část, proto může mít prompt při zapnuté volbě nejvýše {{max}} znaků.",
+      "mcpCharCount": "{{length}} / {{max}} znaků",
+      "mcpTooLong": "{{length}} / {{max}} znaků. Pro uložení prompt zkraťte, nebo vypněte jeho použití v MCP serveru."
     },
     "webSearch": {
       "loading": "Načítání nastavení vyhledávání na webu…",
