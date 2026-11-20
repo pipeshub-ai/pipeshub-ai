@@ -483,6 +483,37 @@ async def test_a_read_pass_with_no_stream_left_by_the_budget_neither_reads_nor_b
     assert elapsed < 1.4, elapsed  # the earlier behaviour sleeps 1.5 s for each of those windows
 
 
+async def test_a_pass_with_no_stream_left_forgets_which_lanes_had_data_so_parked_base_lanes_are_read() -> None:
+    from app.services.messaging.redis_streams.indexing_consumer import IndexingRedisStreamsConsumer
+
+    fairness = bundle(extra_topics=("extra-events",), extra_read_budget=lambda _s: 0)
+    config = RedisStreamsConfig(
+        host="h", port=1, client_id="c", group_id="g", topics=["record-events", "extra-events.0", "extra-events.1"],
+        batch_size=500, block_ms=1,
+    )
+    consumer = IndexingRedisStreamsConsumer(
+        logging.getLogger("lanes"), config, fair_scheduler_config=world.fair_config(), fairness=fairness
+    )
+    consumer.redis = AsyncMock()
+    consumer.main_loop = asyncio.get_running_loop()
+    consumer.running = True
+    read: list[list[str]] = []
+
+    async def grouped(streams: dict, count: int, block_ms: Any) -> list:  # noqa: ANN401
+        read.append(list(streams))
+        return []
+
+    consumer._xreadgroup_grouped = grouped
+    consumer._IndexingRedisStreamsConsumer__buffer_room = lambda: 2000
+    consumer._IndexingRedisStreamsConsumer__drain_deferred = AsyncMock()
+    # the only base lane holds a parked entry, and the last read saw data on an extra lane only
+    consumer._deferred_entries.append(("record-events", "0-0", {}, None, 0.0, time.monotonic()))
+    consumer._lanes_with_data = {"extra-events.0"}
+    for _ in range(2):
+        await consumer._IndexingRedisStreamsConsumer__read_phase()
+    assert read and "record-events" in read[-1]  # the first pass reads nothing; the next one probes the parked lane
+
+
 async def test_a_short_window_of_extra_streams_only_with_no_budget_left_reads_nothing_and_does_not_fail() -> None:
     assert await one_budget_pass(0, room=2, offset=10) == []  # the window is two extra streams
 
