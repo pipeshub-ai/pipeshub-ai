@@ -1,10 +1,11 @@
 import React from 'react';
 import { Theme } from '@radix-ui/themes';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   submit: vi.fn(),
+  getContext: vi.fn(),
   success: vi.fn(),
 }));
 
@@ -31,6 +32,10 @@ vi.mock('../../store', async () => {
   };
 });
 
+vi.mock('../../../support/api', () => ({
+  SupportApi: { getContext: mocks.getContext },
+}));
+
 vi.mock('@/app/(main)/support/store', () => ({
   useSupportDialogStore: (selector: (state: { open: () => void }) => unknown) => selector({ open: vi.fn() }),
 }));
@@ -55,6 +60,10 @@ function submitFeedback() {
 }
 
 describe('SendFeedbackDialog', { timeout: 15000 }, () => {
+  beforeEach(() => {
+    mocks.getContext.mockResolvedValue({ smtpConfigured: true, supportEmail: 'support@example.com', workspaceName: 'Acme', details: [] });
+  });
+
   afterEach(() => {
     act(() => useFeedbackDialogStore.getState().close());
     cleanup();
@@ -99,18 +108,30 @@ describe('SendFeedbackDialog', { timeout: 15000 }, () => {
     expect(useFeedbackDialogStore.getState().isOpen).toBe(false);
   });
 
-  it('keeps the form open with an error when the email did not go out, since nothing was kept', async () => {
-    mocks.submit.mockResolvedValue({ outcome: 'failed' });
+  it('falls back to the email app with the written text when the email did not go out', async () => {
+    mocks.submit.mockResolvedValue({ outcome: 'no_smtp' });
+    mocks.getContext.mockResolvedValue({ smtpConfigured: true, supportEmail: 'support@example.com', workspaceName: 'Acme', details: [] });
     renderOpen();
 
     submitFeedback();
 
-    await screen.findByText('feedback.submitError');
+    await screen.findByText('support@example.com');
+    expect(screen.getByText(/Please add a dark theme/)).toBeTruthy();
     expect(mocks.success).not.toHaveBeenCalled();
-    expect(useFeedbackDialogStore.getState().isOpen).toBe(true);
-    expect((screen.getByRole('textbox', { name: 'feedback.descriptionPlaceholder' }) as HTMLTextAreaElement).value).toBe(
-      'Please add a dark theme for the editor.',
-    );
+  });
+
+  it('says email is not set up and goes straight to the email app, without trying to send', async () => {
+    mocks.getContext.mockResolvedValue({ smtpConfigured: false, supportEmail: 'support@example.com', workspaceName: 'Acme', details: [] });
+    renderOpen();
+
+    await screen.findByText('support.details.smtpTitle');
+    fireEvent.change(screen.getByRole('textbox', { name: 'feedback.descriptionPlaceholder' }), {
+      target: { value: 'Please add a dark theme for the editor.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'support.continue' }));
+
+    await screen.findByText('support@example.com');
+    expect(mocks.submit).not.toHaveBeenCalled();
   });
 
   it('refuses files that together are more than one email can carry', () => {
