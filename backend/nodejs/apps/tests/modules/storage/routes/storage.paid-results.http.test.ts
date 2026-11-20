@@ -750,6 +750,20 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect((await read(page('a'))).text).to.equal('replaced')
     })
 
+    it('a probe that cannot tell (statfs fails) is its own answer on the listing, and a cutoff purge is refused (503)', async () => {
+      await store(page('a'), 'one')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      LocalStorageAdapter.clearCapabilityMemo()
+      ;(fsp.statfs as sinon.SinonStub).rejects(new Error('EIO'))
+      const listed = await call('GET', `/internal/paid-results/${REC}`)
+      expect(listed.body.capabilities).to.deep.equal([])
+      expect(listed.body.capabilitiesInconclusive, 'an inconclusive probe looked like a confirmed "no"').to.equal(true)
+      const r = await call('DELETE', `/internal/paid-results/${REC}?before=${(cut.body as { cutoff: number }).cutoff + 1000}`)
+      expect(r.status).to.equal(503)
+      expect(filesOnDisk().filter((f) => f.includes('ocr_page'))).to.have.length(1)
+    })
+
     it('a cutoff purge is refused (503) while the probe cannot tell, and deletes nothing', async () => {
       await store(page('a'), 'one')
       await new Promise((resolve) => setTimeout(resolve, 20))
@@ -815,6 +829,22 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       })
       expect(res.status).to.equal(400)
       await res.text()
+    })
+
+    it('an etag is refused with every mode but bump (400)', async () => {
+      expect((await presign([{ path: page('a'), mode: 'get', etag: 'abc' }])).status).to.equal(400)
+      expect((await presign([{ path: page('a'), mode: 'refresh', etag: 'abc' }])).status).to.equal(400)
+      expect((await presign([{ path: 'manifests/rev1/parse.json', mode: 'replace', etag: 'abc' }])).status).to.equal(400)
+      expect((await presign([{ path: page('a'), mode: 'put', etag: 'abc' }])).status).to.equal(400)
+    })
+
+    it('the marker is written again once the cutoff is known: its time is at or after the cutoff', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      const cutoff = (cut.body as { cutoff: number }).cutoff
+      const markerFile = path.join(home, PLATFORM_DIR, MOUNT, onDisk(ORG_A, REC, 'refreshed/marker.json'))
+      expect(fs.statSync(markerFile).mtimeMs, 'a result written before the cutoff could be taken for one after the refresh').to.be.at.least(cutoff)
+      expect(JSON.parse(fs.readFileSync(markerFile, 'utf8')).cutoffMs).to.equal(cutoff)
     })
 
     it('a GET of a result carries its etag and write time, the inputs of a bump', async () => {

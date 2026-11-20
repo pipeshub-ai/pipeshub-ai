@@ -22,7 +22,12 @@ from typing import Any, Generic, TypeVar
 
 from app.core.org_context import spawn_in_request
 from app.services.paid_cache import locks as lock_limits
-from app.services.paid_cache.bump import BUMP_AFTER_MS, BumpEntry, BumpQueue
+from app.services.paid_cache.bump import (
+    BUMP_AFTER_MS,
+    PROCESS_BYTE_BUDGET,
+    BumpEntry,
+    BumpQueue,
+)
 from app.services.paid_cache.keys import CacheKey, valid_record_id
 from app.services.paid_cache.locks import (
     DELETED_TTL_MS,
@@ -244,6 +249,10 @@ class _FencedStore:
         # A store that says nothing (a test fake) is taken to honour what it lists: it lists no ETag unless it does.
         return bool(getattr(self._inner, "supports_conditional_delete", True))
 
+    def capabilities_unknown(self, org_id: str) -> bool:
+        unknown = getattr(self._inner, "capabilities_unknown", None)
+        return bool(unknown(org_id)) if unknown is not None else False
+
     def honours(self, org_id: str, capability: str) -> bool:
         """What the storage behind the org honours; a store that says nothing per org falls back to its overall flags."""
         per_org = getattr(self._inner, "honours", None)
@@ -314,7 +323,7 @@ class PaidResultCache:
         loop = id(asyncio.get_running_loop())
         queue = self._bumps.get(loop)
         if queue is None:
-            queue = self._bumps[loop] = BumpQueue(self._store, self.logger)  # type: ignore[arg-type]
+            queue = self._bumps[loop] = BumpQueue(self._store, self.logger, budget=PROCESS_BYTE_BUDGET)  # type: ignore[arg-type]
         return queue
 
     def _bump_after_hit(
@@ -769,11 +778,18 @@ class PaidResultCache:
         if raw is None:
             return False, None, False
         found, value = _decode(key, raw)
-        if found and await self._predates_refresh(key, raw):
-            # A bumped result whose original write is not after the latest refresh survived a purge it should not have
-            # (a stop between the bump and its check): it is replaced like an unreadable one, never reused.
-            self._count(key, "predates_refresh")
-            return False, None, True
+        if found:
+            predates = await self._predates_refresh(key, raw)
+            if predates is None:
+                # The marker could not be read: the result is neither reused nor replaced (an unknown marker proves
+                # nothing about it), so the call is made and the stored object is left as it is.
+                self._count(key, "error")
+                return False, None, False
+            if predates:
+                # A bumped result whose original write is not after the latest refresh survived a purge it should not
+                # have (a stop between the bump and its check): replaced like an unreadable one, never reused.
+                self._count(key, "predates_refresh")
+                return False, None, True
         if found and validate is not None:
             try:
                 validate(value)
@@ -789,15 +805,16 @@ class PaidResultCache:
             self._count(key, "error")
         return found, value, not found
 
-    async def _predates_refresh(self, key: CacheKey, raw: bytes) -> bool:
+    async def _predates_refresh(self, key: CacheKey, raw: bytes) -> bool | None:
         """Only a bumped object carries ``originMs`` (``bump.py``); for one, the record's refresh marker is read (kept for
-        ``MARKER_CACHE_S``). An unreadable marker counts as "predates": the call is made again, never a stale reuse."""
+        ``MARKER_CACHE_S``). True: the marker proves the object predates a refresh. None: the marker could not be read, so the
+        object is neither reused nor replaced."""
         origin = _origin_ms(raw)
         if origin is None:
             return False
         read = getattr(self._store, "refresh_marker_ms", None)
         if read is None:
-            return False
+            return None
         name = (key.org_id, key.record_id)
         now = time.monotonic()
         cached = self._markers.get(name)
@@ -809,7 +826,7 @@ class PaidResultCache:
             marker = await read(key.org_id, key.record_id)
         except Exception as exc:
             self.logger.debug("Paid-result refresh marker unreadable (%s)", type(exc).__name__)
-            return True
+            return None
         rejects = marker is not None and marker // 1000 >= origin // 1000
         if rejects and marker is not None:
             if len(self._markers) > 4096:

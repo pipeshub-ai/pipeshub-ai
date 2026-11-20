@@ -842,17 +842,24 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if ((error as { code?: string }).code === 'ENOENT') return false;
       // unreadable or half-written: the lease decides
     }
-    const st = await fs.stat(lockPath);
-    return Date.now() - st.mtimeMs > KEY_LOCK_LEASE_MS;
+    try {
+      const st = await fs.stat(lockPath);
+      return Date.now() - st.mtimeMs > KEY_LOCK_LEASE_MS;
+    } catch (error) {
+      // released between the read and the stat: nothing to reclaim
+      if ((error as { code?: string }).code === 'ENOENT') return false;
+      throw error;
+    }
   }
 
   /** The synthetic ETag of the file at `fullPath` through a freshly opened descriptor, or null when absent. */
   private async etagAtPath(fullPath: string): Promise<string | null> {
     let handle: FileHandle;
     try {
+      // O_NONBLOCK: a file replaced by a FIFO must not block the open (and the key's lock) before the type check below.
       handle = await fs.open(
         fullPath,
-        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
       );
     } catch (error) {
       const code = (error as { code?: string }).code;
@@ -888,7 +895,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       } catch {
         // Not an answer about the file system: asked again on the next call.
         LOCAL_CAPABILITY_MEMO.delete(this.mountPath);
-        return { conditionalDelete: false, bump: false };
+        return { conditionalDelete: false, bump: false, inconclusive: true };
       }
     })();
     LOCAL_CAPABILITY_MEMO.set(this.mountPath, asked);

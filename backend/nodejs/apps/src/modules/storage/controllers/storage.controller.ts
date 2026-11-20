@@ -1231,7 +1231,7 @@ export class StorageController {
       const capabilities = await this.paidResultCapabilities(req, adapter);
       if (
         files.some((f) => f.mode === 'bump') &&
-        !capabilities.includes('bump')
+        !capabilities.list.includes('bump')
       ) {
         throw new BadRequestError(
           'This store does not support a conditional bump',
@@ -1279,7 +1279,8 @@ export class StorageController {
       res.status(HTTP_STATUS.OK).json({
         recordId,
         expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
-        capabilities,
+        capabilities: capabilities.list,
+        ...(capabilities.inconclusive && { capabilitiesInconclusive: true }),
         files: signed,
       });
     } catch (error) {
@@ -1294,13 +1295,18 @@ export class StorageController {
   private async paidResultCapabilities(
     req: AuthenticatedServiceRequest,
     remote?: StorageServiceAdapter | null,
-  ): Promise<string[]> {
+  ): Promise<{ list: string[]; inconclusive: boolean }> {
     const adapter = remote ?? (await this.initializeStorageAdapter(req));
     const caps = await adapter.conditionalCapabilities();
-    return [
-      ...(caps.conditionalDelete ? ['conditionalDelete'] : []),
-      ...(caps.bump ? ['bump'] : []),
-    ];
+    return {
+      list: [
+        ...(caps.conditionalDelete ? ['conditionalDelete'] : []),
+        ...(caps.bump ? ['bump'] : []),
+      ],
+      // A probe that could not tell is not the same answer as one that said no, or as a replica that names none: the
+      // client retries a sweep on it instead of deleting without a version.
+      inconclusive: caps.inconclusive === true,
+    };
   }
 
   /** Local storage's stand-in for a signed conditional PUT: the first writer wins. */
@@ -1489,7 +1495,8 @@ export class StorageController {
             lastModifiedMs: o.lastModifiedMs,
             ...(o.etag !== undefined && { etag: o.etag }),
           })),
-        capabilities,
+        capabilities: capabilities.list,
+        ...(capabilities.inconclusive && { capabilitiesInconclusive: true }),
         ...(page.next !== undefined && { next: page.next }),
       });
     } catch (error) {
@@ -1715,11 +1722,13 @@ export class StorageController {
         o.etag === undefined ? [] : [{ key: o.key, etag: o.etag }],
       );
       if (conditional && withEtag.length > 0) {
-        // An object overwritten since the listing (a refresh's own result) is not the one listed: it stays.
-        await adapter.deleteObjectsIfMatch(withEtag);
+        // The objects with no version to name go first, so they do not wait for an unrelated guarded delete (their
+        // list-to-delete window is the unavoidable one of a plain delete, and no longer). An object overwritten since the
+        // listing (a refresh's own result) is not the one listed: the guarded delete leaves it.
         const rest = doomedObjects.filter((o) => o.etag === undefined);
         if (rest.length > 0)
           await adapter.deleteObjects(rest.map((o) => o.key));
+        await adapter.deleteObjectsIfMatch(withEtag);
       } else if (doomedObjects.length > 0) {
         await adapter.deleteObjects(doomedObjects.map((o) => o.key));
       }
@@ -1779,6 +1788,17 @@ export class StorageController {
       } finally {
         await adapter.deleteObjects([key]).catch(() => undefined);
       }
+      // The marker is written again now that the cutoff is known: its time is then at or after the cutoff, so a result
+      // written before the cutoff (which the purge removes) can never be taken for one written after the refresh began,
+      // by a run that still holds it and would store it again.
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from(
+          JSON.stringify({ startedMs: Date.now(), cutoffMs: cutoff }),
+        ),
+        documentPath: `${root}/${REFRESH_MARKER_PATH}`,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
       // `marker`: the refresh marker was written before this cutoff was taken (a client with paid-result writes on
       // requires it: a service of an earlier release answers without).
       res.status(HTTP_STATUS.OK).json({ cutoff, marker: true });

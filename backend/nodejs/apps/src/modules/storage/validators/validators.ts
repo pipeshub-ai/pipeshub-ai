@@ -443,13 +443,13 @@ export const PresignPaidResultsSchema = z.object({
           .refine(
             (f) =>
               f.mode === 'replace'
-                ? isPaidResultManifestPath(f.path)
+                ? isPaidResultManifestPath(f.path) && f.etag === undefined
                 : f.mode === 'refresh'
-                  ? isPaidResultObjectPath(f.path)
+                  ? isPaidResultObjectPath(f.path) && f.etag === undefined
                   : f.mode === 'bump'
                     ? isPaidResultObjectPath(f.path) && f.etag !== undefined
                     : f.mode === 'get'
-                      ? true
+                      ? f.etag === undefined
                       : isPaidResultPath(f.path) && f.etag === undefined,
             { message: 'This mode does not apply to this path' },
           ),

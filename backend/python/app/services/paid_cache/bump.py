@@ -16,6 +16,7 @@ removed is removed again, conditionally on the version written). A marker that c
 import asyncio
 import json
 import logging
+import threading
 import time
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -62,6 +63,45 @@ LOSS_LOG_EVERY_S = 60.0
 BUMP_TOTAL = METRICS_BACKEND.counter(
     "pipeshub_paid_bump_total", "Reuse bumps of stored paid results by outcome", ["outcome"],
 )
+
+
+class ByteBudget:
+    """The bytes a process may re-upload in a rolling hour, and what is promised to queued entries. One per process
+    (``PROCESS_BYTE_BUDGET``), shared by the queues of every event loop; the workers stay loop-local."""
+
+    def __init__(self, per_hour: int | None = None) -> None:
+        self._lock = threading.Lock()
+        self._per_hour = per_hour
+        self._uploaded: deque[tuple[float, int]] = deque()
+        self._reserved = 0
+
+    def _used(self, now: float) -> int:
+        while self._uploaded and now - self._uploaded[0][0] > 3600:
+            self._uploaded.popleft()
+        return sum(n for _, n in self._uploaded)
+
+    def used(self, now: float) -> int:
+        with self._lock:
+            return self._used(now)
+
+    def try_reserve(self, size: int, now: float) -> bool:
+        with self._lock:
+            cap = self._per_hour if self._per_hour is not None else BYTES_PER_HOUR
+            if self._used(now) + self._reserved + size > cap:
+                return False
+            self._reserved += size
+            return True
+
+    def release(self, size: int) -> None:
+        with self._lock:
+            self._reserved = max(0, self._reserved - size)
+
+    def record(self, now: float, size: int) -> None:
+        with self._lock:
+            self._uploaded.append((now, size))
+
+
+PROCESS_BYTE_BUDGET = ByteBudget()
 
 
 class BumpStore(Protocol):
@@ -128,7 +168,7 @@ class BumpQueue:
     def __init__(
         self, store: BumpStore, logger: logging.Logger | None = None, *,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, clock: Callable[[], float] = time.time,
-        autostart: bool = True,
+        autostart: bool = True, budget: ByteBudget | None = None,
     ) -> None:
         self._store = store
         self._log = logger or logging.getLogger(__name__)
@@ -138,8 +178,11 @@ class BumpQueue:
         self._autostart = autostart
         self._queue: deque[BumpEntry] = deque()
         self._queued_bytes = 0
+        #: Keys bumped or restored in the last ``LRU_WINDOW_S`` (a repeat is skipped), and keys queued or in flight (a
+        #: pending key is released when its batch ends, so a bump that never happened does not suppress a later hit).
         self._recent: OrderedDict[tuple[str, str, str], float] = OrderedDict()
-        self._uploaded: deque[tuple[float, int]] = deque()
+        self._pending: set[tuple[str, str, str]] = set()
+        self._budget = budget if budget is not None else ByteBudget()
         self._worker: asyncio.Task[None] | None = None
         self._lost: dict[str, int] = {}
         self._last_loss_log = 0.0
@@ -156,16 +199,13 @@ class BumpQueue:
         now = time.monotonic()
         key = (entry.org_id, entry.record_id, entry.path)
         seen = self._recent.get(key)
-        if seen is not None and now - seen < LRU_WINDOW_S:
+        if key in self._pending or (seen is not None and now - seen < LRU_WINDOW_S):
             return self._count("recent")
         if len(self._queue) >= QUEUE_MAX or self._queued_bytes + len(entry.data) + TOUCH_OVERHEAD > QUEUE_BYTES_MAX:
             return self._lose("dropped")
-        if self._uploaded_last_hour(now) + self._queued_bytes + len(entry.data) + TOUCH_OVERHEAD > BYTES_PER_HOUR:
+        if not self._budget.try_reserve(len(entry.data) + TOUCH_OVERHEAD, now):
             return self._lose("over_budget")
-        self._recent[key] = now
-        self._recent.move_to_end(key)
-        while len(self._recent) > 4096:
-            self._recent.popitem(last=False)
+        self._pending.add(key)
         self._queue.append(entry)
         self._queued_bytes += len(entry.data) + TOUCH_OVERHEAD
         self._idle.clear()
@@ -173,9 +213,14 @@ class BumpQueue:
         return "queued"
 
     def _uploaded_last_hour(self, now: float) -> int:
-        while self._uploaded and now - self._uploaded[0][0] > 3600:
-            self._uploaded.popleft()
-        return sum(n for _, n in self._uploaded)
+        return self._budget.used(now)
+
+    def _remember(self, entry: BumpEntry) -> None:
+        key = (entry.org_id, entry.record_id, entry.path)
+        self._recent[key] = time.monotonic()
+        self._recent.move_to_end(key)
+        while len(self._recent) > 4096:
+            self._recent.popitem(last=False)
 
     def _count(self, outcome: str) -> str:
         BUMP_TOTAL.inc(outcome)
@@ -233,6 +278,14 @@ class BumpQueue:
         self._idle.set()
 
     async def _process(self, batch: list[BumpEntry]) -> None:
+        try:
+            await self._process_batch(batch)
+        finally:
+            for entry in batch:
+                self._pending.discard((entry.org_id, entry.record_id, entry.path))
+                self._budget.release(len(entry.data) + TOUCH_OVERHEAD)
+
+    async def _process_batch(self, batch: list[BumpEntry]) -> None:
         groups: dict[tuple[str, str], list[BumpEntry]] = {}
         stale = 0
         for entry in batch:
@@ -327,6 +380,7 @@ class BumpQueue:
                     return
                 if result is not None:
                     written.append((entry, result))
+                    self._remember(entry)
 
         await asyncio.gather(*(one(e) for e in live))
         return written
@@ -360,7 +414,7 @@ class BumpQueue:
 
     def _wrote(self, size: int) -> None:
         self._last_write = time.monotonic()
-        self._uploaded.append((self._last_write, size))
+        self._budget.record(self._last_write, size)
 
     async def _restore(self, entry: BumpEntry, marker: int | None) -> bytes | None:
         """The object is gone: store the bytes the run holds, under the guards of a paid store."""

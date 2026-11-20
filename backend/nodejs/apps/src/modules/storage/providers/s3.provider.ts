@@ -851,6 +851,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
   /** Waits between the attempts of a probe that met a transient failure (tests shorten it). */
   probeBackoffMs: number[] = [250, 1000];
 
+  /** The deadline of the probe's conditional PUT (request and body). */
+  probeTimeoutMs = 10_000;
+
   /**
    * Probe, on a random sentinel outside every record folder: (1) a delete with a wrong ETag must answer
    * precondition-failed and leave the object; (2) the right ETag must delete it, and a conditional delete of a
@@ -909,10 +912,13 @@ class AmazonS3Adapter implements StorageServiceInterface {
         expiresInSeconds: 60,
         ifMatch: etag,
       });
+      // One deadline over the request and its body: a stalled probe must not hold every caller that shares it.
+      const signal = AbortSignal.timeout(this.probeTimeoutMs);
       const response = await fetch(signed.url, {
         method: 'PUT',
         headers: signed.headers,
         body,
+        signal,
       });
       await response.arrayBuffer();
       if (isTransientStatus(response.status)) throw transient;
@@ -965,11 +971,21 @@ class AmazonS3Adapter implements StorageServiceInterface {
       };
     } catch (error) {
       if (error === transient) return null;
+      const name = (error as { name?: string }).name;
+      if (name === 'TimeoutError' || name === 'AbortError') return null;
       const httpStatus = status(error);
       if (httpStatus !== undefined && isTransientStatus(httpStatus))
         return null;
       const code = httpStatus;
       // A store that answers the conditional form with a refusal of its own (501, 400, 403) said no, definitively.
+      if (code === 403) {
+        // The sentinel (or a conditional request) was denied. That is a definitive "no" for this deployment, so the sweep
+        // takes the safe fallback instead of failing for ever; the operator can allow the probe prefix to get it back.
+        this.logger.warn(
+          'The object store denied the conditional-write probe; paid-result sweeps use the fallback. Allow PutObject, GetObject and DeleteObject on the probe prefix to enable conditional deletes',
+          { probePrefix: PROBE_FOLDER },
+        );
+      }
       if (code === 501 || code === 400 || code === 403) {
         return { conditionalDelete: false, bump: false };
       }

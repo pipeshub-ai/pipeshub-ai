@@ -200,6 +200,9 @@ class NodePaidResultStore:
         #: The same, per org: a storage service answers for the target of the request (an org's own store), and a reply
         #: for one org says nothing about another's.
         self._caps_by_org: dict[str, frozenset[str]] = {}
+        #: Orgs whose storage said, in its last reply, that it could not yet tell what it honours (a failed probe): not
+        #: the same as "nothing" and not the same as a reply that names no capability (an earlier release).
+        self._inconclusive_orgs: set[str] = set()
         # Reuses the artifact client's reply handling and its URL transfer helpers.
         self._artifacts = NodeArtifactStore(blob_storage, self.logger)
 
@@ -240,6 +243,14 @@ class NodePaidResultStore:
         if len(self._caps_by_org) > 4096:
             self._caps_by_org.clear()
         self._caps_by_org[org_id] = known
+        if body.get("capabilitiesInconclusive") is True:
+            self._inconclusive_orgs.add(org_id)
+        else:
+            self._inconclusive_orgs.discard(org_id)
+
+    def capabilities_unknown(self, org_id: str) -> bool:
+        """The storage behind the org could not tell, in its last reply, whether it deletes by version."""
+        return org_id in self._inconclusive_orgs
 
     def honours(self, org_id: str, capability: str) -> bool:
         """Whether the storage behind ``org_id`` said, in its last reply for that org, that it honours ``capability``."""
@@ -317,16 +328,16 @@ class NodePaidResultStore:
     async def delete_files(
         self, org_id: str, record_id: str, paths: Sequence[str], etags: Mapping[str, str] | None = None,
     ) -> list[str]:
-        """Deletes ``paths``. A path with an entry in ``etags`` goes only while that is still its version (sent only
-        when the storage service said it honours that, so an older one is never sent a field it would drop). Returns
-        the paths the service kept because the object changed since it was listed."""
+        """Deletes ``paths``. A path with an entry in ``etags`` goes only while that is still its version: the ETags a
+        caller supplies are always sent (a service that cannot honour them answers 503 and the call raises; one of an
+        earlier release lists no ETag, so none is supplied). A caller that takes the unconditional path supplies none.
+        Returns the paths the service kept because the object changed since it was listed."""
         route = Routes.STORAGE_PAID_RESULTS_DELETE.value.format(recordId=record_id)
         changed: list[str] = []
-        conditional = bool(etags) and self.honours(org_id, "conditionalDelete")
         for start in range(0, len(paths), MAX_FILES_PER_CALL):
             chunk = list(paths[start:start + MAX_FILES_PER_CALL])
             request: dict[str, Any] = {"paths": chunk}
-            if conditional and etags:
+            if etags:
                 guarded = {p: etags[p] for p in chunk if p in etags}
                 if guarded:
                     request["etags"] = guarded

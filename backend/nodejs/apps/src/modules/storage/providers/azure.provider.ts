@@ -742,8 +742,19 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
         });
         for (const idx of refused) {
           const refusedKey = slice[idx]?.key ?? '';
-          if (await container.getBlockBlobClient(refusedKey).exists()) {
-            changed.push(refusedKey);
+          try {
+            if (await container.getBlockBlobClient(refusedKey).exists()) {
+              changed.push(refusedKey);
+            }
+          } catch (existsError) {
+            // The check failed: reported after every slice has run, never abandoning the rest of the batch.
+            failures.push(
+              `${refusedKey}: ${
+                existsError instanceof Error
+                  ? existsError.message
+                  : 'existence check failed'
+              }`,
+            );
           }
         }
       }

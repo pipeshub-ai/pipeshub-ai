@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from app.modules.transformers.blob_storage import TransientStorageError
 from app.services.paid_cache.bump import BumpEntry, BumpQueue, touched_bytes
 from app.services.paid_cache.cache import _FencedStore
 from app.services.paid_cache.retention import GRACE_MS, sweep_record
@@ -117,15 +118,18 @@ async def test_a_delete_naming_a_stale_version_keeps_the_object(store: NodePaidR
     outcome, _ = await store.bump_to(signed[(K, "bump")], touched_bytes(VALUE, int(time.time() * 1000)) or b"")
     assert outcome == BUMPED
 
-    changed = await store.delete_files(org, REC, [K], {K: before.etag})
-
-    after = await store.get_versioned(org, REC, K)
-    if store.supports_conditional_delete:
-        assert changed == [K], "the delete removed a version it was not named for"
+    if not store.supports_conditional_delete:
+        # A store that cannot delete by version refuses a request that names versions (503): it is never turned into a plain
+        # delete. The sweep sends no versions to such a store.
+        with pytest.raises(TransientStorageError):
+            await store.delete_files(org, REC, [K], {K: before.etag})
+        after = await store.get_versioned(org, REC, K)
         assert after is not None and after.etag != before.etag
-    else:
-        # The store honours no conditional delete: no ETag is sent, so the delete is unconditional, as before.
-        assert changed == [] and after is None
+        return
+    changed = await store.delete_files(org, REC, [K], {K: before.etag})
+    assert changed == [K], "the delete removed a version it was not named for"
+    after = await store.get_versioned(org, REC, K)
+    assert after is not None and after.etag != before.etag
 
 
 async def test_a_bump_changes_the_etag_and_keeps_the_value(store: NodePaidResultStore) -> None:

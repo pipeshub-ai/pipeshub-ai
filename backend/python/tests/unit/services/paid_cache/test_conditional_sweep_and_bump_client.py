@@ -13,7 +13,13 @@ from app.services.paid_cache import store as store_module
 from app.services.paid_cache.bump import BumpEntry, BumpQueue, touched_bytes
 from app.services.paid_cache.retention import GRACE_MS, sweep_record
 from app.services.paid_cache.run import RunScope
-from app.services.paid_cache.store import BUMPED, CHANGED, GONE, NodePaidResultStore
+from app.services.paid_cache.store import (
+    BUMPED,
+    CHANGED,
+    GONE,
+    NodePaidResultStore,
+    PaidResultStoreError,
+)
 from tests.support.fake_paid_result_storage import FakePaidResultStorage
 
 if TYPE_CHECKING:
@@ -166,7 +172,9 @@ async def test_a_bump_replaces_the_bytes_and_changes_the_etag_even_where_the_eta
 
     outcome, etag = await store.bump_to(signed[(K, "bump")], new)
 
-    assert outcome == BUMPED and etag != before.etag
+    after = await store.get_versioned(ORG, REC, K)
+    assert outcome == BUMPED and etag, "the bump answered no new ETag"
+    assert after is not None and etag == after.etag != before.etag, "the ETag returned is not the stored object's"
     assert json.loads(storage.objects[storage.key(ORG, REC, K)][0])["value"] == "OLD"
     assert storage.put_headers[-1]["If-Match"] == f'"{before.etag}"'
 
@@ -695,3 +703,158 @@ async def test_a_bump_is_not_undone_by_an_unconditional_delete_on_a_store_withou
     queue.offer(BumpEntry(ORG, REC, K, got.data, got.etag, 0, None))
     await queue.drain_once()
     assert deleted == [], "a delete that cannot name the version was sent"
+
+
+async def test_a_sweep_is_retried_not_run_while_the_storage_could_not_tell_what_it_honours(storage: FakePaidResultStorage) -> None:
+    """An inconclusive probe is not "no conditional delete": deleting then could remove a result a reuse just re-wrote."""
+    store = _store(storage)
+    await _doomed_setup(storage, store)
+    storage.capabilities = ()
+    storage.capabilities_inconclusive = True
+    deletes_before = len(storage.delete_bodies)
+    with pytest.raises(PaidResultStoreError):
+        await sweep_record(store, ORG, REC, now_ms=storage.clock_ms)
+    assert K in storage.stored(ORG, REC) and len(storage.delete_bodies) == deletes_before
+    # a storage that confirmed it ignores the condition (or an earlier release that names nothing) still sweeps
+    storage.capabilities_inconclusive = False
+    await sweep_record(store, ORG, REC, now_ms=storage.clock_ms)
+    assert K not in storage.stored(ORG, REC)
+
+
+# -- review round 3 ----------------------------------------------------------------------------------------------------
+
+async def test_supplied_etags_are_always_sent_even_when_this_orgs_capabilities_say_none(storage: FakePaidResultStorage) -> None:
+    store = _store(storage)
+    storage.capabilities = ()
+    await store.presign(ORG, REC, [(K, "get")])
+    assert not store.honours(ORG, "conditionalDelete")
+    await store.delete_files(ORG, REC, [K], {K: "abc"})
+    assert storage.delete_bodies[-1].get("etags") == {K: "abc"}, "a guard the caller supplied was stripped"
+
+
+async def test_a_path_whose_bump_presign_failed_is_offered_again_by_a_later_hit() -> None:
+    from tests.support.versioned_store import VersionedStore
+
+    store = VersionedStore(stamp_ms=1)
+    real = store.presign
+    failures = [True]
+
+    async def flaky_presign(*a: object, **kw: object) -> dict:
+        if failures and any(len(f) > 2 for f in a[2]):  # type: ignore[index]
+            failures.pop()
+            raise ConnectionError("an older replica refused the mode")
+        return await real(*a, **kw)  # type: ignore[arg-type]
+
+    store.presign = flaky_presign  # type: ignore[method-assign]
+
+    async def no_wait(_s: float) -> None:
+        return None
+
+    queue = BumpQueue(store, sleep=no_wait, autostart=False)  # type: ignore[arg-type]
+    store.write(ORG, REC, K, OLD)
+    got = await store.get_versioned(ORG, REC, K)
+    assert got is not None and got.etag
+    entry = BumpEntry(ORG, REC, K, got.data, got.etag, 0, None)
+    assert queue.offer(entry) == "queued"
+    await queue.drain_once()                                     # the presign failed: nothing was bumped
+    assert queue.offer(BumpEntry(ORG, REC, K, got.data, got.etag, 0, None)) == "queued", "a failed batch suppressed the key"
+    await queue.drain_once()
+    assert b"touchedMs" in store.files[(ORG, REC, K)][0]
+    assert queue.offer(BumpEntry(ORG, REC, K, got.data, got.etag, 0, None)) == "recent", "a bumped key is not repeated at once"
+
+
+def test_the_hourly_byte_budget_is_shared_by_queues_and_promised_bytes_count() -> None:
+    from app.services.paid_cache.bump import ByteBudget
+    from tests.support.versioned_store import VersionedStore
+
+    budget = ByteBudget(per_hour=500)
+    one = BumpQueue(VersionedStore(), autostart=False, budget=budget)  # type: ignore[arg-type]
+    two = BumpQueue(VersionedStore(), autostart=False, budget=budget)  # type: ignore[arg-type]
+    entry = lambda n: BumpEntry(ORG, REC, f"ocr_page/{n:064x}.json", b"x" * 100, "e", 0, None)  # noqa: E731
+    assert one.offer(entry(1)) == "queued" and two.offer(entry(2)) == "queued"      # 2 x 196 reserved
+    assert one.offer(entry(3)) == "over_budget" and two.offer(entry(4)) == "over_budget"
+
+
+async def test_a_batch_is_checked_again_before_each_storage_request_for_paths_with_no_listed_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.paid_cache import retention
+    from tests.support.versioned_store import VersionedStore
+
+    monkeypatch.setattr(retention, "MAX_FILES_PER_CALL", 2)
+    store = VersionedStore(stamp_ms=1, now_ms=1_700_000_000_000, conditional_delete=False)
+    keys = [f"ocr_page/{20 + n:064x}.json" for n in range(3)]
+    for k in keys:
+        store.write(ORG, REC, k, OLD, age_ms=3 * HOUR)
+    for rev, n in (("r2", 2), ("r3", 3)):
+        run = RunScope(ORG, REC, rev, "parse", clock=lambda: store.now_ms / 1000)
+        other = f"ocr_page/{n:064x}.json"
+        store.write(ORG, REC, other, b"{}")
+        await run.note(store, other, opens=True)  # type: ignore[arg-type]
+        await run.finish(store)  # type: ignore[arg-type]
+        store.now_ms += 1000
+    store.now_ms += GRACE_MS
+    real_delete = store.delete_files
+    first = True
+
+    async def delete_then_a_reuse_lands(o: str, r: str, paths: object, etags: object = None) -> list[str]:
+        nonlocal first
+        result = await real_delete(o, r, paths, etags)  # type: ignore[arg-type]
+        if first:
+            first = False
+            store.now_ms += 5
+            store.write(ORG, REC, keys[2], touched_bytes(OLD, 1) or b"")     # the third path, in the next request
+        return result
+
+    store.delete_files = delete_then_a_reuse_lands  # type: ignore[method-assign]
+    await sweep_record(store, ORG, REC, now_ms=store.now_ms)  # type: ignore[arg-type]
+    assert (ORG, REC, keys[2]) in store.files, "a path of a later request was deleted on the first request's listing"
+    assert (ORG, REC, keys[0]) not in store.files
+
+
+async def test_a_result_made_before_the_cutoff_cannot_be_stored_again_after_the_marker_written_at_the_cutoff() -> None:
+    """The marker is written again once the cutoff is known: a run still holding a result written between the first
+    marker and the cutoff is refused when it would store it again."""
+    from tests.support.versioned_store import VersionedStore
+
+    store = VersionedStore(stamp_ms=1000)
+    store.begin_refresh(ORG, REC)                        # the first marker, second 0
+    store.now_ms += 2_000
+    held_origin = store.now_ms                           # a normal run's result, written at second 2 (before the cutoff)
+    store.now_ms += 1_000
+    store.begin_refresh(ORG, REC)                        # the marker rewritten at the cutoff, second 3
+    async def no_wait(_s: float) -> None:
+        return None
+
+    queue = BumpQueue(store, sleep=no_wait, autostart=False)  # type: ignore[arg-type]
+    queue.offer(BumpEntry(ORG, REC, K, OLD, "gone", held_origin, None))
+    await queue.drain_once()
+    assert (ORG, REC, K) not in store.files, "a pre-cutoff result was stored again after the purge"
+
+
+async def test_an_unreadable_marker_neither_reuses_nor_overwrites_a_bumped_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.services.paid_cache.cache import PaidResultCache, _encode
+    from app.services.paid_cache.keys import CacheKey
+    from app.services.paid_cache.locks import InProcessLocks
+    from app.services.paid_cache.run import begin_run, clear_run
+    from tests.support.paid_cache import record_in_flight
+    from tests.support.versioned_store import VersionedStore
+
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
+    store = VersionedStore(stamp_ms=1000)
+    store.write(ORG, REC, key.relative_path(), touched_bytes(_encode(key, "kept"), 1, origin_ms=store.now_ms - 10_000) or b"")
+    before = store.files[(ORG, REC, key.relative_path())][1]
+    store.unreadable_marker = True
+    cache = PaidResultCache(store, InProcessLocks())  # type: ignore[arg-type]
+    cache.bumps._autostart = False
+    try:
+        with record_in_flight(ORG, REC):
+            begin_run(ORG, REC, "rev1", "parse")
+            paid = AsyncMock(return_value="fresh")
+            assert await cache.get_or_compute(key, paid) == "fresh"
+        assert store.files[(ORG, REC, key.relative_path())][1] == before, "a result was overwritten on an unknown marker"
+    finally:
+        clear_run()

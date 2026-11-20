@@ -129,6 +129,20 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(most, 'two writers held the key at once').to.equal(1)
     })
 
+    it('a lock released between its read and its stat is not abandoned, and is not an error', async () => {
+      const a = adapter()
+      await a.writeObject(key(1), Buffer.from('one'))
+      const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+      const lock = path.join(dir, '.race.lock')
+      fs.writeFileSync(lock, JSON.stringify({ token: 'x', pid: process.pid, host: os.hostname() }))
+      const real = fsp.stat.bind(fsp)
+      sinon.stub(fsp, 'stat').callsFake((async (p: string, ...rest: unknown[]) => {
+        if (p === lock) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        return (real as any)(p, ...rest)
+      }) as never)
+      expect(await (a as any).lockIsAbandoned(lock)).to.equal(false)
+    })
+
     it('an I/O failure while reclaiming a lock is a failure of the call, not a wait that never ends', async () => {
       const a = adapter()
       await a.writeObject(key(1), Buffer.from('one'))
@@ -175,7 +189,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       }
       LocalStorageAdapter.clearCapabilityMemo()
       stat.rejects(new Error('EIO'))
-      expect(await adapter().conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
+      expect(await adapter().conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
       // a failed statfs is no answer about the file system: the next call asks again
       stat.resolves({ type: 0xef53 } as never)
       expect(await adapter().conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
@@ -193,7 +207,94 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(warn.callCount).to.equal(1)
     })
 
-    it('a lock left by a process that is gone is reclaimed at once, a live owner on this host is waited for however old its lock', async () => {
+    it('a lock left by a process that is gone is reclaimed at once; a live owner on this host is waited for until its lease passes, and no longer', async () => {
+      const a = adapter()
+      await a.writeObject(key(1), Buffer.from('one'))
+      const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+      const name = `.${createHash('sha1').update(path.basename(key(1))).digest('hex')}.lock`
+      const lock = (pid: number): void =>
+        fs.writeFileSync(path.join(dir, name), JSON.stringify({ token: 'x', pid, host: os.hostname() }))
+      lock(2147483646) // no such process
+      const started = Date.now()
+      await a.writeObject(key(1), Buffer.from('after the crash'))
+      expect(Date.now() - started, 'a crash-left lock made the writer wait').to.be.lessThan(1000)
+
+      lock(process.pid) // this process: alive. Inside its lease it is waited for.
+      const young = new Date(Date.now() - 60 * 1000)
+      fs.utimesSync(path.join(dir, name), young, young)
+      setTimeout(() => fs.rmSync(path.join(dir, name), { force: true }), 80)
+      const t0 = Date.now()
+      await a.writeObject(key(1), Buffer.from('after the wait'))
+      expect(Date.now() - t0, 'a live owner lost its lock to a lease that is too short').to.be.greaterThan(60)
+
+      lock(process.pid) // past its lease (5 minutes) even a live owner's lock is taken over, so a stuck owner cannot block for ever
+      const old = new Date(Date.now() - 6 * 60 * 1000)
+      fs.utimesSync(path.join(dir, name), old, old)
+      const t1 = Date.now()
+      await a.writeObject(key(1), Buffer.from('after the lease'))
+      expect(Date.now() - t1).to.be.lessThan(1000)
+    })
+
+    it('a file replaced by a FIFO does not block a conditional operation (and the key lock)', async function () {
+      if (process.platform === 'win32') this.skip()
+      const a = adapter()
+      await a.writeObject(key(1), Buffer.from('one'))
+      const full = path.join((a as any).mountPath, key(1))
+      fs.rmSync(full)
+      require('child_process').execFileSync('mkfifo', [full])
+      const started = Date.now()
+      const r = await a.deleteObjectsIfMatch([{ key: key(1), etag: 'x' }])
+      expect(Date.now() - started).to.be.lessThan(2000)
+      expect(r.changed).to.deep.equal([])
+    })
+
+    it('a holder that lost its lease does not delete: the file stays and is reported changed', async () => {
+      const a = adapter()
+      await a.writeObject(key(1), Buffer.from('one'))
+      const e = await etagOf(a, key(1))
+      const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+      const real = (a as any).etagAtPath.bind(a)
+      sinon.stub(a as any, 'etagAtPath').callsFake(async (p: string) => {
+        const lock = fs.readdirSync(dir).find((f) => f.endsWith('.lock'))!
+        fs.writeFileSync(path.join(dir, lock), 'a taker')
+        return real(p)
+      })
+      const r = await a.deleteObjectsIfMatch([{ key: key(1), etag: e }])
+      expect(r.changed).to.deep.equal([key(1)])
+      expect((await a.listObjects(`${ROOT}/`, { limit: 10 })).objects).to.have.length(1)
+    })
+
+    it('honours conditional operations only on a file system it can name as local', async () => {
+      const stat = sinon.stub(fsp, 'statfs')
+      LocalStorageAdapter.clearCapabilityMemo()
+      stat.resolves({ type: 0xef53 } as never)
+      expect(await adapter().conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
+      for (const type of [0x6969, 0xff534d42, 0x65735546, 0xc36400, 0x01021994 + 1]) {
+        LocalStorageAdapter.clearCapabilityMemo()
+        stat.resolves({ type } as never)
+        expect(await adapter().conditionalCapabilities(), `0x${type.toString(16)}`).to.deep.equal({ conditionalDelete: false, bump: false })
+      }
+      LocalStorageAdapter.clearCapabilityMemo()
+      stat.rejects(new Error('EIO'))
+      expect(await adapter().conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
+      // a failed statfs is no answer about the file system: the next call asks again
+      stat.resolves({ type: 0xef53 } as never)
+      expect(await adapter().conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
+    })
+
+    it('says once per process that a mount is not a recognised local file system, however many adapters ask', async () => {
+      LocalStorageAdapter.clearCapabilityMemo()
+      sinon.stub(fsp, 'statfs').resolves({ type: 0x6969 } as never)
+      const warn = sinon.spy()
+      for (let i = 0; i < 5; i += 1) {
+        const a = adapter()
+        ;(a as any).logger = { warn, info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
+        await a.conditionalCapabilities()
+      }
+      expect(warn.callCount).to.equal(1)
+    })
+
+    it('a lock left by a process that is gone is reclaimed at once; a live owner on this host is waited for until its lease passes, and no longer', async () => {
       const a = adapter()
       await a.writeObject(key(1), Buffer.from('one'))
       const dir = path.join((a as any).mountPath, path.dirname(key(1)))
@@ -358,6 +459,18 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(up.callCount, 'a probe per caller').to.equal(2)
     })
 
+    it('a probe whose PUT stalls is aborted by its deadline, answers "cannot tell", and does not hold the callers', async () => {
+      const a = flaky({})
+      a.probeTimeoutMs = 40
+      a.probeBackoffMs = []
+      ;(globalThis.fetch as any).restore()
+      sinon.stub(globalThis, 'fetch').callsFake(((_u: string, init: any) =>
+        new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' }))))) as any)
+      const started = Date.now()
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
+      expect(Date.now() - started).to.be.lessThan(2000)
+    })
+
     it('a definitive refusal (403) is remembered as "none", not retried', async () => {
       const a = adapter('forbidden-' + Math.random().toString(36).slice(2))
       a.probeBackoffMs = [0, 0]
@@ -433,6 +546,17 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       const exists = sinon.stub().resolves(true)
       const r = await container(sinon.stub().rejects(Object.assign(new Error('c'), { statusCode: 412, details: { errorCode: 'ConditionNotMet' } })), exists).deleteObjectsIfMatch([{ key: key(1), etag: 'e1' }])
       expect(r.changed).to.deep.equal([key(1)])
+    })
+
+    it('an existence check that fails does not abandon the rest of the batch; it is reported after every slice ran', async () => {
+      const del = sinon.stub().resolves(true)
+      del.onCall(0).rejects(Object.assign(new Error('c'), { statusCode: 412, details: { errorCode: 'ConditionNotMet' } }))
+      const exists = sinon.stub().rejects(new Error('503'))
+      const a = container(del, exists)
+      let thrown: unknown
+      try { await a.deleteObjectsIfMatch(Array.from({ length: 17 }, (_, i) => ({ key: key(i + 1), etag: 'e' }))) } catch (e) { thrown = e }
+      expect(thrown).to.be.instanceOf(StorageUploadError)
+      expect(del.callCount, 'the second slice was never attempted').to.equal(17)
     })
 
     it('any other failure of a conditional delete is raised after the rest were tried', async () => {

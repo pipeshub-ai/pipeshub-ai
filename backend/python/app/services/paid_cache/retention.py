@@ -24,6 +24,7 @@ from typing import Any
 
 from app.services.paid_cache.cache import ResultStore
 from app.services.paid_cache.run import OPEN_PROTECTS_MS
+from app.services.paid_cache.store import MAX_FILES_PER_CALL, PaidResultStoreError
 from app.telemetry.backend import METRICS_BACKEND
 
 #: Completed revisions whose objects are kept (the newest and one before it).
@@ -152,6 +153,7 @@ async def sweep_record(
     if doomed is None:
         return SweepResult(0, len(files), "no completed revision")
     etags: dict[str, str] = {}
+    second: dict[str, Any] = {}
     if doomed:
         # A run that reused one of these objects after the listing above has noted it in its manifest by now: the
         # manifests are read again and only what both reads leave unprotected is deleted. An object whose version or
@@ -166,12 +168,22 @@ async def sweep_record(
         ]
         # Each delete names the version of the listing it is made from (what a bump changes).
         etags = {path: second[path].etag for path in doomed if second[path].etag}
+        unknown = getattr(store, "capabilities_unknown", None)
+        if unknown is not None and unknown(org_id):
+            # The storage could not say whether it deletes by version: deleting now would be a delete the store may
+            # not honour a condition on. The sweep fails and the next completed revision retries it.
+            raise PaidResultStoreError("the storage could not yet say whether it deletes by version; the sweep is retried")
         honours = getattr(store, "honours", None)
         if not (honours(org_id, "conditionalDelete") if honours is not None else getattr(store, "supports_conditional_delete", True)):
             etags = {}
-        # A path the delete cannot name a version for (no ETag listed, or a store that honours no conditional delete) is
-        # looked at once more right before the delete: the window is what lies between that look and the delete.
-        unguarded = [path for path in doomed if path not in etags]
+    changed: list[str] = []
+    sent = 0
+    # Delete one storage request at a time. A path the delete cannot name a version for (no ETag listed, or a store that
+    # honours no conditional delete) is looked at once more right before its request, so what a request waits for is not
+    # counted against the paths of a later one; the window left is the one between that look and the delete.
+    for start in range(0, len(doomed), MAX_FILES_PER_CALL):
+        chunk = doomed[start:start + MAX_FILES_PER_CALL]
+        unguarded = [path for path in chunk if path not in etags]
         if unguarded:
             latest = {f.path: f for f in await store.list_files(org_id, record_id)}
             stays = {
@@ -179,14 +191,16 @@ async def sweep_record(
                 if path in latest and latest[path].last_modified_ms == second[path].last_modified_ms
                 and latest[path].etag == second[path].etag
             }
-            doomed = [path for path in doomed if path in etags or path in stays]
-    changed: list[str] = []
-    if doomed:
-        result = await (store.delete_files(org_id, record_id, doomed, etags) if etags else store.delete_files(org_id, record_id, doomed))
-        changed = list(result) if isinstance(result, list) else []
+            chunk = [path for path in chunk if path in etags or path in stays]
+        if not chunk:
+            continue
+        guard = {path: etags[path] for path in chunk if path in etags}
+        result = await (store.delete_files(org_id, record_id, chunk, guard) if guard else store.delete_files(org_id, record_id, chunk))
+        changed.extend(result if isinstance(result, list) else [])
+        sent += len(chunk)
     if changed:
         SWEEP_CHANGED.inc(value=float(len(changed)))
-    deleted = len(doomed) - len(changed)
+    deleted = sent - len(changed)
     log.debug(
         "Paid-result sweep of record %s: %d deleted, %d changed since listed, %d kept",
         record_id, deleted, len(changed), len(files) - deleted,

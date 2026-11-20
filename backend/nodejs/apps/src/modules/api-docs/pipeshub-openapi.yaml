@@ -40697,6 +40697,9 @@ paths:
                     type: string
                   expiresInSeconds:
                     type: integer
+                  capabilitiesInconclusive:
+                    type: boolean
+                    description: '`true`: the store could not yet say what it honours (a failed probe); see the listing reply.'
                   capabilities:
                     type: array
                     description: |
@@ -40858,6 +40861,12 @@ paths:
                             The file's version (ETag without quotes), when the store lists one. A delete may name
                             it (`etags`) so that a file replaced since is kept. The refresh marker and a purge
                             cutoff's sentinel are never listed.
+                  capabilitiesInconclusive:
+                    type: boolean
+                    description: |
+                      `true`: the store could not yet say what it honours (a failed probe). Not the same as an empty
+                      `capabilities` (a store that confirmed it honours nothing) or a reply with neither field (a
+                      storage service of an earlier release): a client retries its sweep on it.
                   capabilities:
                     type: array
                     description: What the store honours (see the presign reply).
@@ -41147,6 +41156,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            `etags` names versions and the store cannot delete by version right now (it does not honour the condition, or
+            its probe could not tell yet). Nothing was deleted and the request is never turned into a plain delete: retry
+            it, keeping the version guard. A request that names no `etags` still deletes unconditionally.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
   /document/internal/paid-results/{recordId}/files/{path}:
@@ -41155,9 +41173,15 @@ paths:
       - name: path
         in: path
         required: true
-        description: The file inside the record's folder; may contain `/`.
+        description: |
+          The file inside the record's folder; may contain `/`. A GET may also read the refresh marker
+          (`refreshed/marker.json`); a PUT refuses it (`400`).
         schema:
-          $ref: '#/components/schemas/PaidResultPath'
+          anyOf:
+            - $ref: '#/components/schemas/PaidResultPath'
+            - type: string
+              enum:
+                - refreshed/marker.json
     put:
       tags:
         - Internal Storage
