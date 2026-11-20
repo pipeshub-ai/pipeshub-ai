@@ -23,6 +23,17 @@ describe('createZipBuffer', () => {
     expect(String(files['日本語.txt'])).to.equal('こんにちは');
   });
 
+  it('stores the standard CRC-32 in both headers', async () => {
+    // 0xCBF43926 is the published check value for the ASCII text "123456789".
+    const zip = await createZipBuffer([
+      { name: 'check.txt', data: Buffer.from('123456789') },
+    ]);
+    const centralAt = zip.readUInt32LE(zip.length - 22 + 16);
+
+    expect(zip.readUInt32LE(14)).to.equal(0xcbf43926);
+    expect(zip.readUInt32LE(centralAt + 16)).to.equal(0xcbf43926);
+  });
+
   it('keeps two files with the same name instead of letting one overwrite the other', async () => {
     const files = readZip(
       await createZipBuffer([

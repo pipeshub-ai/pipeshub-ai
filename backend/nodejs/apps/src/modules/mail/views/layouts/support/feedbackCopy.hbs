@@ -73,7 +73,7 @@
                       line-height: 20px;
                     "
                   >
-                    {{#if attachmentCount}}Your {{attachmentCount}} file(s) are attached to this email.{{else}}No files attached.{{/if}}
+                    {{#if attachmentsFailed}}Your files could not be attached to this email.{{else if attachmentCount}}Your {{attachmentCount}} file(s) are attached to this email.{{else}}No files attached.{{/if}}
                     · Submitted: {{submittedAt}}
                   </div>
                 </td>

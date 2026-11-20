@@ -63,7 +63,7 @@
                       line-height: 20px;
                     "
                   >
-                    Attachments: {{attachmentCount}} · Submitted: {{submittedAt}}
+                    Attachments: {{#if attachmentsFailed}}could not be attached{{else}}{{attachmentCount}}{{/if}} · Submitted: {{submittedAt}}
                   </div>
                 </td>
               </tr>

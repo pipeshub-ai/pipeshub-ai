@@ -422,6 +422,27 @@ describe('Contact support and Send feedback routes', () => {
       ).to.include('are attached to this email');
     });
 
+    it('tells support and the person when files could not be attached', () => {
+      const data = {
+        kindLabel: 'Feedback',
+        description: 'Please add a dark theme for the editor.',
+        userName: 'Ada',
+        attachmentCount: 0,
+        attachmentsFailed: true,
+        submittedAt: '8 Oct 2026, 21:10 UTC',
+      };
+
+      expect(getEmailContent('feedbackReceived', data)).to.include(
+        'could not be attached',
+      );
+      expect(getEmailContent('feedbackCopy', data)).to.include(
+        'Your files could not be attached',
+      );
+      expect(
+        getEmailContent('feedbackCopy', { ...data, attachmentsFailed: false }),
+      ).to.include('No files attached');
+    });
+
     it('labels general feedback as Feedback', async () => {
       await request('POST', '/feedback', feedbackForm('issue'));
       expect(sent()[0].subject).to.match(/^\[Feedback\] Acme/);
