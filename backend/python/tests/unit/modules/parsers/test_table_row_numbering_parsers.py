@@ -423,9 +423,17 @@ async def test_no_model_call_completes_after_a_stop_in_a_csv_table() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_task_is_pending_when_a_stop_leaves_an_excel_table(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Excel cancels the batches still running and waits for them before the error leaves."""
+@pytest.mark.parametrize("stall_s", [0.0, 0.4], ids=["idle_loop", "loop_stalled_after_the_refusal_is_raised"])
+async def test_no_task_is_pending_when_a_stop_leaves_an_excel_table(monkeypatch: pytest.MonkeyPatch, stall_s: float) -> None:
+    """Excel cancels the batches still running and waits for them before the error leaves.
+
+    No batch finishes on a timer here: a sibling that would complete after a fixed delay finishes when the event loop
+    is stalled (a busy runner) for longer than that delay, with the refusal and the sibling's timer both due in one loop
+    pass, so "cancelled batches never finish" held only on a quiet machine. The siblings wait on an event nobody sets
+    until the test ends, and the refusal is raised once one of them is inside its call; ``stall_s`` blocks the loop
+    right before the refusal is raised, which used to be enough to make the old timer-based sibling finish."""
     import asyncio
+    import time
     from unittest.mock import AsyncMock
 
     from app.exceptions.non_retryable import NonRetryableError
@@ -436,14 +444,23 @@ async def test_no_task_is_pending_when_a_stop_leaves_an_excel_table(monkeypatch:
         f'<row r="{r}"><c r="A{r}" t="inlineStr"><is><t>REG{r - 2}</t></is></c></row>' for r in range(2, 302)
     )
     finished: list[str] = []
+    cleaned: list[str] = []
+    sibling_started = asyncio.Event()
+    never = asyncio.Event()  # set only by the test's own cleanup, after the assertions
 
     class Slow(FakeTableModel):
         async def ainvoke(self, messages: list, **kwargs: object) -> object:
             ids = [rid for _, rid in self._rows(messages[-1].content)]
             if ids[0] == "REG50":
-                await asyncio.sleep(0.05)
+                await sibling_started.wait()  # the refusal arrives while a sibling is inside its call
+                time.sleep(stall_s)  # the stall under test: a loop that was busy elsewhere
                 raise NonRetryableError("refused")
-            await asyncio.sleep(0.3)
+            sibling_started.set()
+            try:
+                await never.wait()
+            except asyncio.CancelledError:
+                cleaned.append(ids[0])
+                raise
             finished.append(ids[0])
             return await super().ainvoke(messages, **kwargs)
 
@@ -455,10 +472,14 @@ async def test_no_task_is_pending_when_a_stop_leaves_an_excel_table(monkeypatch:
     parser.get_table_summary = AsyncMock(return_value="S")  # type: ignore[method-assign]
 
     before = asyncio.all_tasks()
-    with pytest.raises(NonRetryableError):
-        await parser.get_blocks_from_workbook(Slow())
-    pending = asyncio.all_tasks() - before  # looked at the moment the error leaves, with no extra wait
-
-    assert pending == set()
-    await asyncio.sleep(0.5)
-    assert finished == []
+    try:
+        with pytest.raises(NonRetryableError):
+            await parser.get_blocks_from_workbook(Slow())
+        pending = asyncio.all_tasks() - before  # looked at the moment the error leaves, with no extra wait
+        assert cleaned, "a cancelled sibling must have been cancelled before the error left"
+        assert pending == set()
+    finally:
+        never.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert finished == [], "cancelled batches never finish normally"
