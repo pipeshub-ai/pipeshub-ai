@@ -180,12 +180,12 @@ def _page(rows: list[dict], scan_cursor: str | None) -> SearchPage:
 def test_the_service_goes_on_from_empty_pages_within_its_budget_and_returns_the_empty_page_when_it_runs_out(monkeypatch) -> None:
     seen: list[str | None] = []
 
-    async def fetch(token: str | None) -> SearchPage:
+    async def fetch(token: str | None, rows: int) -> SearchPage:
         seen.append(token)
         return _page([row("r", "r")], None) if token == "c3" else _page([], f"c{len(seen) + 1}")
-    got = asyncio.run(KnowledgeHubService._walk_pages(None, fetch, None, 1))      # type: ignore[arg-type]
+    got = asyncio.run(KnowledgeHubService._walk_pages(None, fetch, None, 1, 1))      # type: ignore[arg-type]
     assert [r["id"] for r in got.rows] == ["r"] and seen == [None, "c2", "c3"]
     seen.clear()
     monkeypatch.setattr(khs, "SCAN_BUDGET_S", 0.0)
-    got = asyncio.run(KnowledgeHubService._walk_pages(None, fetch, None, 1))      # type: ignore[arg-type]
+    got = asyncio.run(KnowledgeHubService._walk_pages(None, fetch, None, 1, 1))      # type: ignore[arg-type]
     assert got.rows == [] and got.next_cursor and seen == [None]

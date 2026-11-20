@@ -636,9 +636,8 @@ async def test_numbered_pages_cover_the_listing_once_in_order(service, provider,
         result = await service.get_nodes(user_id="u1", org_id="o1", page=page, limit=limit, sort_by="name",
                                          sort_order="asc")
         assert result.success is True
-        # One keyset step per page up to this one, stopping where the listing ends.
-        last_page = -(-len(rows) // limit)
-        assert provider.get_knowledge_hub_root_nodes_v2.await_count == min(page, last_page)
+        # The rows before the page in one read, then the page from where they end (none past the end of the listing).
+        assert provider.get_knowledge_hub_root_nodes_v2.await_count == (2 if 0 < (page - 1) * limit < len(rows) else 1)
         expected = rows[(page - 1) * limit:page * limit]
         assert [i.id for i in result.items] == [r["id"] for r in expected]
         assert result.pagination.totalItems == len(rows)
