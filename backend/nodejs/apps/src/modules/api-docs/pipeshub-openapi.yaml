@@ -40858,8 +40858,8 @@ paths:
                         etag:
                           type: string
                           description: |
-                            The file's version (ETag without quotes), when the store lists one. A delete may name
-                            it (`etags`) so that a file replaced since is kept. The refresh marker and a purge
+                            The file's version (ETag without quotes), when the store lists one. `delete-if-match`
+                            takes it so that a file replaced since is kept. The refresh marker and a purge
                             cutoff's sentinel are never listed.
                   capabilitiesInconclusive:
                     type: boolean
@@ -41091,9 +41091,8 @@ paths:
       summary: Remove named cached model outputs of one record (service-to-service)
       description: |
         Removes up to 1000 files of the record's folder in one call. A file that is already gone
-        is counted as removed. A path with an entry in `etags` is removed only while that is still the
-        file's version (where the store honours it: see `capabilities` of the listing); a file that changed
-        since is kept and named in `changed`. Paths without an ETag are removed unconditionally.
+        is counted as removed. This route is unconditional: it takes no version and deletes every path named.
+        To delete only while a file is still the version a listing returned, use `delete-if-match`.
       operationId: internalDeletePaidResults
       security:
         - scopedToken: []
