@@ -20,11 +20,13 @@ from unittest.mock import patch
 from app import indexing_main
 from app.config.constants.arangodb import EventTypes, ProgressStatus
 from app.connectors.services.event_service import EventService
+from app.core.org_context import OrgContext, bind
 from app.modules.indexing import refresh_intent as ri
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.services.messaging.kafka.handlers import record as record_handler
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
 from app.services.paid_cache import access as paid_cache_access
+from app.services.paid_cache import run as paid_cache_run
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -101,7 +103,7 @@ class _Producer:
         self.world = world
 
     async def send_event(self, *, topic: str, event_type: str, payload: dict, key: str) -> None:
-        self.world.msgs.append({"event_type": event_type, "payload": dict(payload)})
+        self.world.msgs.append({"event_type": event_type, "payload": dict(payload), "derived": True})
 
 
 class _Leases:
@@ -175,9 +177,9 @@ class World:
     def unsatisfied_before(self, ts: int) -> list[int]:
         return [k for k, tk in self.reqs.items() if k not in self.sat and tk < ts]
 
-    def _lost_or_requeued(self, payload: dict, event_type: str, *, allow_loss: bool) -> None:
+    def _lost_or_requeued(self, payload: dict, event_type: str, *, allow_loss: bool, derived: bool) -> None:
         if not (allow_loss and self.R.random() < 0.5):
-            self.msgs.append({"event_type": event_type, "payload": payload})
+            self.msgs.append({"event_type": event_type, "payload": payload, "derived": derived})
 
     # ---- actions
     async def user_force(self) -> None:
@@ -231,22 +233,26 @@ class World:
             return
         msg = self.msgs.pop(0)
         event_type, payload = msg["event_type"], msg["payload"]
+        # Derived: not the user's own message. Built from the record (a sweep, a hand-over), or a plain event the record's
+        # request turned into a refresh. Kept by the world, not read off the payload, so removing a payload marker is seen.
+        was_refresh = paid_cache_run.refresh_requested(payload)
         run = await self.handler._settle_refresh_intent(event_type, payload, dict(self.row), KEY, parse_now=False)
         if run is not None and await self.handler._refresh_already_ran(run, dict(self.row), payload):
             self.notes["deduped"] += 1
             return
+        derived = bool(msg.get("derived")) or bool(run is not None and run.refresh and not was_refresh)
         if run is not None and run.refresh:
             if self.R.random() < 0.15:                       # a hand-back before the refresh branch
                 self.notes["pre_branch_handback"] += 1
-                self._lost_or_requeued(payload, event_type, allow_loss=allow_loss)
+                self._lost_or_requeued(payload, event_type, allow_loss=allow_loss, derived=derived)
                 return
             if self.R.random() < 0.2:                        # RefreshPurgeHeld
                 self.notes["held"] += 1
-                self._lost_or_requeued(payload, event_type, allow_loss=allow_loss)
+                self._lost_or_requeued(payload, event_type, allow_loss=allow_loss, derived=derived)
                 return
         self.active = {
             "run": run, "payload": payload, "start": self.tick(),
-            "derived": bool(payload.get(ri.FROM_INTENT_KEY)),
+            "derived": derived,
         }
         self.row["indexingStatus"] = IN_PROGRESS
         self.crashed = False
@@ -273,7 +279,7 @@ class World:
         if self.crashed and self.active is None and self.row["indexingStatus"] == IN_PROGRESS:
             payload = {"recordId": KEY, "orgId": ORG, "version": 1, "virtualRecordId": "v1"}
             ri.with_intent(payload, self.row, self.now_ms)        # what the recovery pass adds (indexing_main)
-            self.msgs.append({"event_type": EventTypes.REINDEX_RECORD.value, "payload": payload})
+            self.msgs.append({"event_type": EventTypes.REINDEX_RECORD.value, "payload": payload, "derived": True})
             self.row["indexingStatus"] = ProgressStatus.QUEUED.value
             self.crashed = False
 
@@ -284,7 +290,7 @@ class World:
         if self.twin_inflight and status == ProgressStatus.QUEUED.value and is_parked_duplicate(self.row):
             return                                           # _still_parked_behind_a_twin
         event_type, payload = record_event(self.row, record_key=KEY, connector_id="c1")
-        self.msgs.append({"event_type": event_type, "payload": payload})
+        self.msgs.append({"event_type": event_type, "payload": payload, "derived": True})
 
     async def intent_sweep(self) -> None:
         await indexing_main._republish_refresh_intents(
@@ -330,7 +336,7 @@ async def _pass(awaitable: Any) -> Any:  # noqa: ANN401
 def patched(world: World) -> Iterator[None]:
     """The writes on, the clock the world's, the paid-result marker the world's, and every record live."""
     with ExitStack() as stack:
-        stack.enter_context(patch.dict("os.environ", {"REFRESH_INTENT_WRITE": "true"}))
+        stack.enter_context(patch.dict("os.environ", {"REFRESH_INTENT_WRITE": "true", "STRANDED_RECORD_REPUBLISH_AFTER_SECONDS": "3600"}))
         for module in (
             "app.indexing_main", "app.modules.indexing.record_republish", "app.services.messaging.kafka.handlers.record",
             "app.connectors.services.event_service",
@@ -338,6 +344,7 @@ def patched(world: World) -> Iterator[None]:
             stack.enter_context(patch(f"{module}.get_epoch_timestamp_in_ms", world.clock))
         stack.enter_context(patch.object(paid_cache_access, "paid_cache_for", lambda *_a, **_k: world.cache))
         stack.enter_context(patch.object(record_handler, "is_live_record", lambda _r: True))
+        stack.enter_context(bind(OrgContext(ORG, None, "job", "job:test", "t")))
         yield
 
 

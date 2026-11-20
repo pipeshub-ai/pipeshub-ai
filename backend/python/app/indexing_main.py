@@ -477,7 +477,8 @@ async def recover_in_progress_records(
                         retry_tracker, tracking_id, logger
                     ):
                         await exhausted_sink.on_recovery_exhausted(
-                            record_id, resume_enrichment=resume_enrichment, intent_id=recovered_intent
+                            record_id, resume_enrichment=resume_enrichment,
+                            **({"intent_id": recovered_intent} if recovered_intent else {}),
                         )
                         logger.warning(
                             "Gave up recovering record %s (%s): it kept failing or "

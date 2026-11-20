@@ -1611,13 +1611,13 @@ class EventService:
             # A folder has nothing to index: indexing marks it COMPLETED, and some
             # connectors never publish it at all, so NOT_STARTED would stick forever.
             if intent_id:
-                records, kept = await self._keep_request_of_running_records(records, intent_id)
+                records, kept = await EventService._keep_request_of_running_records(self, records, intent_id)
                 total_processed += kept
                 if not records:
                     if fetched_count < batch_size:
                         break
                     continue
-            await self._clear_status_before_publish(records, intent_id)
+            await EventService._clear_status_before_publish(self, records, intent_id)
 
             async with unless_synced_since(self.graph_provider, connector_id) as stamp:
                 try:

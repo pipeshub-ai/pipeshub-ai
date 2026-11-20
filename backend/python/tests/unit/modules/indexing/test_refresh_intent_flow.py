@@ -456,3 +456,13 @@ async def test_the_walk_is_today_s_while_the_flag_is_off(monkeypatch: pytest.Mon
     assert "fields" not in graph.update_indexing_status_for_record_ids.await_args_list[0].kwargs
 
 
+
+
+async def test_an_event_upgraded_by_a_request_reaches_the_pipeline_as_a_forced_run(w: World) -> None:
+    """G-37: the swap decides a forced run from the two flags the pipeline reads off the event; the handler sets them in place."""
+    from app.events.events import refresh_requested
+
+    w.row.update(ri.intent_fields("i1", w.now_ms))
+    plain = {"recordId": KEY, "orgId": ORG}
+    await w.handler._settle_refresh_intent(EventTypes.UPDATE_RECORD.value, plain, dict(w.row), KEY, parse_now=False)
+    assert refresh_requested(plain) and plain["forceReindex"] is True

@@ -2010,7 +2010,8 @@ class RecordEventHandler(BaseEventService):
         """Whether a refresh run under this event's id has already ended (a second event of one request is a no-op)."""
         if not run.refresh or not run.intent_id:
             return False
-        org_id = _event_org(record, payload) or record.get("orgId")
+        bound = peek_org_context()
+        org_id = bound.org_id if bound is not None else None
         if not org_id:
             return False
         cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
@@ -2032,7 +2033,8 @@ class RecordEventHandler(BaseEventService):
                 refresh_intent.REFRESH_INTENT_EVENTS.inc("cleared")
             graph = self.event_processor.graph_provider
             row = await graph.get_document(record_id, CollectionNames.RECORDS.value)
-            org_id = (row or {}).get("orgId") or payload.get("orgId")
+            bound = peek_org_context()
+            org_id = bound.org_id if bound is not None else None
             if run.refresh and run.intent_id and org_id:
                 await paid_cache_access.paid_cache_for(self.config_service, self.logger).mark_refresh_done(
                     str(org_id), record_id, run.intent_id
