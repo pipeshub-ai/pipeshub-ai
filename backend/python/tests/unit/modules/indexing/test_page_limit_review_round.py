@@ -646,3 +646,15 @@ async def test_a_refusal_hands_the_events_virtual_record_id_to_the_un_index() ->
     await world.run()
     assert world.refused
     assert world.unindex.await_args.kwargs["fallback_vrid"] == "v-old"
+
+
+@pytest.mark.asyncio
+async def test_a_late_refusal_hands_the_events_virtual_record_id_to_the_un_index() -> None:
+    """The retry's early count is unavailable, so the refusal comes from the late check, after the run has written."""
+    world = World({"indexingStatus": "QUEUED"})
+    world.count(Unavailable())
+    world.inspected(600)
+    world.extra_payload["virtualRecordId"] = "v-old"
+    await world.run()
+    assert world.refused
+    assert world.unindex.await_args.kwargs["fallback_vrid"] == "v-old"
