@@ -46,6 +46,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 def _make_mock_deps():
     logger = logging.getLogger("test.sharepoint.deep")
     dep = MagicMock()
+    dep.permission_sync_gated = AsyncMock(return_value=False)
     dep.org_id = "org-sp-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_user_groups = AsyncMock()

@@ -54,6 +54,7 @@ MODULE = "app.connectors.sources.microsoft.sharepoint_online.connector"
 def _make_mock_deps():
     logger = logging.getLogger("test.sharepoint.online.coverage")
     dep = MagicMock()
+    dep.permission_sync_gated = AsyncMock(return_value=False)
     dep.org_id = "org-sp-cov"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_user_groups = AsyncMock()

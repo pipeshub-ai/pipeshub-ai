@@ -108,7 +108,7 @@ CONNECTORS: tuple[Connector, ...] = (
               "same writer shape as Cloud: project OPEN + Browse grants; an issue inherits where it is filed, a top-level one also has its Browse reporter or assignee as grants; a leveled one keeps a copy of the holders"),
     Connector("atlassian/jira_cloud_personal", "container", CONTAINER, "atlassian/jira_cloud_personal/connector.py::JiraCloudPersonalConnector"),
     Connector("atlassian/jira_data_center_personal", "container", CONTAINER, "atlassian/jira_data_center_personal/connector.py::JiraDataCenterPersonalConnector"),
-    Connector("microsoft/sharepoint_online", "sharepoint", OVERRIDE, "microsoft/sharepoint_online/connector.py::SharePointConnector._drive_item_access",
+    Connector("microsoft/sharepoint_online", "sharepoint", OVERRIDE, "../../ee/permission_sync/sharepoint_online.py::SharePointPermissionsMixin._drive_item_access",
               "unique item inherit=False + own role assignments"),
     Connector("microsoft/onedrive", "onedrive", OVERRIDE, "microsoft/onedrive/connector.py::OneDriveConnector._process_delta_item",
               "every item inherit=False with the full effective list"),

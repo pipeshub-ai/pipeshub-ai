@@ -46,6 +46,7 @@ from app.models.permission import EntityType
 def _make_mock_deps():
     logger = logging.getLogger("test.sharepoint.workflow")
     data_entities_processor = MagicMock()
+    data_entities_processor.permission_sync_gated = AsyncMock(return_value=False)
     data_entities_processor.org_id = "org-sp-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
