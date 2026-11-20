@@ -662,7 +662,7 @@ class TestParseStream:
         r2 = parser.parse_stream(_stream({**base, "rows": [{"id": 1}, {"id": 2}]}))
         assert r1.block_groups[0].content_hash != r2.block_groups[0].content_hash
 
-    def test_group_hash_is_stable_for_the_same_rows(self, parser):
+    def test_group_hash_is_stable_for_the_same_rows(self, parser) -> None:
         data = {
             "table_name": "t",
             "database_name": "db",
@@ -673,7 +673,7 @@ class TestParseStream:
         r2 = parser.parse_stream(_stream(data))
         assert r1.block_groups[0].content_hash == r2.block_groups[0].content_hash
 
-    def test_added_rows_regenerate_the_summary_through_reconciliation(self, parser):
+    def test_added_rows_regenerate_the_summary_through_reconciliation(self, parser) -> None:
         """The summary text states the row count; the group must be re-indexed, the unchanged rows kept."""
         from app.modules.reconciliation.service import ReconciliationService
 
