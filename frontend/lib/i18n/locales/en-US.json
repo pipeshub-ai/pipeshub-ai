@@ -2838,7 +2838,9 @@
           "pipeshub_code_impact": "Shows what depends on a symbol: everything that calls, imports or builds on it, with the tests that reach it. It answers who calls this and what breaks if it changes.",
           "pipeshub_code_impact_of_diff": "Takes a unified diff, such as git diff output or the diff of a pull request, and shows the symbols it changes, the files and tests that reach them, and the callers no test covers.",
           "pipeshub_code_history": "Lists the indexed pull requests that changed a file, with author, reviewers, who merged it and the tickets it names.",
-          "pipeshub_code_entry_points": "Lists where control enters a repository, such as routes, command-line tools, jobs and hooks. A starting point for reading unfamiliar code."
+          "pipeshub_code_entry_points": "Lists where control enters a repository, such as routes, command-line tools, jobs and hooks. A starting point for reading unfamiliar code.",
+          "pipeshub_entities": "Finds the people, teams, topics, projects, folders, customers and document titles in the workspace's knowledge graph, lists the records connected to one of them, and the people, companies or products mentioned alongside it. Finding and listing are offered once entities have been indexed; the mentioned-alongside list also needs named-entity extraction. An OAuth app or access token also needs the semantic:read or semantic:write scope.",
+          "pipeshub_find_records": "Lists records by who they belong to or what they mention rather than by their words: the records a person is assigned, created, wrote or owns, records that mention an amount, date, quantity or percentage, and passages inside the records that name given people, companies or products. Amounts and dates need named-entity extraction, and the passages are offered only where the deployment also turns on entity search. An OAuth app or access token also needs the semantic:read or semantic:write scope."
         }
       },
       "appliesNote": "Changes apply to new MCP requests within a few seconds.",

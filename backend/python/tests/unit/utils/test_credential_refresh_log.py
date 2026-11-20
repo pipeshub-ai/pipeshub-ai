@@ -13,6 +13,7 @@ from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 
 from app.connectors.core.base.token_service.oauth_service import (
+    MalformedTokenError,
     OAuthTokenRequestError,
     RefreshConfigError,
     RefreshTokenInvalidError,
@@ -193,6 +194,20 @@ class TestMisconfiguredEndpoint:
         assert [log_record_fields(r)["error_class"] for r in ends] == ["misconfigured", "misconfigured"]
         assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
         assert not any(QUERY_MARKER in _rendered(r) for r in records)
+
+    async def test_a_malformed_token_field_is_misconfigured_once_and_named_by_its_field(self, records: _Records) -> None:
+        for _ in range(2):
+            exc = await _attempt(MalformedTokenError("created_at"))
+            CR.log_check_failed(_logger(), exc, once_key="connector:c1")
+
+        ends = _ends(records)
+        assert [(log_record_fields(r)["error_class"], log_record_fields(r)["reason"]) for r in ends] == [
+            ("misconfigured", "malformed_token")] * 2
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
+        assert ends[0].exc_text and "File " in ends[0].exc_text
+        assert log_record_fields(ends[0])["error_message"] == (
+            "MalformedTokenError: OAuth token field 'created_at' is malformed")  # our text: kept
+        assert all(r.levelno < logging.ERROR for r in records if r is not ends[0])
 
     @pytest.mark.parametrize("make", [
         lambda: _raised(RuntimeError("refresh failed"), aiohttp.InvalidUrlClientError(f"idp.example/token?{QUERY_MARKER}")),

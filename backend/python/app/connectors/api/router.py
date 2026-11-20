@@ -66,7 +66,11 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
 )
-from app.api.middlewares.request_log import add_request_log_fields, mark_request_failure
+from app.api.middlewares.request_log import (
+    add_request_log_fields,
+    bind_request_log_fields,
+    mark_request_failure,
+)
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -7380,13 +7384,16 @@ async def handle_oauth_callback(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can handle OAuth callback for this connector"
             )
+        # Bound only after the checks above (stricter than the toolset callback): a state naming a connector the
+        # caller may not use never puts its id on a line.
+        bind_request_log_fields(request, connector_id=connector_id, connector_type=connector_type)
 
         # Get configuration
         config_path = _get_config_path_for_instance(connector_id)
         config = await config_service.get_config(config_path)
 
         if not config or not config.get(OAuthConfigKeys.AUTH):
-            logger.error(f"No OAuth config for instance {connector_id}")
+            mark_request_failure(request, None, error_class="misconfigured", reason="config_not_found")
             return {
                 "success": False,
                 "error": "config_not_found",
@@ -7409,6 +7416,8 @@ async def handle_oauth_callback(
                 registry_type=instance.get("type", ""),
             )
         except HTTPException:
+            # Only its shared-config lookup logs a cause; the line says which step failed.
+            mark_request_failure(request, None, error_class="misconfigured", reason="oauth_config_fetch_error")
             return {
                 "success": False,
                 "error": "oauth_config_fetch_error",
@@ -7433,30 +7442,16 @@ async def handle_oauth_callback(
             await oauth_provider.close()
 
         if not token or not token.access_token:
-            logger.error(f"Invalid token received for instance {connector_id}")
+            mark_request_failure(request, None, error_class="internal", reason="invalid_token")
             return {
                 "success": False,
                 "error": "invalid_token",
                 "redirect_url": f"{base_url}{settings_base_path}?oauth_error=invalid_token"
             }
 
-        # Log token information after OAuth callback completes
-        logger.info(
-            f"OAuth token exchange completed for instance {connector_id} (connector_type: {connector_type}). "
-            f"Token details - has_access_token: {bool(token.access_token)}, "
-            f"has_refresh_token: {bool(token.refresh_token)}, "
-            f"token_type: {token.token_type}, "
-            f"expires_in: {token.expires_in}, "
-            f"refresh_token_expires_in: {token.refresh_token_expires_in}, "
-            f"scope: {token.scope}, "
-            f"has_id_token: {bool(token.id_token)}, "
-            f"uid: {token.uid}, "
-            f"account_id: {token.account_id}, "
-            f"team_id: {token.team_id}, "
-            f"created_at: {token.created_at}"
-        )
-
-        logger.info(f"OAuth tokens stored successfully for instance {connector_id}")
+        # The provider's token fields (scopes, uid, account_id, team_id) stay off the logs: this route serves every
+        # connector and can't tell an opaque id from a login.
+        add_request_log_fields(request, has_refresh_token=bool(token.refresh_token))
 
         # ============================================================
         # 6. Post-Processing: Cache, Token Refresh, Status Update
