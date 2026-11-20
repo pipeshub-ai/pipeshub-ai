@@ -171,11 +171,6 @@ def refresh_done_name(org_id: str, record_id: str, event_id: str) -> str:
     return f"pc:refreshdone:{{{org_id}:{record_id}}}:{event_id}"
 
 
-def refresh_last_name(org_id: str, record_id: str) -> str:
-    """The marker holding the request time of the newest refresh that ran on the record (an older request's late event is refused)."""
-    return f"pc:refreshlast:{{{org_id}:{record_id}}}"
-
-
 class LockBackend(Protocol):
     #: True when every replica sees this backend's locks and markers (Redis); False for one process's own.
     shared: bool

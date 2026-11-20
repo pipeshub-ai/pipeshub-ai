@@ -26,16 +26,13 @@ if TYPE_CHECKING:
 
 ID_FIELD = "refreshIntentId"
 AT_FIELD = "refreshIntentAtMs"
-#: The request time of the newest refresh that ran on the record, written with the clear of the request it served.
-DONE_FIELD = "refreshDoneAtMs"
+#: The id of the newest request whose refresh ran on the record, written with the clear of the request it served.
+DONE_ID_FIELD = "refreshDoneId"
 #: Set on an event that was built from, or upgraded by, a stored intent (not the user's own message). Such an event
 #: whose id is no longer the stored one was satisfied meanwhile and runs plain.
 FROM_INTENT_KEY = "refreshFromIntent"
 #: The payload key that names the refresh: the walk stamps it, the republishers copy it from the record.
 PAYLOAD_ID_KEY = "refreshIntentId"
-#: When the request was made (ms), stamped next to the id: it orders requests, so a late event of an older one is refused once a newer
-#: one has run (see ``PaidResultCache.refresh_state``).
-REQUESTED_AT_KEY = "refreshRequestedAtMs"
 
 #: The paid-result refresh marker's life (``paid_cache.locks.DELETED_TTL_MS``, pinned equal by a test): inside it a
 #: re-sent refresh finds its own marker and reuses what its first attempt stored.
@@ -93,17 +90,11 @@ def waiting_intent(record: Mapping[str, Any] | None, now_ms: int, run_started_ms
     return held[0] if held is not None and held[1] is not None and held[1] >= run_started_ms else None
 
 
-def done_at(record: Mapping[str, Any] | None) -> int | None:
-    """The request time of the newest refresh that ran on the record, or None."""
-    value = (record or {}).get(DONE_FIELD)
-    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-
 def served(record: Mapping[str, Any] | None) -> bool:
-    """Whether the request the record holds has already been served: a refresh of a request at least as new has run on it."""
+    """Whether the request the record holds has already been served: the refresh that ran last on it was of this very request.
+    Identity, not time: two requests stamped by different hosts can be ordered wrongly by their clocks."""
     held = stored_intent(record)
-    done = done_at(record)
-    return held is not None and held[1] is not None and done is not None and done >= held[1]
+    return held is not None and (record or {}).get(DONE_ID_FIELD) == held[0]
 
 
 def expired_intent(record: Mapping[str, Any] | None, now_ms: int) -> bool:
@@ -111,13 +102,11 @@ def expired_intent(record: Mapping[str, Any] | None, now_ms: int) -> bool:
     return held is not None and live_intent(record, now_ms) is None
 
 
-def intent_flags(intent_id: str, *, from_intent: bool, requested_at_ms: int | None = None) -> dict[str, Any]:
+def intent_flags(intent_id: str, *, from_intent: bool) -> dict[str, Any]:
     """The payload keys that make an event a Force-reindex refresh under ``intent_id``."""
     flags: dict[str, Any] = {"forceReindex": True, "refreshPaidOutputs": True, PAYLOAD_ID_KEY: intent_id}
     if from_intent:
         flags[FROM_INTENT_KEY] = True
-    if requested_at_ms is not None:
-        flags[REQUESTED_AT_KEY] = requested_at_ms
     return flags
 
 
@@ -125,8 +114,7 @@ def with_intent(payload: dict[str, Any], record: Mapping[str, Any], now_ms: int)
     """``payload`` of an event rebuilt from ``record``, made a refresh when the record holds a live intent."""
     intent_id = live_intent(record, now_ms)
     if intent_id is not None:
-        held = stored_intent(record)
-        payload.update(intent_flags(intent_id, from_intent=True, requested_at_ms=held[1] if held else None))
+        payload.update(intent_flags(intent_id, from_intent=True))
     return payload
 
 
@@ -145,11 +133,15 @@ async def clear_intent(
     record_id: str,
     intent_id: str | None,
     extra: Mapping[str, Any] | None = None,
+    *,
+    expected_at: int | float | None = None,
 ) -> bool:
     """Remove the request ``intent_id`` from the record, and only that one (a compare-and-set on its id); ``extra`` fields
-    are written in the same statement. True when it was cleared."""
+    are written in the same statement. ``expected_at`` also requires the request's time to be what the caller read, so a
+    hand-over (which renews the time) between the read and the clear is not undone. True when it was cleared."""
     if not intent_id:
         return False
     return bool(await graph_provider.update_node_fields_if_match(
-        record_id, "records", dict(extra or {}), {ID_FIELD: intent_id}, unset=CLEARED_FIELDS,
+        record_id, "records", dict(extra or {}),
+        {ID_FIELD: intent_id, **({AT_FIELD: expected_at} if expected_at is not None else {})}, unset=CLEARED_FIELDS,
     ))

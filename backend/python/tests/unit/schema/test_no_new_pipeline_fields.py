@@ -59,7 +59,7 @@ RECORD_PROPERTIES = frozenset({
     "deferredUntilMs", "rateLimitedSinceMs",
     # A Force reindex requested and not yet served: its id and time (app/modules/indexing/refresh_intent.py). Internal, optional,
     # written only behind REFRESH_INTENT_WRITE.
-    "refreshDoneAtMs", "refreshIntentAtMs", "refreshIntentId",
+    "refreshDoneId", "refreshIntentAtMs", "refreshIntentId",
     # The virtual record a record is writing a replacement copy into while it keeps serving the old one (keep_old_copy). This
     # release accepts it and its writes are off by default (INDEXING_KEEP_OLD_COPY); the next turns them on.
     "pendingVirtualRecordId",

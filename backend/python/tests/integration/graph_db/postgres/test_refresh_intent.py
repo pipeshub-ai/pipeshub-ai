@@ -130,9 +130,18 @@ async def test_a_promotion_checks_each_copy_in_the_statement_that_writes_it(w: W
 
 async def test_the_completion_is_kept_with_the_clear_and_survives_the_next_request(w: World) -> None:
     await record(w, "d", **ri.intent_fields("mine", 5))
-    assert await ri.clear_intent(w.p, "d", "mine", {ri.DONE_FIELD: 5})
+    assert await ri.clear_intent(w.p, "d", "mine", {ri.DONE_ID_FIELD: "mine"})
     d = await doc(w, "d")
-    assert ri.ID_FIELD not in d and d[ri.DONE_FIELD] == 5 and ri.done_at(d) == 5
+    assert ri.ID_FIELD not in d and d[ri.DONE_ID_FIELD] == "mine"
     await w.p.update_record_fields_for_ids(["d"], ri.intent_fields("next", 9))
     d = await doc(w, "d")
-    assert d[ri.DONE_FIELD] == 5 and d[ri.ID_FIELD] == "next" and not ri.served(d)
+    assert d[ri.DONE_ID_FIELD] == "mine" and d[ri.ID_FIELD] == "next" and not ri.served(d)
+
+
+async def test_a_clear_that_names_the_time_it_read_does_not_undo_a_renewal(w: World) -> None:
+    await record(w, "t", **ri.intent_fields("mine", 5))
+    await w.p.update_record_fields_for_ids(["t"], ri.intent_fields("mine", 9))              # handed over: the time moved
+    assert not await ri.clear_intent(w.p, "t", "mine", expected_at=5)
+    assert (await doc(w, "t"))[ri.ID_FIELD] == "mine"
+    assert await ri.clear_intent(w.p, "t", "mine", expected_at=9)
+    assert ri.ID_FIELD not in await doc(w, "t")

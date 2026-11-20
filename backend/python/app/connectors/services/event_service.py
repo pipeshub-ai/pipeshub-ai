@@ -24,13 +24,15 @@ from app.connectors.core.base.connector.connector_service import (
     dispose_connector,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
-from app.connectors.core.base.data_processor.data_source_entities_processor import unless_synced_since
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    unless_synced_since,
+)
+from app.connectors.core.base.data_processor.storage_cleanup import (
+    StorageCleanupHelper,
+)
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.sources.local_repo.cleanup import remove_mirror
-from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME
-from app.connectors.core.sync.sync_dispatcher import SyncSpec
 from app.connectors.core.sync.sync_coordinator import (
     Admission,
     SyncCoordinator,
@@ -39,15 +41,13 @@ from app.connectors.core.sync.sync_coordinator import (
     get_coordinator,
     stop_wait_sec,
 )
+from app.connectors.core.sync.sync_dispatcher import SyncSpec
 from app.connectors.core.sync.sync_runner import (
     drain_queued_syncs,
     resumes_interrupted_full_sync,
     run_sync_task,
 )
 from app.connectors.core.sync.task_manager import reindex_task_manager
-from app.connectors.core.base.data_processor.storage_cleanup import (
-    StorageCleanupHelper,
-)
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.late_write_sweep import record_pending_late_write_sweep
 from app.connectors.services.reindex_force import forced_by_user, user_forced_intent_id
@@ -59,6 +59,8 @@ from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
     log_cleanup_publish_failure,
 )
+from app.connectors.sources.local_repo.cleanup import remove_mirror
+from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME
 from app.containers.connector import ConnectorAppContainer
 from app.core.org_context import spawn_detached
 from app.edition_services import (
@@ -67,12 +69,12 @@ from app.edition_services import (
 )
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.entities import FileRecord, Record
+from app.modules.indexing import refresh_intent
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.logging_fields import log_event, log_fields
-from app.modules.indexing import refresh_intent
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Bounded because this runs inline in the sync consumer loop: a longer wait

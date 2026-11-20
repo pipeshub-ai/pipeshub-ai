@@ -39,3 +39,11 @@ def test_upgrade_that_loses_its_origin_marker_buys_twice() -> None:
     """an in-place upgrade re-queued as an original, and a backstop that rewrites a cleared request, re-buy."""
     dropped, _, derived = _tally("fix3m", SEEDS[0], twins=True)
     assert dropped == 0 and derived > 100
+
+
+def test_deciding_served_by_the_times_of_two_hosts_drops_requests() -> None:
+    """The control for the clock-skew class: with the walk's host a few ticks off, comparing its request time with the time the indexing
+    host recorded at completion ends requests that never ran. The built design decides by identity and does not."""
+    dropped = _tally("timed", SEEDS[0], twins=False)[0]
+    assert dropped > 50
+    assert _tally("final", SEEDS[0], twins=False) == (0, 0, 0)

@@ -250,10 +250,19 @@ async def test_a_promotion_checks_each_copy_in_the_statement_that_writes_it(stor
 
 async def test_the_completion_is_kept_with_the_clear_and_survives_the_next_request(store: _Store) -> None:
     k = await store.add("d", **ri.intent_fields("mine", 5))
-    assert await ri.clear_intent(store.graph, k, "mine", {ri.DONE_FIELD: 5})
+    assert await ri.clear_intent(store.graph, k, "mine", {ri.DONE_ID_FIELD: "mine"})
     doc = await store.doc("d")
-    assert ri.ID_FIELD not in doc and doc[ri.DONE_FIELD] == 5 and ri.done_at(doc) == 5
+    assert ri.ID_FIELD not in doc and doc[ri.DONE_ID_FIELD] == "mine"
     await store.graph.update_record_fields_for_ids([k], ri.intent_fields("next", 9))
     doc = await store.doc("d")
-    assert doc[ri.DONE_FIELD] == 5 and doc[ri.ID_FIELD] == "next" and not ri.served(doc)
-    assert ri.served({**doc, ri.AT_FIELD: 5})
+    assert doc[ri.DONE_ID_FIELD] == "mine" and doc[ri.ID_FIELD] == "next" and not ri.served(doc)
+    assert ri.served({**doc, ri.ID_FIELD: "mine"})
+
+
+async def test_a_clear_that_names_the_time_it_read_does_not_undo_a_renewal(store: _Store) -> None:
+    k = await store.add("t", **ri.intent_fields("mine", 5))
+    await store.graph.update_record_fields_for_ids([k], ri.intent_fields("mine", 9))        # handed over: the time moved
+    assert not await ri.clear_intent(store.graph, k, "mine", expected_at=5)
+    assert (await store.doc("t"))[ri.ID_FIELD] == "mine"
+    assert await ri.clear_intent(store.graph, k, "mine", expected_at=9)
+    assert ri.ID_FIELD not in await store.doc("t")

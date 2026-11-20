@@ -24,7 +24,7 @@ from app.core.org_context import OrgContext, bind
 from app.modules.indexing import refresh_intent as ri
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.services.messaging.kafka.handlers import record as record_handler
-from app.services.messaging.kafka.handlers.record import RecordEventHandler
+from app.services.messaging.kafka.handlers.record import RecordEventHandler, RefreshRun
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
 
@@ -125,28 +125,25 @@ class _Leases:
 class _Cache:
     def __init__(self) -> None:
         self.done: set[tuple[str, str, str]] = set()
-        self.last: dict[tuple[str, str], int] = {}
         self.unavailable = False
 
-    async def refresh_state(self, org: str, record: str, intent_id: str, requested_at: int | None = None) -> str:
+    async def refresh_state(self, org: str, record: str, intent_id: str) -> str:
         if self.unavailable:
             return "unavailable"
-        if (org, record, intent_id) in self.done:
-            return "done"
-        if requested_at is not None and self.last.get((org, record), -1) >= requested_at:
-            return "done"
-        return "open"
+        return "done" if (org, record, intent_id) in self.done else "open"
 
-    async def mark_refresh_done(self, org: str, record: str, intent_id: str, requested_at: int | None = None) -> bool:
+    async def mark_refresh_done(self, org: str, record: str, intent_id: str) -> bool:
         self.done.add((org, record, intent_id))
-        if requested_at is not None:
-            self.last[(org, record)] = max(self.last.get((org, record), -1), requested_at)
         return True
 
 
 class World:
     def __init__(self, seed: int, *, twins: bool, steps: int = 40) -> None:
         self.R = random.Random(seed)
+        #: The walk's host and the indexing host do not share a clock: what the walk stamps on a request is its own, up to minutes off.
+        self.walk_skew_ms = self.R.choice([0, 0, 5_000, -5_000, 65_000, -65_000, 300_000])
+        #: Some worlds move in seconds (a run is shorter than the skew), others in minutes.
+        self.fast = self.R.random() < 0.5
         self.twins = twins
         self.steps = steps
         self.now_ms = START_MS
@@ -182,7 +179,13 @@ class World:
         return self.now_ms
 
     def advance(self, low_ms: int, high_ms: int) -> None:
+        if self.fast:
+            high_ms = min(high_ms, 3_000)
+            low_ms = min(low_ms, high_ms)
         self.now_ms += self.R.randint(low_ms, high_ms)
+
+    def walk_clock(self) -> int:
+        return self.now_ms + self.walk_skew_ms
 
     @property
     def row(self) -> dict:
@@ -212,7 +215,7 @@ class World:
             return
         payload = {
             "recordId": KEY, "orgId": ORG, "version": 1, "virtualRecordId": "v1", "forceReindex": True,
-            "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: intent_id, ri.REQUESTED_AT_KEY: self.now_ms,
+            "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: intent_id,
             "_event_id": f"e{k}", "_delivery_id": f"d{k}",
         }
         self.msgs.append({"event_type": EventTypes.REINDEX_RECORD.value, "payload": payload})
@@ -254,7 +257,13 @@ class World:
         run = await self.handler._settle_refresh_intent(event_type, payload, dict(self.row), KEY, parse_now=False)
         if run is not None and await self.handler._refresh_state(run, dict(self.row), payload) == "done":
             self.notes["deduped"] += 1
-            return
+            if not run.adopted:
+                return
+            # An independent update that adopted a request already served: the request is cleared and the update goes on plain.
+            await self.handler._clear_intent(KEY, run.intent_id)
+            for key in (ri.PAYLOAD_ID_KEY, ri.FROM_INTENT_KEY, "forceReindex", "refreshPaidOutputs"):
+                payload.pop(key, None)
+            run = RefreshRun(seen=None, intent_id=None, refresh=False, started_ms=run.started_ms)
         derived = bool(msg.get("derived")) or bool(run is not None and run.refresh and not was_refresh)
         if run is not None and run.refresh:
             if self.R.random() < 0.15:                       # a hand-back before the refresh branch
@@ -326,7 +335,7 @@ class World:
             self.advance(0, 30 * MINUTE_MS)
             await self.R.choice(actions)()
         for _ in range(80):                                   # drain: no new requests, no losses, no crashes
-            self.advance(90 * MINUTE_MS, 90 * MINUTE_MS)
+            self.now_ms += 90 * MINUTE_MS
             await self.twin_complete()
             await self.consume(allow_loss=False)
             await self.finish(allow_crash=False)
@@ -354,9 +363,9 @@ def patched(world: World) -> Iterator[None]:
         stack.enter_context(patch.dict("os.environ", {"REFRESH_INTENT_WRITE": "true", "STRANDED_RECORD_REPUBLISH_AFTER_SECONDS": "3600"}))
         for module in (
             "app.indexing_main", "app.modules.indexing.record_republish", "app.services.messaging.kafka.handlers.record",
-            "app.connectors.services.event_service",
         ):
             stack.enter_context(patch(f"{module}.get_epoch_timestamp_in_ms", world.clock))
+        stack.enter_context(patch("app.connectors.services.event_service.get_epoch_timestamp_in_ms", world.walk_clock))
         stack.enter_context(patch.object(paid_cache_access, "paid_cache_for", lambda *_a, **_k: world.cache))
         stack.enter_context(patch.object(record_handler, "is_live_record", lambda _r: True))
         stack.enter_context(bind(OrgContext(ORG, None, "job", "job:test", "t")))

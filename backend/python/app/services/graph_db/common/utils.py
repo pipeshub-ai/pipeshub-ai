@@ -464,7 +464,7 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "rateLimitedSinceMs",
     "refreshIntentId",
     "refreshIntentAtMs",
-    "refreshDoneAtMs",
+    "refreshDoneId",
     "lastRepublishedAt",
     "republishCount",
     "firstQueuedAt",

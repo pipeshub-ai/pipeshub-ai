@@ -309,9 +309,9 @@ async def test_the_backstop_stores_the_request_of_an_unstamped_refresh_and_never
     assert w.row.get(ri.ID_FIELD) is None, "a cleared request must not be written back"
 
 
-async def test_an_unstamped_refresh_whose_write_loses_the_race_runs_under_the_id_on_the_record(w: World) -> None:
-    """The compare-and-set loses to a different live request: this delivery refreshes under the winner's id (the one that is cleared),
-    never under an id that was not stored (which would leave the winner to be served, and paid for, again)."""
+async def test_an_unstamped_refresh_whose_write_loses_the_race_runs_under_the_winners_id(w: World) -> None:
+    """The compare-and-set loses to a different live request: this delivery refreshes under the winner's id, never under an id that
+    was not stored (which would leave the winner to be served, and paid for, again)."""
     real = w.graph.update_node_fields_if_match
     calls = 0
 
@@ -328,6 +328,9 @@ async def test_an_unstamped_refresh_whose_write_loses_the_race_runs_under_the_id
     run = await w.handler._settle_refresh_intent(EventTypes.NEW_RECORD.value, unstamped, dict(w.row), KEY, parse_now=False)
     assert run is not None and run.refresh and run.intent_id == "winner" and run.seen == "winner"
     assert unstamped[ri.PAYLOAD_ID_KEY] == "winner" and w.row[ri.ID_FIELD] == "winner"
+    w.active = {"run": run, "payload": unstamped, "start": 1, "derived": False}
+    await w.finish(allow_crash=False)
+    assert w.row[ri.DONE_ID_FIELD] == "winner"
 
 
 async def test_an_unstamped_refresh_for_a_record_that_is_gone_keeps_its_own_id(w: World) -> None:
@@ -602,35 +605,28 @@ async def test_a_retry_of_an_older_refresh_that_finds_a_newer_request_runs_as_th
 async def test_the_completion_is_written_on_the_record_with_the_clear_and_needs_no_marker_store(w: World) -> None:
     """A worker whose marker store is its own (Redis unreachable) still leaves the completion where every replica reads it."""
     w.row.update(ri.intent_fields("A", w.now_ms))
-    at = w.row[ri.AT_FIELD]
     run = await w.handler._settle_refresh_intent(
         EventTypes.UPDATE_RECORD.value, {"recordId": KEY, "orgId": ORG}, dict(w.row), KEY, parse_now=False,
     )
-    assert run.requested_at == at
 
     async def refused(*_a: object, **_k: object) -> bool:
         return False
 
     w.cache.mark_refresh_done = refused                                                   # type: ignore[method-assign]
     await w.handler._end_refresh_run(KEY, run, {"recordId": KEY, "orgId": ORG})
-    assert ri.ID_FIELD not in w.row and w.row[ri.DONE_FIELD] == at
-    # a second worker, with an empty marker store, refuses the late event of that request (and of an older one) on the record alone
-    for requested_at in (at, at - 5):
-        late = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "A",
-                ri.REQUESTED_AT_KEY: requested_at}
+    assert ri.ID_FIELD not in w.row and w.row[ri.DONE_ID_FIELD] == "A"
+    # a second worker, with an empty marker store, refuses a later event of that request on the record alone; another request runs
+    for event_id, expected in (("A", "done"), ("N", "open")):
+        late = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: event_id}
         again = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, late, dict(w.row), KEY, parse_now=False)
-        assert await w.handler._refresh_state(again, dict(w.row), late) == "done"
-    newer = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "N",
-             ri.REQUESTED_AT_KEY: at + 5}
-    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, newer, dict(w.row), KEY, parse_now=False)
-    assert await w.handler._refresh_state(run, dict(w.row), newer) == "open"
+        assert await w.handler._refresh_state(again, dict(w.row), late) == expected
 
 
 async def test_a_leftover_request_that_a_completed_refresh_covers_is_cleared_not_sent(w: World) -> None:
     w.row.update(ri.intent_fields("A", w.now_ms - 2 * HOUR_MS))
-    w.row[ri.DONE_FIELD] = w.row[ri.AT_FIELD]
+    w.row[ri.DONE_ID_FIELD] = "A"
     await w.intent_sweep()
-    assert not w.msgs and ri.ID_FIELD not in w.row and w.row[ri.DONE_FIELD]
+    assert not w.msgs and ri.ID_FIELD not in w.row and w.row[ri.DONE_ID_FIELD] == "A"
 
 
 # ---- review round 3: the sweep under the lease, the connector confirmed at the clear, the order of requests
@@ -705,18 +701,6 @@ async def test_a_connector_that_came_back_since_it_was_cached_keeps_the_request(
     assert not w.msgs                                                                       # and nothing is sent in the same pass
 
 
-async def test_a_late_event_of_an_older_request_does_not_refresh_after_a_newer_one_ran(w: World) -> None:
-    w.cache.last[(ORG, KEY)] = 200                                                         # request B (time 200) has run and cleared
-    late = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "A",
-            ri.REQUESTED_AT_KEY: 100}
-    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, late, dict(w.row), KEY, parse_now=False)
-    assert run is not None and run.requested_at == 100
-    assert await w.handler._refresh_state(run, dict(w.row), late) == "done"
-    newer = {**late, ri.PAYLOAD_ID_KEY: "C", ri.REQUESTED_AT_KEY: 300}
-    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, newer, dict(w.row), KEY, parse_now=False)
-    assert await w.handler._refresh_state(run, dict(w.row), newer) == "open"
-
-
 async def test_a_long_runs_request_survives_a_sweep_that_read_the_row_before_its_hand_over(w: World) -> None:
     """Stored during a run older than the life, the record already COMPLETED: the sweep that observed the pre-hand-over row does not
     drop it, and the run's end hands it over once."""
@@ -731,3 +715,63 @@ async def test_a_long_runs_request_survives_a_sweep_that_read_the_row_before_its
     await w.finish(allow_crash=False)
     handed = [m for m in w.msgs if m["payload"].get(ri.PAYLOAD_ID_KEY)]
     assert len(handed) == 1 and w.row[ri.AT_FIELD] == w.now_ms
+
+
+async def test_a_rebuilt_event_of_a_request_that_ran_is_done_on_the_record_alone(w: World) -> None:
+    """The walk's event completes; a recovery or sweep rebuild of the same id (it carries the id, whatever time it was stamped)
+    is covered by the record, with no cache marker."""
+    w.row.update(ri.intent_fields("A", w.now_ms - 59_960))
+    walk = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "A"}
+    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, walk, dict(w.row), KEY, parse_now=False)
+
+    async def refused(*_a: object, **_k: object) -> bool:
+        return False
+
+    w.cache.mark_refresh_done = refused                                                   # type: ignore[method-assign]
+    await w.handler._end_refresh_run(KEY, run, walk)
+    assert w.row[ri.DONE_ID_FIELD] == "A"
+    rebuilt = {"recordId": KEY, "orgId": ORG}
+    ri.with_intent(rebuilt, {**w.row, **ri.intent_fields("A", w.now_ms)}, w.now_ms)
+    again = await w.handler._settle_refresh_intent(
+        EventTypes.REINDEX_RECORD.value, rebuilt, {**w.row, **ri.intent_fields("A", w.now_ms)}, KEY, parse_now=False,
+    )
+    assert await w.handler._refresh_state(again, dict(w.row), rebuilt) == "done"
+
+
+async def test_a_request_is_never_taken_for_served_because_of_what_the_clocks_say(w: World) -> None:
+    """Hosts' clocks differ: B is a different id, so the completion of A never covers it, whatever times either was stamped with."""
+    for skew_ms in (-300_000, -5_000, 0, 5_000, 300_000):
+        w.row.update(ri.intent_fields("B", w.now_ms - 2 * HOUR_MS + skew_ms))
+        w.row[ri.DONE_ID_FIELD] = "A"
+        assert not ri.served(w.row)
+    w.row[ri.DONE_ID_FIELD] = "B"
+    assert ri.served(w.row)
+
+
+async def test_an_expired_request_keeps_connector_off_as_the_reason(w: World) -> None:
+    from app.utils.user_errors import CONNECTOR_OFF
+
+    w.row.update(ri.intent_fields("old", w.now_ms - 25 * HOUR_MS), indexingStatus=ProgressStatus.AUTO_INDEX_OFF.value, reason=CONNECTOR_OFF)
+    await w.intent_sweep()
+    assert ri.ID_FIELD not in w.row and w.row["reason"] == CONNECTOR_OFF
+
+
+async def test_the_connector_of_the_row_as_it_is_now_decides_whether_a_request_ends(w: World) -> None:
+    w.graph.docs["c1"] = {"_key": "c1", "isActive": False}
+    w.graph.docs["c2"] = {"_key": "c2", "isActive": True}
+    w.row.update(ri.intent_fields("A", w.now_ms - 2 * HOUR_MS))
+    real = w.graph.get_document
+    reads = 0
+
+    async def moved_to_an_active_connector(key: str, collection: str, **kw: object) -> dict | None:
+        nonlocal reads
+        doc = await real(key, collection, **kw)
+        if collection == "records":
+            reads += 1
+            if reads == 1:                                                                # the re-read under the lease: the record has moved
+                doc = {**(doc or {}), "connectorId": "c2"}
+        return doc
+
+    w.graph.get_document = moved_to_an_active_connector                                    # type: ignore[method-assign]
+    await w.intent_sweep()
+    assert w.row[ri.ID_FIELD] == "A"

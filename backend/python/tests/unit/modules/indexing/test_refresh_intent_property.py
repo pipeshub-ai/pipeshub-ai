@@ -122,8 +122,8 @@ def _no_origin_marker() -> Iterator[None]:
     async def never_done(self, *_a, **_k):  # noqa: ANN202
         return "open"                     # the done-marker also answers a satisfied id; without Redis only the marker rule is left
 
-    def flags(intent_id: str, *, from_intent: bool, requested_at_ms: int | None = None) -> dict:
-        return original(intent_id, from_intent=False, requested_at_ms=requested_at_ms)
+    def flags(intent_id: str, *, from_intent: bool) -> dict:
+        return original(intent_id, from_intent=False)
 
     with patch.object(ri, "intent_flags", flags), patch.object(RecordEventHandler, "_refresh_state", never_done):
         yield
@@ -140,7 +140,34 @@ def _backstop_on_a_stamped_payload() -> Iterator[None]:
         yield
 
 
+@contextmanager
+def _served_by_wall_time() -> Iterator[None]:
+    """The control for the clock-skew class: "served" decided by comparing the request's time (stamped by the walk's host) with the time
+    the indexing host recorded at completion, instead of by identity."""
+    real_clear = ri.clear_intent
+    clock = {"now": 0}
+
+    async def clear(graph, record_id, intent_id, extra=None, **kw):  # noqa: ANN202
+        from app.services.messaging.kafka.handlers import record as record_module
+
+        return await real_clear(graph, record_id, intent_id, {**(extra or {}), "doneAtMs": record_module.get_epoch_timestamp_in_ms()}, **kw)
+
+    def served(record):  # noqa: ANN202
+        held = ri.stored_intent(record)
+        done = (record or {}).get("doneAtMs")
+        return held is not None and held[1] is not None and done is not None and done >= held[1]
+
+    async def state(self, run, record, payload):  # noqa: ANN202
+        done = (record or {}).get("doneAtMs")
+        at = (record or {}).get(ri.AT_FIELD) or clock["now"]
+        return "done" if done is not None and run.refresh and done >= (payload.get("_at") or at) else "open"
+
+    with patch.object(ri, "clear_intent", clear), patch.object(ri, "served", served), patch.object(RecordEventHandler, "_refresh_state", state):
+        yield
+
+
 MUTANTS: dict[str, Callable[[], object]] = {
+    "served decided by comparing wall times of two hosts": _served_by_wall_time,
     "no handler read": _no_handler_read,
     "no write at publish time": _no_publish_time_write,
     "walk skips running records": _walk_skips_running_records,

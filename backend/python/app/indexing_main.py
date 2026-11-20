@@ -1730,9 +1730,12 @@ async def _republish_refresh_intents(
                 ):
                     return
                 updates: dict[str, Any] = {}
-                if fresh.get("indexingStatus") != ProgressStatus.COMPLETED.value:
+                if fresh.get("indexingStatus") != ProgressStatus.COMPLETED.value and fresh.get("reason") != CONNECTOR_OFF:
+                    # Not over CONNECTOR_OFF: the stranded scan finds a row parked while its connector was off by that reason.
                     updates["reason"] = refresh_intent.REFRESH_EXPIRED_REASON
-                if await refresh_intent.clear_intent(graph_provider, key, held[0], updates):
+                if await refresh_intent.clear_intent(
+                    graph_provider, key, held[0], updates, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
+                ):
                     refresh_intent.REFRESH_INTENT_EVENTS.inc("expired")
                     logger.warning(
                         "The Force reindex requested for record %s was not served within its life and is dropped (record status %s)",
@@ -1771,10 +1774,13 @@ async def _republish_refresh_intents(
                 fresh = await _fresh(key)
                 if fresh is None or refresh_intent.live_intent(fresh, get_epoch_timestamp_in_ms()) != intent_id:
                     return
-                if await _read_connector(str(record.get("connectorId"))) is not False:
-                    connector_state.pop(str(record.get("connectorId")), None)    # it came back, or could not be read: keep the request
+                connector_id = str(fresh.get("connectorId") or "")       # the row's connector now, not the scanned row's
+                if not connector_id or await _read_connector(connector_id) is not False:
+                    connector_state.pop(connector_id, None)                   # it came back, or could not be read: keep the request
                     return
-                if await refresh_intent.clear_intent(graph_provider, key, intent_id):
+                if await refresh_intent.clear_intent(
+                    graph_provider, key, intent_id, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
+                ):
                     refresh_intent.REFRESH_INTENT_EVENTS.inc("connector_off")
                     logger.info("The Force reindex of record %s ended: its connector is off or removed", key)
         except Exception as exc:
@@ -1787,7 +1793,9 @@ async def _republish_refresh_intents(
                     return
                 fresh = await _fresh(key)
                 if fresh is not None and refresh_intent.live_intent(fresh, get_epoch_timestamp_in_ms()) == intent_id and refresh_intent.served(fresh):
-                    await refresh_intent.clear_intent(graph_provider, key, intent_id)
+                    await refresh_intent.clear_intent(
+                        graph_provider, key, intent_id, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
+                    )
         except Exception as exc:
             logger.error("Failed to end the served Force reindex of record %s: %s", key, exc)
 

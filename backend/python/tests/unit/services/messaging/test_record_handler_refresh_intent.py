@@ -38,23 +38,16 @@ ORG = "org-1"
 class _Cache:
     def __init__(self) -> None:
         self.done: set[tuple[str, str, str]] = set()
-        self.last: dict[tuple[str, str], int] = {}
         self.unavailable = False
         self.purges: list[str] = []
 
-    async def refresh_state(self, org: str, record: str, intent_id: str, requested_at: int | None = None) -> str:
+    async def refresh_state(self, org: str, record: str, intent_id: str) -> str:
         if self.unavailable:
             return "unavailable"
-        if (org, record, intent_id) in self.done:
-            return "done"
-        if requested_at is not None and self.last.get((org, record), -1) >= requested_at:
-            return "done"
-        return "open"
+        return "done" if (org, record, intent_id) in self.done else "open"
 
-    async def mark_refresh_done(self, org: str, record: str, intent_id: str, requested_at: int | None = None) -> bool:
+    async def mark_refresh_done(self, org: str, record: str, intent_id: str) -> bool:
         self.done.add((org, record, intent_id))
-        if requested_at is not None:
-            self.last[(org, record)] = max(self.last.get((org, record), -1), requested_at)
         return True
 
     @asynccontextmanager

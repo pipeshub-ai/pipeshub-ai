@@ -2822,7 +2822,6 @@ def mark_user_forced_reindex(event_data: dict) -> None:
         payload["refreshPaidOutputs"] = True
         # The refresh's identity: stored on the record before the publish (below) and copied by every re-send.
         payload["refreshIntentId"] = uuid4().hex
-        payload["refreshRequestedAtMs"] = get_epoch_timestamp_in_ms()
     else:
         payload["force"] = True
 
