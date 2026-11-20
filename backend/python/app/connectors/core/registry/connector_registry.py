@@ -15,6 +15,13 @@ from app.config.constants.arangodb import (
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.connectors.core.constants import ConnectorStateKeys
+from app.connectors.core.base.data_processor.permission_sync_gate import (
+    PERSONAL_CONNECTOR_CAP,
+    PersonalConnectorCapReachedError,
+    permission_sync_licensed,
+    personal_cap_applies,
+    personal_cap_reached,
+)
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
 from app.core.org_jobs import for_each_org, of_org
@@ -490,6 +497,32 @@ class ConnectorRegistry:
             )
             return None
 
+    async def _check_personal_connector_cap(
+        self, connector_type: str, scope: str, created_by: str, org_id: str
+    ) -> None:
+        """Without a licence key, a personal connector of each source is limited to
+        PERSONAL_CONNECTOR_CAP people per install: each one brings in what others
+        shared with its owner, so one per employee would be permission-aware search."""
+        if scope != ConnectorScope.PERSONAL.value or not personal_cap_applies(connector_type):
+            return
+        try:
+            if await permission_sync_licensed(self.container.config_service()):
+                return
+            graph_provider = await self._get_graph_provider()
+            apps = await graph_provider.get_org_apps(
+                org_id, active_only=False, app_type=connector_type, raise_on_error=True
+            )
+        except Exception as e:
+            # Same as the name check: a failed lookup must not block setting up a connector.
+            self.logger.warning(f"Could not check the personal {connector_type} connector limit: {e}")
+            return
+        if personal_cap_reached(created_by, apps):
+            raise PersonalConnectorCapReachedError(
+                f"Without a licence key, up to {PERSONAL_CONNECTOR_CAP} people in an organisation can "
+                f"connect their own {connector_type} account, and that many already have. "
+                "Ask an admin to add a licence key to lift the limit."
+            )
+
     async def _create_connector_instance(
         self,
         connector_type: str,
@@ -545,6 +578,8 @@ class ConnectorRegistry:
                     f"Connector instance name '{instance_name}' already exists. "
                     f"Please choose a different name."
                 )
+
+            await self._check_personal_connector_cap(connector_type, scope, created_by, org_id)
 
             # Create connector instance document
             instance_key = str(uuid4())

@@ -125,6 +125,7 @@ from app.connectors.core.base.connector.connector_service import (
     dispose_connector,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.data_processor.permission_sync_gate import PersonalConnectorCapReachedError
 from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
 from app.connectors.core.base.error.stream_errors import not_downloadable, to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
@@ -250,6 +251,8 @@ NAME_TAKEN = "That name is already used by another connector. Pick a different n
 
 
 def _setup_failure_message(exc: ValueError) -> str:
+    if isinstance(exc, PersonalConnectorCapReachedError):
+        return str(exc)
     text = str(exc)
     if "already exists" in text:
         return NAME_TAKEN
