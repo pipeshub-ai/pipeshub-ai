@@ -630,20 +630,8 @@ def _clock_ticks_per_second() -> float:
         return 100.0  # USER_HZ is 100 on virtually every Linux distro
 
 
-def _cgroup_v2_cpu_stat_file() -> Path | None:
-    """``cpu.stat`` of the cgroup whose quota binds (an ancestor's when it is tighter than the member's), else the
-    member's: the utilisation divides by that quota, so it must count the CPU time that quota is shared by."""
-    own = _resolve_cgroup_path("cpu", "cpu.stat")
-    binding = _v2_cpu_binding()
-    if binding is not None:
-        candidate = binding[1].parent / "cpu.stat"
-        if candidate != own and candidate.exists():
-            return candidate
-    return own
-
-
 def _cgroup_v2_cpu_stat_field(field: str) -> int | None:
-    path = _cgroup_v2_cpu_stat_file()
+    path = _resolve_cgroup_path("cpu", "cpu.stat")
     text = _read_text(path) if path else None
     if not text:
         return None
@@ -658,12 +646,6 @@ def _cgroup_v2_cpu_stat_field(field: str) -> int | None:
 
 def _cgroup_v1_cpu_usage_usec() -> int | None:
     path = _resolve_cgroup_path("cpuacct", "cpuacct.usage")
-    binding = _v1_cpu_binding()
-    if binding is not None:
-        # cpu and cpuacct are mounted together on almost every v1 host: the counter next to the binding quota.
-        candidate = binding[1].parent / "cpuacct.usage"
-        if candidate.exists() and binding[1] != _resolve_cgroup_path("cpu", "cpu.cfs_quota_us"):
-            path = candidate
     nanos = _read_int(path) if path else None
     return None if nanos is None else nanos // 1000
 
@@ -741,6 +723,47 @@ def _resolve_cpu_usage_usec() -> tuple[int | None, str]:
     if usage is not None:
         return usage, "psutil"
     return None, "unknown"
+
+
+@dataclass(frozen=True)
+class _AncestorCpu:
+    """The cumulative CPU counters of an ancestor cgroup whose quota is tighter than the member's own."""
+
+    scope: str  # the ancestor's directory: counters of two scopes are not comparable
+    quota: float  # CPUs
+    usage_usec: int
+    throttled_usec: int | None
+
+
+def _ancestor_cpu() -> _AncestorCpu | None:
+    """The counters of the ancestor that binds the CPU quota, or ``None`` when the member's own level binds (or
+    nothing is limited, or the ancestor's counter cannot be read).
+
+    The ancestor's counter includes its other children, so it divides by the ancestor's quota, never by the member's
+    affinity; the member's own counter keeps dividing by what the member may use. The utilisation is the larger of the
+    two, so neither a busy sibling nor a member saturating its own CPUs goes unseen.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    v2 = _v2_cpu_binding()
+    if v2 is not None and v2[1] != _resolve_cgroup_path("cpu", "cpu.max"):
+        text = _read_text(v2[1].parent / "cpu.stat")
+        fields = dict(line.split()[:2] for line in (text or "").splitlines() if len(line.split()) >= 2)
+        try:
+            usage = int(fields["usage_usec"])
+        except (KeyError, ValueError):
+            return None
+        try:
+            throttled: int | None = int(fields["throttled_usec"])
+        except (KeyError, ValueError):
+            throttled = None
+        return _AncestorCpu(str(v2[1].parent), v2[0], usage, throttled)
+    v1 = _v1_cpu_binding()
+    if v1 is not None and v1[1] != _resolve_cgroup_path("cpu", "cpu.cfs_quota_us"):
+        nanos = _read_int(v1[1].parent / "cpuacct.usage")
+        if nanos is not None:
+            return _AncestorCpu(str(v1[1].parent), v1[0], nanos // 1000, None)
+    return None
 
 
 def _cgroup_v2_cpu_throttled_usec() -> int | None:
@@ -917,6 +940,7 @@ class SystemResourceProbe:
         self._lock = threading.Lock()
         self._prev_cpu_usec: int | None = None
         self._prev_cpu_source: str | None = None
+        self._prev_ancestor: _AncestorCpu | None = None
         self._prev_throttled_usec: int | None = None
         self._prev_time: float | None = None
         self._baseline_tracker = baseline_tracker or BaselineMemoryTracker()
@@ -946,6 +970,7 @@ class SystemResourceProbe:
             )
             cpu_usage_usec, cpu_source = _resolve_cpu_usage_usec()
             throttled_usec = _cgroup_v2_cpu_throttled_usec()
+            ancestor = _ancestor_cpu() if cpu_source in ("cgroup_v2", "cgroup_v1") else None
 
             cpu_utilisation: float | None = None
             cpu_throttled_ratio: float | None = None
@@ -986,8 +1011,21 @@ class SystemResourceProbe:
                         throttled_delta = throttled_usec - self._prev_throttled_usec
                         cpu_throttled_ratio = max(0.0, throttled_delta / (elapsed * 1_000_000))
 
+            prev_anc = self._prev_ancestor
+            if ancestor is not None and prev_anc is not None and prev_anc.scope == ancestor.scope and self._prev_time is not None:
+                # The cap is an ancestor's: its counter (siblings included) over its quota. A change of binding level
+                # between samples has another scope and gives no delta, as a change of source does.
+                elapsed = now - self._prev_time
+                if elapsed > 0 and ancestor.quota > 0:
+                    anc_util = max(0.0, (ancestor.usage_usec - prev_anc.usage_usec) / (elapsed * 1_000_000 * ancestor.quota))
+                    cpu_utilisation = anc_util if cpu_utilisation is None else max(cpu_utilisation, anc_util)
+                    if ancestor.throttled_usec is not None and prev_anc.throttled_usec is not None:
+                        anc_throttled = max(0.0, (ancestor.throttled_usec - prev_anc.throttled_usec) / (elapsed * 1_000_000))
+                        cpu_throttled_ratio = anc_throttled if cpu_throttled_ratio is None else max(cpu_throttled_ratio, anc_throttled)
+
             self._prev_cpu_usec = cpu_usage_usec
             self._prev_cpu_source = cpu_source
+            self._prev_ancestor = ancestor
             self._prev_throttled_usec = throttled_usec
             self._prev_time = now
 
