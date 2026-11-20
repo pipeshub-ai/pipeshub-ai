@@ -4288,6 +4288,13 @@ class JiraDataCenterConnector(BaseConnector):
             total_matching = int(issues_batch_response.get("total", 0) or 0)
 
             if not batch_issues:
+                if start_at < total_matching:
+                    # Jira counted more than it gave: the issues past here are unread, not gone. Inconclusive, as a 503:
+                    # the project's sync fails with its cursor and stored access kept, and the next sync reads on.
+                    raise JiraReadError(
+                        HttpStatusCode.SERVICE_UNAVAILABLE.value,
+                        f"The issue search for {project_key} ended at {start_at} of the {total_matching} it counted",
+                    )
                 # No more issues - yield empty to signal completion
                 yield [], False, last_issue_updated
                 break

@@ -602,3 +602,17 @@ async def test_an_issue_moved_out_of_the_project_leaves_its_retry_list(site, db,
     search.add("ENG", 0, two_issues_with_role_comments()[:1])
     await connector.run_sync()
     assert to_retry(store) == []
+
+
+async def test_a_search_that_ends_short_of_its_total_drops_no_issue_from_the_retry_list(site, db, store, search) -> None:
+    """Jira counts 2 issues but gives one and then an empty page: the other is unread, not gone, so it stays on the
+    saved retry list (and the project's sync fails as an unread read, its cursor kept)."""
+    connector = await retry_list_of_two(site, search, db, store)
+    search.pages.clear()
+    search.add("ENG", 0, two_issues_with_role_comments()[:1], total=2)
+    search.pages[("ENG", 1)] = {"issues": [], "total": 2}
+
+    await connector.run_sync()
+
+    assert to_retry(store) == ["1001", "1002"]
+    assert grants(db, "comment_602") == set(), "1002 was not read"
