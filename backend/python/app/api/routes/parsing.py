@@ -277,6 +277,7 @@ async def parse_file(
     refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
     record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
     refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
+    record_id: Annotated[str | None, Form(description="The record being parsed, for log lines; optional")] = None,
 ) -> JSONResponse:
     """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
     load = parse_load()
@@ -286,7 +287,7 @@ async def parse_file(
     try:
         response = await _parse_file(
             request, file, claims, record_name, mime_type, extension, org_id,
-            provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s, refresh_token,
+            provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s, refresh_token, record_id,
         )
     finally:
         load.leave()
@@ -310,6 +311,7 @@ async def _parse_file(
     refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
     record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
     refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
+    record_id: Annotated[str | None, Form(description="The record being parsed, for log lines; optional")] = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -360,6 +362,8 @@ async def _parse_file(
         config["skip_table_enrichment"] = True
     if file_path:
         config["file_path"] = file_path
+    if record_id:
+        config["record_id"] = record_id[:128]
 
     if provider_enum is None:
         return JSONResponse(

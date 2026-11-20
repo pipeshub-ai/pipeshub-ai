@@ -162,7 +162,7 @@ def _two_col_words(
 def _char_level_table_extraction(test: Callable[..., None]) -> Callable[..., None]:
     """Route word-level grid extraction back to the mocked pdfplumber calls,
     for tests that stub ``extract_table`` / ``Table.extract`` on mocks."""
-    def by_page(page: MagicMock, settings: Optional[dict[str, object]] = None) -> object:
+    def by_page(page: MagicMock, settings: Optional[dict[str, object]] = None, target: object = None, info: object = None) -> object:
         return page.extract_table(settings) if settings else page.extract_table()
 
     return patch.object(ola, "_extract_table_by_words", new=by_page)(
@@ -1381,6 +1381,7 @@ class TestVectorBulletsAndStripes:
         bullets = _find_vector_bullets(page, words)
         assert len(bullets) >= 2
         assert bullets[0]["fontname"] == "_synthetic_bullet"
+        assert all(b["synthetic"] is True for b in bullets)  # the origin flag the table shadow run reads
 
     def test_find_vector_bullets_exception(self):
         page = MagicMock()

@@ -693,6 +693,7 @@ class EventProcessor:
             org_id=org_id,
             provider=provider,
             file_path=file_path,
+            record_id=record_id,
         )
         # The parsing service has the file; the blocks are what is left to index.
         file_content = None
