@@ -5,6 +5,8 @@ links of a deleted record, as the graph stores do (a delete removes the vertex w
 edges, and a record is linked to its parent only when it is written).
 """
 
+import json
+
 import pytest
 from web_behaviour_fakes import (
     START_URL,
@@ -31,6 +33,8 @@ class LinkingRecordsDb(FakeRecordsDb):
 
     def _store(self, record: Record) -> None:
         super()._store(record)
+        # A write links a record to the parent its reference names, and to no other.
+        self.parent_of.pop(record.id, None)
         parent = self.records.get(record.parent_external_record_id or "")
         if parent is not None:
             self.parent_of[record.id] = parent.id
@@ -188,11 +192,9 @@ async def test_a_full_resync_keeps_pages_linked_under_folders_that_already_exist
     assert db.parent_of.get(db.records[SETUP].id) == db.records[GUIDES].id
 
 
-async def test_a_full_sync_links_pages_again_under_folders_an_earlier_sync_unlinked(
+async def _damaged_by_an_earlier_full_sync(
     site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
-) -> None:
-    """The state an earlier build left: the folders have no links, nor do the pages under them.
-    The page is unchanged, so only the connector can link it again."""
+) -> WebConnector:
     site.html(START_URL, "Home", "/guides/setup/install.html")
     site.html(INSTALL, "Install", text="Install with pip")
     connector = await make_connector()
@@ -200,13 +202,124 @@ async def test_a_full_sync_links_pages_again_under_folders_an_earlier_sync_unlin
     db.mark_indexed()
     db.end_full_sync()
     db.parent_of.clear()
-
     checkpoints.sync_points.clear()
+    return connector
+
+
+async def test_a_full_sync_links_pages_again_under_folders_an_earlier_sync_unlinked(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    """The state an earlier build left: the folders have no links, nor do the pages under them.
+    The page is unchanged, so only the connector can link it again."""
+    connector = await _damaged_by_an_earlier_full_sync(site, db, checkpoints, make_connector)
     await connector.run_sync()
     db.end_full_sync()
 
     assert db.parent_of.get(db.records[INSTALL].id) == db.records[SETUP].id
     assert db.parent_of.get(db.records[SETUP].id) == db.records[GUIDES].id
+
+
+async def test_pages_a_full_sync_could_not_link_again_are_linked_by_the_next_sync(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a full sync links them, so a failure must not be forgotten when that sync ends."""
+    connector = await _damaged_by_an_earlier_full_sync(site, db, checkpoints, make_connector)
+    attach = db.on_records_attached_to_parent
+
+    async def failing(*_: object, **__: object) -> None:
+        raise RuntimeError("records database unavailable")
+
+    monkeypatch.setattr(db, "on_records_attached_to_parent", failing)
+    await connector.run_sync()
+    db.end_full_sync()
+    assert db.records[INSTALL].id not in db.parent_of
+    saved = next(iter(checkpoints.sync_points.values()))
+    assert saved["relinkPending"] == [SETUP]
+
+    monkeypatch.setattr(db, "on_records_attached_to_parent", attach)
+    await connector.run_sync()  # incremental: the sync point is kept
+
+    assert db.parent_of.get(db.records[INSTALL].id) == db.records[SETUP].id
+    assert next(iter(checkpoints.sync_points.values()))["relinkPending"] == []
+
+
+async def test_a_folder_rewritten_under_a_parent_stored_without_a_trailing_slash_keeps_its_link(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    """Older builds stored folders without the trailing slash. A reference with one names no record."""
+    site.html(START_URL, "Home", "/guides/setup/install.html")
+    site.html(INSTALL, "Install", text="Install with pip")
+    connector = await make_connector()
+    await connector.run_sync()
+    db.mark_indexed()
+    legacy = GUIDES.rstrip("/")
+    guides = db.records.pop(GUIDES)
+    guides.external_record_id = legacy
+    db.records[legacy] = guides
+    db.records[SETUP].parent_external_record_id = legacy
+    db.end_full_sync()
+
+    checkpoints.sync_points.clear()
+    await connector.run_sync()
+    db.end_full_sync()
+
+    assert GUIDES not in db.records, "no second folder under the slashed id"
+    assert db.records[SETUP].parent_external_record_id == legacy
+    assert db.parent_of.get(db.records[SETUP].id) == guides.id
+
+
+MANUAL = "http://site.test/guides/setup/manual.pdf"
+
+
+async def test_a_full_sync_fetches_a_document_the_site_would_answer_not_modified_for(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    """A 304 writes nothing, so the full sync would unlink the document and the folder above it."""
+    site.html(START_URL, "Home", "/guides/setup/manual.pdf")
+    site.add(MANUAL, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+    db.mark_indexed()
+    db.end_full_sync()
+
+    checkpoints.sync_points.clear()
+    await connector.run_sync()
+    db.end_full_sync()
+
+    assert site.not_modified == []
+    assert db.parent_of.get(db.records[MANUAL].id) == db.records[SETUP].id
+    assert db.parent_of.get(db.records[SETUP].id) == db.records[GUIDES].id
+
+
+async def test_a_full_sync_fetches_a_page_the_sitemap_says_is_unchanged(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    """In sitemap-only discovery an unchanged page is not fetched, so a full sync would write nothing for it."""
+    site.add("http://site.test/robots.txt", Page(
+        body=b"User-agent: *\nAllow: /\nSitemap: http://site.test/sm.xml\n", content_type="text/plain",
+    ))
+    site.add("http://site.test/sm.xml", Page(
+        body=(
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            f"<url><loc>{INSTALL}</loc><lastmod>2020-01-01</lastmod></url></urlset>"
+        ).encode(),
+        content_type="application/xml",
+    ))
+    site.html(START_URL, "Home")
+    site.html(INSTALL, "Install", text="Install with pip")
+    connector = await make_connector(discovery="sitemap")
+    await connector.run_sync()
+    db.mark_indexed()
+    db.end_full_sync()
+
+    checkpoints.sync_points.clear()
+    await connector.run_sync()
+    db.end_full_sync()
+
+    run = json.loads(next(iter(checkpoints.sync_points.values()))["lastRun"])
+    assert run["unchanged_by_lastmod"] == 0
+    assert db.parent_of.get(db.records[INSTALL].id) == db.records[SETUP].id
 
 
 async def test_a_folder_that_already_exists_is_written_once_per_sync(
