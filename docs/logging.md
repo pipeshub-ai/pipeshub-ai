@@ -187,7 +187,8 @@ except Exception as e:
   raised `from` it, is DEBUG unless it asks for a higher level. `include_error_text=False` leaves `error_message` out and prints
   each exception in the stack as `Type: <message omitted>`, for errors whose text can echo what was sent (an MCP or OpenAPI server's
   answer quoting tool arguments). That record carries the stack as `exc_text` only, with no `exc_info`, so a handler that formats
-  `exc_info` itself cannot print the message either.
+  `exc_info` itself cannot print the message either. Tests check such a line with `tests/support/log_capture.py`:
+  `failure_line(records, event, error_class, level, *values)` and `assert_text_free(records, *values)`.
 - `logged_level(exc)` is the highest level `log_failure` already wrote `exc` (or an exception it was raised `from`) at, or `None`.
   A per-unit line that must keep its level when several units fail with one shared exception checks it: `log_failure` when it is
   `None` or lower, else `log_event` at the unit's level with the error fields (see "Tool calls and MCP").
