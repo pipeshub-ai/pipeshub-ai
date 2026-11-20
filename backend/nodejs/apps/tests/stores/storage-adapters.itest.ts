@@ -735,6 +735,25 @@ describe('Storage adapters against a real storage server', function () {
       expect((await etagOf(k)) !== undefined).to.equal(true);
     });
 
+    it('a full cutoff-purge page that gains a key in range between its two listings leaves no old object behind', async () => {
+      const keys = [310, 311, 312, 313, 314].map(key);
+      for (const k of keys) await put(k, '{"old":true}');
+      const cutoff = Date.now() + 60_000;
+      const realList = target.adapter.listObjects!.bind(target.adapter);
+      let listings = 0;
+      const adapter = Object.create(target.adapter) as typeof target.adapter;
+      adapter.listObjects = async (prefix, options) => {
+        const page = await realList(prefix, options);
+        listings += 1;
+        // After the first page is out, a key that sorts before the others is stored.
+        if (listings === 1) await put(key(305), '{"inserted":true}');
+        return page;
+      };
+      // The inserted key is newer than the cutoff would allow only if the cutoff were earlier; here it is older, so it goes too.
+      await purgePaidResultsOlderThan(adapter as never, root, cutoff, Error as never, 2);
+      for (const k of keys) expect(await exists(k), `${k} survived the purge`).to.equal(false);
+    });
+
     it('a bump and a conditional delete racing on one version never both win, over many keys', async () => {
       if (!(await target.adapter.conditionalCapabilities!()).conditionalDelete) return; // this store ignores the condition
       const keys = Array.from({ length: 40 }, (_, i) => key(100 + i));
