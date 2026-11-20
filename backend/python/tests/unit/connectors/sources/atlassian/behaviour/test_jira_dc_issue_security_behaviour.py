@@ -1358,7 +1358,9 @@ class TestWithdrawnAccounts:
         connector._extract_issue_data_with_parent = fail_once
         await sync(connector, jql_search, recent=[])
         assert failures and ("USER", "frank-key") not in readers(db, "2")
+        batches = len(db.record_batches)
         await sync(connector, jql_search, recent=[])
+        assert "2" in {r.external_record_id for b in db.record_batches[batches:] for r in b}, "built by the next sync"
         assert ("USER", "frank-key") in readers(db, "2")
 
     async def test_an_issue_given_up_on_that_still_fails_does_not_hold_a_level_pass(self, jira, db, store, jql_search) -> None:
