@@ -33,7 +33,11 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.notification.notification_service import (
     NotificationService,
 )
+from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.logger import create_logger
+
+# Startup tries of ensure_schema, a second apart and then two, for a store that is briefly unavailable.
+_SCHEMA_TRIES = 3
 
 
 class ConnectorAppContainer(BaseAppContainer):
@@ -347,8 +351,21 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
                 raise
 
             # Schema init: collections, graph, departments seed
-            await data_store.graph_provider.ensure_schema()
-            logger.info("✅ Schema ensured")
+            # Retried, not fatal: OAuth, configuration and the dashboard's endpoints do not need it. Until it is ensured, a store that
+            # refuses the apps schema refuses every sync's start, and each refused sync says so on its connector (`run_sync_task`).
+            for attempt in range(_SCHEMA_TRIES):
+                if await data_store.graph_provider.ensure_schema():
+                    logger.info("✅ Schema ensured")
+                    break
+                if attempt + 1 < _SCHEMA_TRIES:
+                    await asyncio.sleep(attempt + 1)
+            else:
+                logger.error(
+                    "The graph schema could not be ensured after %d tries (see the errors above). On ArangoDB this is usually "
+                    "the apps collection's schema: until it is applied, every sync stops at its start. Check that the database "
+                    "user may update collection properties, then restart the connector service.", _SCHEMA_TRIES,
+                )
+                record_service_activity("connector_service", "graph_schema_not_ensured", status="failed")
 
             # Apps from before connector instances carried an orgId get one, or the
             # org filters on Apps drop them. Not fatal: the next startup retries.

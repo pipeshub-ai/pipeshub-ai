@@ -770,7 +770,8 @@ class IGraphDBProvider(ABC):
         services, so it must be idempotent.
 
         Returns:
-            bool: True if schema was ensured successfully, False otherwise
+            bool: True if schema was ensured successfully, False otherwise. The connector
+            service does not start on False.
         """
         pass
 

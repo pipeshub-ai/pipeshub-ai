@@ -1343,6 +1343,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 schema_by_collection[col_name] = col_schema
 
             # 1. Create all collections (node + edge)
+            apps_schema_applied = True
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
             for col in CollectionNames:
                 name = col.value
@@ -1363,6 +1364,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             "The schema of collection '%s' was not updated; documents carrying fields "
                             "the previous schema does not list will be refused until it is", name,
                         )
+                        # Reported to the caller for apps: an older apps schema refuses every write to an app
+                        # document, and a sync whose start is refused does not run (`run_sync_task`).
+                        apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -1391,8 +1395,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self._ensure_departments_seed()
 
             self.start_record_schema_poll()
-            self.logger.info("✅ ArangoDB schema ensured successfully")
-            return True
+            if apps_schema_applied:
+                self.logger.info("✅ ArangoDB schema ensured successfully")
+            return apps_schema_applied
 
         except Exception as e:
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
