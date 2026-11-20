@@ -5,8 +5,7 @@ must be enough for it. Two ``PgState`` objects stand for two processes.
 """
 
 import asyncio
-import statistics
-import time
+import contextlib
 
 import pytest
 
@@ -23,7 +22,8 @@ from app.services.paid_cache.repurge_window import (
     PgWindowStore,
 )
 from app.services.pg_runtime import RuntimeDb
-from app.services.pg_state import PgState
+from app.services.pg_state import LockedTx, PgState
+from tests.support import plan_gate
 from tests.support.repurge_window import MemoryWindowStore
 
 NOW = 1_700_000_000_000
@@ -96,11 +96,29 @@ async def test_the_cap_is_the_sequence_never_a_row_count_and_a_full_window_answe
     assert read.ids == ("r0", "r1", "r2")
 
 
-async def test_an_append_into_a_window_of_50k_rows_stays_fast_under_the_lock(stores, uid) -> None:
-    """R2-3: counting rows under the window lock cost 75 ms at 50k rows (RLS enforced). Nothing counts now."""
+class _Recorded:
+    """A unit of work that keeps every statement run on it (here: the window lock holder's)."""
+
+    def __init__(self, tx: object, seen: list[tuple[str, tuple]]) -> None:
+        self._tx, self._seen = tx, seen
+
+    def __getattr__(self, name: str) -> object:
+        run = getattr(self._tx, name)
+
+        async def recorded(sql: str, *args: object) -> object:
+            self._seen.append((sql, args))
+            return await run(sql, *args)
+        return recorded
+
+
+async def test_an_append_into_a_window_of_50k_rows_reads_only_its_own_keys_under_the_lock(stores, uid, monkeypatch) -> None:
+    """R2-3: counting rows under the window lock cost 75 ms at 50k rows (RLS enforced). Nothing counts now. Judged by what
+    runs under the lock, not by a clock: an append into a window of 50k rows runs as many statements as one into an empty
+    window, and each reads ``platform.kv_entries`` by its key alone (the plan), so the lock is held for the same work at any size."""
     pg = stores[0]
-    org = f"org-{uid}"
+    org, empty = f"org-{uid}", f"org-{uid}-empty"
     await _publish(pg, org)
+    await _publish(pg, empty)
     base = f"state:rpw:{{{org}}}:5"
     async with (await pg._state.rt.db()).runtime_uow(write=True) as tx:
         await tx.execute(
@@ -112,13 +130,25 @@ async def test_an_append_into_a_window_of_50k_rows_stays_fast_under_the_lock(sto
             "INSERT INTO platform.kv_entries (key, value, expires_at, updated_at) VALUES ($1, convert_to('50000', 'UTF8'), now() + interval '1 hour', now())",
             base + ":n",
         )
-    spans = []
-    for i in range(200):
-        t = time.perf_counter()
-        assert (await pg.open_or_append(org, 5, "zz", "e", f"late{i}", NOW)).state == APPENDED
-        spans.append((time.perf_counter() - t) * 1000)
-    spans.sort()
-    assert spans[int(len(spans) * 0.99) - 1] < 20, f"p99 {spans[int(len(spans) * 0.99) - 1]:.1f} ms, median {statistics.median(spans):.1f} ms"
+    statements: list[tuple[str, tuple]] = []
+    real_locked = pg._state.locked
+
+    @contextlib.asynccontextmanager
+    async def recording(name: str):  # noqa: ANN202
+        async with real_locked(name) as locked:
+            yield LockedTx(_Recorded(locked._tx, statements))
+
+    monkeypatch.setattr(pg._state, "locked", recording)
+    assert (await pg.open_or_append(empty, 5, "zz", "e", "first", NOW)).state == APPENDED
+    on_empty = len(statements)
+    statements.clear()
+    assert (await pg.open_or_append(org, 5, "zz", "e", "late", NOW)).state == APPENDED
+    assert len(statements) == on_empty, [sql.split("*/")[0] for sql, _ in statements]
+    async with (await pg._state.rt.db()).runtime_uow(write=True) as tx:
+        plans = [await tx.fetchval("/* pipeshub:test.explain */ EXPLAIN (FORMAT JSON) " + sql, *args) for sql, args in statements]
+    assert sum(len(plan_gate.scans(plan, "kv_entries")) for plan in plans) >= 2          # the reads of ``sealed`` and ``own`` are judged
+    unkeyed = [v for plan in plans for v in plan_gate.violations(plan, {"kv_entries": r"\bkey = "})]
+    assert not unkeyed, unkeyed
 
 
 async def test_repair_sees_only_the_orgs_open_windows_and_a_done_window_leaves_the_set(stores, uid) -> None:
