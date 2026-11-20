@@ -47,7 +47,7 @@ from app.core.org_context import (
 )
 from app.edition import check_runtime_settings
 from app.edition_containers import IndexingAppContainer
-from app.edition_services import configure_app
+from app.edition_services import configure_app, indexing_fairness
 from app.events.dedup import will_promote_queued_copies
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
@@ -118,6 +118,7 @@ from app.services.llm_gateway.fleet_redis import (
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.llm_gateway.trial_lease import get_trial_renewer
 from app.services.llm_gateway.wire import hook_status as wire_hook_status
+from app.services.messaging import consumer_concurrency
 from app.services.messaging.backpressure import (
     get_default_backpressure_coordinator,
 )
@@ -2571,6 +2572,7 @@ async def start_kafka_consumers(
         # passing it explicitly here is what lets the consumer's read loop
         # actually see their 429 signals and pause new reads.
         record_kafka_consumer = MessagingFactory.create_consumer(
+            fairness=indexing_fairness(lambda pool: consumer_concurrency.slot_pool_limit(record_kafka_consumer, pool)),
             broker_type=broker_type,
             logger=logger,
             config=record_consumer_config,
