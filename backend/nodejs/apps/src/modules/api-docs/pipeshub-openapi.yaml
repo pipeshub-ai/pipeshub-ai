@@ -55089,9 +55089,10 @@ paths:
 
         **A connected app with a limit:** the rendered text names nothing
         outside the limit beside the record. A parent the limit leaves out
-        is not named: a read with `maxChars`, `startBlock`, `query` or
-        `mode` leaves its `External Parent ID` line out, and a read without
-        them shows it as `N/A`. A code file's `Path:`
+        is not named: a budgeted read (any of `maxChars`, `startBlock`,
+        `startRecord`, `query`, `mode` or `extract`) leaves its
+        `External Parent ID` line out, and a read with none of them shows it
+        as `N/A`. A code file's `Path:`
         line is left out unless the limit covers the whole app. Linked
         records, related tables, a deal's orgs and products, and live Jira
         parent, epic, sub-task and linked-issue lines appear only for
