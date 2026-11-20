@@ -133,10 +133,10 @@ class TestSpecStream:
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen.append(request)
-            return httpx.Response(200, json={"sources": [
+            return httpx.Response(200, json={"request_id": "r1", "status": 200, "error": None, "data": {"sources": [
                 {"url": "https://a.example/", "title": "A", "snippet": "s", "published": "2026-11-01"},
                 {"url": "https://b.example/", "title": "B"},
-            ]})
+            ]}})
 
         results = await SpecStreamSearch({"apiKey": "k"}, httpx.AsyncClient(transport=httpx.MockTransport(handler))).search("q", deadline())
         assert [(r.url, r.snippet, r.published) for r in results] == [
@@ -144,6 +144,11 @@ class TestSpecStream:
         ]
         assert str(seen[0].url) == "https://api.specstream.ai/v1/web-search?q=q"
         assert seen[0].headers["Authorization"] == "Bearer k"
+
+    async def test_a_null_data_raises_the_error_message(self) -> None:
+        handler = lambda request: httpx.Response(200, json={"data": None, "error": {"message": "Query is empty."}})
+        with pytest.raises(UpstreamError, match="Query is empty."):
+            await SpecStreamSearch({"apiKey": "k"}, httpx.AsyncClient(transport=httpx.MockTransport(handler))).search("q", deadline())
 
     async def test_without_a_key_it_is_not_configured(self) -> None:
         with pytest.raises(NotConfigured):
