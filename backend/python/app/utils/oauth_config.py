@@ -70,8 +70,8 @@ def extract_oauth_error_message(exc: Exception) -> str:
     helper span more than just the OAuth token exchange (DB updates, cache
     refresh, scheduling), so ``exc`` may carry internal details unrelated to
     the OAuth provider. Instead it only classifies the exception against a
-    fixed allow-list of known messages. Callers log ``exc`` itself, which
-    carries the provider's full response.
+    fixed allow-list of known messages. Callers hand ``exc`` to the request
+    line without its text (``mark_request_failure(..., include_error_text=False)``).
 
     The function tries, in order:
       1. Parse the embedded JSON response from the exception message
