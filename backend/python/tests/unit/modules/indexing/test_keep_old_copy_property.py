@@ -194,8 +194,9 @@ class World:
             # a sweep took it in the narrow window between that read and the write (a status that left the running set and came back).
             doc = self.graph.records["A"]
             assert self.points.get(doc["virtualRecordId"]) == "complete" or self.window_taken, ("an unverified copy is incomplete", self.points)
-            return
         for key, doc in self.graph.records.items():
+            if key == "A" and self.unverified:
+                continue  # the record whose attempt is in flight: checked above, and finished by the rerun
             if doc.get("hasIndexedCopy") and doc["indexingStatus"] not in ("EMPTY",):
                 assert self.points.get(doc["virtualRecordId"]) == "complete", (key, doc, self.points)
 
@@ -203,7 +204,7 @@ class World:
         """The stage states of the copy a searchable record serves are never retained away."""
         doc = self.graph.records["A"]
         if self.unverified:
-            return  # an attempt in flight on a copy that was never finished: it has no stage states until the rerun commits
+            return  # an attempt in flight on a copy that was never finished: it has no stage states until the rerun commits (A only)
         if doc.get("hasIndexedCopy"):
             assert (doc["virtualRecordId"], self.served_rev) in self.states, ("a served copy lost its stage states", doc, self.states)
 
@@ -233,6 +234,7 @@ async def _one(seed: int) -> None:
     # nothing is left running: the records end in a settled state and the sweep has run
     w.runs.clear()
     await w.recover()
+    assert not w.unverified, "the rerun did not finish the attempt that was left in flight"
     for doc in w.graph.records.values():
         if doc["indexingStatus"] in ("IN_PROGRESS", "QUEUED", "NOT_STARTED"):
             doc["indexingStatus"] = "FAILED"

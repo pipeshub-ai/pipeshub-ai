@@ -121,8 +121,9 @@ class SwapCommitter:
         # in flight (the handler requeues it, or the stale sweep does) and never COMPLETED on a copy nobody has shown to be whole.
         finished = await graph.update_node_fields_if(
             record.id, _RECORDS, fields,
-            [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", ONE_OF, list(keep_old_copy.COMMITTABLE))],
-        )
+            [Cond("virtualRecordId", EQ, swap.new_vrid), Cond(PENDING_VIRTUAL_RECORD_ID, "is_null"),
+             Cond("indexingStatus", ONE_OF, list(keep_old_copy.COMMITTABLE))],
+        )  # not while another attempt has installed its own pending copy: that attempt is still running and finishes the record
         if finished:
             return True
         doc = await graph.get_document(swap.record_id, _RECORDS, raise_on_error=True)
@@ -162,7 +163,8 @@ class SwapCommitter:
             try:
                 undone = await self.o.graph_provider.update_node_fields_if(
                     swap.record_id, _RECORDS, {"virtualRecordId": swap.old_vrid, PENDING_VIRTUAL_RECORD_ID: swap.new_vrid},
-                    [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", ONE_OF, list(keep_old_copy.COMMITTABLE))],
+                    [Cond("virtualRecordId", EQ, swap.new_vrid), Cond(PENDING_VIRTUAL_RECORD_ID, "is_null"),
+                     Cond("indexingStatus", ONE_OF, list(keep_old_copy.COMMITTABLE))],  # not over the pending copy of a newer attempt
                 )
                 break
             except Exception as undo_exc:
@@ -170,6 +172,11 @@ class SwapCommitter:
                 await asyncio.sleep(UNDO_BACKOFF_SECONDS * (attempt + 1))
         if not undone:
             self.logger.error("Record %s names a copy that was not verified; its attempt is left in flight to be rerun", swap.record_id)
+            if failure is None:
+                # The copy is known to be incomplete (the read answered): keep it out of search until the rerun, as far as the graph store lets
+                # it be written. A record that is not an indexed copy is not served.
+                with contextlib.suppress(Exception):
+                    await self.o.graph_provider.update_node(swap.record_id, _RECORDS, {"hasIndexedCopy": False})
         if failure is not None:
             raise failure  # the run is retried
         raise IndexingError(

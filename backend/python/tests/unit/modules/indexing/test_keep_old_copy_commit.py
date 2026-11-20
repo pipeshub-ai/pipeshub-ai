@@ -677,3 +677,43 @@ async def test_after_a_failed_read_and_a_failed_undo_the_copy_search_serves_is_t
     assert doc["virtualRecordId"] == "Y" and doc["indexingStatus"] == "IN_PROGRESS" and doc["hasIndexedCopy"] is True
     assert holds_vrid(doc, "Y")  # a sweep cannot take it: the record names it
     assert monkey_points["Y"] == ["b1", "b2"]  # and what search serves is the set the pre-commit read confirmed
+
+
+@pytest.mark.asyncio
+async def test_a_copy_known_to_be_incomplete_is_kept_out_of_search_when_the_undo_cannot_be_written(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.modules.transformers.swap_commit.UNDO_BACKOFF_SECONDS", 0)
+    g = FakeGraph({"A": rec("X", "IN_PROGRESS", pendingVirtualRecordId="Y", hasIndexedCopy=True)})
+    reads = iter([["b1", "b2"], ["b1"]])  # whole before the write, a block gone after it (the read answers: incomplete)
+    real = g.update_node_fields_if
+
+    async def undo_fails(key: str, collection: str, updates: dict, conditions: list, *a: object, **k: object) -> bool:
+        if updates.get("virtualRecordId") == "X" and updates.get("pendingVirtualRecordId"):
+            raise TimeoutError("down")
+        return await real(key, collection, updates, conditions, *a, **k)
+
+    g.update_node_fields_if = undo_fails  # type: ignore[method-assign]
+    swap, _ = committer(g, view=lambda vrid: next(reads))
+    with pytest.raises(IndexingError):
+        await swap.commit(ctx_for("A", "Y", pointed=["b1", "b2"]), run(), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "Y" and g.records["A"]["hasIndexedCopy"] is False  # not served until the rerun
+
+
+@pytest.mark.asyncio
+async def test_neither_the_finish_nor_the_undo_runs_over_the_pending_copy_of_a_newer_attempt() -> None:
+    """After the move the record has no pending field, and a newer attempt may install its own while this one verifies."""
+    g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y")})
+    swap, _ = committer(g)
+
+    async def newer_attempt_installs_its_copy(ctx: object, s: object) -> None:
+        g.records["A"]["pendingVirtualRecordId"] = "Y2"  # during the read after the write
+
+    swap._confirm_after_commit = newer_attempt_installs_its_copy  # type: ignore[method-assign]
+    assert await swap.commit(ctx_for("A", "Y"), run(), {"indexingStatus": "COMPLETED"})  # the move stands
+    assert g.records["A"]["indexingStatus"] == "IN_PROGRESS"  # not completed over the newer attempt, which finishes the record
+    assert g.records["A"]["pendingVirtualRecordId"] == "Y2"
+
+    g2 = FakeGraph({"A": rec("Y", "IN_PROGRESS", pendingVirtualRecordId="Y2")})
+    swap2, _ = committer(g2, view=lambda vrid: [])
+    with pytest.raises(IndexingError):
+        await swap2._confirm_after_commit(ctx_for("A", "Y", pointed=["b1"]), run())
+    assert g2.records["A"]["virtualRecordId"] == "Y" and g2.records["A"]["pendingVirtualRecordId"] == "Y2"  # the undo did not overwrite it
