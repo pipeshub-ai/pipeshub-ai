@@ -18,6 +18,7 @@ import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { isUserOrgAdmin } from '../services/user-admin.service';
 import { audit } from '../../../libs/services/audit';
+import { withoutHiddenEmail } from '../utils/hide-email';
 import { auditMemberships, foundGroupIds } from '../utils/user-audit';
 
 const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
@@ -428,12 +429,14 @@ export class UserGroupController {
       }
     }
 
-    const users = userDocs.map((u) => ({
-      _id: u._id,
-      fullName: u.fullName ?? null,
-      email: u.email ?? null,
-      profilePicture: dpMap.get(u._id) ?? null,
-    }));
+    const users = userDocs.map((u) =>
+      withoutHiddenEmail({
+        _id: u._id,
+        fullName: u.fullName ?? null,
+        email: u.email ?? null,
+        profilePicture: dpMap.get(u._id) ?? null,
+      }),
+    );
 
     res.status(200).json({
       users,
