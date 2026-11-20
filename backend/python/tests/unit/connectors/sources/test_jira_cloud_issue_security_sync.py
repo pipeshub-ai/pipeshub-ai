@@ -1130,7 +1130,7 @@ def test_a_role_group_actor_whose_members_are_not_known_leaves_the_role_unread(a
 
 @pytest.mark.asyncio
 async def test_the_sync_keeps_a_role_whose_group_actor_it_cannot_resolve() -> None:
-    """The role is not written with that group's members missing: its stored members stay, the project counts as failed,
+    """The role is not written with that group's members missing: its stored members stay, the project is reported failed,
     and the level readers hold no members for it (unknown, so no one reads a leveled issue alone through it)."""
     c = _connector()
     roles = _resp(200, {"Developers": "https://x.atlassian.net/rest/api/3/project/PROJ/role/10002"})
@@ -1140,7 +1140,9 @@ async def test_the_sync_keeps_a_role_whose_group_actor_it_cannot_resolve() -> No
     c._call_with_retry = AsyncMock(side_effect=[roles, role])
     users = {u.source_user_id: u for u in _users()}
     key, project_roles, failed = await c._fetch_project_roles("PROJ", {}, users, {"group-1": [_users()[0]]})
-    assert (key, project_roles, failed) == ("PROJ", [], True)
+    assert (key, project_roles) == ("PROJ", [])
+    # Held for the caller, which reports the project as failed unless the unread bound closes the role.
+    assert [(k, r.source_role_id, g) for k, r, _, g in c._roles_unread] == [("PROJ", "PROJ_10002", "Renamed devs")]
     assert ("role", "PROJ_10002") in c._kept_after_refusal
 
 
@@ -4196,20 +4198,31 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
     removed: the group is written with no members and the role with the members read. Its level readers stay unknown."""
 
     @staticmethod
-    async def _role_sync(points: _KeptSyncPoints, *, short_user_read: bool = False, unread: bool = True) -> JiraConnector:
+    async def _role_sync(points: _KeptSyncPoints, *, short_user_read: bool = False, unread: bool = True,
+                         write_fails: bool = False, notice: NotificationOutcome = NotificationOutcome.SENT) -> JiraConnector:
         c = _connector()
         c._user_read_unfinished = short_user_read
         c._has_stored_access = AsyncMock(return_value=True)  # stored members, which a short user read keeps
         c.issues_sync_point, c.notify = points, AsyncMock()
+        c.notify_and_wait = AsyncMock(return_value=notice)
         c.data_source = MagicMock()
-        c.data_entities_processor.on_new_app_roles = AsyncMock()
+        c.data_entities_processor.on_new_app_roles = AsyncMock(side_effect=RuntimeError("graph down") if write_fails else None)
         c._call_with_retry = AsyncMock(side_effect=[
             _resp(200, {"Developers": "https://x.atlassian.net/rest/api/3/project/PROJ/role/10002"}),
             _resp(200, {"name": "Developers", "actors": [
                 {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}},
                 *([{"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "group-unread"}}] if unread else [])]})])
-        await c._sync_project_roles(["PROJ"], _users(), {"group-unread": None})
+        with contextlib.suppress(RuntimeError) if write_fails else contextlib.nullcontext():
+            await c._sync_project_roles(["PROJ"], _users(), {"group-unread": None})
         return c
+
+    @staticmethod
+    def _preserved(c: JiraConnector) -> list[str]:
+        return [n.kwargs["message"] for n in c.notify.await_args_list if "couldn't sync project roles" in n.kwargs["title"]]
+
+    @staticmethod
+    def _closed_notices(c: JiraConnector) -> list[str]:
+        return [n.kwargs["message"] for n in c.notify_and_wait.await_args_list]
 
     @staticmethod
     def _written(c: JiraConnector) -> dict[str, list[str]]:
@@ -4222,9 +4235,12 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
         for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
             c = await self._role_sync(points)
             assert self._written(c) == {}, "a transient failure keeps the stored members"
+            assert self._preserved(c) and "PROJ" in self._preserved(c)[0], "kept, and reported as preserved"
         c = await self._role_sync(points)
         assert self._written(c) == {"PROJ_10002": ["acc-1"]}  # the stored members are not kept: only those read now
-        assert [n.kwargs["title"] for n in c.notify.await_args_list if "removed the stored members" in n.kwargs["title"]]
+        assert self._preserved(c) == [], "a closed role is not reported as preserved"
+        (notice,) = self._closed_notices(c)
+        assert "Developers" in notice and "saved with the members read this sync" in notice
         assert "PROJ_10002" not in c._role_members  # its level readers stay unknown, so leveled issues wait
 
     @pytest.mark.asyncio
@@ -4233,19 +4249,20 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
         for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
             await self._role_sync(points)
         c = _connector()
-        c.issues_sync_point, c.notify = points, AsyncMock()
-        c.data_entities_processor.on_new_app_roles = AsyncMock()
+        c.issues_sync_point = points
         assert await c._unread_streaks("role", set(), {"PROJ_10002"}) == {}
         c = await self._role_sync(points)
         assert self._written(c) == {}, "one failure after a full read is transient again"
 
     @staticmethod
-    async def _group_sync(points: _KeptSyncPoints, *, short_user_read: bool = False, unread: bool = True) -> JiraConnector:
+    async def _group_sync(points: _KeptSyncPoints, *, short_user_read: bool = False, unread: bool = True,
+                          write_fails: bool = False, notice: NotificationOutcome = NotificationOutcome.SENT) -> JiraConnector:
         c = _connector()
         c._user_read_unfinished = short_user_read
         c._has_stored_access = AsyncMock(return_value=True)
         c.issues_sync_point, c.notify = points, AsyncMock()
-        c.data_entities_processor.on_new_user_groups = AsyncMock()
+        c.notify_and_wait = AsyncMock(return_value=notice)
+        c.data_entities_processor.on_new_user_groups = AsyncMock(side_effect=RuntimeError("graph down") if write_fails else None)
         c._fetch_groups = AsyncMock(return_value=([{"groupId": "group-1", "name": "devs"}], False))
         c._fetch_group_members = AsyncMock(return_value=([], False) if unread else (["acc-1"], True))
         await c._sync_user_groups(_users())
@@ -4261,10 +4278,10 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
         ((group, members),) = c.data_entities_processor.on_new_user_groups.await_args.args[0]
         assert (group.source_user_group_id, members) == ("group-1", [])
         assert c._group_members.get("group-1") is None  # unknown to level readers, not "no members"
-        (notice,) = c.notify.await_args_list  # the owner is told on the sync that closes it
-        assert "devs" in notice.kwargs["message"] and "5 syncs in a row" in notice.kwargs["message"]
+        (notice,) = self._closed_notices(c)  # the owner is told on the sync that closes it
+        assert "devs" in notice and "5 syncs in a row" in notice
         c = await self._group_sync(points)
-        assert c.data_entities_processor.on_new_user_groups.await_count == 1 and c.notify.await_count == 0, \
+        assert c.data_entities_processor.on_new_user_groups.await_count == 1 and self._closed_notices(c) == [], \
             "still closed on the next unread sync, and told once"
 
     @pytest.mark.asyncio
@@ -4288,6 +4305,34 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
         written = [(g.source_user_group_id, m) for call in c.data_entities_processor.on_new_user_groups.await_args_list
                    for g, m in call.args[0]]
         assert written == [("group-1", [])]  # closed on the last sync, a short user read or not
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["role", "user_group"])
+    @pytest.mark.parametrize("failure", ["write", "notice"])
+    async def test_a_close_is_told_once_and_only_after_it_was_saved(self, kind: str, failure: str) -> None:
+        """A close whose write fails, or whose notice is not delivered, is told on the next close; then never again."""
+        points = _KeptSyncPoints()
+        sync = self._role_sync if kind == "role" else self._group_sync
+        for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
+            await sync(points)
+        c = await (sync(points, write_fails=True) if failure == "write" else sync(points, notice=NotificationOutcome.FAILED))
+        assert len(self._closed_notices(c)) == (0 if failure == "write" else 1), "nothing is told before the write"
+        c = await sync(points)
+        assert len(self._closed_notices(c)) == 1, "told after the next close was saved"
+        c = await sync(points)
+        assert self._closed_notices(c) == [], "and only once"
+
+    @pytest.mark.asyncio
+    async def test_a_full_read_then_a_new_close_is_told_again(self) -> None:
+        points = _KeptSyncPoints()
+        for _ in range(UNREAD_SYNCS_BEFORE_CLOSE):
+            await self._group_sync(points)
+        await self._group_sync(points, unread=False)
+        for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
+            c = await self._group_sync(points)
+            assert self._closed_notices(c) == []
+        c = await self._group_sync(points)
+        assert len(self._closed_notices(c)) == 1
 
     @pytest.mark.asyncio
     async def test_a_count_that_cannot_be_saved_closes_nothing_and_the_sync_goes_on(self) -> None:

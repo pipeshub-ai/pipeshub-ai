@@ -653,8 +653,9 @@ class JiraConnector(BaseConnector):
         # groups are unknown. They are noted as seen before run_sync returns, so a full
         # sync's unlink leaves them alone without the refusal making every full sync incomplete.
         self._kept_after_refusal: list[tuple[str, str]] = []
-        # Roles this sync held back for a group whose members are not known: (role, the members that were read, the group).
-        self._roles_unread: list[tuple[AppRole, list[AppUser], str]] = []
+        # Roles this sync held back for a group whose members are not known: (project key, role, the members that were read,
+        # the group). ``_sync_project_roles`` reports their projects as failed unless the unread bound closes them.
+        self._roles_unread: list[tuple[str, AppRole, list[AppUser], str]] = []
         # This sync's users-and-roles reads, which the later steps of run_sync rely on:
         # the stored app users and deactivated accounts (_fetch_users) decide the withdraw,
         # and the application-role mapping is read once and reused for project access.
@@ -3912,10 +3913,6 @@ class JiraConnector(BaseConnector):
                 user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
             # After the short-read filter: the stored members it would keep are what the bound drops.
             user_groups_batch.extend(closed_groups)
-            await self._notify_unread_closed(
-                "groups", [group.name for group, _ in closed_groups
-                           if closing.get(group.source_user_group_id) == UNREAD_SYNCS_BEFORE_CLOSE],
-                NotificationType.CONNECTOR_GROUP_SYNC_ERROR)
 
             # One transaction per group, as the Confluence connector writes them: a large
             # site's groups in a single transaction (one user lookup per membership) outlive
@@ -3925,6 +3922,11 @@ class JiraConnector(BaseConnector):
                     await self.data_entities_processor.on_new_user_groups([entry])
             else:
                 self.logger.info("ℹ️ No groups with valid members to sync")
+            # After the writes: the owner is told only what was saved.
+            await self._tell_unread_closed(
+                "user_group", {g.source_user_group_id: g.name for g, _ in closed_groups if not closing[g.source_user_group_id]},
+                NotificationType.CONNECTOR_GROUP_SYNC_ERROR, "groups",
+                "Their stored members were removed and they were saved with none, until a sync reads them in full.")
 
             # A list cut short may miss a group that took a name since: no name resolves then.
             self._group_ids_by_name = {} if fetch_failed else group_ids_by_name
@@ -4114,8 +4116,9 @@ class JiraConnector(BaseConnector):
         """Fetch a project's roles + actors and build ``(AppRole, members)`` tuples.
 
         Returns ``(project_key, roles, failed)``. A role that includes a group whose
-        members could not be read is left out (keeping its stored members) and marks
-        the project as failed.
+        members could not be read is left out (keeping its stored members) and held in
+        ``_roles_unread``: the caller marks its project as failed unless the unread bound
+        closes it.
         """
         project_roles: list[tuple[AppRole, list[AppUser]]] = []
         role_skipped = False
@@ -4191,8 +4194,7 @@ class JiraConnector(BaseConnector):
                             f"members of group '{unreadable_group}' could not be read"
                         )
                         self._kept_after_refusal.append(("role", f"{project_key}_{role_id}"))
-                        self._roles_unread.append((app_role, member_users, unreadable_group))
-                        role_skipped = True
+                        self._roles_unread.append((project_key, app_role, member_users, unreadable_group))
                         continue
 
                     project_roles.append((app_role, member_users))
@@ -4212,12 +4214,12 @@ class JiraConnector(BaseConnector):
             self._note_unread(None)
             return project_key, project_roles, True
 
-    async def _unread_streaks(self, kind: str, unread: set[str], read: set[str]) -> dict[str, int]:
+    async def _unread_streaks(self, kind: str, unread: set[str], read: set[str]) -> dict[str, bool]:
         """Count, per ``kind`` (``user_group`` or ``role``), the syncs in a row that left each one unread, saved across
-        syncs; one read in full starts again at none. Returns those unread for ``UNREAD_SYNCS_BEFORE_CLOSE`` syncs or more,
-        with their count:
-        a transient failure keeps the stored members, a lasting one does not. When the count cannot be read or saved,
-        nothing is closed this sync and the group and role sync goes on."""
+        syncs; one read in full starts again at none and is told again if it closes later. Returns those unread for
+        ``UNREAD_SYNCS_BEFORE_CLOSE`` syncs or more, each with whether the owner was told (``_tell_unread_closed``): a
+        transient failure keeps the stored members, a lasting one does not. When the count cannot be read or saved, nothing
+        is closed this sync and the group and role sync goes on."""
         try:
             state = (await self.issues_sync_point.read_sync_point(UNREAD_STREAKS_KEY)) or {}
             try:
@@ -4226,31 +4228,53 @@ class JiraConnector(BaseConnector):
                 streaks = {}
             if not isinstance(streaks, dict):
                 streaks = {}
+            told = set(self._told_unread_closed(state, kind))
             now = {k: v for k, v in streaks.items() if k not in read and isinstance(v, int)}
             now.update({k: now.get(k, 0) + 1 for k in unread})
-            if now != streaks:
-                await self.issues_sync_point.update_sync_point(
-                    UNREAD_STREAKS_KEY, {**state, kind: json.dumps(now, sort_keys=True)})
+            told_now = told - read
+            if now != streaks or told_now != told:
+                await self.issues_sync_point.update_sync_point(UNREAD_STREAKS_KEY, {
+                    **state, kind: json.dumps(now, sort_keys=True), f"{kind}_told": json.dumps(sorted(told_now))})
         except Exception as e:
             self.logger.warning(f"Could not count the syncs that left a {kind} unread: {e}")
             return {}
-        return {k: now[k] for k in unread if now[k] >= UNREAD_SYNCS_BEFORE_CLOSE}
+        return {k: k in told_now for k in unread if now[k] >= UNREAD_SYNCS_BEFORE_CLOSE}
 
-    async def _notify_unread_closed(self, what: str, names: list[str], notification_type: NotificationType) -> None:
-        """Tell the connector's owner, on the sync that first closes them, which groups or roles lost their stored members."""
+    @staticmethod
+    def _told_unread_closed(state: dict[str, Any], kind: str) -> list[str]:
+        try:
+            told = json.loads(state.get(f"{kind}_told") or "[]")
+        except (TypeError, ValueError):
+            told = []
+        return [str(t) for t in told] if isinstance(told, list) else []
+
+    async def _tell_unread_closed(
+        self, kind: str, names: dict[str, str], notification_type: NotificationType, what: str, outcome_text: str,
+    ) -> None:
+        """Tell the connector's owner which groups or roles a sync closed (``_unread_streaks``), once each: an id is marked
+        told only after the notice was sent, so a notice that was not sent goes out with the next close."""
         if not names:
             return
-        preview = ", ".join(sorted(names)[:10]) + (f", and {len(names) - 10} more" if len(names) > 10 else "")
-        await self.notify(
+        listed = sorted(names.values())
+        preview = ", ".join(listed[:10]) + (f", and {len(listed) - 10} more" if len(listed) > 10 else "")
+        outcome = await self.notify_and_wait(
             type=notification_type,
             severity=NotificationSeverity.WARNING,
-            title=self._notification_title(f"removed the stored members of {what} it could not read"),
+            title=self._notification_title(f"stopped keeping the stored members of {what} it could not read"),
             message=(
                 f"Jira {what} whose members could not be read for {UNREAD_SYNCS_BEFORE_CLOSE} syncs in a row: {preview}. "
-                "Their stored members were removed, so no one Jira removed from them keeps access through them. Their "
-                "members are written again on the next sync that reads them in full."
+                f"{outcome_text} So no one Jira removed from them keeps access through them."
             ),
         )
+        if outcome is not NotificationOutcome.SENT:
+            self.logger.info("The notice of closed %s was not delivered (%s); the next close sends it", what, outcome.value)
+            return
+        try:
+            state = (await self.issues_sync_point.read_sync_point(UNREAD_STREAKS_KEY)) or {}
+            told = sorted({*self._told_unread_closed(state, kind), *names})
+            await self.issues_sync_point.update_sync_point(UNREAD_STREAKS_KEY, {**state, f"{kind}_told": json.dumps(told)})
+        except Exception as e:
+            self.logger.warning(f"Could not record that the closed {what} were notified: {e}")
 
     def _role_actor_group_id(self, actor: dict[str, Any]) -> Optional[str]:
         """A group actor's id: ``actorGroup.groupId``, where Get project role for project documents it ("As a group's name can
@@ -4352,16 +4376,20 @@ class JiraConnector(BaseConnector):
             total_roles += len(project_roles)
             total_members += sum(len(members) for _, members in project_roles)
         closed = await self._unread_streaks(
-            "role", {role.source_role_id for role, _, _ in self._roles_unread}, {role.source_role_id for role, _ in roles_to_sync})
+            "role", {role.source_role_id for _, role, _, _ in self._roles_unread}, {role.source_role_id for role, _ in roles_to_sync})
         closed_roles: list[tuple[AppRole, list[AppUser]]] = []
-        for role, members, group in self._roles_unread:
-            if role.source_role_id in closed:
-                # Its level readers stay unknown (no ``_role_members`` entry): issues that read through it wait.
-                self.logger.error(
-                    f"Role {role.name}: the members of its group '{group}' could not be read for {UNREAD_SYNCS_BEFORE_CLOSE} "
-                    "syncs in a row; writing it with the members that were read, so no one Jira removed keeps access"
-                )
-                closed_roles.append((role, members))
+        for project_key, role, members, group in self._roles_unread:
+            if role.source_role_id not in closed:
+                # Its stored members are kept this sync, as the failure notice says.
+                if project_key not in failed_project_keys:
+                    failed_project_keys.append(project_key)
+                continue
+            # Its level readers stay unknown (no ``_role_members`` entry): issues that read through it wait.
+            self.logger.error(
+                f"Role {role.name}: the members of its group '{group}' could not be read for {UNREAD_SYNCS_BEFORE_CLOSE} "
+                "syncs in a row; writing it with the members that were read, so no one Jira removed keeps access"
+            )
+            closed_roles.append((role, members))
 
         if failed_project_keys:
             preview = ", ".join(failed_project_keys[:10])
@@ -4387,9 +4415,6 @@ class JiraConnector(BaseConnector):
             roles_to_sync = await self._without_stored_members("role", roles_to_sync)
         # After the short-read filter: the stored members it would keep are what the bound drops.
         roles_to_sync.extend(closed_roles)
-        await self._notify_unread_closed(
-            "project roles", [role.name for role, _ in closed_roles if closed.get(role.source_role_id) == UNREAD_SYNCS_BEFORE_CLOSE],
-            NotificationType.CONNECTOR_ROLE_SYNC_ERROR)
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
@@ -4399,6 +4424,12 @@ class JiraConnector(BaseConnector):
             )
         else:
             self.logger.info("ℹ️ No project roles to sync")
+        # After the write: the owner is told only what was saved.
+        await self._tell_unread_closed(
+            "role", {role.source_role_id: role.name for role, _ in closed_roles if not closed[role.source_role_id]},
+            NotificationType.CONNECTOR_ROLE_SYNC_ERROR, "project roles",
+            "They were saved with the members read this sync; the members of the group that could not be read stay out "
+            "until a sync reads it in full.")
 
     async def _sync_project_lead_roles(
         self,
