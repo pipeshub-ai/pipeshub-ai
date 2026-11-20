@@ -6553,6 +6553,7 @@
     "submit": "Submit",
     "needReply": "Need a reply? Contact support",
     "success": "Thanks, we received your feedback.",
+    "pending": "The email to {{email}} is taking longer than usual. If you don't hear back, contact us.",
     "submitError": "Could not submit. Please try again.",
     "descriptionTooShort": "Please add a bit more detail (at least 10 characters).",
     "invalidType": "That file type is not supported.",

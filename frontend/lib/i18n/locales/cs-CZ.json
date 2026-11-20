@@ -6717,6 +6717,7 @@
     "submit": "Odeslat",
     "needReply": "Potřebujete odpověď? Kontaktujte podporu",
     "success": "Děkujeme, vaši zpětnou vazbu jsme obdrželi.",
+    "pending": "E-mail na adresu {{email}} se odesílá déle než obvykle. Pokud se vám nikdo neozve, kontaktujte nás.",
     "submitError": "Odeslání se nezdařilo. Zkuste to prosím znovu.",
     "descriptionTooShort": "Přidejte prosím trochu více podrobností (alespoň 10 znaků).",
     "invalidType": "Tento typ souboru není podporován.",

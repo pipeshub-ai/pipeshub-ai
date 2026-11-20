@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   submit: vi.fn(),
   getContext: vi.fn(),
   success: vi.fn(),
+  warning: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -18,7 +19,7 @@ vi.mock('../../api', () => ({
 }));
 
 vi.mock('@/lib/store/toast-store', () => ({
-  toast: { success: mocks.success, warning: vi.fn(), error: vi.fn() },
+  toast: { success: mocks.success, warning: mocks.warning, error: vi.fn() },
 }));
 
 vi.mock('../../store', async () => {
@@ -105,6 +106,17 @@ describe('SendFeedbackDialog', { timeout: 15000 }, () => {
     submitFeedback();
 
     await waitFor(() => expect(mocks.success).toHaveBeenCalledWith('feedback.success'));
+    expect(useFeedbackDialogStore.getState().isOpen).toBe(false);
+  });
+
+  it('says the email is still sending, not that it was received, when the mail server is slow', async () => {
+    mocks.submit.mockResolvedValue({ outcome: 'pending' });
+    renderOpen();
+
+    submitFeedback();
+
+    await waitFor(() => expect(mocks.warning).toHaveBeenCalledWith('support.result.pendingTitle', expect.anything()));
+    expect(mocks.success).not.toHaveBeenCalled();
     expect(useFeedbackDialogStore.getState().isOpen).toBe(false);
   });
 

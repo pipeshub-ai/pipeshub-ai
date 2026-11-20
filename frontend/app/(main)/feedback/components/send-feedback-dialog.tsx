@@ -220,7 +220,14 @@ export function SendFeedbackDialog() {
         await showEmailInstead(trimmed);
         return;
       }
-      toast.success(t('feedback.success'));
+      if (outcome === 'pending') {
+        // The mail server is slow: the email may still arrive, so this is not "received" yet.
+        toast.warning(t('support.result.pendingTitle'), {
+          description: t('feedback.pending', { email: context?.supportEmail ?? '' }),
+        });
+      } else {
+        toast.success(t('feedback.success'));
+      }
       close();
       reset();
     } catch {
