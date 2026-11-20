@@ -19,6 +19,7 @@ Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions
 - [Setting Up the Development Environment](#setting-up-the-development-environment)
 - [Project Architecture](#project-architecture)
 - [Contribution Workflow](#contribution-workflow)
+- [Contributor License Agreement](#contributor-license-agreement)
 - [Code Style Guidelines](#code-style-guidelines)
 - [Testing](#testing)
 - [Community Guidelines](#community-guidelines)
@@ -276,12 +277,24 @@ In Docker (`./install.sh --build`), Node serves the API and the built UI togethe
    - Provide a clear description of the changes
    - Reference any related issues
    - Add screenshots if applicable
+9. **Sign the [Contributor License Agreement](CLA.md)** when the CLA Assistant bot asks, on your first pull request (see below)
 
 Pull requests from forks run the integration tests without repository secrets:
 CI runs only the helper unit tests under `integration-tests/unit/`. A maintainer
 runs the full suite on a reviewed commit using *Run workflow* on
 `integration-tests.yml` with that commit's hash (see
 [integration-tests/README.md](integration-tests/README.md)).
+
+## Contributor License Agreement
+
+Before we can merge your first pull request, you need to sign our [Contributor License Agreement](CLA.md) (CLA). You keep the copyright to your work; the CLA gives PipesHub a license to use and distribute it.
+
+Signing takes a minute. The CLA Assistant bot comments on your pull request with a link; follow it, sign in with GitHub and select **I agree**. You only sign once.
+
+If the `license/cla` check is still failing after you signed:
+
+- Select **recheck** in the bot's comment; that re-runs the check.
+- Make sure the email in your commits is linked to your GitHub account ([GitHub's guide](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/adding-an-email-address-to-your-github-account)). Commits made with an unlinked email can't be matched to your signature. Fix the email with `git config user.email`, then amend or rebase your commits and push again.
 
 ## Code Style Guidelines
 
