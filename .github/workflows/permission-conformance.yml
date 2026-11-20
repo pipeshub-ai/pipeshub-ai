@@ -162,7 +162,8 @@ jobs:
             pytest_args: -p no:logging --timeout=3000
             allow: test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]
           # The Knowledge Hub conformance again with Neo4j browsing by the legacy browse (KH_BROWSE_MODE=legacy, the opt-out from the default
-          # split browse, docs/knowledge-hub-browse.md), Neo4j only: the other stores have no browse mode. A second pass, outside the once-each split above; its two shards hold each test once.
+          # split browse, docs/knowledge-hub-browse.md), Neo4j only: the other stores have no browse mode. A second pass, outside the once-each
+          # split above; its two shards hold each test once.
           - shard: 8
             suite: tests.permissions
             tests: tests/permissions/test_conformance_kh.py
