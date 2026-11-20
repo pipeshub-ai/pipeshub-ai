@@ -3900,7 +3900,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 raw = await offload_if_large(decode_message, value_str)
                 return await open_stream_message(stream_name, raw, StreamMessage)
             except EnvelopeRejected as e:
-                self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
+                self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.describe())
             except (json.JSONDecodeError, ValidationError, TypeError) as e:
                 # The type only: a ValidationError's text quotes the payload's values. The cause names nesting or a
                 # too-long number behind a JSONDecodeError (decode_json).

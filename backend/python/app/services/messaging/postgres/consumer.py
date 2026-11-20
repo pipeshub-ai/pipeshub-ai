@@ -766,7 +766,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                     timing.note(outcome="skipped", reason="duplicate_envelope")
                     return True, False, None, ""
                 except EnvelopeRejected as e:
-                    timing.note(reason="envelope_rejected", code=e.reason)
+                    timing.note(reason="envelope_rejected", code=e.reason, **e.facts())
                     stale = await self._read_stale_for_sink(d, raw) if e.reason == "stale" else None
                     return False, True, stale, f"envelope rejected: {e.reason}"
                 if parsed is None:

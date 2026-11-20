@@ -276,6 +276,43 @@ async def test_stale_signature_follows_the_mode(monkeypatch, caplog) -> None:
             envelope.max_age_seconds()
 
 
+async def test_a_dropped_stale_control_message_names_its_event_type_and_record(monkeypatch) -> None:
+    """A stale message dropped in enforce mode is counted by reason and event type and says which record it was about."""
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
+    old = _msg({"orgId": "org_b", "recordId": "rec-lost"}, issued_at=int(time.time()) - 901, event_type="purgePaidResults")
+    counter = envelope.REJECTED._metric.labels(TOPIC, "stale", "purgePaidResults")
+    by_type = envelope.STALE_BY_TYPE._metric.labels(TOPIC, "purgePaidResults")
+    before, before_type = counter._value.get(), by_type._value.get()
+    with pytest.raises(EnvelopeRejected) as dropped:
+        await _open(old)
+    assert counter._value.get() == before + 1 and by_type._value.get() == before_type + 1
+    assert (dropped.value.event_type, dropped.value.record_id) == ("purgePaidResults", "rec-lost")
+    assert dropped.value.facts() == {"event_type": "purgePaidResults", "record_id": "rec-lost"}
+    assert "reason=stale" in dropped.value.describe() and "age_seconds=9" in dropped.value.describe()
+
+
+async def test_a_dropped_future_message_names_its_event_type_and_record() -> None:
+    future = _msg({"orgId": "org_b", "recordId": "rec-early"}, issued_at=int(time.time()) + 3600, event_type="purgePaidResults")
+    counter = envelope.REJECTED._metric.labels(TOPIC, "future", "purgePaidResults")
+    before = counter._value.get()
+    with pytest.raises(EnvelopeRejected) as dropped:
+        await _open(future)
+    assert dropped.value.facts() == {"event_type": "purgePaidResults", "record_id": "rec-early"}
+    assert counter._value.get() == before + 1
+
+
+async def test_a_rejection_before_the_signature_verified_never_names_an_event_type(monkeypatch) -> None:
+    """The event type of a message that failed verification is the sender's claim: it is not a metric label or a log field."""
+    forged = _msg(issued_at=int(time.time()) - 901, event_type="purgePaidResults")
+    forged["eventType"] = "attacker-chosen"
+    counter = envelope.REJECTED._metric.labels(TOPIC, "bad_signature", "")
+    before = counter._value.get()
+    with pytest.raises(EnvelopeRejected) as dropped:
+        await _open(forged)
+    assert dropped.value.reason == "bad_signature" and dropped.value.facts() == {}
+    assert counter._value.get() == before + 1
+
+
 async def test_stripped_ctx_is_counted_as_stripped_while_signing_is_on(monkeypatch) -> None:
     legacy = {"eventType": "x", "payload": {"orgId": "org_b"}}
     stripped, missing = envelope.STRIPPED._metric.labels(TOPIC), envelope.CTX_MISSING._metric.labels(TOPIC)
