@@ -1597,9 +1597,12 @@ index graph.edges_by_neighbour_out on graph.edges unique=false exclusion=false v
 index graph.edges_by_target on graph.edges unique=false exclusion=false valid=true def=f87b2d07ea6c1bb8dcebe54000a174c1
 index graph.edges_pkey on graph.edges unique=true exclusion=false valid=true def=cb40875fb7aeea0903e6713524de17e3
 index graph.nodes_app_by_id on graph.nodes unique=false exclusion=false valid=true def=9fb2c424ad701514ef37f152dfa19f27
-index graph.nodes_block_name on graph.nodes unique=false exclusion=false valid=true def=712c4d01207783fbc63455b118dd712a
-index graph.nodes_block_record on graph.nodes unique=false exclusion=false valid=true def=d1db3ecf0bfd168db0aac0dee2e02bd6
-index graph.nodes_codefile_path on graph.nodes unique=false exclusion=false valid=true def=939e3bb2da3568e09cbddf04a3ac3da6
+index graph.nodes_block_name on graph.nodes unique=false exclusion=false valid=true def=49619dfd1628d521678017dab7b7b6fa
+index graph.nodes_block_name_seek on graph.nodes unique=false exclusion=false valid=true def=4bea3d944dffb1d889ce0cb3ed2d1608
+index graph.nodes_block_record on graph.nodes unique=false exclusion=false valid=true def=49c4a104b5d1bd103fe19163130fe052
+index graph.nodes_block_record_seek on graph.nodes unique=false exclusion=false valid=true def=2b07db6b24c3b329336413fe99638f6c
+index graph.nodes_codefile_path on graph.nodes unique=false exclusion=false valid=true def=a0ca69de02117c30b4a5b6c5f666ed6e
+index graph.nodes_codefile_path_seek on graph.nodes unique=false exclusion=false valid=true def=18f176591b162c09abaa39ae9ec26b94
 index graph.nodes_file_path on graph.nodes unique=false exclusion=false valid=true def=73d839b6dcd5439ecd9a5b192b6e5325
 index graph.nodes_group_by_external on graph.nodes unique=false exclusion=false valid=true def=b8bd5c14dc0ab6ce8b252f15de2cf812
 index graph.nodes_group_email on graph.nodes unique=false exclusion=false valid=true def=2cb5691aa86567072a8f53cc8229f0fb

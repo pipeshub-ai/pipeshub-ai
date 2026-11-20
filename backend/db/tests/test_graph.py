@@ -306,9 +306,9 @@ def _uses(plan, index):
 
 
 @pytest.mark.parametrize(("fn", "params", "index"), [
-    ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("rec7", ["recordId", "qualifiedName"], ['"rec7"', '"q777"']), "nodes_block_record"),
-    ("graph.blocks_by_name(%s, %s, %s::text[], %s::jsonb[], true)", ("c1", "n7", ["connectorId"], ['"c1"']), "nodes_block_name"),
-    ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/p7/f7.py", ["orgId"], ['"' + "a" * 24 + '"']), "nodes_codefile_path"),
+    ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("rec7", ["recordId", "qualifiedName"], ['"rec7"', '"q777"']), "nodes_block_record_seek"),
+    ("graph.blocks_by_name(%s, %s, %s::text[], %s::jsonb[], true)", ("c1", "n7", ["connectorId"], ['"c1"']), "nodes_block_name_seek"),
+    ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/p7/f7.py", ["orgId"], ['"' + "a" * 24 + '"']), "nodes_codefile_path_seek"),
 ], ids=["blocks_by_record", "blocks_by_name", "code_files_by_path"])
 def test_a_hot_lookup_uses_its_index_where_the_plain_statement_cannot(rdb, fn, params, index):
     """Row-level security keeps the planner from the expression index of a plain statement (the `->>` operator is not leakproof); the vetted function
@@ -326,7 +326,7 @@ def test_a_hot_lookup_uses_its_index_where_the_plain_statement_cannot(rdb, fn, p
         assert all(_uses(p, index) for p in plans[:1] + plans[-1:]), plans[0] + "\n" + plans[-1]
         assert all("Seq Scan on" not in p for p in plans), "a sequential scan of graph.nodes"
         # the same read as a plain statement, which is what the provider sent before: no key index
-        coll, hot = ("codeFiles", "n.doc->>'filePath' = %s") if index == "nodes_codefile_path" else ("blocks", "n.doc->>'recordId' = %s")
+        coll, hot = ("codeFiles", "n.doc->>'filePath' = %s") if index == "nodes_codefile_path_seek" else ("blocks", "n.doc->>'recordId' = %s")
         plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = %s AND " + hot,
                                                   (coll, "src/p7/f7.py" if coll == "codeFiles" else "rec7"))
         assert not any(_uses(p, index) for p in plain), "the plain statement used the index: the function is not needed on this server"
@@ -524,9 +524,9 @@ def test_a_page_of_a_hot_lookup_reads_one_page_of_matches_from_its_cursor(rdb):
         c.execute("RESET ROLE")
         c.execute("ANALYZE graph.nodes")
         cases = [   # (call with the cursor last, its leading arguments, the plain filter of every match, the index)
-            ("graph.code_files_by_path(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("src/common.py",), "f", "nodes_codefile_path"),
-            ("graph.blocks_by_record(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("big",), "b", "nodes_block_record"),
-            ("graph.blocks_by_name(%s, %s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("c1", "init"), "b", "nodes_block_name"),
+            ("graph.code_files_by_path(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("src/common.py",), "f", "nodes_codefile_path_seek"),
+            ("graph.blocks_by_record(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("big",), "b", "nodes_block_record_seek"),
+            ("graph.blocks_by_name(%s, %s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("c1", "init"), "b", "nodes_block_name_seek"),
         ]
         for call, lead, prefix, index in cases:
             plan = _analyzed(c, A, f"SELECT node_id FROM {call}", (*lead, json.dumps(A), f"{prefix}04999"))

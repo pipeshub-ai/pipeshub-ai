@@ -65,7 +65,7 @@ functions:
 # applied as the provider's own statement applies them, and p_null_absent selects its rule that a null value also matches an absent key.
 # A page continues after p_after (ids ascending), so a read of every match pages by the last id.
 
-  # The blocks of one record (index nodes_block_record: record, then id).
+  # The blocks of one record (index nodes_block_record_seek: record, then id).
   - name: graph.blocks_by_record
     class: read
     scope: org
@@ -94,7 +94,7 @@ functions:
           AND n.id > p_after ORDER BY n.doc->>'recordId', n.id LIMIT p_limit)
         SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'blocks' AND n.id = m.id ORDER BY n.id;
 
-  # The blocks of one connector with one folded name (index nodes_block_name: connector, name, then id).
+  # The blocks of one connector with one folded name (index nodes_block_name_seek: connector, name, then id).
   - name: graph.blocks_by_name
     class: read
     scope: org
@@ -124,7 +124,7 @@ functions:
           AND n.id > p_after ORDER BY n.doc->>'connectorId', n.doc->>'nameFolded', n.id LIMIT p_limit)
         SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'blocks' AND n.id = m.id ORDER BY n.id;
 
-  # The code files of one path (index nodes_codefile_path: path, then id).
+  # The code files of one path (index nodes_codefile_path_seek: path, then id).
   - name: graph.code_files_by_path
     class: read
     scope: org
