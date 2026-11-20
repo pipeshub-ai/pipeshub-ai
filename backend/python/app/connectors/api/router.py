@@ -110,6 +110,7 @@ from app.edition_config import (
     strip_redacted_fields,
     vector_store_rebuild_available,
 )
+from app.connectors.api.connector_stats_cache import connector_stats
 from app.edition_services import get_data_entities_processor_cls
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
@@ -225,7 +226,12 @@ from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.utils.user_lookup import (
+    get_document_or_503,
+    get_org_or_503,
+    get_record_or_503,
+    get_user_or_503,
+)
 
 logger = create_logger("connector_service")
 
@@ -650,7 +656,7 @@ async def _resolve_record_content_response(
         )
 
     connector_id = record.connector_id
-    connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    connector_instance = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
     refuse_connector_state(connector_instance, loaded=True)
 
     container: ConnectorAppContainer = request.app.container
@@ -848,7 +854,7 @@ async def get_record_content_internal(
                 detail="Token missing userId — this endpoint requires a user-bound token",
             )
 
-        record = await graph_provider.get_record_by_id(record_id)
+        record = await get_record_or_503(graph_provider, record_id)
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
@@ -1468,7 +1474,7 @@ async def get_signed_url(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
 
-        record = await graph_provider.get_record_by_id(record_id)
+        record = await get_record_or_503(graph_provider, record_id)
         if not record:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
@@ -1533,7 +1539,7 @@ async def stream_record_internal(
                 detail="Missing orgId in token"
             )
 
-        record_task = graph_provider.get_record_by_id(record_id)
+        record_task = get_record_or_503(graph_provider, record_id)
         org_task = get_org_or_503(graph_provider, org_id)
         record, org = await asyncio.gather(record_task, org_task)
 
@@ -1589,7 +1595,7 @@ async def stream_record_internal(
             return Response(content=buffer or b'', media_type=mime_type)
 
         connector_id = record.connector_id
-        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        connector_instance = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
         if not connector_instance:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
@@ -1692,9 +1698,7 @@ async def download_file(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Get record details
-        record = await graph_provider.get_record_by_id(
-            record_id
-        )
+        record = await get_record_or_503(graph_provider, record_id)
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
@@ -1723,7 +1727,7 @@ async def download_file(
             graph_provider, request.app.container.config_service(), org_id, user_id, connector_id
         )
         # Get connector instance to check scope and existence
-        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        connector_instance = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
         connector_type = connector_instance.get("type", None) if connector_instance else None
         if not connector_instance or connector_type is None:
             raise HTTPException(
@@ -1774,9 +1778,7 @@ async def stream_record(
         user_id = user.get("userId")
 
         org_task = get_org_or_503(graph_provider, org_id)
-        record_task = graph_provider.get_record_by_id(
-            record_id
-        )
+        record_task = get_record_or_503(graph_provider, record_id)
         org, record = await asyncio.gather(org_task, record_task)
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
@@ -2082,7 +2084,7 @@ async def _refuse_connector_state_for_open(graph_provider: IGraphDBProvider, doc
         Connectors.ATTACHMENTS.value, Connectors.CODING_SANDBOX.value,
     ):
         return
-    connector_instance = await graph_provider.get_document(doc.get("connectorId"), CollectionNames.APPS.value)
+    connector_instance = await get_document_or_503(graph_provider, doc.get("connectorId"), CollectionNames.APPS.value)
     refuse_connector_state(connector_instance)
 
 
@@ -3001,8 +3003,7 @@ async def get_connector_stats_endpoint(
             request, graph_provider, connector_registry, connector_id, org_id
         )
 
-        # Fetch stats from graph provider
-        result = await graph_provider.get_connector_stats(org_id, connector_id)
+        result = await connector_stats(graph_provider, org_id, connector_id)
         if result["success"]:
              return {"success": True, "data": result["data"]}
         else:

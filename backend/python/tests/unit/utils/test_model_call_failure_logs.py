@@ -15,10 +15,10 @@ import pytest
 from app.utils import custom_embeddings, embedding_retry
 from app.utils import record_extract as extract_module
 from app.utils.pattern_match import GrepCommandResult, generate_grep_command_via_llm
+from tests.support.log_capture import assert_text_free, failure_line
 from tests.support.provider_errors import (
     MARK,
-    assert_text_free,
-    failure_line,
+    SENTINELS,
     httpx_error,
     openai_error,
     schema_mismatch,
@@ -57,7 +57,7 @@ async def test_each_failed_grep_generation_attempt_is_one_text_free_line(log, er
     lines = [r for r in log.records if r.getMessage() == "grep_generation.failed"]
     assert [r.attempt for r in lines] == [1, 2]
     assert {(r.error_class, r.levelno) for r in lines} == {(error_class, level)}
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_an_unparseable_grep_answer_names_the_parsing_error_type_only(log) -> None:
@@ -74,7 +74,7 @@ async def test_an_unparseable_grep_answer_names_the_parsing_error_type_only(log)
 
     (note,) = [r for r in log.records if "unparseable output" in r.getMessage()]
     assert note.error_type == "ValueError"
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_a_failed_record_extract_returns_the_plain_read_with_one_text_free_line(log) -> None:
@@ -89,8 +89,8 @@ async def test_a_failed_record_extract_returns_the_plain_read_with_one_text_free
         )
 
     assert result["extract"]["error"] == "BadRequestError"
-    assert failure_line(log.records, "record_extract.failed", "bad_request", logging.WARNING)["record_id"] == "r-1"
-    assert_text_free(log.records)
+    assert failure_line(log.records, "record_extract.failed", "bad_request", logging.WARNING, *SENTINELS)["record_id"] == "r-1"
+    assert_text_free(log.records, *SENTINELS)
 
 
 def _flaky(error: Exception) -> Callable[[], str]:
@@ -115,7 +115,7 @@ def test_a_retried_sync_embedding_names_the_type_only(log) -> None:
     assert note.levelno == logging.WARNING
     assert note.error_type == "RateLimitError"
     assert "failed (attempt 1/2): RateLimitError;" in note.getMessage()
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_a_retried_async_embedding_names_the_type_only(log) -> None:
@@ -131,7 +131,7 @@ async def test_a_retried_async_embedding_names_the_type_only(log) -> None:
 
     (note,) = [r for r in log.records if "retrying" in r.getMessage()]
     assert note.error_type == "RateLimitError"
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_an_embedding_error_that_is_not_retried_is_raised_without_a_line(log) -> None:
@@ -162,4 +162,4 @@ def test_a_retried_voyage_embedding_names_the_type_only(log, monkeypatch) -> Non
     (note,) = [r for r in log.records if "retrying" in r.getMessage()]
     assert note.levelno == logging.WARNING
     assert note.error_type == "VoyageAPIError"
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)

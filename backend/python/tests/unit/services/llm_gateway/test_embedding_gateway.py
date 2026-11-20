@@ -22,6 +22,7 @@ from app.services.spend_guard.retry_policy import (
     RetryBudget,
     RetryKind,
 )
+from app.utils import embedding_retry
 
 
 def _status_error(status: int, retry_after: str | None = None) -> openai.APIStatusError:
@@ -29,6 +30,67 @@ def _status_error(status: int, retry_after: str | None = None) -> openai.APIStat
     response = httpx.Response(status, headers=headers, request=httpx.Request("POST", "http://x/v1/embeddings"))
     cls = openai.RateLimitError if status == 429 else openai.InternalServerError
     return cls("failed", response=response, body=None)
+
+
+def _quota_error(code: str = "insufficient_quota") -> openai.RateLimitError:
+    response = httpx.Response(429, request=httpx.Request("POST", "http://x/v1/embeddings"))
+    return openai.RateLimitError(
+        "Error code: 429", response=response, body={"error": {"message": "no credit", "type": code, "code": code}},
+    )
+
+
+@pytest.mark.parametrize("code", ["insufficient_quota", "credit_balance_exhausted"])
+def test_an_empty_balance_is_not_retried_although_it_is_a_429(code: str) -> None:
+    exc = _quota_error(code)
+    assert EmbeddingGateway.retry_kind(exc) is None
+    wrapped = RuntimeError("embedding failed")
+    wrapped.__cause__ = exc
+    assert EmbeddingGateway.retry_kind(wrapped) is None
+    assert not EmbeddingGateway(retry_budget=RetryBudget()).decide(0, exc).retry
+
+
+def test_a_failure_that_only_repeats_the_submitted_text_is_still_retried() -> None:
+    # A provider can echo the request in an error's body or message, and a document may mention a credit balance.
+    response = httpx.Response(503, request=httpx.Request("POST", "http://x/v1/embeddings"))
+    echoed = openai.InternalServerError(
+        "Error code: 503 - could not embed 'insufficient_quota and credit_balance, credit balance is too low'",
+        response=response,
+        body={"error": {"message": "upstream unavailable", "code": "server_error"}, "input": ["credit_balance"]},
+    )
+    assert EmbeddingGateway.retry_kind(echoed) is RetryKind.TRANSIENT
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        # A 5xx is the provider's failure, whatever its message says.
+        (503, "Your credit balance is too low to access the Anthropic API."),
+        # A refusal that quotes the submitted text further in.
+        (400, "Could not process input: 'your credit balance is too low'"),
+    ],
+)
+def test_the_anthropic_sentence_counts_only_as_the_opening_of_a_4xx_refusal(status: int, message: str) -> None:
+    response = httpx.Response(status, request=httpx.Request("POST", "http://x/v1/messages"))
+    cls = openai.InternalServerError if status >= 500 else openai.BadRequestError
+    exc = cls(f"Error code: {status}", response=response, body={"error": {"type": "api_error", "message": message}})
+    assert not embedding_retry.is_quota_exhausted(exc)
+    assert EmbeddingGateway.retry_kind(exc) is (RetryKind.TRANSIENT if status >= 500 else None)
+
+
+def test_anthropic_wording_of_an_empty_balance_is_not_retried() -> None:
+    response = httpx.Response(400, request=httpx.Request("POST", "http://x/v1/messages"))
+    exc = openai.BadRequestError(
+        "Error code: 400",
+        response=response,
+        body={"type": "error", "error": {
+            "type": "invalid_request_error", "message": "Your credit balance is too low to access the Anthropic API.",
+        }},
+    )
+    assert EmbeddingGateway.retry_kind(exc) is None
+
+
+def test_a_rate_limit_is_still_a_throttle() -> None:
+    assert EmbeddingGateway.retry_kind(_status_error(429)) is RetryKind.THROTTLE
 
 
 @pytest.fixture

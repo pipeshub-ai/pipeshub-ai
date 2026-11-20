@@ -34,7 +34,6 @@ Willkommen in unserem Open-Source-Projekt! Wir freuen uns, dass du an einem Beit
 sudo apt update
 sudo apt install python3.12-venv
 sudo apt-get install libreoffice
-sudo apt install libmariadb-dev
 ```
 
 #### Mac

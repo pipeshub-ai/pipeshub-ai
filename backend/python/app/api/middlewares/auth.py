@@ -37,11 +37,22 @@ AUTH_POLICY_ATTR = "__auth_policy__"
 
 # Set only by the regular path from a verified OAuth access token; a service token that
 # arrives carrying them must not be able to pose as an OAuth client.
-_OAUTH_DERIVED_CLAIMS = ("isOAuth", "oauthScopes", "oauthClientId", "knowledgeLimit")
+_OAUTH_DERIVED_CLAIMS = (
+    "isOAuth",
+    "oauthScopes",
+    "oauthClientId",
+    "knowledgeLimit",
+    "actsAsServiceAccount",
+)
 
 #: What the user let a connected app see (``apps`` / ``recordGroups`` /
 #: ``records``), signed into the app's OAuth or personal access token by Node.
 KNOWLEDGE_LIMIT_CLAIM = "knowledgeLimit"
+#: Whether the identity this token acts as is a service account rather than a
+#: person. Set by Node only on a client_credentials token whose application names
+#: one (``oauth_token.service.ts``). Nothing authorises on it; it is for code that
+#: has to treat a machine identity differently from a colleague.
+SERVICE_IDENTITY_CLAIM = "actsAsServiceAccount"
 _KNOWLEDGE_LIMIT_KEYS = ("apps", "recordGroups", "records")
 
 DEFAULT_SESSION_CHECK_TTL_SECONDS = 30.0
@@ -128,6 +139,9 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
     payload["user"] = token
     payload["token_type"] = AuthTokenType.REGULAR.value
     limit = payload.pop(KNOWLEDGE_LIMIT_CLAIM, None)
+    # Dropped unless the client_credentials branch below puts it back, so the
+    # claim on a session or a user grant is never honoured.
+    acts_as_service_account = payload.pop(SERVICE_IDENTITY_CLAIM, None) is True
     if payload.get("tokenType") == "oauth":
         # "".split(" ") is [""]. A token with no scope names is not a grant.
         scopes = str(payload.get("scope") or "").split()
@@ -153,6 +167,7 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
         # it has already issued, so a claim reaching here is never stale.
         if payload.get("userId") == payload.get("client_id") and payload.get("createdBy"):
             payload["userId"] = payload["createdBy"]
+            payload[SERVICE_IDENTITY_CLAIM] = acts_as_service_account
 
     payload["role"] = normalize_auth_role(payload.get("role"))
     return payload
