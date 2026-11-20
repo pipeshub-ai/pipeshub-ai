@@ -472,6 +472,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._offset_fetcher: OffsetFetcher | None = None
         self._remembered_budget_logged = False
         self._fetch_back_task: asyncio.Task | None = None
+        self._fetch_turns = 0
         self._fetch_back_plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
         # Each connector's records in flight per index slot pool, so that
         # while another connector is waiting no one connector can hold more
@@ -2485,7 +2486,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
         planned: dict[object, int] = {}
         buffer_room = self._fairness.buffer_room if self._fairness else None
-        for entity in remembered.entities():
+        entities = remembered.entities()
+        if buffer_room and entities:  # entities sharing a bucket take turns at being first
+            self._fetch_turns += 1
+            entities = entities[self._fetch_turns % len(entities):] + entities[: self._fetch_turns % len(entities)]
+        for entity in entities:
             free = cap - scheduler.pending_count_for(entity)
             shared = buffer_room(entity, scheduler) if buffer_room else None
             chunk = min(cap // 2, remembered.count(entity))

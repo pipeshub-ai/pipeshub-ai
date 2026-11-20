@@ -511,8 +511,10 @@ async def run_pg(
     finally:
         consumer.running = False
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        deliveries = list(consumer._tasks)
+        for delivery in deliveries:
+            delivery.cancel()
+        await asyncio.gather(task, *deliveries, return_exceptions=True)
         if saved_ordered is None:
             os.environ.pop("PG_QUEUE_ORDERED_TOPICS", None)
         else:

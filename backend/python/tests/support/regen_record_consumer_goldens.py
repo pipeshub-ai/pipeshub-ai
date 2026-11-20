@@ -5,6 +5,10 @@ Run it on the commit the goldens are meant to describe (the base commit of the c
 
     PYTHONPATH=. venv/bin/python -m tests.support.regen_record_consumer_goldens
 
+The harness does not exist on the base commit, so make a worktree there (``git worktree add --detach <dir> <base>``), copy
+``tests/support/record_consumer_world.py`` and this module into its ``backend/python/tests/support/``, run the command
+there with the base commit's ``app`` (``PYTHONPATH=.``), and copy the written files back. Do not copy any ``app`` file.
+
 ``tests/unit/services/messaging/test_record_consumer_seam_off.py`` replays the same streams and compares.
 """
 from __future__ import annotations

@@ -284,6 +284,34 @@ async def test_one_plan_asks_a_shared_bucket_for_no_more_than_its_room_in_total(
     assert await planned_total() == 12
 
 
+async def test_connectors_sharing_a_bucket_take_turns_at_being_first_in_the_plan() -> None:
+    async with world.kafka_world(
+        [], fair=world.fair_config(max_per_entity_messages=500, max_buffered_messages=2000), produce=False,
+        consumer_kwargs={"fairness": bundle(buffer_room=lambda key, s: ("org", 12 - s.pending_count_for(key[:1])))},
+    ) as run:
+        from aiokafka.structs import TopicPartition
+
+        tp = TopicPartition("record-events", 0)
+        for c in range(2):
+            for offset in range(30):
+                run.consumer._remembered.remember(("org-0", f"conn-{c}"), tp, c * 100 + offset)
+        asked: list[list[int]] = []
+
+        class Fetcher:
+            async def fetch(self, wanted: dict, **_k: Any) -> tuple[dict, set]:  # noqa: ANN401
+                asked.append(sorted(o for offsets in wanted.values() for o in offsets))
+                return {}, set()
+
+        run.consumer._offset_fetcher = Fetcher()
+        for _ in range(2):
+            await run.consumer._IndexingKafkaConsumer__fetch_back_remembered()  # starts a fetch
+            await asyncio.sleep(0.02)
+            await run.consumer._IndexingKafkaConsumer__fetch_back_remembered()  # takes its result
+    firsts = {offsets[0] // 100 for offsets in asked}
+    assert len(asked) == 2 and all(len(offsets) == 12 for offsets in asked)
+    assert firsts == {0, 1}, "one connector took the bucket's whole room in every plan"
+
+
 async def test_a_plan_without_the_running_bucket_total_asks_for_more_than_twice_the_room(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -385,7 +413,7 @@ async def test_with_no_budget_every_extra_stream_is_read_in_one_pass() -> None:
     assert seen == [len(BASE_STREAMS) + len(EXTRA_STREAMS)]
 
 
-async def one_budget_pass(budget: int, room: int = 2000, offset: int = 0) -> list[str]:
+async def one_budget_pass(budget: int, room: int = 2000, offset: int = 0, batch_size: int = 500) -> list[str]:
     """The streams one read phase reads, with 4 base streams, 40 extra ones and the given budget."""
     from app.services.messaging.redis_streams.indexing_consumer import (
         IndexingRedisStreamsConsumer,
@@ -393,7 +421,7 @@ async def one_budget_pass(budget: int, room: int = 2000, offset: int = 0) -> lis
 
     fairness = bundle(extra_topics=("extra-events",), extra_read_budget=lambda _s: budget)
     config = RedisStreamsConfig(
-        host="h", port=1, client_id="c", group_id="g", topics=[*BASE_STREAMS, *EXTRA_STREAMS], batch_size=500, block_ms=1
+        host="h", port=1, client_id="c", group_id="g", topics=[*BASE_STREAMS, *EXTRA_STREAMS], batch_size=batch_size, block_ms=1
     )
     consumer = IndexingRedisStreamsConsumer(
         logging.getLogger("edges"), config, fair_scheduler_config=world.fair_config(), fairness=fairness
@@ -420,6 +448,12 @@ async def test_a_budget_below_one_batch_or_below_zero_reads_no_extra_stream(budg
     read = await one_budget_pass(budget)  # 44 streams share 2000 places: 45 per stream
     assert [s for s in read if s in EXTRA_STREAMS] == []
     assert [s for s in read if s in BASE_STREAMS] == BASE_STREAMS
+
+
+async def test_the_budget_is_counted_in_entries_a_read_takes_not_in_places_the_buffer_has() -> None:
+    # 44 streams share 2000 places (45 each), but a read takes at most batch_size = 10 entries from a stream
+    read = await one_budget_pass(100, batch_size=10)
+    assert len([s for s in read if s in EXTRA_STREAMS]) == 10
 
 
 async def test_a_short_window_of_extra_streams_only_with_no_budget_left_reads_nothing_and_does_not_fail() -> None:
@@ -590,6 +624,20 @@ async def test_a_bundle_without_claim_steps_claims_as_before() -> None:
         world.generate_messages(world.GOLDEN_SEED, world.GOLDEN_SIZES["pg"]), consumer_kwargs={"fairness": bundle()}
     )
     assert world.summarise(json.loads(json.dumps(trace.to_json()))) == golden("pg")
+
+
+async def test_the_replay_leaves_no_delivery_task_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Slow(world.Handler):
+        async def __call__(self, message: Any) -> Any:  # noqa: ANN401
+            await asyncio.sleep(0.5)
+            async for event in super().__call__(message):
+                yield event
+
+    seen: dict[str, Any] = {}
+    await world.run_pg(
+        world.generate_messages(61, 6), handler=Slow(), max_seconds=0.3, concurrency=3, on_claim=lambda c: seen.update(c=c)
+    )
+    assert all(t.done() for t in seen["c"]._tasks)
 
 
 # -- O-12: the observer ---------------------------------------------------------------------------------------------
