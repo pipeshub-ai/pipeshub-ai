@@ -102,6 +102,12 @@ def after(field_: str, sort_dir: str, direction: str, boundary: dict[str, Any], 
         branches = [f"{key} = {bkp} AND {id_past}", f"{key} {past} {bkp}"]
     if fwd:
         branches.append(f"{lead} IS NULL")
+    if text:
+        # One read in the order of the name index. A reader's row-level security keeps a condition on substring() (not leakproof) out of the index conditions, so each
+        # branch read alone was a scan of the organisation's rows (the planner's pick for the equal-prefix ones) or of the connector's.
+        # shortcut: the read walks the connector's name index from its start to the boundary (rows before it, not a seek); upgrade to a stored, indexed prefix column
+        # if pages deep into a large connector by name must be fast.
+        return [f"({') OR ('.join(branches)})"]
     return branches
 
 

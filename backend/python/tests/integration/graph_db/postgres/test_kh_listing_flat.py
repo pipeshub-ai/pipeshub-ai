@@ -76,6 +76,37 @@ async def test_a_connector_listed_while_kg_does_not_serve_it_lists_the_same_rows
     assert served == walked == [f"r{i:04d}" for i in range(7)] and first["total"] == again["total"] == 7
 
 
+@pytest.mark.parametrize("hidden", [False, True], ids=["plain", "walked"])
+async def test_a_first_page_that_reads_its_whole_listing_counts_its_total_from_it_without_a_second_read(pg_db, monkeypatch, hidden) -> None:
+    """300 records, 15 readable. A search that matches ten names reads its whole listing in the page's first window: the total (5, of the readable ones) and the counts are the
+    rows the window admitted, and the connector is not read again to count them (a rare word was read whole twice, once to find its rows and once to count them). A listing that
+    does not end in the page's windows (no search), and a page after a boundary, still count by the count. ``walked``: a matching readable record no class decides (a restamp hides
+    it) is in the total as the access check admits it, in the window as in the count."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 300, readable=15)
+    if hidden:
+        await _admin("UPDATE kg.records SET fence_job = 1 WHERE org_id = $1 AND id = 'r0012' AND coll = 3", org)
+    counted: list[bool] = []
+    real = kh_listing.KhListingMixin._kh_flat_exact
+
+    async def spy(self, *a, **kw) -> object:
+        counted.append(True)
+        return await real(self, *a, **kw)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_flat_exact", spy)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, filters={"search_query": "r001"})
+    matched = [f"r{i:04d}" for i in range(10, 15)]
+    assert [r["id"] for r in page["rows"]] == matched and page["total"] == 5 and page["counts"] == {"record": 5} and not page.get("totalCapped")
+    assert not counted
+    with ctx(org):
+        whole = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=3)
+    assert whole["total"] == 15 and len(counted) == 1
+    after = {k: whole["rows"][-1][k] for k in ("nullRank", "sortKey", "id")}
+    with ctx(org):
+        later = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, after=after, filters={"search_query": "r001"})
+    assert [r["id"] for r in later["rows"]] == matched and later["total"] == 5 and len(counted) == 2
+
+
 async def test_a_connector_with_no_copy_is_refused(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 3, promote=False)
@@ -385,6 +416,43 @@ async def test_the_indexing_status_filter_probes_each_rows_node_and_never_joins_
         assert plan_gate.scans(plan, "nodes") and not joined, f"indexing status ({'after' if analyzed else 'before'} ANALYZE) joins the organisation's nodes: {joined}"
     finally:
         await con.close()
+
+
+def _rows_read(plan: object, relation: str) -> int:
+    """The rows the plan's reads of ``relation`` looked at: what each returned and what its filter removed, over every loop."""
+    return sum(int((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * n.get("Actual Loops", 1)) for n in plan_gate.scans(plan, relation))
+
+
+@pytest.mark.parametrize(("sort_dir", "direction"), [("ASC", "next"), ("ASC", "prev"), ("DESC", "next"), ("DESC", "prev")])
+async def test_a_name_ordered_window_past_a_boundary_reads_the_rows_up_to_it_not_the_connector(pg_db, sort_dir, direction) -> None:
+    """A page by name past a boundary, read as the listing's reader is, under row-level security: a condition on the name prefix (substring(), not leakproof) is never an
+    index condition there. Read as one disjoint read per part of the boundary, each read was a scan of the connector (or of the organisation, the planner's pick at 1M records)
+    to find a handful of rows; read as one walk of the name index it looks at the rows up to the boundary and the window."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 600, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("ANALYZE kg.records")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+    finally:
+        await con.close()
+    at = "r0010" if (sort_dir == "ASC") == (direction == "next") else "r0589"      # ten rows from the start of the walk in the page's direction
+    q = kgl.Params([org, app_sk, 20])
+    sql = kgl.page_sql("name", sort_dir, direction, "", kgl.after("name", sort_dir, direction, {"nullRank": 0, "sortKey": at, "id": at}, q))
+
+    async def read(tx) -> tuple[list[str], object]:
+        # A connector this small is read whole and sorted, to the planner; at scale the window's LIMIT makes the walk of the name index the cheap plan, which these
+        # settings leave as the only one. The gate is about how far that walk reads.
+        for setting in ("enable_seqscan", "enable_bitmapscan", "enable_sort"):
+            await tx.execute(f"SET LOCAL {setting} = off")
+        return [r["id"] for r in await tx.fetch(sql, *q.values)], json.loads(await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *q.values))
+    with ctx(org):
+        ids, plan = await pg_db.run(read, custom_plan=True)
+    n = int(at[1:])
+    want = [f"r{i:04d}" for i in (range(n + 1, n + 21) if (sort_dir == "ASC") == (direction == "next") else range(n - 1, n - 21, -1))]
+    assert ids == want
+    reads = [(n["Node Type"], plan_gate.bounds(n), n.get("Actual Rows"), n.get("Rows Removed by Filter")) for n in plan_gate.scans(plan, "records")]
+    assert _rows_read(plan, "records") <= 60, f"{sort_dir} {direction}: looked at {_rows_read(plan, 'records')} rows of a 600-row connector for a window of 20: {reads}"
 
 
 async def test_the_records_a_viewers_classes_admit_are_read_within_the_connector_never_the_organisation(pg_db) -> None:

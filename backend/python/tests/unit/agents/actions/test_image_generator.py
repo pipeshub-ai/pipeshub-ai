@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.support.provider_errors import assert_text_free, failure_line, openai_error
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import SENTINELS, openai_error
 
 
 def _make_state(**overrides):
@@ -1399,8 +1400,8 @@ class TestProviderFailure:
             ok, _ = await tool.generate_image(prompt="a fox", record_id=record_id)
 
         assert ok is False
-        fields = failure_line(caplog.records, "image_generation.failed", "bad_request", logging.WARNING)
+        fields = failure_line(caplog.records, "image_generation.failed", "bad_request", logging.WARNING, *SENTINELS)
         assert (fields["provider"], fields["model"], fields["mode"]) == (
             "openAI", "gpt-image-1", "edit" if record_id else "generate",
         )
-        assert_text_free(caplog.records)
+        assert_text_free(caplog.records, *SENTINELS)

@@ -11,7 +11,8 @@ import pytest
 
 from app.agent_loop_lib.modules.providers.skills.base import SkillMetadata, SkillStatus
 from app.agents.agent_loop.skills import semantic_index as si
-from tests.support.provider_errors import assert_text_free, failure_line, openai_error
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import SENTINELS, openai_error
 
 
 def _skill(name: str, description: str = "does a thing") -> SkillMetadata:
@@ -188,6 +189,6 @@ class TestEmbeddingFailures:
             embedder.aembed_query = AsyncMock(side_effect=error)
             assert [m.skill.name for m in await index.search("does a thing")] == ["a"]  # keyword fallback
 
-        fields = failure_line(caplog.records, "skill_index.embed_failed", "bad_request", logging.WARNING)
+        fields = failure_line(caplog.records, "skill_index.embed_failed", "bad_request", logging.WARNING, *SENTINELS)
         assert fields["step"] == step
-        assert_text_free(caplog.records)
+        assert_text_free(caplog.records, *SENTINELS)
