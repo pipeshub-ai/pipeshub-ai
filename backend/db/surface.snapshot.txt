@@ -1245,9 +1245,9 @@ extension btree_gin schema=ext owner=pipeshub_owner
 extension pg_trgm schema=ext owner=<bootstrap-superuser>
 extension plpgsql schema=pg_catalog owner=<bootstrap-superuser>
 extension vector schema=ext owner=<bootstrap-superuser>
-func graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=cb2d61dbf4fa5a83445d28bdda0486bb ext=-
-func graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=523eb45c3655082b03631500638ae570 ext=-
-func graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7a77f90546ea23c4be106caaf27764e9 ext=-
+func graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=9ae98ec8332b6d2fb92c06b85de10b02 ext=-
+func graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f93dc1d6ae8f68dbb4802aaadd6b9825 ext=-
+func graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=03811e4b833c71b572c93e9ab629cfce ext=-
 func graph.declared_record_groups(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=b60419229e5f17eeccdb6bb4bf222040 ext=-
 func graph.named_entities_by_alias(text,text[],text[],integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=27ffd53475e34a3b42c305c2143d20c9 ext=-
 func graph.named_entities_by_keys(text,text,text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3bd6e8bf058c6abcef3f3348ef40172b ext=-
@@ -1608,8 +1608,11 @@ index graph.edges_by_target on graph.edges unique=false exclusion=false valid=tr
 index graph.edges_pkey on graph.edges unique=true exclusion=false valid=true def=cb40875fb7aeea0903e6713524de17e3
 index graph.nodes_app_by_id on graph.nodes unique=false exclusion=false valid=true def=9fb2c424ad701514ef37f152dfa19f27
 index graph.nodes_block_name on graph.nodes unique=false exclusion=false valid=true def=49619dfd1628d521678017dab7b7b6fa
+index graph.nodes_block_name_seek on graph.nodes unique=false exclusion=false valid=true def=e008c0ac8ab0ab02de10697fc2be6c50
 index graph.nodes_block_record on graph.nodes unique=false exclusion=false valid=true def=49c4a104b5d1bd103fe19163130fe052
+index graph.nodes_block_record_seek on graph.nodes unique=false exclusion=false valid=true def=99061850c0170da5e22afa32e717cdd4
 index graph.nodes_codefile_path on graph.nodes unique=false exclusion=false valid=true def=a0ca69de02117c30b4a5b6c5f666ed6e
+index graph.nodes_codefile_path_seek on graph.nodes unique=false exclusion=false valid=true def=50392ab445805fcb4dcfd60fbcfc121d
 index graph.nodes_file_path on graph.nodes unique=false exclusion=false valid=true def=73d839b6dcd5439ecd9a5b192b6e5325
 index graph.nodes_group_by_external on graph.nodes unique=false exclusion=false valid=true def=b8bd5c14dc0ab6ce8b252f15de2cf812
 index graph.nodes_group_email on graph.nodes unique=false exclusion=false valid=true def=2cb5691aa86567072a8f53cc8229f0fb
