@@ -788,7 +788,10 @@ class BoxConnector(BaseConnector):
             # A listed row is evidence on its own, even when a later page could not be read.
             self._cannot_sign_in_ids = frozenset(str(u.source_user_id) for u in app_users if u.source_user_id and not u.is_active)
             if self._user_list_complete:
-                self._synced_box_user_ids = frozenset(str(u.source_user_id) for u in app_users if u.source_user_id)
+                # Only accounts that can sign in get a drive record group (see _sync_record_groups).
+                self._synced_box_user_ids = frozenset(
+                    str(u.source_user_id) for u in app_users if u.source_user_id and u.is_active
+                )
             return app_users
 
         except Exception as e:
@@ -822,8 +825,8 @@ class BoxConnector(BaseConnector):
         ]
         await self.data_entities_processor.on_new_app_users(signed_in)
         returning = newly_linked if withdrawn is None else [u for u in signed_in if str(u.source_user_id) in withdrawn]
-        # An empty list is no evidence that everyone left.
-        if not self._user_list_complete or not signed_in:
+        # An empty list is no evidence that everyone left; a complete list in which no one can sign in is.
+        if not self._user_list_complete or not users:
             return returning
         kept_ids = {str(u.source_user_id) for u in signed_in if u.source_user_id}
         kept_emails = {u.email.lower() for u in signed_in if u.email}
@@ -1450,7 +1453,8 @@ class BoxConnector(BaseConnector):
             await self._sync_user_groups()
 
             self.logger.info("📦 [Full Sync] Syncing user drives...")
-            await self._sync_record_groups(users)
+            # Their drive groups carry an owner grant, which the withdrawal above has just taken away.
+            await self._sync_record_groups([u for u in users if u.is_active])
 
             self.logger.info("📦 [Full Sync] Syncing user files and folders...")
             # Box hides an inactive user's folders from collaborators, and the user cannot sign in to read them.

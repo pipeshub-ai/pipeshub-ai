@@ -401,6 +401,8 @@ class FakeBoxRecordsDb:
         self.records: dict[str, Any] = {}
         self.permissions: dict[str, dict[str, Any]] = {}
         self.record_groups: dict[str, Any] = {}
+        # Emails holding a grant on each record group (drives, "Shared with me").
+        self.record_group_access: dict[str, set[str]] = {}
         self.app_users: dict[str, Any] = {}
         self.active_emails: set[str] = set()
         self.user_groups: dict[str, Any] = {}
@@ -482,8 +484,9 @@ class FakeBoxRecordsDb:
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         self._check("on_new_record_groups")
-        for group, _ in groups:
+        for group, permissions in groups:
             self.record_groups[group.external_group_id] = group
+            self.record_group_access[group.external_group_id] = {p.email for p in permissions or [] if p.email}
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         self._check("on_new_app_users")
@@ -502,6 +505,8 @@ class FakeBoxRecordsDb:
             self.withdrawn.append((user.email, drop_grants))
             self.app_users.pop(user.email.lower(), None)
             if drop_grants:
+                for holders in self.record_group_access.values():
+                    holders.discard(user.email)
                 for stored in self.permissions.values():
                     for key in [k for k, p in stored.items() if p.entity_type.value == "USER" and p.email == user.email]:
                         stored.pop(key)

@@ -81,6 +81,18 @@ class _Env:
             assert await self.connector.init()
         await self.connector.run_sync()
 
+    async def full_sync(self) -> None:
+        """A full sync as the platform runs one: the saved positions are forgotten first."""
+        await self.graph.delete_sync_points_by_connector_id(connector_id=self.connector_id)
+        await self.sync()
+
+    async def drive_grants(self, name: str) -> set[str]:
+        """Record groups of this connector the person holds a grant on directly (their drive, "Shared with me")."""
+        groups = await self.graph.get_nodes_by_filters(CollectionNames.RECORD_GROUPS.value, {"connectorId": self.connector_id})
+        ids = {str(g.get("id") or g.get("_key")) for g in groups}
+        edges = await self.graph.get_edges_from_node(f"users/{self.user_keys[name]}", CollectionNames.PERMISSION.value)
+        return {e["_to"].split("/", 1)[1] for e in edges if e.get("_to", "").split("/", 1)[-1] in ids}
+
     async def readable(self, name: str) -> set[str]:
         """Names of the records the person may read, by the access check and by search."""
         docs = [d for d in await self.graph.get_nodes_by_filters(
@@ -226,3 +238,28 @@ async def test_a_view_only_account_keeps_its_access(env: _Env) -> None:
     await env.sync()
 
     assert await env.readable("carol") == CAROL_READS
+
+
+async def test_the_only_account_that_can_sign_in_reads_nothing_once_deactivated(env: _Env) -> None:
+    for name in ("bob", "carol"):
+        env.api.users[f"u-{name}"]["status"] = "inactive"
+    await env.sync()
+    assert await env.readable("alice") >= ALICE_READS
+    env.api.users["u-alice"]["status"] = "inactive"
+
+    await env.sync()
+
+    assert await env.readable("alice") == set()
+
+
+async def test_a_full_sync_after_a_deactivation_gives_no_grant_back(env: _Env) -> None:
+    await env.sync()
+    assert await env.drive_grants("carol")
+    env.api.users["u-carol"]["status"] = "inactive"
+    await env.sync()
+
+    await env.full_sync()
+
+    assert await env.drive_grants("carol") == set()
+    assert await env.readable("carol") == set()
+    assert await env.readable("bob") == BOB_READS
