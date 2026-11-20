@@ -894,9 +894,16 @@ their own HTTP clients.
   caller's signal, is spent, no further attempt starts, so a timed-out call writes one `timeout` line.
 - **Known gaps.** A caller that expects a 404 (an existence check) still gets a WARNING `not_found` line: the transport
   cannot know what the caller expects.
+- **Destination.** `upstreamFetch` (and so every service command) sends only to a registered PipesHub service
+  (`checkUpstreamUrl`): an `http:`/`https:` URL without credentials, on a registered origin and under its base path by whole
+  segments. A command checks in `buildUrl`, before its retry loop. A refused URL is never sent and writes no
+  `upstream.call.end`; the request's `http.request.error` reports it once (500, `internal`), without the URL. A redirect is
+  followed only to a URL that passes the same check. The registry is `registerAppUpstreams` in `loadAppConfig`; a reload adds
+  its bases and keeps the earlier ones, so a container built before it still reaches its service. Calls on an axios instance
+  are not checked; a third-party call uses axios or an SDK.
 - **New calls** use a command or axios, so they get the line; do not log the call again at the call site. A new raw `fetch`
-  goes through `upstreamFetch`, and adds `injectRequestHeaders` only when the target is a PipesHub service: it does not
-  check the destination, and the request id and MCP relay header must not reach a third party (the axios adapter adds them
+  to a PipesHub service goes through `upstreamFetch` and adds `injectRequestHeaders`; a third party is reached with axios
+  or an SDK, never `upstreamFetch`, and the request id and MCP relay header must not reach it (the axios adapter adds them
   only for registered internal targets).
 
 ## Chat streams (Node)

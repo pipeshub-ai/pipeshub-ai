@@ -11,6 +11,8 @@ import { EncryptionService } from '../../../../src/libs/encryptor/encryptor'
 import { loadConfigurationManagerConfig } from '../../../../src/modules/configuration_manager/config/config'
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const appConfig = {
   aiBackend: 'http://ai.test',
@@ -57,6 +59,9 @@ function fresh(): { store: InMemoryChatStore; ai: FakeAIBackend } {
 }
 
 describe('es_controller listing and paging', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })
