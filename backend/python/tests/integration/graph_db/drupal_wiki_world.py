@@ -154,6 +154,11 @@ class FakeWiki:
             {"id": a, "fileName": f"file-{a}.pdf", "lastModified": 1000} for a in self.attachments.get(page_id, [])
         ] if page == 0 else [])
 
+    async def get_attachment(self, attachment_id: int) -> _Response:
+        if not any(attachment_id in ids for ids in self.attachments.values()):
+            return _Response({"title": "Not Found", "status": 404}, status=404)
+        return _Response({"id": attachment_id, "fileName": f"file-{attachment_id}.pdf", "lastModified": 1000})
+
     async def get_page(self, page_id: int) -> _Response:
         if page_id not in self.pages:
             return _Response({"title": "Not Found", "status": 404}, status=404)
