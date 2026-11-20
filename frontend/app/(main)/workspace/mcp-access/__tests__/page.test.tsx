@@ -309,6 +309,21 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
     expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
   });
 
+  it('folds a group while filtering, and opens it again on the next filter', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: strings.tools.filters.writes }));
+    const addHeader = () =>
+      screen.getAllByRole('button').find((b) => b.getAttribute('aria-controls') === 'mcp-tool-group-add');
+    fireEvent.click(addHeader());
+    expect(addHeader().getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
+    fireEvent.click(addHeader());
+    expect(screen.getByRole('switch', { name: 'Upload documents' })).toBeTruthy();
+    fireEvent.click(addHeader());
+    fireEvent.click(screen.getByRole('button', { name: strings.tools.filters.all }));
+    expect(addHeader().getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('turns a whole group off and saves it', async () => {
     renderPage();
     await screen.findByText(groupLabel('read'));

@@ -288,7 +288,10 @@ export default function McpAccessPage() {
                     size="2"
                     type="search"
                     value={query}
-                    onChange={(event) => setQuery(event.target.value)}
+                    onChange={(event) => {
+                      setQuery(event.target.value);
+                      setClosedGroups(new Set());
+                    }}
                     placeholder={t('workspace.mcpAccess.tools.searchPlaceholder')}
                     aria-label={t('workspace.mcpAccess.tools.searchLabel')}
                     style={{ flex: '1 1 260px', minWidth: 0 }}
@@ -309,7 +312,10 @@ export default function McpAccessPage() {
                         variant={filter === id ? 'soft' : 'outline'}
                         color={filter === id ? undefined : 'gray'}
                         aria-pressed={filter === id}
-                        onClick={() => setFilter(id)}
+                        onClick={() => {
+                          setFilter(id);
+                          setClosedGroups(new Set());
+                        }}
                       >
                         {t(`workspace.mcpAccess.tools.filters.${id}`)}
                       </Button>
@@ -331,7 +337,7 @@ export default function McpAccessPage() {
                     total={all.length}
                     allOn={allOn}
                     switchDisabled={!form.enabled || switchable.length === 0}
-                    open={searching || !closedGroups.has(group)}
+                    open={!closedGroups.has(group)}
                     onOpenChange={(open) =>
                       setClosedGroups((current) => {
                         const next = new Set(current);
