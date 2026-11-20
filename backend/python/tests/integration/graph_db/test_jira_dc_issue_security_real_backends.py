@@ -148,45 +148,50 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         user_keys: list[str] = []
         cleanup.push_async_callback(_remove, graph, org_id, connector_id, user_keys)
 
-        now = get_epoch_timestamp_in_ms()
-        assert await graph.batch_upsert_nodes(
-            [{"id": org_id, "name": "Acme", "accountType": "enterprise", "isActive": True,
-              "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.ORGS.value)
-        assert await graph.batch_upsert_nodes(
-            [{"id": connector_id, "orgId": org_id, "name": "Jira Data Center", "type": Connectors.JIRA.value,
-              "appGroup": "Atlassian", "scope": "team", "isActive": True, "isConfigured": True,
-              "isAuthenticated": True, "authType": "API_TOKEN", "createdBy": "it-admin",
-              "createdAtTimestamp": now, "updatedAtTimestamp": now}],
-            collection=CollectionNames.APPS.value)
+        yield await new_world(graph, run, org_id, connector_id, user_keys)
 
-        user_ids: dict[str, str] = {}
-        for name in PEOPLE:
-            key, user_id = f"{run}-{name}", f"user-{run}-{name}"
-            user_keys.append(key)
-            assert await graph.batch_upsert_nodes(
-                [{"id": key, "userId": user_id, "orgId": org_id, "email": _email(name, run), "fullName": name,
-                  "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}],
-                collection=CollectionNames.USERS.value)
-            assert await graph.batch_create_edges(
-                [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
-                  "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
-                  "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
-            user_ids[name] = user_id
 
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
-        processor.org_id = org_id
-        processor.messaging_producer = AsyncMock()
-        processor.messaging_producer.send_messages.side_effect = lambda _topic, messages, **_: [True] * len(messages)
-        config = MagicMock()
-        config.get_config = AsyncMock(return_value=None)
-        connector = JiraDataCenterConnector(
-            logger, processor, GraphDataStore(logger, graph), config, connector_id, "team", "it-admin")
-        connector.notify = AsyncMock()
-        connector.data_source = MagicMock()  # the search itself is stood in for per test
-        connector._epic_link_field_id = EPIC_FIELD
-        connector._parent_link_field_id = ""
-        yield {"graph": graph, "processor": processor, "connector": connector, "run": run,
-               "org_id": org_id, "connector_id": connector_id, "user_ids": user_ids}
+async def new_world(graph: IGraphDBProvider, run: str, org_id: str, connector_id: str, user_keys: list[str]) -> dict[str, Any]:
+    """The org, the Jira Data Center app, the people and the connector writing through the real processor into ``graph``."""
+    now = get_epoch_timestamp_in_ms()
+    assert await graph.batch_upsert_nodes(
+        [{"id": org_id, "name": "Acme", "accountType": "enterprise", "isActive": True,
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.ORGS.value)
+    assert await graph.batch_upsert_nodes(
+        [{"id": connector_id, "orgId": org_id, "name": "Jira Data Center", "type": Connectors.JIRA.value,
+          "appGroup": "Atlassian", "scope": "team", "isActive": True, "isConfigured": True,
+          "isAuthenticated": True, "authType": "API_TOKEN", "createdBy": "it-admin",
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.APPS.value)
+
+    user_ids: dict[str, str] = {}
+    for name in PEOPLE:
+        key, user_id = f"{run}-{name}", f"user-{run}-{name}"
+        user_keys.append(key)
+        assert await graph.batch_upsert_nodes(
+            [{"id": key, "userId": user_id, "orgId": org_id, "email": _email(name, run), "fullName": name,
+              "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+            collection=CollectionNames.USERS.value)
+        assert await graph.batch_create_edges(
+            [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
+              "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
+        user_ids[name] = user_id
+
+    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+    processor.org_id = org_id
+    processor.messaging_producer = AsyncMock()
+    processor.messaging_producer.send_messages.side_effect = lambda _topic, messages, **_: [True] * len(messages)
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value=None)
+    connector = JiraDataCenterConnector(
+        logger, processor, GraphDataStore(logger, graph), config, connector_id, "team", "it-admin")
+    connector.notify = AsyncMock()
+    connector.data_source = MagicMock()  # the search itself is stood in for per test
+    connector._epic_link_field_id = EPIC_FIELD
+    connector._parent_link_field_id = ""
+    return {"graph": graph, "processor": processor, "connector": connector, "run": run,
+           "org_id": org_id, "connector_id": connector_id, "user_ids": user_ids}
 
 
 def _user_holder(name: str) -> dict[str, Any]:
