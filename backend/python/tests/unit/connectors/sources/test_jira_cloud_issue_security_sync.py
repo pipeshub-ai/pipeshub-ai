@@ -1062,31 +1062,51 @@ def test_a_role_group_actor_is_found_by_the_documented_actor_group_id() -> None:
                                  {}, {}, {"g": None})[1] == "g"
 
 
+GROUP_ONLY_LEVEL = {"10102": [{"type": "group", "value": "group-1"}]}
+REPORTER_AND_ASSIGNEE = frozenset({user_grant_key("rep@x.com", "acc-1"), user_grant_key("asg@x.com", "acc-2")})
+
+
+def _access_with_readers(
+    level_readers: dict | None, browse: list | None, *, subtask: bool = False, members: dict | None = None,
+) -> tuple[tuple, dict]:
+    """``(the issue's access, the level digests)`` for issue 1001 in level 10102 with these level readers."""
+    context = _present(members)
+    context.browse_holders, context.level_readers = browse, level_readers
+    record = _stored_ticket()
+    perms, skipped, settled = apply_issue_access_settled(
+        record, _issue({"id": "10102", "name": "Leadership"})["fields"], is_subtask=subtask, project_key="PROJ",
+        context=context, user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
+    access = (record.access_rule, record.access_group_external_id, record.rewrite_permissions,
+              sorted((str(p.entity_type), p.email or p.external_id) for p in perms), skipped, settled)
+    return access, context.level_fingerprints(split=True)
+
+
 @pytest.mark.parametrize("browse", [[], None])
 @pytest.mark.parametrize("subtask", [False, True])
+@pytest.mark.parametrize("members", [None, GROUP_ONLY_LEVEL])
 @pytest.mark.parametrize("readers", [
-    None, {}, {"10102": None}, {"10102": frozenset()},
-    {"10102": frozenset({user_grant_key("rep@x.com", "acc-1"), user_grant_key("asg@x.com", "acc-2")})},
-    {"10102": frozenset({("*", "*")})},
+    None, {}, {"10102": None}, {"10102": frozenset()}, {"10102": REPORTER_AND_ASSIGNEE}, {"10102": frozenset({("*", "*")})},
 ])
-def test_level_readers_change_nothing_without_browse_holders(browse: list | None, subtask: bool, readers: dict | None) -> None:
+def test_level_readers_change_nothing_without_browse_holders(
+    browse: list | None, subtask: bool, members: dict | None, readers: dict | None,
+) -> None:
     """The proof behind the skip: with no per-issue Browse holder, an issue's access and the level digests the sync saves are
     the same whatever the level readers hold (unread, empty, its reporter and assignee, or anyone). So not reading them
     neither adds nor drops a reader."""
-    def build(level_readers: dict | None, holders: list | None = browse) -> tuple:
-        context = _present()
-        context.browse_holders, context.level_readers = holders, level_readers
-        record = _stored_ticket()
-        fields = _issue({"id": "10102", "name": "Leadership"})["fields"]
-        perms, skipped, settled = apply_issue_access_settled(
-            record, fields, is_subtask=subtask, project_key="PROJ", context=context,
-            user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
-        return (record.access_rule, record.access_group_external_id, record.rewrite_permissions,
-                sorted((str(p.entity_type), p.email or p.external_id) for p in perms), skipped, settled,
-                context.level_fingerprints(split=True))
-    assert build(readers) == build(None)
-    if readers and readers["10102"]:  # the control: once Browse names the reporter, these readers do change the issue
-        assert build(readers, [{"type": "reporter"}]) != build({"10102": frozenset()}, [{"type": "reporter"}])
+    access, digests = _access_with_readers(readers, browse, subtask=subtask, members=members)
+    unread_access, unread_digests = _access_with_readers(None, browse, subtask=subtask, members=members)
+    assert access == unread_access
+    assert digests == unread_digests
+
+
+@pytest.mark.parametrize("readers", [REPORTER_AND_ASSIGNEE, frozenset({("*", "*")})])
+def test_the_control_level_readers_do_change_access_once_browse_names_the_reporter(readers: frozenset) -> None:
+    """The control for the proof above: the same readers do change who reads the issue once Browse names its reporter. The
+    level holds groups only, so the readers are the only way the reporter is in it."""
+    named, _ = _access_with_readers({"10102": readers}, [{"type": "reporter"}], members=GROUP_ONLY_LEVEL)
+    not_named, _ = _access_with_readers({"10102": frozenset()}, [{"type": "reporter"}], members=GROUP_ONLY_LEVEL)
+    assert (named[0], named[3]) == (AccessRule.OPEN, [("EntityType.USER", "rep@x.com")])
+    assert (not_named[0], not_named[3]) == (AccessRule.STRICT, [])
 
 
 class TestSubtasksFollowTheirParent:
