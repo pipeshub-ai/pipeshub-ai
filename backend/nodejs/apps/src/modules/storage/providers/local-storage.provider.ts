@@ -26,6 +26,7 @@ import {
 } from '../../../libs/errors/storage.errors';
 import { LocalStorageConfig } from '../config/storage.config';
 import { localEtagOf, type ObjectStat } from '../utils/storage-fingerprint';
+import { withDeadline } from '../utils/call-deadline';
 
 /**
  * A key's lock lease. A holder that stalls longer (event-loop stall, SIGSTOP) loses it to a taker, which is why the
@@ -34,6 +35,8 @@ import { localEtagOf, type ObjectStat } from '../utils/storage-fingerprint';
 const KEY_LOCK_LEASE_MS = 5 * 60 * 1000;
 const KEY_LOCK_WAIT_MS = 15_000;
 const KEY_LOCK_POLL_MS = 10;
+/** A locked section (a conditional delete, a bump, a write of one key) that takes longer fails: it is a few file operations. */
+const KEY_SECTION_DEADLINE_MS = 60_000;
 /** A reclaim guard older than this was left by a contender that stopped. */
 const KEY_LOCK_GUARD_STALE_MS = 10_000;
 
@@ -89,6 +92,9 @@ export function fitPathSegment(full: string): string {
 
 @injectable()
 class LocalStorageAdapter implements StorageServiceInterface {
+  /** The deadline of one locked section of a key (tests shorten it). */
+  callDeadlineMs = KEY_SECTION_DEADLINE_MS;
+
   private readonly mountPath: string;
   private readonly baseUrl: string;
   private readonly mountName: string;
@@ -764,10 +770,22 @@ class LocalStorageAdapter implements StorageServiceInterface {
         return false;
       }
     };
+    const state = { timedOut: false };
     try {
-      return await body(stillHeld);
+      // The deadline covers the whole section. A section that does not finish in it fails the call; its lock is then left
+      // for the lease to expire, not removed, because the work it guards may still be running and a taker must not enter
+      // beside it.
+      return await withDeadline(
+        body(stillHeld),
+        this.callDeadlineMs,
+        'local key section',
+      ).catch((error: unknown) => {
+        state.timedOut = (error as { name?: string }).name === 'TimeoutError';
+        throw error;
+      });
     } finally {
-      if (await stillHeld()) await fs.rm(lockPath, { force: true });
+      if (!state.timedOut && (await stillHeld()))
+        await fs.rm(lockPath, { force: true });
     }
   }
 

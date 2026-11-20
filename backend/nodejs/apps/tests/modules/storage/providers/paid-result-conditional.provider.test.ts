@@ -161,6 +161,19 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(Date.now() - started).to.be.lessThan(3000)
     })
 
+    it('a locked section that never finishes fails by its deadline and leaves its lock for the lease', async () => {
+      const a = adapter()
+      a.callDeadlineMs = 40
+      await a.writeObject(key(1), Buffer.from('one'))
+      const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+      sinon.stub(a as any, 'etagAtPath').callsFake(() => new Promise(() => undefined))
+      let outcome: unknown = 'resolved'
+      try { await a.deleteObjectsIfMatch([{ key: key(1), etag: 'x' }]) } catch (e) { outcome = e }
+      expect(outcome, 'a hung section reported success').to.be.instanceOf(Error)
+      expect(fs.readdirSync(dir).some((f) => f.endsWith('.lock')), 'the lock was released under work that may still run').to.equal(true)
+      expect(fs.existsSync(path.join((a as any).mountPath, key(1))), 'the object was deleted').to.equal(true)
+    })
+
     it('a holder that lost its lease does not delete: the file stays and is reported changed', async () => {
       const a = adapter()
       await a.writeObject(key(1), Buffer.from('one'))
@@ -471,6 +484,23 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(Date.now() - started).to.be.lessThan(2000)
     })
 
+    it('a delete by version or a listing whose SDK call never answers fails by its deadline, never as success', async () => {
+      const a = adapter()
+      a.callDeadlineMs = 40
+      const hung = () => ({ promise: () => new Promise(() => undefined) })
+      ;(a as any).s3 = { deleteObjects: hung, listObjectsV2: hung }
+      for (const [name, run] of [
+        ['delete', () => a.deleteObjectsIfMatch([{ key: key(1), etag: 'e1' }])],
+        ['listing', () => a.listObjects(`${ROOT}/`, { limit: 10 })],
+      ] as const) {
+        const started = Date.now()
+        let outcome: unknown = 'resolved'
+        try { await run() } catch (e) { outcome = e }
+        expect(outcome, `${name} reported an answer for a call that never answered`).to.be.instanceOf(Error)
+        expect(Date.now() - started, name).to.be.lessThan(2000)
+      }
+    })
+
     it('a 403 (denied probe prefix, refreshing credential) or a 400 RequestTimeout is not "unsupported": asked again, never remembered', async () => {
       for (const failure of [
         { $metadata: { httpStatusCode: 403 }, code: 'AccessDenied' },
@@ -507,6 +537,20 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
       denied = false
       expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
+    })
+
+    it('a 403 on the sentinel upload is logged with the prefix to allow and is no answer', async () => {
+      const a = adapter('denied-setup-' + Math.random().toString(36).slice(2))
+      a.probeBackoffMs = []
+      const warn = sinon.spy()
+      ;(a as any).logger = { warn, info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
+      ;(a as any).s3 = {
+        upload: () => ({ promise: async () => { throw Object.assign(new Error('denied'), { $metadata: { httpStatusCode: 403 }, code: 'AccessDenied' }) } }),
+        deleteObjects: () => done({}),
+      }
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
+      expect(warn.calledOnce, 'the denial was not logged').to.equal(true)
+      expect(JSON.stringify(warn.firstCall.args)).to.include('paid-results-conditional-probe')
     })
 
     it('a 501 on the sentinel upload (the setup) is no answer about conditions; a 501 on the conditional write is definitive', async () => {
@@ -638,6 +682,29 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       try { await a.deleteObjectsIfMatch(Array.from({ length: 17 }, (_, i) => ({ key: key(i + 1), etag: 'e' }))) } catch (e) { thrown = e }
       expect(thrown).to.be.instanceOf(StorageUploadError)
       expect(del.callCount, 'the second slice was never attempted').to.equal(17)
+    })
+
+    it('a conditional delete, an existence check or a listing that never answers fails by its deadline, never as success', async () => {
+      const never = new Promise(() => undefined)
+      const base = (extra: object) => {
+        const a = Object.create(AzureBlobStorageAdapter.prototype)
+        a.containerReady = Promise.resolve()
+        a.callDeadlineMs = 40
+        a.containerClient = extra
+        return a as AzureBlobStorageAdapter
+      }
+      const attempts: [string, () => Promise<unknown>][] = [
+        ['delete', () => base({ getBlockBlobClient: () => ({ deleteIfExists: () => never }) }).deleteObjectsIfMatch([{ key: key(1), etag: 'e' }])],
+        ['exists', () => base({ getBlockBlobClient: () => ({ deleteIfExists: () => Promise.reject(Object.assign(new Error('c'), { statusCode: 412, details: { errorCode: 'ConditionNotMet' } })), exists: () => never }) }).deleteObjectsIfMatch([{ key: key(1), etag: 'e' }])],
+        ['listing', () => base({ listBlobsFlat: () => ({ byPage: () => ({ next: () => never }) }) }).listObjects(`${ROOT}/`, { limit: 10 })],
+      ]
+      for (const [name, run] of attempts) {
+        const started = Date.now()
+        let outcome: unknown = 'resolved'
+        try { await run() } catch (e) { outcome = e }
+        expect(outcome, `${name} reported an answer for a call that never answered`).to.be.instanceOf(Error)
+        expect(Date.now() - started, name).to.be.lessThan(2000)
+      }
     })
 
     it('any other failure of a conditional delete is raised after the rest were tried', async () => {

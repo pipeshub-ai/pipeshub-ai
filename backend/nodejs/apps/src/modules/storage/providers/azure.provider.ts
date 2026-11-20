@@ -6,6 +6,10 @@ import {
   StorageSharedKeyCredential,
 } from '@azure/storage-blob';
 import { injectable } from 'inversify';
+import {
+  PAID_RESULT_CALL_DEADLINE_MS,
+  withDeadline,
+} from '../utils/call-deadline';
 import { Logger } from '../../../libs/services/logger.service';
 import { StorageServiceInterface } from '../services/storage.service';
 import {
@@ -60,6 +64,8 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
   private containerClient: ContainerClient;
   private readonly containerName!: string;
   private containerReady!: Promise<void>;
+  /** The deadline of each storage call this adapter makes on the paid-result sweep path (tests shorten it). */
+  callDeadlineMs?: number;
   private readonly logger = Logger.getInstance({
     service: 'AzureBlobStorageAdapter',
   });
@@ -627,7 +633,11 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
         maxPageSize: options.limit,
         continuationToken: options.after,
       });
-      const result = await iterator.next();
+      const result = await withDeadline(
+        iterator.next(),
+        this.callDeadlineMs ?? PAID_RESULT_CALL_DEADLINE_MS,
+        'listing',
+      );
       if (result.done === true) {
         return { objects: [] };
       }
@@ -705,9 +715,13 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
         const slice = items.slice(i, i + 16);
         const settled = await Promise.allSettled(
           slice.map(({ key, etag }) =>
-            container.getBlockBlobClient(key).deleteIfExists({
-              conditions: { ifMatch: quoteEtag(etag) },
-            }),
+            withDeadline(
+              container.getBlockBlobClient(key).deleteIfExists({
+                conditions: { ifMatch: quoteEtag(etag) },
+              }),
+              this.callDeadlineMs ?? PAID_RESULT_CALL_DEADLINE_MS,
+              'delete by version',
+            ),
           ),
         );
         // A refused condition (Azurite answers 412 for a blob that is gone, too) is told apart from a changed blob
@@ -743,7 +757,13 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
         for (const idx of refused) {
           const refusedKey = slice[idx]?.key ?? '';
           try {
-            if (await container.getBlockBlobClient(refusedKey).exists()) {
+            if (
+              await withDeadline(
+                container.getBlockBlobClient(refusedKey).exists(),
+                this.callDeadlineMs ?? PAID_RESULT_CALL_DEADLINE_MS,
+                'existence check',
+              )
+            ) {
               changed.push(refusedKey);
             }
           } catch (existsError) {

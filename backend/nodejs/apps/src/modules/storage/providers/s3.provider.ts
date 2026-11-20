@@ -1,5 +1,9 @@
 import { randomUUID } from 'crypto';
 import {
+  PAID_RESULT_CALL_DEADLINE_MS,
+  withDeadline,
+} from '../utils/call-deadline';
+import {
   createS3Service as buildS3Service,
   type S3Service,
   type S3ServiceConfig,
@@ -668,16 +672,20 @@ class AmazonS3Adapter implements StorageServiceInterface {
       throw new StorageValidationError('The listing cursor is not valid');
     }
     try {
-      const response = await this.s3
-        .listObjectsV2({
-          Bucket: this.bucketName,
-          Prefix: prefix,
-          MaxKeys: options.limit,
-          ...(options.after !== undefined && {
-            ContinuationToken: options.after,
-          }),
-        })
-        .promise();
+      const response = await withDeadline(
+        this.s3
+          .listObjectsV2({
+            Bucket: this.bucketName,
+            Prefix: prefix,
+            MaxKeys: options.limit,
+            ...(options.after !== undefined && {
+              ContinuationToken: options.after,
+            }),
+          })
+          .promise(),
+        this.callDeadlineMs,
+        'listing',
+      );
       return {
         objects: (response.Contents ?? []).map((o) => ({
           key: o.Key as string,
@@ -764,18 +772,22 @@ class AmazonS3Adapter implements StorageServiceInterface {
     try {
       for (let i = 0; i < items.length; i += 1000) {
         const batch = items.slice(i, i + 1000);
-        const result = await this.s3
-          .deleteObjects({
-            Bucket: this.bucketName,
-            Delete: {
-              Objects: batch.map(({ key, etag }) => ({
-                Key: key,
-                ETag: quoteEtag(etag),
-              })),
-              Quiet: true,
-            },
-          })
-          .promise();
+        const result = await withDeadline(
+          this.s3
+            .deleteObjects({
+              Bucket: this.bucketName,
+              Delete: {
+                Objects: batch.map(({ key, etag }) => ({
+                  Key: key,
+                  ETag: quoteEtag(etag),
+                })),
+                Quiet: true,
+              },
+            })
+            .promise(),
+          this.callDeadlineMs,
+          'delete by version',
+        );
         const failures: string[] = [];
         for (const e of result.Errors ?? []) {
           if (
@@ -850,6 +862,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
   /** Waits between the attempts of a probe that met a transient failure (tests shorten it). */
   probeBackoffMs: number[] = [250, 1000];
+
+  /** The deadline of each storage call this adapter makes on the paid-result sweep path (tests shorten it). */
+  callDeadlineMs = PAID_RESULT_CALL_DEADLINE_MS;
 
   /** The deadline of the probe's conditional PUT (request and body). */
   probeTimeoutMs = 10_000;
@@ -1023,11 +1038,22 @@ class AmazonS3Adapter implements StorageServiceInterface {
       };
     } catch (error) {
       if (error === transient) return null;
-      // A failure before any conditional request (the sentinel upload) says nothing about the store's conditions.
-      if (!stage.conditionalStarted) return null;
       const name = (error as { name?: string }).name;
       if (name === 'TimeoutError' || name === 'AbortError') return null;
       const httpStatus = status(error);
+      const errorCode = (error as { code?: string }).code ?? '';
+      // A denial is logged wherever it happens, the sentinel upload included: it is the operator's one signal that the
+      // probe prefix must be allowed, and it is not remembered, so it is asked (and logged) again on the next call.
+      if (httpStatus === 403 || errorCode === 'AccessDenied') {
+        this.logger.warn(
+          'The object store denied the conditional-write probe; paid-result sweeps wait until it is allowed. Allow PutObject, GetObject and DeleteObject on the probe prefix',
+          { probePrefix: PROBE_FOLDER },
+        );
+        return null;
+      }
+      // A failure before any conditional request (the sentinel upload, a 501 on it included) says nothing about the
+      // store's conditions.
+      if (!stage.conditionalStarted) return null;
       if (httpStatus !== undefined && isTransientStatus(httpStatus))
         return null;
       // A 400 that is S3's own transient answer (RequestTimeout and its kin, which the SDK has already retried) says
@@ -1037,14 +1063,6 @@ class AmazonS3Adapter implements StorageServiceInterface {
       // unsupported feature). A 403 (a denied probe prefix, a refreshing credential) and a 400 with any other code
       // (RequestTimeout among them) are not: they are asked again, and a sweep in that window fails and is retried instead
       // of deleting without a version. The warning names what to allow.
-      const errorCode = (error as { code?: string }).code ?? '';
-      if (httpStatus === 403 || errorCode === 'AccessDenied') {
-        this.logger.warn(
-          'The object store denied the conditional-write probe; paid-result sweeps wait until it is allowed. Allow PutObject, GetObject and DeleteObject on the probe prefix',
-          { probePrefix: PROBE_FOLDER },
-        );
-        return null;
-      }
       if (
         httpStatus === 501 ||
         (httpStatus === 400 &&
