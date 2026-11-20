@@ -28580,123 +28580,115 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_agents_by_web_search_provider(
         self, org_id: str, provider: str
     ) -> list[dict]:
-        try:
-            query = f"""
-            // Collect user keys that belong to this org
-            LET org_user_keys = (
-                FOR bt IN {CollectionNames.BELONGS_TO.value}
-                    FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
-                    RETURN PARSE_IDENTIFIER(bt._from).key
-            )
+        query = f"""
+        // Collect user keys that belong to this org
+        LET org_user_keys = (
+            FOR bt IN {CollectionNames.BELONGS_TO.value}
+                FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
+                RETURN PARSE_IDENTIFIER(bt._from).key
+        )
 
-            // Find agents owned by those users that use this web search provider
-            LET user_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm.type == 'USER'
-                    FILTER perm.role == 'OWNER'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    LET owner_key = PARSE_IDENTIFIER(perm._from).key
-                    FILTER owner_key IN org_user_keys
-                    RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
-            )
+        // Find agents owned by those users that use this web search provider
+        LET user_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm.type == 'USER'
+                FILTER perm.role == 'OWNER'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                LET owner_key = PARSE_IDENTIFIER(perm._from).key
+                FILTER owner_key IN org_user_keys
+                RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
+        )
 
-            // Also include agents shared directly with the org
-            LET org_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER perm.type == 'ORG'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    RETURN PARSE_IDENTIFIER(perm._to).key
-            )
+        // Also include agents shared directly with the org
+        LET org_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER perm.type == 'ORG'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                RETURN PARSE_IDENTIFIER(perm._to).key
+        )
 
-            LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
+        LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
 
-            FOR agent_key IN all_agent_keys
-                LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
-                FILTER agent != null
-                FILTER agent.isDeleted != true
-                FILTER agent.webSearch == @provider
-                LET creator = agent.createdBy != null
-                    ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
-                    : null
-                RETURN {{
-                    name: agent.name,
-                    _key: agent._key,
-                    creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
-                }}
-            """
-            result = await self.execute_query(
-                query, bind_vars={"org_id": org_id, "provider": provider}
-            )
-            return result or []
-        except Exception as e:
-            self.logger.error(f"Failed to get agents by web search provider: {str(e)}")
-            return []
+        FOR agent_key IN all_agent_keys
+            LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
+            FILTER agent != null
+            FILTER agent.isDeleted != true
+            FILTER agent.webSearch == @provider
+            LET creator = agent.createdBy != null
+                ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
+                : null
+            RETURN {{
+                name: agent.name,
+                _key: agent._key,
+                creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
+            }}
+        """
+        result = await self.execute_query(
+            query, bind_vars={"org_id": org_id, "provider": provider}
+        )
+        return result or []
 
     async def get_agents_by_model_key(
         self, org_id: str, model_key: str
     ) -> list[dict]:
-        try:
-            query = f"""
-            // Collect user keys that belong to this org
-            LET org_user_keys = (
-                FOR bt IN {CollectionNames.BELONGS_TO.value}
-                    FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
-                    RETURN PARSE_IDENTIFIER(bt._from).key
-            )
+        query = f"""
+        // Collect user keys that belong to this org
+        LET org_user_keys = (
+            FOR bt IN {CollectionNames.BELONGS_TO.value}
+                FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
+                RETURN PARSE_IDENTIFIER(bt._from).key
+        )
 
-            // Find agents owned by those users
-            LET user_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm.type == 'USER'
-                    FILTER perm.role == 'OWNER'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    LET owner_key = PARSE_IDENTIFIER(perm._from).key
-                    FILTER owner_key IN org_user_keys
-                    RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
-            )
+        // Find agents owned by those users
+        LET user_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm.type == 'USER'
+                FILTER perm.role == 'OWNER'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                LET owner_key = PARSE_IDENTIFIER(perm._from).key
+                FILTER owner_key IN org_user_keys
+                RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
+        )
 
-            // Also include agents shared directly with the org
-            LET org_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER perm.type == 'ORG'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    RETURN PARSE_IDENTIFIER(perm._to).key
-            )
+        // Also include agents shared directly with the org
+        LET org_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER perm.type == 'ORG'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                RETURN PARSE_IDENTIFIER(perm._to).key
+        )
 
-            LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
+        LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
 
-            LET model_key_prefix = CONCAT(@model_key, "_")
+        LET model_key_prefix = CONCAT(@model_key, "_")
 
-            FOR agent_key IN all_agent_keys
-                LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
-                FILTER agent != null
-                FILTER agent.isDeleted != true
-                FILTER LENGTH(
-                    FOR m IN (agent.models != null ? agent.models : [])
-                        FILTER m == @model_key OR STARTS_WITH(m, model_key_prefix)
-                        LIMIT 1
-                        RETURN 1
-                ) > 0
-                LET creator = agent.createdBy != null
-                    ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
-                    : null
-                RETURN {{
-                    name: agent.name,
-                    _key: agent._key,
-                    creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
-                }}
-            """
-            result = await self.execute_query(
-                query, bind_vars={"org_id": org_id, "model_key": model_key}
-            )
-            return result or []
-        except Exception as e:
-            self.logger.error(f"Failed to get agents by model key: {str(e)}")
-            return []
+        FOR agent_key IN all_agent_keys
+            LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
+            FILTER agent != null
+            FILTER agent.isDeleted != true
+            FILTER LENGTH(
+                FOR m IN (agent.models != null ? agent.models : [])
+                    FILTER m == @model_key OR STARTS_WITH(m, model_key_prefix)
+                    LIMIT 1
+                    RETURN 1
+            ) > 0
+            LET creator = agent.createdBy != null
+                ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
+                : null
+            RETURN {{
+                name: agent.name,
+                _key: agent._key,
+                creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
+            }}
+        """
+        result = await self.execute_query(
+            query, bind_vars={"org_id": org_id, "model_key": model_key}
+        )
+        return result or []
 
     async def get_all_agents(
         self,

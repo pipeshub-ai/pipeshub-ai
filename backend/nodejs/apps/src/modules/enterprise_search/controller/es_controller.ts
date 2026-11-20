@@ -5901,9 +5901,12 @@ export const getWebSearchProviderUsage =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (!aiResponse || aiResponse.statusCode !== 200) {
-        res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
-        return;
+      // A check that failed is not "no agents": the UI would offer the delete as safe.
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(
+          aiResponse,
+          'check which agents use this web search provider',
+        );
       }
       res.status(HTTP_STATUS.OK).json(aiResponse.data);
     } catch (error: any) {
@@ -5914,7 +5917,7 @@ export const getWebSearchProviderUsage =
       });
       const backendError = handleBackendError(
         error,
-        'Web Search Provider Usage',
+        'check which agents use this web search provider',
       );
       next(backendError);
     }
@@ -5943,9 +5946,11 @@ export const getModelUsage =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (!aiResponse || aiResponse.statusCode !== 200) {
-        res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
-        return;
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(
+          aiResponse,
+          'check which agents use this model',
+        );
       }
       res.status(HTTP_STATUS.OK).json(aiResponse.data);
     } catch (error: any) {
@@ -5958,7 +5963,10 @@ export const getModelUsage =
         next(error);
         return;
       }
-      const backendError = handleBackendError(error, 'AI Model Usage');
+      const backendError = handleBackendError(
+        error,
+        'check which agents use this model',
+      );
       next(backendError);
     }
   };
