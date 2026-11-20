@@ -299,24 +299,29 @@ async def widest_group(pg_db, org: str, app: str) -> tuple[str, str | None]:
 
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("seed", range(4))
-async def test_a_membership_added_and_removed_while_kg_serves_restamps_nothing_and_ends_with_the_walks_answer(
+async def test_a_membership_added_and_removed_while_kg_serves_never_restamps_a_connector_whole_and_ends_with_the_walks_answer(
         w: World, pg_db, monkeypatch: pytest.MonkeyPatch, seed: int) -> None:
-    """A membership is a closure row: no record's class names who is in a group. Even with a restamp threshold of 3, a user with grants on records and on the connectors
-    joins and leaves a group that is granted records, and kg keeps serving every connector it served, with nothing queued, and answers what the graph answers."""
+    """A membership is a closure row, and no stamp reads who links to a connector. With a restamp threshold of 3: u3, who only belongs to a collection, joins and leaves a
+    group that is granted records, and kg keeps serving every connector it served with nothing queued; u1, who also holds grants on records, does too, and what is queued is
+    at most the rows its grants reach, never a connector whole. After each change every user's scope is the graph's."""
     monkeypatch.setenv("PG_KG_INLINE_MAX", "3")
     recs = await build(w, random.Random(seed), w.org, n=40)
     await extras(w, random.Random(seed), recs)
     assert (await flip(pg_db, w.org))[0], "the world was not promoted: the test proves nothing"
     before = await served(pg_db, w.org)
     assert LVL in before
-    for change in (w.p.batch_create_edges, w.p.batch_delete_edges):
-        await change([{"from_collection": "users", "from_id": "u1", "to_collection": "groups", "to_id": "g1", "type": "USER", "role": "READER"}], "permission")
-        await drain_org(pg_db, w.org)
-        assert await pg_db.run(lambda tx: restamp.pending(tx, w.org)) == [], change.__name__
-        assert await served(pg_db, w.org) == before, change.__name__
-        want = await walk_scopes(w, recs, MEMBERS, monkeypatch)
-        for uid in MEMBERS:
-            assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], (change.__name__, uid)
+    for user in ("u3", "u1"):
+        for change in (w.p.batch_create_edges, w.p.batch_delete_edges):
+            await change([{"from_collection": "users", "from_id": user, "to_collection": "groups", "to_id": "g1", "type": "USER", "role": "READER"}], "permission")
+            await drain_org(pg_db, w.org)
+            queued = await pg_db.run(lambda tx: restamp.pending(tx, w.org))
+            assert "app" not in {j.kind for j in queued}, (user, change.__name__)
+            if user == "u3":
+                assert queued == [] and await served(pg_db, w.org) == before, change.__name__
+            await restamp.run_jobs(pg_db, w.org, "w1")
+            want = await walk_scopes(w, recs, MEMBERS, monkeypatch)
+            for uid in MEMBERS:
+                assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], (user, change.__name__, uid)
 
 
 @pytest.mark.timeout(300)

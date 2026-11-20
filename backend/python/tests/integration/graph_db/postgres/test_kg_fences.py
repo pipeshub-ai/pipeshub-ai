@@ -128,19 +128,38 @@ async def test_the_access_list_of_a_hidden_record_is_hidden_with_it_and_only_the
     assert await hidden_scopes() == set() and await dry_diffs(p, org, "app1") == []
 
 
-async def test_a_membership_change_hides_nothing_and_queues_nothing(pg_db) -> None:
-    """No stamp names who is in a group: a user who joins or leaves one changes the closure only, even a user with a grant above twelve records and a membership of the connector."""
+async def test_a_membership_change_of_a_member_of_the_connector_hides_nothing_and_queues_nothing(pg_db) -> None:
+    """No stamp reads who is in a group or who links to a connector: a user who belongs to the connector joins and leaves a group, and only the closure changes."""
     p, org = prov(pg_db), new_org()
     await fat(p, org)
+    await delete_edge(p, org, ("users", "u1"), ("records", "F"), "permission", type="USER")
     with ctx(org):
         await p.batch_upsert_nodes([{"_key": "grp", "orgId": org}], "groups")
     await drain_org(pg_db, org)
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
     for change, member in ((add_edge, True), (delete_edge, False)):
         await change(p, org, ("users", "u1"), ("groups", "grp"), "permission", type="USER")
         await drain_org(pg_db, org)
         assert await jobs(pg_db, org) == [] and await marks(p, org) == 0, change.__name__
         assert (("u1", "grp", "-") in (await held(p, org))["closure"]) is member
         assert await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_membership_change_of_a_user_with_a_grant_restamps_what_the_grant_reaches_never_the_connector_whole(pg_db) -> None:
+    """The user also holds a grant on F, above twelve records. The change log cannot tell a membership from the user's node coming or going, so what the grant reaches is
+    restamped as for a principal that came or went; the connector the user belongs to is not."""
+    p, org = prov(pg_db), new_org()
+    await fat(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "grp", "orgId": org}], "groups")
+    await drain_org(pg_db, org)
+    for change in (add_edge, delete_edge):
+        await change(p, org, ("users", "u1"), ("groups", "grp"), "permission", type="USER")
+        await drain_org(pg_db, org)
+        assert [j.kind for j in await jobs(pg_db, org)] in ([], ["rows"]), change.__name__
+        await no_stale_visible(p, pg_db, org)
+        await restamp.run_jobs(pg_db, org, "w1", batch=5)
+        assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
 
 
 async def test_a_user_whose_node_goes_with_its_edges_left_hides_what_its_grant_reached_until_restamped(pg_db) -> None:
@@ -155,6 +174,64 @@ async def test_a_user_whose_node_goes_with_its_edges_left_hides_what_its_grant_r
         assert await no_stale_visible(p, pg_db, org) >= {f"r{i:02d}" for i in range(12)}
         await restamp.run_jobs(pg_db, org, "w1", batch=5)
         assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+async def ungranted_folder(p, pg_db, org: str) -> None:
+    """``fat`` with the user's grant on F taken away and a grant to F from the team t9 written before t9 exists: nothing grants F, and kg agrees."""
+    await fat(p, org)
+    await delete_edge(p, org, ("users", "u1"), ("records", "F"), "permission", type="USER")
+    await add_edge(p, org, ("teams", "t9"), ("records", "F"), "permission", type="TEAM", role="READER")
+    await drain_org(pg_db, org)
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_grant_a_principal_copy_wrote_does_not_stand_for_the_projection_of_the_node_it_is_on(pg_db) -> None:
+    """t9 appears and the copy of the organisation's principals runs before the drain: it writes t9's grant on F without projecting F. When the drain then projects t9, the grant
+    row agrees with t9, yet F was never projected with t9 there: F (granted now) and the records below it must still be restamped, and nothing outdated may be visible meanwhile."""
+    p, org = prov(pg_db), new_org()
+    await ungranted_folder(p, pg_db, org)
+    await update_node(p, org, "teams", "t9", orgId=org)
+    assert await bf.backfill_scope(pg_db, org, None) > 0
+    await drain_org(pg_db, org)
+    assert await no_stale_visible(p, pg_db, org) >= {f"r{i:02d}" for i in range(12)}
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_principal_that_goes_before_a_copy_of_the_principals_still_hides_what_its_grant_reached(pg_db) -> None:
+    """The mirror: t9 alone grants F, then t9's node goes (its edges stay) and the principal copy runs before the drain. Nothing outdated may stay visible: F and the records
+    below it are no longer granted."""
+    p, org = prov(pg_db), new_org()
+    await ungranted_folder(p, pg_db, org)
+    await update_node(p, org, "teams", "t9", orgId=org)
+    await drain_org(pg_db, org)
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await dry_diffs(p, org, "app1") == []
+    await drop_only("teams", "t9")(p, org)
+    await bf.backfill_scope(pg_db, org, None)
+    await drain_org(pg_db, org)
+    assert await no_stale_visible(p, pg_db, org) >= {f"r{i:02d}" for i in range(12)}
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_principal_that_goes_and_comes_back_before_the_drain_leaves_no_stamp_compiled_without_it(pg_db) -> None:
+    """t9 alone grants F. Its node goes (edges stay), the connector is stamped page by page while t9 is gone (F not granted), and t9 comes back before the drain: its grant
+    row agrees with the graph again, but the stamps compiled in between do not, and they must be restamped."""
+    p, org = prov(pg_db), new_org()
+    await ungranted_folder(p, pg_db, org)
+    await update_node(p, org, "teams", "t9", orgId=org)
+    await drain_org(pg_db, org)
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await dry_diffs(p, org, "app1") == []
+    await drop_only("teams", "t9")(p, org)
+    assert await bf.restamp_app(pg_db, org, "app1") > 0
+    await update_node(p, org, "teams", "t9", orgId=org)
+    await drain_org(pg_db, org)
+    assert await no_stale_visible(p, pg_db, org) >= {f"r{i:02d}" for i in range(12)}
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
 
 
 async def test_a_change_that_fits_is_restamped_in_the_writers_unit_and_hides_nothing(pg_db, monkeypatch) -> None:
