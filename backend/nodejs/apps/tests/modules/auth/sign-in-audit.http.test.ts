@@ -107,6 +107,26 @@ interface Cred {
 }
 type Rec = Record<string, any>;
 
+/**
+ * Whether a log text quotes `part`, a segment of a token. A long segment is looked for as it is. A short one ('e30' is the
+ * base64url of `{}`) is looked for as a whole word only: the records hold random ids (24 hex characters for each account), and
+ * 'e30' sits inside about one in 200 of those, which failed this test on code that logged nothing of the token.
+ */
+const quotes = (log: string, part: string): boolean =>
+  part.length >= 12 ? log.includes(part) : new RegExp(`(?<![A-Za-z0-9_-])${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(log);
+
+describe('the check that a log does not quote a token segment', () => {
+  it('does not take a short segment inside a random id for a quote of it', () => {
+    expect(quotes('{"user_id":"6563e30a9d5f2b1c7e8f0a12"}', 'e30')).to.equal(false);
+    expect(quotes('{"id":"4d0e30c1-0e30-4e30-8e30-e30e30e30e30"}', 'e30')).to.equal(false);
+  });
+  it('still finds a segment that is quoted, short or long', () => {
+    expect(quotes('{"msg":"bad token eyJhbGciOiJSUzI1NiJ9.e30.c2ln"}', 'e30')).to.equal(true);
+    expect(quotes('{"cause":"Unexpected token e30"}', 'e30')).to.equal(true);
+    expect(quotes('{"msg":"eyJhbGciOiJSUzI1NiJ9"}', 'eyJhbGciOiJSUzI1NiJ9')).to.equal(true);
+  });
+});
+
 describe('auth audit lines (HTTP)', function () {
   this.timeout(20000);
   useCommunitySignInLists();
@@ -549,7 +569,7 @@ describe('auth audit lines (HTTP)', function () {
           expect(errorLine()).to.include({ level: 'warning', status: 401, error_class: 'bad_request', error_type: 'WrongCredentialError' });
           expect(errorLine().metadata.error.cause.message).to.match(cause);
           // The library quotes the token, or its claims, whatever their shape: none of it reaches a log line.
-          for (const part of [t, ...t.split('.').filter((p) => p.length > 1)]) expect(JSON.stringify(records)).to.not.include(part);
+          for (const part of [t, ...t.split('.').filter((p) => p.length > 1)]) expect(quotes(JSON.stringify(records), part), `a log line quotes ${part}`).to.equal(false);
           expectNoPrivateData();
         });
       }

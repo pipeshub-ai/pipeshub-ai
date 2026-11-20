@@ -598,8 +598,7 @@ class DeleteMixin(PgBase):
                 raise Exception(f"Deletion failed: {result.get('reason', 'Unknown error')}")
             return result
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete record by external ID failed: {str(e)}")
+        except Exception:
             raise
 
     async def unlink_nodes_missed_by_full_sync(self, connector_id: str, seen: Mapping[str, Collection[str]], *, window_start_ms: int | None = None,

@@ -51,7 +51,8 @@ COUNT = f"""/* pipeshub:kg.trash_count */ WITH {_BATCHES}
 SELECT count(*) FILTER (WHERE cardinality(c.roots) > 0) AS total, coalesce(bool_or(c.odd), false) AS odd FROM (SELECT s.roots, s.odd FROM s WHERE cardinality(s.roots) > 0 OR s.odd LIMIT $8) c"""
 
 # A page's rows, shaped as the walk shapes them (``TrashMixin`` in ``postgres/trash.py``, the statement after its ``page``), from the batches this module read
-# (``page`` from JSON, with each batch's other root names and size already read).
+# (``page`` from JSON, with each batch's other root names and size already read). A record's parent edges are a seek on to_id spelt in its order: with sorts off,
+# the walk's ``e.to_id = r.id ORDER BY e.from_id LIMIT 1`` is the primary key read in from_id order, every relation of the org up to the parent.
 ROWS = """/* pipeshub:kg.trash_rows */ WITH page AS (SELECT * FROM jsonb_to_recordset($2::jsonb) AS x(o int, batch text, deleted_at bigint, first_id text, root_count bigint, batch_size bigint, other_names text[]))
             SELECT page.batch, page.deleted_at, r.doc AS rec, p.id AS parent_id, p.doc->>'recordName' AS parent_name, p.doc->>'isDeleted' AS parent_deleted,
                    ty.doc->>'isFile' AS is_file, ty.doc->>'mimeType' AS file_mime, ty.doc->'sizeInBytes' AS size, page.root_count,
@@ -61,10 +62,12 @@ ROWS = """/* pipeshub:kg.trash_rows */ WITH page AS (SELECT * FROM jsonb_to_reco
                         ELSE trim(coalesce(u.doc->>'firstName', '') || ' ' || coalesce(u.doc->>'lastName', '')) END AS user_name, u.doc->>'email' AS user_email
             FROM page CROSS JOIN LATERAL (SELECT x.org_id, x.id, x.doc, x.doc->>'deletedByUserId' AS deleted_by FROM graph.nodes x
               WHERE x.org_id = $1 AND x.coll = 'records' AND x.id = page.first_id LIMIT 1) r
-            LEFT JOIN LATERAL (SELECT pn.id, pn.doc FROM graph.edges e JOIN graph.nodes pn ON pn.org_id = e.org_id AND pn.coll = e.from_coll AND pn.id = e.from_id
-              WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.to_id = r.id ORDER BY e.from_id LIMIT 1) p ON true
-            LEFT JOIN LATERAL (SELECT t.doc, t.coll AS tcoll FROM graph.edges e JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
-    WHERE e.org_id = r.org_id AND e.coll = 'isOfType' AND e.from_id = r.id LIMIT 1) ty ON true
+            LEFT JOIN LATERAL (SELECT pn.id, pn.doc FROM (SELECT e.org_id, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+                AND e.to_id >= r.id AND e.to_id <= r.id AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') ORDER BY e.to_id) e
+              JOIN graph.nodes pn ON pn.org_id = e.org_id AND pn.coll = e.from_coll AND pn.id = e.from_id ORDER BY e.from_id LIMIT 1) p ON true
+            LEFT JOIN LATERAL (SELECT t.doc, t.coll AS tcoll FROM (SELECT e.org_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'isOfType'
+                AND e.from_id >= r.id AND e.from_id <= r.id ORDER BY e.from_id) e
+              JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id LIMIT 1) ty ON true
             LEFT JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = r.deleted_by
             ORDER BY page.o"""
 ORG_APPS = "/* pipeshub:kg.trash_org_apps */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id <> $2"

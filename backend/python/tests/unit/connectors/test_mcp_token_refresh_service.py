@@ -185,12 +185,16 @@ class TestPerformTokenRefresh:
         assert mock_refresh.await_args.kwargs["client_id"] == "shared-cid"
 
 
+# The in-process count is left for a refused request shape (a grant or client refusal is token_refresh's shared rule).
+REFUSED_REQUEST = oauth_client_module.MCPRefreshTokenInvalidError("refused", error_code="invalid_scope")
+
+
 class TestHandleRefreshTokenInvalid:
     @pytest.mark.asyncio
     async def test_deactivates_only_on_threshold_rejection(
         self, service: MCPTokenRefreshService, mock_config_service: MagicMock
     ) -> None:
-        error = oauth_client_module.MCPRefreshTokenInvalidError("refresh_token is invalid")
+        error = REFUSED_REQUEST
 
         for _ in range(MAX_REFRESH_TOKEN_INVALID_FAILURES - 1):
             await service._handle_refresh_token_invalid(CONFIG_PATH, error)
@@ -212,12 +216,24 @@ class TestHandleRefreshTokenInvalid:
     async def test_tolerates_missing_record_on_deactivation(
         self, service: MCPTokenRefreshService, mock_config_service: MagicMock
     ) -> None:
-        error = oauth_client_module.MCPRefreshTokenInvalidError("invalid_grant")
+        error = REFUSED_REQUEST
         mock_config_service.get_config = AsyncMock(return_value=None)
 
         for _ in range(MAX_REFRESH_TOKEN_INVALID_FAILURES):
             await service._handle_refresh_token_invalid(CONFIG_PATH, error)
 
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_the_shared_rule_counts_is_not_counted_again(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock
+    ) -> None:
+        for error in (oauth_client_module.MCPRefreshTokenInvalidError("refresh_token is invalid"),
+                      oauth_client_module.MCPOAuthError("refused", error_code="invalid_client", status=401)):
+            for _ in range(MAX_REFRESH_TOKEN_INVALID_FAILURES):
+                await service._handle_refresh_token_invalid(CONFIG_PATH, error)
+
+        assert CONFIG_PATH not in service._invalid_refresh_failures
         mock_config_service.set_config.assert_not_awaited()
 
 
@@ -530,7 +546,7 @@ class TestHandleRefreshTokenInvalidPersistenceError:
     async def test_set_config_failure_is_logged_not_raised(
         self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
     ) -> None:
-        error = oauth_client_module.MCPRefreshTokenInvalidError("invalid_grant")
+        error = REFUSED_REQUEST
         mock_config_service.get_config = AsyncMock(return_value={"isAuthenticated": True})
         mock_config_service.set_config = AsyncMock(side_effect=RuntimeError("write failed"))
 
