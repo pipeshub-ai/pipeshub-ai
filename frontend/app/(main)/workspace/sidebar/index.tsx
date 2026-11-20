@@ -25,6 +25,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { useDesktopState } from '@/lib/electron/desktop-mode';
 import { ENTERPRISE_FEATURES, type EnterpriseSection } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
 
 // ========================================
@@ -41,6 +42,8 @@ interface NavItem {
   requiresFlag?: FeatureFlagGate;
   /** Renders a Beta badge as the item's rightSlot. */
   beta?: boolean;
+  /** Only in the desktop app while it runs PipesHub on this computer. */
+  desktopLocalOnly?: boolean;
 }
 
 const OVERVIEW_ITEMS: NavItem[] = [
@@ -90,6 +93,7 @@ const PERSONAL_ITEMS: NavItem[] = [
   { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.yourMcpServers', route: '/workspace/mcp-servers/personal', requiresFlag: 'mcp' },
   { icon: 'psychology', labelKey: 'workspace.sidebar.nav.yourSkills', route: '/workspace/skills/personal', requiresFlag: 'skills', beta: true },
   { icon: 'archive', labelKey: 'workspace.sidebar.nav.archivedChats', route: '/workspace/archived-chats' },
+  { icon: 'computer', labelKey: 'workspace.sidebar.nav.desktop', route: '/workspace/desktop', desktopLocalOnly: true },
 ];
 
 const PEOPLE_ROUTES = PEOPLE_SUB_ITEMS.map((item) => item.route);
@@ -118,6 +122,7 @@ export default function WorkspaceSidebar() {
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
+  const desktopLocal = useDesktopState().state?.mode === 'local';
   const showEnterprise = useEnterprisePrompt();
   const isMobile = useIsMobile();
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
@@ -139,6 +144,7 @@ export default function WorkspaceSidebar() {
   };
   const isNavItemVisible = (item: NavItem) =>
     (isAdmin || !item.adminOnly) &&
+    (!item.desktopLocalOnly || desktopLocal) &&
     (item.requiresFlag === undefined || flagEnabled[item.requiresFlag]);
 
   const allRoutes = [

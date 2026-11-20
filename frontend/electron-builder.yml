@@ -9,6 +9,9 @@ files:
   - electron/compile/deep-link.js
   - electron/compile/navigation.js
   - electron/compile/static-export.js
+  - electron/compile/local-mode.js
+  - electron/compile/local-server/**/*.js
+  - electron/compile/local-repos/**/*.js
   - electron/package.json
   - electron/compile/local-sync/**/*.js
   - "!electron/compile/local-sync/**/*.test.js"
@@ -43,6 +46,16 @@ files:
   - node_modules/xmlhttprequest-ssl/**/*
   - node_modules/debug/**/*
   - node_modules/ms/**/*
+# The native launcher bundle ("run on this computer"), the WHOLE folder (launcher +
+# pg/ py/ app/ models/ node/, ~2.1 GB; the launcher finds them beside itself): read-only app content,
+# staged into resources/pipeshub-native by scripts/electron/stage-launcher.mjs.
+# When nothing is staged the folder is empty and the app offers server mode only.
+# Its data lives in the OS app-data folder, never in here.
+extraResources:
+  - from: resources/pipeshub-native
+    to: pipeshub-native
+    filter:
+      - "**/*"
 asarUnpack:
   - electron/compile/preload.js
 # Sign-in opens in the default browser, which returns the result through this
@@ -56,6 +69,14 @@ afterPack: scripts/electron/after-pack.cjs
 mac:
   category: public.app-category.productivity
   darkModeSupport: true
+  # Every Mach-O file in the bundle is also listed for signing by scripts/electron/after-pack.cjs.
+  # Used only when a signing identity is present (CSC_LINK / CSC_NAME); unsigned
+  # builds ignore them. The bundled Bun, Python and PostgreSQL binaries inherit
+  # the same entitlements (see scripts/electron/entitlements.mac.plist).
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: scripts/electron/entitlements.mac.plist
+  entitlementsInherit: scripts/electron/entitlements.mac.plist
   # Single `dmg` target — arch comes from the CLI (`--x64` / `--arm64`) in
   # `scripts/electron/build.mjs`. Listing both archs here makes electron-builder
   # build two DMGs in one process; both mount `/Volumes/<dmg.title>` and the
@@ -66,6 +87,8 @@ dmg:
   title: PipesHub
   artifactName: PipesHub-mac-${arch}.${ext}
 win:
+  # Stub: the Windows installer builds, but there is no Windows launcher bundle,
+  # so the app offers server mode only.
   # Arch is selected per `build.mjs` invocation via `--x64` / `--arm64`.
   target:
     - nsis

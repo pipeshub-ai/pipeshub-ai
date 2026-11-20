@@ -574,6 +574,43 @@
         "invalid": "유효한 URL을 입력해 주세요 (예: http://localhost:3000).",
         "protocol": "서버 URL은 http:// 또는 https://를 사용해야 합니다."
       }
+    },
+    "desktopMode": {
+      "useLocalInstead": "Run PipesHub on this computer instead",
+      "choice": {
+        "title": "Welcome to PipesHub",
+        "subtitle": "Choose how you want to use PipesHub on this device.",
+        "local": {
+          "title": "Run PipesHub on this computer",
+          "description": "Everything runs privately on this device. No server needed.",
+          "unavailable": "This build does not include the local PipesHub server. Download the full installer to use this option."
+        },
+        "remote": {
+          "title": "Connect to a PipesHub server",
+          "description": "Sign in to a PipesHub server your team or company already runs."
+        }
+      },
+      "local": {
+        "startingTitle": "Starting PipesHub",
+        "startingSubtitle": "The first start sets up your data and can take about a minute.",
+        "dataFolder": "Data folder: {{path}}",
+        "failedTitle": "PipesHub could not start",
+        "retry": "Try again",
+        "openLogs": "Open logs",
+        "useServer": "Connect to a server instead",
+        "phases": {
+          "starting": "Starting…",
+          "checking": "Checking for a running copy…"
+        },
+        "errors": {
+          "launcher_missing": "This build does not include the local PipesHub server.",
+          "spawn_failed": "The local PipesHub server could not be launched.",
+          "port_in_use": "A network port PipesHub needs is already in use by another program. Close it and try again.",
+          "crashed": "PipesHub stopped unexpectedly. The log below may say why.",
+          "timeout": "PipesHub took too long to become ready. Try again, or open the logs.",
+          "bad_url": "The local PipesHub server reported an unexpected address, so it was not used."
+        }
+      }
     }
   },
   "common": {
@@ -2512,7 +2549,8 @@
         "tenants": "테넌트",
         "superOrgs": "조직",
         "oauthApps": "커넥터 OAuth 앱",
-        "serviceAccounts": "서비스 계정"
+        "serviceAccounts": "서비스 계정",
+        "desktop": "This computer"
       }
     },
     "actions": {
@@ -5172,6 +5210,49 @@
         "read": "즉시 실행",
         "write": "먼저 사용자에게 확인",
         "destructive": "에이전트의 액션 규칙에서 허용하지 않으면 차단"
+      }
+    },
+    "desktop": {
+      "title": "PipesHub on this computer",
+      "subtitle": "Manage the PipesHub server that runs inside this app.",
+      "notLocal": "This app is connected to a server. Local mode is not active.",
+      "server": {
+        "title": "Local server",
+        "status": "Status",
+        "states": {
+          "idle": "Stopped",
+          "starting": "Starting",
+          "running": "Running",
+          "stopping": "Stopping",
+          "failed": "Failed"
+        },
+        "keepRunning": "Keep running in the tray",
+        "keepRunningDescription": "Closing the window hides PipesHub to the tray instead of stopping it. Quit from the tray menu.",
+        "dataFolder": "Data folder",
+        "openLogs": "Open logs",
+        "useServer": "Connect to a server",
+        "useServerDescription": "Stops the local server and returns to the server sign-in. Your local data is kept.",
+        "useServerAction": "Switch"
+      },
+      "repos": {
+        "title": "Code repositories",
+        "description": "Index folders on this computer so PipesHub can answer questions about your code.",
+        "add": "Add repository",
+        "adding": "Adding…",
+        "empty": "No repositories yet.",
+        "files": "Files: {{count}}",
+        "remove": "Remove",
+        "addError": "Could not add the repository",
+        "removeError": "Could not remove the repository",
+        "states": {
+          "empty": "Empty",
+          "syncing": "Syncing",
+          "indexing": "Indexing",
+          "ready": "Ready",
+          "failed": "Failed",
+          "deleting": "Removing",
+          "unknown": "Unknown"
+        }
       }
     }
   },

@@ -63,3 +63,6 @@ next-env.d.ts
 
 # local postman collection dump
 kb_swagger.yaml
+
+# staged native launcher bundle (electron-builder extraResources)
+/resources/pipeshub-native/

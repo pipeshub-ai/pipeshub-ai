@@ -1,5 +1,6 @@
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { isElectron } from '@/lib/electron';
+import { onApiBaseUrlChange } from '@/lib/electron/api-base-url-storage';
 import { useAuthStore } from '@/config';
 import { ConnectorsApi } from '../api';
 import { isLocalFsConnectorType } from './local-fs-helpers';
@@ -124,8 +125,8 @@ export async function startElectronLocalSync(
   });
 }
 
-/** Last value handed to main, so a store change that left the token alone is not re-pushed. */
-let lastPushedAccessToken: string | null = null;
+/** Last token and server handed to main, so a store change that left both alone is not re-pushed. */
+let lastPushed: string | null = null;
 let tokenBridgeStarted = false;
 
 /**
@@ -141,11 +142,13 @@ export async function pushElectronDesktopAccessToken(): Promise<void> {
   const apiBaseUrl = getApiBaseUrl();
   const accessToken = useAuthStore.getState().accessToken;
   if (!apiBaseUrl || !accessToken) return;
-  if (accessToken === lastPushedAccessToken) return;
+  // The server counts too: a restarted local server is on a new port with the same token.
+  const pushed = `${apiBaseUrl}\n${accessToken}`;
+  if (pushed === lastPushed) return;
 
   const result = await api.setAccessToken(accessToken, apiBaseUrl);
   if (result?.ok) {
-    lastPushedAccessToken = accessToken;
+    lastPushed = pushed;
   } else if (result?.error) {
     console.warn(`[local-sync] desktop rejected the access token: ${result.error}`);
   }
@@ -163,10 +166,16 @@ export function startElectronDesktopTokenBridge(): void {
   if (tokenBridgeStarted) return;
   if (!getElectronLocalSyncApi()) return;
   tokenBridgeStarted = true;
-  useAuthStore.subscribe(() => {
+  const push = (): void => {
     void pushElectronDesktopAccessToken().catch((error) => {
       console.warn('[local-sync] could not push the access token to the desktop:', error);
     });
+  };
+  useAuthStore.subscribe(push);
+  onApiBaseUrlChange((url) => {
+    // The local server went away and main forgets its token then; when it is back, even on the same port, push again.
+    if (!url) lastPushed = null;
+    else push();
   });
 }
 
