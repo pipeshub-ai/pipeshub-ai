@@ -2,9 +2,10 @@
 
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Button, Callout, Dialog, Flex, Link, Text, TextField } from '@radix-ui/themes';
+import { Box, Button, Callout, Dialog, Flex, Link, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { CONNECTOR_OAUTH_POST_MESSAGE } from '@/app/(main)/connectors/oauth/connector-oauth-window-messages';
 import { ConnectorsApi } from '../../api';
@@ -84,11 +85,9 @@ function TokenDialog({
             <Text as="label" htmlFor={tokenId} size="2" weight="medium">
               {t('workspace.connectors.userAccess.connectDialog.tokenLabel')}
             </Text>
-            <TextField.Root
+            <SecretTextField
               id={tokenId}
               size="2"
-              type="password"
-              autoComplete="off"
               value={token}
               onChange={(e) => setToken(e.target.value)}
               disabled={busy}
