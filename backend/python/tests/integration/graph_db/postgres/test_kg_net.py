@@ -13,7 +13,7 @@ import pytest
 
 from app.core.db import DbConfig, KernelDB
 from app.services.graph_db.postgres.kg import backfill as bf
-from app.services.graph_db.postgres.kg import bootstrap, drainer, net
+from app.services.graph_db.postgres.kg import bootstrap, drainer, net, restamp
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg import verify as verify_mod
 from app.services.graph_db.postgres.kg.worker import KgWorker
@@ -183,6 +183,21 @@ async def test_a_record_kg_holds_that_the_graph_does_not_is_caught_by_the_chunke
     await _enforce(p, pg_db, org)
     await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk) SELECT $1, 80000001, 3, 'ghost', 3, k.sk FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'drv'", org)
     assert await net.verify_due(pg_db, org, {}) == 1 and await _mode(p, org) == "legacy"
+
+
+async def test_the_verify_waits_while_a_restamp_job_hides_rows_and_never_demotes_for_their_outdated_stamps(pg_db, no_jitter) -> None:
+    """A rows job keeps its connector served; the stamps of the rows it hides differ from a fresh compile until it is over them. The verify waits for the job instead of demoting."""
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+
+    async def mark(tx) -> int:
+        return await restamp.enqueue_rows(tx, org, {("records", "r3")}, "reach", org_wide=True)
+    with ctx(org):
+        assert await pg_db.run(mark, write=True) == 1
+    await _admin("UPDATE kg.records SET class_id = NULL WHERE org_id = $1 AND id = 'r3'", org)          # an outdated stamp, hidden by the mark
+    assert await net.verify_due(pg_db, org, {}) == 0 and await _mode(p, org) == "enforce"
+    assert await restamp.run_jobs(pg_db, org, "w1") == 1
+    assert await net.verify_due(pg_db, org, {}) == 1 and await _mode(p, org) == "enforce"
 
 
 async def test_the_verify_is_bounded_per_pass_scheduled_stoppable(pg_db, no_jitter, monkeypatch) -> None:

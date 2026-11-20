@@ -1,7 +1,7 @@
 """The access check from kg: which of the asked nodes the viewer may open, decided from the stamped classes instead of the walk. On unless ``PG_KG_READ=0``.
 
 The switch is per node and fails closed to today's walk (``access.accessible_rows``). A node is answered from kg only when its connector is served (``drainer.serves``: enforced,
-verified by this code, nothing waiting that can alter it, no restamp job hiding it) and the row is stamped and not hidden; every other node, and the whole call when the switch is off,
+verified by this code, nothing waiting that can alter it, no restamp job hiding it whole) and the row is stamped and not hidden; every other node, and the whole call when the switch is off,
 inside an explicit transaction, for the system role or failing, takes the walk. The two answers are merged. What the walk keeps for itself:
 
 - a row with no class (refused by the compiler), a placeholder, a record of no connector (``r13`` true or not yet stamped: NULL), a row with no ``path`` (not stamped, a cycle or a chain
@@ -42,7 +42,7 @@ FALLBACKS = METRICS_BACKEND.counter("pipeshub_kg_read_fallback_total", "Nodes (o
 # answers too: when the statistics knew only small orgs and the asked org's rows were newer (its first large sync, before autovacuum analyses the table) the planner chose to
 # scan the whole org once per asked key. OFFSET 0 keeps a seek's key check in its own subquery, so the plan shows it next to the seek (``s.id = q.id``) as the union does.
 # The asked nodes: apps, record groups and records, one seek per id and collection, and the connector of each by its key. ``hidden`` is the record's own mark; the connector-wide
-# one (a queued restamp job that hides) is part of ``drainer.serves``.
+# one (a restamp job that hides the whole connector) is part of ``drainer.serves``.
 BY_ID = """/* pipeshub:kg.read_rows */ SELECT r.coll, r.id, r.kind, r.deleted, r.placeholder, r.class_id, r.r13, r.path IS NULL AS no_path, r.fence_job IS NOT NULL AS hidden, a.id AS app_id
     FROM unnest($2::text[]) AS q(id)
     CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE s.id = q.id

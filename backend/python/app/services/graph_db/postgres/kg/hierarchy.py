@@ -5,7 +5,7 @@ Only the edges are kg's. Every filter the walk applies to a document (connector,
 same predicates, so a page differs from the walk's only if kg's structure does. kg answers for a connector it serves (``read.serves``: verified, enforced, nothing waiting in the
 log), in one snapshot with that check. The walk answers instead (counted ``pipeshub_kg_hierarchy_total{what, answer}``) when the switch is off, inside a caller's own transaction, for
 the system role, when a read fails, and when a row the read passes through is another connector's (that connector's copy is not the one checked) or has no ``path`` (the stamper
-could not place it: a cycle, or a chain deeper than it stores).
+could not place it: a cycle, or a chain deeper than it stores) or a ``path`` a restamp job has yet to rewrite (``fence_job``).
 """
 from __future__ import annotations
 
@@ -99,12 +99,12 @@ _DOC = """r.doc->>'connectorId' = {c} AND (r.doc->>'orgId' = {o} OR r.doc->>'org
       AND ({a}::text IS NULL OR r.id > {a})"""
 
 # The records below the record $2 (an sk), $3 levels down, by every hierarchy parent: the primary one in ``parent_sk``, the others in kg.links. Only records, as the walk follows
-# record-to-record edges. ``untrusted``: a row it passes through is not the connector's ($4) or has no path. ``ids``: the walk's page of them (its document filters, its order).
+# record-to-record edges. ``untrusted``: a row it passes through is not the connector's ($4) or has no path we trust (none, or a restamp job's mark). ``ids``: the walk's page of them (its document filters, its order).
 BELOW = f"""/* pipeshub:kg.hier_below */ WITH RECURSIVE w(sk, d) AS (
     SELECT $2::bigint, 0
     UNION SELECT x.sk, w.d + 1 FROM w CROSS JOIN LATERAL ({_below("w.sk", 3)}) x WHERE w.d < $3),
-  v AS MATERIALIZED (SELECT r.sk, r.id, r.app_sk, r.path FROM (SELECT DISTINCT sk FROM w) q CROSS JOIN LATERAL {_sk("q.sk")} r)
-SELECT (SELECT coalesce(bool_or(v.app_sk IS DISTINCT FROM $4 OR v.path IS NULL), false) FROM v) AS untrusted,
+  v AS MATERIALIZED (SELECT r.sk, r.id, r.app_sk, r.path, r.fence_job FROM (SELECT DISTINCT sk FROM w) q CROSS JOIN LATERAL {_sk("q.sk")} r)
+SELECT (SELECT coalesce(bool_or(v.app_sk IS DISTINCT FROM $4 OR v.path IS NULL OR v.fence_job IS NOT NULL), false) FROM v) AS untrusted,
   EXISTS (SELECT 1 FROM v WHERE {_unheld("v.id")}) AS unheld,
   array(SELECT r.id FROM v CROSS JOIN LATERAL {_node("'records'", "v.id")} r
     WHERE {_DOC.format(c="$5", o="$6", s="$7", x="$8", a="$9")} ORDER BY r.id OFFSET $10 LIMIT $11) AS ids"""
@@ -115,13 +115,13 @@ NEST = f"""/* pipeshub:kg.hier_nest */ WITH RECURSIVE nest(sk, d) AS (
     UNION SELECT c.sk, nest.d + 1 FROM nest CROSS JOIN LATERAL ({_below("nest.sk", 2, by="group_sk", link=2)}) x CROSS JOIN LATERAL {_sk("x.sk")} c
       CROSS JOIN LATERAL {_node("'recordGroups'", "c.id")} n
     WHERE nest.d < $4 AND (n.doc->>'orgId' = $3 OR n.doc->>'orgId' IS NULL))
-SELECT r.sk, r.id, r.app_sk, r.path IS NULL AS no_path, {_unheld("r.id")} AS unheld
+SELECT r.sk, r.id, r.app_sk, (r.path IS NULL OR r.fence_job IS NOT NULL) AS no_path, {_unheld("r.id")} AS unheld
 FROM (SELECT DISTINCT sk FROM nest) q CROSS JOIN LATERAL {_sk("q.sk")} r"""
 
 # The records that belong to one of the groups $2 (sks) and pass the walk's document filters and its file test (its candidates), then those reachable from a candidate no other
 # candidate is a hierarchy parent of, 100 levels down within the candidates (a cycle of candidates with no root is not returned, as by the walk). ``untrusted`` as for BELOW.
 GROUP_RECORDS = f"""/* pipeshub:kg.hier_group_records */ WITH RECURSIVE cand AS MATERIALIZED (
-    SELECT c.sk, c.id, c.parent_sk, c.app_sk, c.path FROM (SELECT DISTINCT m.sk FROM unnest($2::bigint[]) g(sk) CROSS JOIN LATERAL ({_below("g.sk", 3, by="group_sk", link=2)}) m) m
+    SELECT c.sk, c.id, c.parent_sk, c.app_sk, c.path, c.fence_job FROM (SELECT DISTINCT m.sk FROM unnest($2::bigint[]) g(sk) CROSS JOIN LATERAL ({_below("g.sk", 3, by="group_sk", link=2)}) m) m
       CROSS JOIN LATERAL {_sk("m.sk")} c CROSS JOIN LATERAL {_node("'records'", "c.id")} r
       CROSS JOIN LATERAL (SELECT t.doc, t.coll AS tcoll FROM (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_id >= r.id
           AND e.from_id <= r.id ORDER BY e.from_id) e CROSS JOIN LATERAL {_node("e.to_coll", "e.to_id")} t LIMIT 1) ty
@@ -130,7 +130,7 @@ GROUP_RECORDS = f"""/* pipeshub:kg.hier_group_records */ WITH RECURSIVE cand AS 
     SELECT c.sk, 0 FROM cand c WHERE NOT EXISTS (SELECT 1 FROM cand p WHERE p.sk = c.parent_sk)
       AND NOT EXISTS (SELECT 1 FROM {_links_up("c.sk", 1)} l JOIN cand p ON p.sk = l.parent_sk)
     UNION SELECT x.sk, reach.d + 1 FROM reach CROSS JOIN LATERAL ({_below("reach.sk", 3)}) x WHERE reach.d < 100 AND x.sk IN (SELECT sk FROM cand))
-SELECT (SELECT coalesce(bool_or(cand.app_sk IS DISTINCT FROM $8 OR cand.path IS NULL), false) FROM cand) AS untrusted,
+SELECT (SELECT coalesce(bool_or(cand.app_sk IS DISTINCT FROM $8 OR cand.path IS NULL OR cand.fence_job IS NOT NULL), false) FROM cand) AS untrusted,
   array(SELECT c.id FROM (SELECT DISTINCT sk FROM reach) q JOIN cand c ON c.sk = q.sk ORDER BY c.id OFFSET $9 LIMIT $10) AS ids"""
 
 # Each asked record ($2) and its record ancestors by every hierarchy parent, $3 levels up: (asked id, ancestor sk, levels up). A level under a parent is read from these.
@@ -141,7 +141,7 @@ UP = f"""/* pipeshub:kg.hier_up */ WITH RECURSIVE up(node, sk, k) AS (
       SELECT c.parent_sk AS sk FROM {_sk("up.sk")} c UNION ALL SELECT l.parent_sk FROM {_links_up("up.sk", 1)} l) x
       CROSS JOIN LATERAL {_sk("x.sk")} p
     WHERE up.k < $3 AND p.coll = 3),
-  a AS MATERIALIZED (SELECT r.sk, r.app_sk, r.path IS NULL AS no_path, {_unheld("r.id")} AS unheld FROM (SELECT DISTINCT sk FROM up) q CROSS JOIN LATERAL {_sk("q.sk")} r)
+  a AS MATERIALIZED (SELECT r.sk, r.app_sk, (r.path IS NULL OR r.fence_job IS NOT NULL) AS no_path, {_unheld("r.id")} AS unheld FROM (SELECT DISTINCT sk FROM up) q CROSS JOIN LATERAL {_sk("q.sk")} r)
 SELECT up.node, up.sk, up.k, a.app_sk, a.no_path, a.unheld FROM up JOIN a ON a.sk = up.sk"""
 # The members among the sks $2 of the group $3 (its group, or a group link).
 GROUP_MEMBERS = f"""/* pipeshub:kg.hier_group_members */ SELECT c.sk FROM unnest($2::bigint[]) q(sk) CROSS JOIN LATERAL {_sk("q.sk")} c
@@ -178,7 +178,7 @@ HUB_NODES = f"""/* pipeshub:graph.hub_node */ SELECT q.id AS key, coalesce(r.col
 
 # One node of the hub's trail ($2, an sk): its row, its record parents (the primary one and the linked ones that are records), its groups (the first and the linked ones) and
 # whether an edge the trail follows up from it has an end kg does not hold.
-TRAIL_NODE = f"""/* pipeshub:kg.hier_trail_node */ SELECT r.sk, r.coll, r.id, r.app_sk, r.path IS NULL AS no_path,
+TRAIL_NODE = f"""/* pipeshub:kg.hier_trail_node */ SELECT r.sk, r.coll, r.id, r.app_sk, (r.path IS NULL OR r.fence_job IS NOT NULL) AS no_path,
     array(SELECT p.sk FROM (SELECT r.parent_sk AS sk UNION ALL SELECT l.parent_sk FROM {_links_up("r.sk", 1)} l) x CROSS JOIN LATERAL {_sk("x.sk")} p WHERE p.coll = 3) AS parents,
     array(SELECT x.sk FROM (SELECT r.group_sk AS sk UNION ALL SELECT l.parent_sk FROM {_links_up("r.sk", 2)} l) x WHERE x.sk IS NOT NULL) AS groups,
     {_unheld_up("r.id")} AS unheld

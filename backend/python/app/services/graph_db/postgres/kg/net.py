@@ -366,11 +366,11 @@ class VerifyState:
 
 
 async def _chunk(db: KernelDB, org: str, app: str, cur: Cursor) -> str:
-    """One page of the verify in a snapshot of its own: ``skipped`` when the connector is not served in it (a change waits in the log, so kg is behind the graph by design), else ``done`` or
-    ``more``."""
+    """One page of the verify in a snapshot of its own: ``skipped`` when the connector is not served in it (a change waits in the log, so kg is behind the graph by design) or a restamp
+    job hides rows of it (their stamps are outdated by design until the job is over them), else ``done`` or ``more``."""
     async def go(tx: Tx) -> str:
         await tx.fetchval(CHUNK_PROFILE, VERIFY_TIMEOUT)
-        if not await drainer.serves(tx, org, app):
+        if not await drainer.serves(tx, org, app) or await drainer.fenced(tx, org, app):
             return "skipped"
         return "done" if await verify_chunk(tx, org, app, cur) else "more"
     with bind(drainer._ctx(org)):
