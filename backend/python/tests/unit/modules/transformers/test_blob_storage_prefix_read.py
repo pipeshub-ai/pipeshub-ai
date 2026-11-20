@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
 from app.modules.transformers.blob_storage import BlobStorage
@@ -31,4 +32,59 @@ async def test_object_storage_still_asks_the_gateway_for_a_signed_url() -> None:
     blob = _blob("s3")
     with patch("app.modules.transformers.blob_storage.get_shared_session"):
         assert await blob.read_stored_prefix("v-1", "org-1", 1024) is None
+    blob._fetch_record_envelope.assert_awaited_once()
+
+
+class _Response:
+    def __init__(self, status: int, body: bytes = b"", headers: dict | None = None) -> None:
+        self.status, self.headers = status, headers or {}
+        self.content = MagicMock()
+        chunks = [body, b""]
+        self.content.read = AsyncMock(side_effect=lambda _n: chunks.pop(0) if chunks else b"")
+
+    async def __aenter__(self) -> "_Response":
+        return self
+
+    async def __aexit__(self, *_a: object) -> None:
+        return None
+
+
+def _session(responses: dict[str, _Response]) -> MagicMock:
+    session = MagicMock()
+    session.get = MagicMock(side_effect=lambda url, **_kw: responses[str(url)])
+    return session
+
+
+@pytest.mark.asyncio
+async def test_a_cached_url_that_is_refused_is_replaced_by_one_gateway_refresh() -> None:
+    blob = _blob("s3")
+    blob._cached_signed_url = AsyncMock(return_value="https://old/x")
+    blob._fetch_record_envelope = AsyncMock(return_value={"signedUrl": "https://new/x"})
+    blob._store_signed_url = AsyncMock()
+    session = _session({"https://old/x": _Response(403), "https://new/x": _Response(206, b"%PDF", {"Content-Range": "bytes 0-3/99"})})
+    with patch("app.modules.transformers.blob_storage.get_shared_session", return_value=session):
+        assert await blob.read_stored_prefix("v-1", "org-1", 4) == (b"%PDF", 99)
+    blob._fetch_record_envelope.assert_awaited_once()
+    blob._store_signed_url.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_cached_url_that_works_is_read_directly() -> None:
+    blob = _blob("s3")
+    blob._cached_signed_url = AsyncMock(return_value="https://old/x")
+    session = _session({"https://old/x": _Response(206, b"%PDF", {"Content-Range": "bytes 0-3/99"})})
+    with patch("app.modules.transformers.blob_storage.get_shared_session", return_value=session):
+        assert await blob.read_stored_prefix("v-1", "org-1", 4) == (b"%PDF", 99)
+    blob._fetch_record_envelope.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_url_that_is_refused_is_not_retried() -> None:
+    blob = _blob("s3")
+    blob._cached_signed_url = AsyncMock(return_value=None)
+    blob._fetch_record_envelope = AsyncMock(return_value={"signedUrl": "https://new/x"})
+    blob._store_signed_url = AsyncMock()
+    session = _session({"https://new/x": _Response(403)})
+    with patch("app.modules.transformers.blob_storage.get_shared_session", return_value=session), pytest.raises(aiohttp.ClientError):
+        await blob.read_stored_prefix("v-1", "org-1", 4)
     blob._fetch_record_envelope.assert_awaited_once()

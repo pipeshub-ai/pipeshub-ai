@@ -225,10 +225,10 @@ async def test_the_log_line_states_the_counts(caplog: pytest.LogCaptureFixture) 
 
 
 @pytest.mark.asyncio
-async def test_a_failed_read_is_counted_not_fatal() -> None:
+async def test_a_failed_read_is_counted_not_fatal_but_the_pass_is_not_done() -> None:
     graph = Graph([pdf("a")])
     result, *_ = await run(graph, AsyncMock(side_effect=RuntimeError("storage down")))
-    assert result.not_checked == 1 and result.complete
+    assert result.not_checked == 1 and result.read_failed == 1 and not result.complete
 
 
 def test_the_scan_cap_and_size_floor_are_the_documented_sizes() -> None:
@@ -270,7 +270,7 @@ async def test_the_budget_is_checked_before_each_app_even_when_every_app_is_a_sh
     assert [w[0] for w in graph.writes] == ["a"]
     assert not result.complete
     assert audit.FLAG_KEY not in config.data
-    assert config.data[audit.CURSOR_KEY] == {"app": "app-1￿", "after": None}
+    assert config.data[audit.CURSOR_KEY] == {"app": "app-1￿", "after": None, "read_failed": 0}
     assert lock.released
 
 
@@ -284,4 +284,31 @@ async def test_the_lease_is_renewed_before_each_app_and_a_lost_one_stops_the_aud
     graph = _two_small_apps()
     result, config, _ = await run(graph, reader_of({}), lock=Losing())
     assert [w[0] for w in graph.writes] == ["a"]
+    assert not result.complete and audit.FLAG_KEY not in config.data
+
+
+@pytest.mark.asyncio
+async def test_a_stored_record_that_could_not_be_read_keeps_the_audit_from_being_marked_done() -> None:
+    graph = Graph([pdf("a"), pdf("b", pageCount=900)])
+    reader = AsyncMock(side_effect=RuntimeError("storage unavailable"))
+    result, config, _ = await run(graph, reader)
+    assert result.read_failed == 2 or result.read_failed == 1
+    assert not result.complete and audit.FLAG_KEY not in config.data
+    assert audit.CURSOR_KEY not in config.data, "the next start runs the whole pass again"
+
+
+@pytest.mark.asyncio
+async def test_records_with_nothing_to_read_do_not_hold_the_audit_open() -> None:
+    graph = Graph([pdf("a"), pdf("b", sizeInBytes=None, virtualRecordId=None)])
+    result, config, _ = await run(graph, reader_of({}))
+    assert result.not_checked and result.read_failed == 0
+    assert result.complete and config.data[audit.FLAG_KEY]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_in_an_earlier_part_of_a_resumed_pass_still_holds_it_open() -> None:
+    graph = Graph([pdf("a", pageCount=900)])
+    config = Config()
+    config.data[audit.CURSOR_KEY] = {"app": "app-1", "after": None, "read_failed": 3}
+    result, config, _ = await run(graph, reader_of({}), config)
     assert not result.complete and audit.FLAG_KEY not in config.data

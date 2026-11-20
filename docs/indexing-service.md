@@ -1069,6 +1069,7 @@ no lease of its own.
 At start-up `pdf_page_limit_audit` notes the indexed PDFs it can prove are over the limit (`PDF_PAGE_LIMIT_AUDIT=false`
 skips it). It reads `pageCount`, reads nothing for files under 1 MiB, and for the rest scans at most the first 8 MiB of
 the stored record without decoding it; compressed records are counted, not inflated.
+A stored record that cannot be read because storage fails (a refused cached link is first replaced by one fresh link from the gateway) keeps the pass from being marked done: the next start runs it again. Records with nothing to read (no stored document, compressed, local storage) do not.
 
 ## 5. Root cause: throughput collapses to a few records after the first few hundred
 

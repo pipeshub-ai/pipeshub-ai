@@ -3331,32 +3331,43 @@ class BlobStorage(Transformer):
         if not document_id:
             return None
         session = get_shared_session()
-        url = await self._cached_signed_url(org_id, document_id)
+        download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+
+        async def read(url: str) -> tuple[bytes, int | None]:
+            async with session.get(URL(url, encoded=True), headers={"Range": f"bytes=0-{max_bytes - 1}"}) as response:
+                if response.status not in (HttpStatusCode.SUCCESS.value, HttpStatusCode.PARTIAL_CONTENT.value):
+                    raise _storage_status_error(
+                        response.status, f"Failed to read a stored record prefix: status {response.status}"
+                    )
+                total: int | None = None
+                content_range = response.headers.get("Content-Range", "")
+                if "/" in content_range and content_range.rsplit("/", 1)[-1].isdigit():
+                    total = int(content_range.rsplit("/", 1)[-1])
+                elif response.headers.get("Content-Length", "").isdigit() and response.status == HttpStatusCode.SUCCESS.value:
+                    total = int(response.headers["Content-Length"])
+                chunks: list[bytes] = []
+                remaining = max_bytes
+                while remaining > 0:
+                    chunk = await response.content.read(min(remaining, 1 << 20))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                return b"".join(chunks), total
+
+        cached = await self._cached_signed_url(org_id, document_id)
+        if cached:
+            try:
+                return await read(cached)
+            except Exception as error:
+                # An expired or revoked cached URL: ask the gateway for a fresh one once, as the stored-record reader does.
+                self.logger.debug("Cached signed URL failed for %s, re-signing: %s", document_id, error)
+        data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+        url = data.get("signedUrl")
         if not url:
-            download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
-            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
-            url = data.get("signedUrl")
-            if not url:
-                return None
-            await self._store_signed_url(org_id, document_id, url)
-        async with session.get(URL(url, encoded=True), headers={"Range": f"bytes=0-{max_bytes - 1}"}) as response:
-            if response.status not in (HttpStatusCode.SUCCESS.value, HttpStatusCode.PARTIAL_CONTENT.value):
-                raise _storage_status_error(response.status, f"Failed to read a stored record prefix: status {response.status}")
-            total: int | None = None
-            content_range = response.headers.get("Content-Range", "")
-            if "/" in content_range and content_range.rsplit("/", 1)[-1].isdigit():
-                total = int(content_range.rsplit("/", 1)[-1])
-            elif response.headers.get("Content-Length", "").isdigit() and response.status == HttpStatusCode.SUCCESS.value:
-                total = int(response.headers["Content-Length"])
-            chunks: list[bytes] = []
-            remaining = max_bytes
-            while remaining > 0:
-                chunk = await response.content.read(min(remaining, 1 << 20))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            return b"".join(chunks), total
+            return None
+        await self._store_signed_url(org_id, document_id, url)
+        return await read(url)
 
     async def get_record_from_storage(
         self,

@@ -63,6 +63,7 @@ class AuditResult:
     not_checked: int = 0
     compressed: int = 0
     noted: int = 0
+    read_failed: int = 0
 
     def line(self) -> str:
         return (
@@ -117,7 +118,9 @@ async def _inspect(record: dict[str, Any], org_id: str, read_prefix: PrefixReade
     try:
         read = await read_prefix(vrid, org_id, SCAN_CAP_BYTES)
     except Exception:
+        # A storage failure (not a record with nothing to read): the pass is not marked done while it stands.
         result.not_checked += 1
+        result.read_failed += 1
         return False
     if read is None:
         result.not_checked += 1
@@ -222,11 +225,13 @@ async def run_pdf_page_limit_audit(
         return result
 
     result.ran = True
+    # Failures of the passes this one resumes: a pass is done only when none of its parts had one.
+    result.read_failed = int(cursor.get("read_failed") or 0)
     deadline = clock() + budget_seconds
 
     async def save_cursor(app_id: str, after: str | None) -> None:
         try:
-            await config_service.set_config(CURSOR_KEY, {"app": app_id, "after": after})
+            await config_service.set_config(CURSOR_KEY, {"app": app_id, "after": after, "read_failed": result.read_failed})
         except Exception:
             logger.warning("PDF page-limit audit: its cursor was not saved", exc_info=True)
 
@@ -253,7 +258,19 @@ async def run_pdf_page_limit_audit(
                 complete = False
                 break
             await save_cursor(str(app_id) + "￿", None)
-        result.complete = complete
+        if complete and result.read_failed:
+            logger.warning(
+                "PDF page-limit audit: %d stored records could not be read; it is not marked done and runs again at the next start",
+                result.read_failed,
+            )
+            complete = False
+            try:
+                await config_service.delete_config(CURSOR_KEY)
+            except Exception:
+                logger.warning("PDF page-limit audit: its cursor was not removed", exc_info=True)
+            result.complete = False
+        else:
+            result.complete = complete
         if complete:
             await config_service.set_config(FLAG_KEY, {"timestamp": get_epoch_timestamp_in_ms(), "over_limit": result.over_limit})
             try:
