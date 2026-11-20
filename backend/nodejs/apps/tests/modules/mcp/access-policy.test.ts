@@ -10,11 +10,19 @@ import {
   mcpAccessPolicySchema,
   toolTurnedOff,
 } from '../../../src/modules/mcp/access-policy'
-import { McpToolCatalog } from '../../../src/modules/mcp/tool-catalog'
+import { McpToolCatalog, toolArguments } from '../../../src/modules/mcp/tool-catalog'
+import { z } from 'zod'
+import Ajv from 'ajv'
+import yaml from 'js-yaml'
+import { readFileSync } from 'fs'
+import path from 'path'
 import { makeOrgContext, runWithOrgContext } from '../../../src/libs/context/orgContext'
 
 const mcpServerExports = require.cache[
   require.resolve('@pipeshub-ai/mcp/esm/mcp-server/server.js')
+]!.exports
+const oauthScopesExports = require.cache[
+  require.resolve('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js')
 ]!.exports
 
 /** A key-value store in memory, shaped like the slice the policy store uses. */
@@ -201,7 +209,8 @@ describe('MCP access policy', () => {
           pipeshub_search: { title: 'Semantic search', remove() {} },
           ...(opts.scopes ? {} : { pipeshub_upload: { annotations: { title: 'Upload' }, remove() {} } }),
         }
-        return { server: { _registeredTools: tools, registerTool: (name: string) => { tools[name] = { remove() {} } } } }
+        // Kept as the SDK keeps it: the catalog reads a tool's description, schema and hints from it.
+        return { server: { _registeredTools: tools, registerTool: (name: string, config: object) => { tools[name] = { ...config, remove() {} } } } }
       })
     })
 
@@ -212,13 +221,115 @@ describe('MCP access policy', () => {
 
     it("lists the package's tools and the code tools, and marks the ones the read scope leaves out as writing", async () => {
       const tools = await McpToolCatalog.list()
-      expect(tools.find((t) => t.name === 'pipeshub_search')).to.deep.equal({ name: 'pipeshub_search', title: 'Semantic search', writes: false })
-      expect(tools.find((t) => t.name === 'pipeshub_upload')).to.deep.equal({ name: 'pipeshub_upload', title: 'Upload', writes: true })
+      const blank = { description: '', arguments: [], hints: { readOnly: false, destructive: false, idempotent: false, openWorld: false }, scopes: [] }
+      expect(tools.find((t) => t.name === 'pipeshub_search')).to.deep.equal({ name: 'pipeshub_search', title: 'Semantic search', writes: false, ...blank })
+      expect(tools.find((t) => t.name === 'pipeshub_upload')).to.deep.equal({ name: 'pipeshub_upload', title: 'Upload', writes: true, ...blank })
       expect(tools.find((t) => t.name === 'pipeshub_code_read')).to.include({ writes: false })
       const isWrite = await McpToolCatalog.isWriteTool()
       expect(isWrite('pipeshub_upload')).to.equal(true)
       expect(isWrite('pipeshub_search')).to.equal(false)
       expect(mcpServerExports.createMCPServer.callCount, 'built once').to.equal(2)
+    })
+
+    it('gives the code and entity tools the scopes the MCP endpoint checks for them, with their arguments', async () => {
+      const tools = await McpToolCatalog.list()
+      const code = tools.find((t) => t.name === 'pipeshub_code_read')!
+      expect(code.scopes).to.deep.equal(['code:read'])
+      expect(code.hints.readOnly).to.equal(true)
+      expect(code.arguments.map((a) => a.name)).to.include('repo')
+      const entities = tools.find((t) => t.name === 'pipeshub_entities')!
+      expect(entities.scopes).to.deep.equal(['semantic:read'])
+      expect(entities.arguments.find((a) => a.name === 'action')).to.include({ type: 'enum', required: true })
+      expect(entities.description).to.not.equal('')
+    })
+
+    it("takes a package tool's scopes from the package", async () => {
+      const original = oauthScopesExports.requiredOAuthScopes
+      oauthScopesExports.requiredOAuthScopes = (tool: string) => ({ pipeshub_upload: ['kb:upload'] } as Record<string, string[]>)[tool]
+      try {
+        const tools = await McpToolCatalog.list()
+        expect(tools.find((t) => t.name === 'pipeshub_upload')!.scopes).to.deep.equal(['kb:upload'])
+        expect(tools.find((t) => t.name === 'pipeshub_search')!.scopes).to.deep.equal([])
+      } finally {
+        oauthScopesExports.requiredOAuthScopes = original
+      }
+    })
+  })
+
+  describe('tool arguments', () => {
+    it('reads names, types, required, descriptions and allowed values off the input schema', () => {
+      const schema = z.object({
+        query: z.string().describe('What to look for.'),
+        limit: z.number().int().optional(),
+        mode: z.enum(['content', 'thread']).optional(),
+        kinds: z.array(z.enum(['date', 'currency'])).optional(),
+        cursor: z.string().nullable().optional(),
+        filters: z.object({ apps: z.array(z.string()) }).optional(),
+        mentions: z.array(z.object({ name: z.string() })),
+      })
+      expect(toolArguments(schema)).to.deep.equal([
+        { name: 'query', type: 'string', required: true, description: 'What to look for.' },
+        { name: 'limit', type: 'integer', required: false },
+        { name: 'mode', type: 'enum', required: false, values: ['content', 'thread'] },
+        { name: 'kinds', type: 'enum[]', required: false, values: ['date', 'currency'] },
+        { name: 'cursor', type: 'string', required: false },
+        { name: 'filters', type: 'object', required: false },
+        { name: 'mentions', type: 'object[]', required: true },
+      ])
+    })
+
+    it('lists nothing for a tool without input, or one whose schema cannot be read', () => {
+      expect(toolArguments(undefined)).to.deep.equal([])
+      expect(toolArguments({ not: 'a schema' })).to.deep.equal([])
+    })
+  })
+
+  describe('tool catalog, with the real @pipeshub-ai/mcp package', () => {
+    const nm = (p: string): string => path.join(__dirname, '../../../node_modules', p)
+    // The mocha setup mocks the CJS view of the package; load the real ESM files.
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval -- ts-node compiles import() to the mocked require()
+    const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<any>
+    let origCreate: any
+    let origScopes: any
+
+    beforeEach(async () => {
+      McpToolCatalog.reset()
+      origCreate = mcpServerExports.createMCPServer
+      origScopes = oauthScopesExports.requiredOAuthScopes
+      mcpServerExports.createMCPServer = (await nativeImport(nm('@pipeshub-ai/mcp/esm/mcp-server/server.js'))).createMCPServer
+      oauthScopesExports.requiredOAuthScopes = (await nativeImport(nm('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js'))).requiredOAuthScopes
+    })
+
+    afterEach(() => {
+      mcpServerExports.createMCPServer = origCreate
+      oauthScopesExports.requiredOAuthScopes = origScopes
+      McpToolCatalog.reset()
+    })
+
+    it('answers every tool in the shape the published spec documents', async () => {
+      const spec = yaml.load(readFileSync(path.join(__dirname, '../../../src/modules/api-docs/pipeshub-openapi.yaml'), 'utf8')) as any
+      const ajv = new Ajv({ strict: false })
+      ajv.addSchema({ components: { schemas: spec.components.schemas } }, 'spec')
+      const validate = ajv.compile({ $ref: 'spec#/components/schemas/McpAccessTool' })
+      const tools = await McpToolCatalog.list()
+      expect(tools.length).to.be.greaterThan(20)
+      for (const tool of tools) {
+        expect(validate(tool), `${tool.name}: ${JSON.stringify(validate.errors)}`).to.equal(true)
+        expect(tool.description, tool.name).to.not.equal('')
+      }
+    })
+
+    it("carries each tool's own hints, arguments and scopes", async () => {
+      const tools = await McpToolCatalog.list()
+      const byName = (name: string) => tools.find((t) => t.name === name)!
+      expect(byName('pipeshub_upload')).to.deep.include({ writes: true, scopes: ['kb:upload'] })
+      expect(byName('pipeshub_upload').hints.readOnly).to.equal(false)
+      expect(byName('pipeshub_upload').arguments.find((a) => a.name === 'collectionId')).to.include({ required: true, type: 'string' })
+      expect(byName('pipeshub_search').hints).to.include({ readOnly: true, openWorld: true })
+      expect(byName('pipeshub_search').scopes).to.deep.equal(['semantic:write'])
+      expect(byName('pipeshub_chat').hints.destructive).to.equal(true)
+      expect(byName('pipeshub_connect_source').scopes).to.deep.equal([])
+      expect(byName('pipeshub_get_record_content').arguments.find((a) => a.name === 'mode')!.values).to.include.members(['content', 'lookup'])
     })
   })
 })

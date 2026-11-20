@@ -976,6 +976,10 @@ components:
         - name
         - title
         - writes
+        - description
+        - arguments
+        - hints
+        - scopes
       properties:
         name:
           type: string
@@ -986,6 +990,59 @@ components:
         writes:
           type: boolean
           description: True for a tool that is left out while `allowWriteTools` is false.
+        description:
+          type: string
+          description: What the AI model reads before it picks the tool, as the MCP server publishes it. Written for the model, so it names arguments and other tools.
+        arguments:
+          type: array
+          description: The tool's arguments, flattened from the input schema it publishes. Empty for a tool that takes none.
+          items:
+            $ref: '#/components/schemas/McpAccessToolArgument'
+        hints:
+          type: object
+          additionalProperties: false
+          description: What the tool declares it does (MCP tool annotations). A hint the tool does not declare is false.
+          required: [readOnly, destructive, idempotent, openWorld]
+          properties:
+            readOnly:
+              type: boolean
+              description: It changes nothing.
+            destructive:
+              type: boolean
+              description: It can change or remove data, for example by running a connected action.
+            idempotent:
+              type: boolean
+              description: Calling it again with the same arguments has no further effect.
+            openWorld:
+              type: boolean
+              description: It reaches outside PipesHub, for example the web.
+        scopes:
+          type: array
+          description: The OAuth scopes an app or access token needs to call it. Empty for a tool that calls nothing in PipesHub.
+          items:
+            type: string
+          example: [kb:upload]
+    McpAccessToolArgument:
+      type: object
+      additionalProperties: false
+      required: [name, type, required]
+      properties:
+        name:
+          type: string
+          example: collectionId
+        type:
+          type: string
+          description: "`string`, `number`, `integer`, `boolean`, `object`, `enum`, `<type>[]` for a list, or `a|b` for a choice of types."
+          example: string
+        required:
+          type: boolean
+        description:
+          type: string
+        values:
+          type: array
+          description: The allowed values, for an enum or a list of one.
+          items:
+            type: string
     AIGatewayIdentityPolicy:
       type: object
       additionalProperties: false
@@ -74706,7 +74763,7 @@ paths:
       tags:
         - MCP
       summary: List the tools /mcp can serve
-      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, for choosing which ones to turn off. Admins only.
+      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, with what each one tells the AI model, its arguments, the hints it declares and the OAuth scopes it needs, for choosing which ones to turn off. Admins only.
       operationId: listMcpAccessTools
       security:
         - bearerAuth: []

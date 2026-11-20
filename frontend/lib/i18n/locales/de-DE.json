@@ -2680,6 +2680,92 @@
           "pipeshub_code_entry_points": "Listet auf, wo die Ausführung in ein Repository eintritt, etwa Routen, Kommandozeilenwerkzeuge, Jobs und Hooks. Ein Einstieg in unbekannten Code.",
           "pipeshub_entities": "Findet Personen, Teams, Themen, Projekte, Ordner, Kunden und Dokumenttitel im Wissensgraphen des Arbeitsbereichs, listet die mit einem davon verbundenen Datensätze auf sowie die Personen, Unternehmen oder Produkte, die zusammen damit erwähnt werden. Suchen und Auflisten werden angeboten, sobald Entitäten indexiert sind; die Liste der gemeinsam Erwähnten braucht außerdem die Erkennung benannter Entitäten. Eine OAuth-App oder ein Zugriffstoken braucht zusätzlich den Scope semantic:read oder semantic:write.",
           "pipeshub_find_records": "Listet Datensätze danach auf, wem sie gehören oder was sie erwähnen, statt nach ihrem Wortlaut: die Datensätze, die einer Person zugewiesen sind oder die sie erstellt, verfasst oder besitzt, Datensätze, die einen Betrag, ein Datum, eine Menge oder einen Prozentsatz erwähnen, und Passagen in den Datensätzen, die bestimmte Personen, Unternehmen oder Produkte nennen. Beträge und Daten brauchen die Erkennung benannter Entitäten, und die Passagen werden nur angeboten, wo die Bereitstellung zusätzlich die Entitätssuche aktiviert. Eine OAuth-App oder ein Zugriffstoken braucht zusätzlich den Scope semantic:read oder semantic:write."
+        },
+        "count": "{{offered}} von {{total}} angeboten",
+        "searchPlaceholder": "Tools, Argumente oder Scopes suchen",
+        "searchLabel": "Tools suchen",
+        "filterLabel": "Anzeigen",
+        "filters": {
+          "all": "Alle",
+          "read": "Nur lesend",
+          "writes": "Schreibt oder ändert Daten",
+          "off": "Aus"
+        },
+        "expandAll": "Alle aufklappen",
+        "collapseAll": "Alle zuklappen",
+        "noMatch": "Kein Tool passt zu dieser Suche.",
+        "groupCount": "{{offered}} von {{total}} an",
+        "groupSwitch": "Alle Tools in {{group}}",
+        "showDetails": "Details zu {{tool}} anzeigen",
+        "hideDetails": "Details zu {{tool}} ausblenden",
+        "groups": {
+          "read": {
+            "label": "Finden und lesen",
+            "description": "Suchen, lesen und herunterladen, worauf der Benutzer zugreifen kann."
+          },
+          "people": {
+            "label": "Personen und Entitäten",
+            "description": "Die Benutzer und Gruppen des Arbeitsbereichs sowie die Personen, Projekte, Themen und Werte in seinem Wissensgraphen."
+          },
+          "chat": {
+            "label": "Chat und Agenten",
+            "description": "Den PipesHub-Assistenten oder einen Agenten des Arbeitsbereichs fragen."
+          },
+          "add": {
+            "label": "Inhalte hinzufügen",
+            "description": "Sammlungen anlegen, Dokumente hochladen, Websites hinzufügen und Quellen verbinden."
+          },
+          "viewer": {
+            "label": "Quellenansicht",
+            "description": "Zeigt die Quellen hinter einer Antwort, in Clients, die sie darstellen können."
+          },
+          "code": {
+            "label": "Code",
+            "description": "Die indexierten Code-Repositories erkunden.",
+            "availability": "Nur für Benutzer, die ein indexiertes Code-Repository lesen können."
+          },
+          "other": {
+            "label": "Weitere",
+            "description": "Tools, die diese Version der Seite noch nicht kennt."
+          }
+        },
+        "kinds": {
+          "readOnly": "Nur lesend",
+          "changes": "Kann Daten ändern",
+          "openWorld": "Greift über PipesHub hinaus"
+        },
+        "blocked": {
+          "writesOff": "Aus, solange schreibende Tools nicht erlaubt sind.",
+          "chatOff": "Aus, solange Chat mit PipesHub aus ist."
+        },
+        "details": {
+          "scopes": "Benötigte OAuth-Scopes",
+          "noScopes": "Keine: Es ruft nichts in PipesHub auf.",
+          "availability": "Wann es angeboten wird",
+          "arguments": "Argumente · {{n}}",
+          "noArguments": "Nimmt keine Argumente.",
+          "columns": {
+            "name": "Name",
+            "type": "Typ",
+            "description": "Beschreibung"
+          },
+          "required": "erforderlich",
+          "oneOf": "Einer von: {{values}}",
+          "modelText": "Was die KI sieht",
+          "hideModelText": "Ausblenden, was die KI sieht",
+          "modelTextHint": "Die Beschreibung, die das KI-Modell liest, bevor es dieses Tool wählt."
+        },
+        "availability": {
+          "default": "Immer, solange es an ist.",
+          "pipeshub_chat": "Immer, solange es an ist. Verbundene Aktionen führt es nur aus, solange schreibende Tools erlaubt sind.",
+          "pipeshub_agents": "Nur solange Chat mit PipesHub an ist.",
+          "pipeshub_create_collection": "Nur solange schreibende Tools erlaubt sind.",
+          "pipeshub_upload": "Nur solange schreibende Tools erlaubt sind.",
+          "pipeshub_add_web_source": "Nur solange schreibende Tools erlaubt sind.",
+          "pipeshub_show_citations": "Nur für Clients, die die Quellenansicht darstellen können, etwa Claude.",
+          "pipeshub_preview_record": "Nur für die Quellenansicht, nie für das KI-Modell.",
+          "pipeshub_entities": "Entitäten finden und ihre Datensätze auflisten, sobald Entitäten indexiert sind. Die Liste der gemeinsam Erwähnten braucht außerdem die Erkennung benannter Entitäten.",
+          "pipeshub_find_records": "Die Datensätze einer Person immer. Beträge und Daten brauchen die Erkennung benannter Entitäten, und Passagen, die Personen oder Unternehmen nennen, brauchen zusätzlich die für die Bereitstellung aktivierte Entitätssuche."
         }
       },
       "appliesNote": "Änderungen gelten innerhalb weniger Sekunden für neue MCP-Anfragen.",
@@ -2688,6 +2774,43 @@
         "saveSuccess": "MCP-Zugriffseinstellungen gespeichert",
         "saveError": "MCP-Zugriffseinstellungen konnten nicht gespeichert werden",
         "saveErrorDescription": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
+      },
+      "status": {
+        "on": "An · {{offered}} von {{total}} Tools angeboten",
+        "off": "Aus · kein KI-Client kann sich verbinden"
+      },
+      "connect": {
+        "title": "KI-Client verbinden",
+        "description": "Clients verbinden sich mit diesem Endpunkt, und jeder Benutzer meldet sich mit seinem eigenen PipesHub-Konto an. Ein persönliches Zugriffstoken funktioniert ebenfalls.",
+        "endpointLabel": "MCP-Endpunkt",
+        "copy": "Kopieren",
+        "copied": "Kopiert",
+        "copyEndpoint": "MCP-Endpunkt kopieren",
+        "copySnippet": "Konfiguration kopieren",
+        "clientsLabel": "KI-Client",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "Öffnen Sie in Claude Einstellungen › Konnektoren, wählen Sie „Benutzerdefinierten Konnektor hinzufügen“, fügen Sie den Endpunkt oben ein, wählen Sie dann „Verbinden“ und melden Sie sich bei PipesHub an."
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "Schalten Sie in ChatGPT den Entwicklermodus ein, fügen Sie einen Konnektor mit dem Endpunkt oben als URL und OAuth als Authentifizierung hinzu und melden Sie sich dann bei PipesHub an."
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "Fügen Sie den Server in ~/.cursor/mcp.json oder in .cursor/mcp.json eines Projekts ein. Cursor fragt beim ersten Aufruf eines Tools nach der Anmeldung."
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "Fügen Sie den Server in .vscode/mcp.json ein, starten Sie ihn dann aus der Liste der MCP-Server und melden Sie sich an."
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "Führen Sie dies in einem Terminal aus und anschließend /mcp in Claude Code, um sich anzumelden.",
+            "tip": "Nur für Fragen zum Code: Hängen Sie ?tools=code an den Endpunkt an; der Client erhält dann nur die Code-Tools."
+          }
+        }
       }
     },
     "labs": {
