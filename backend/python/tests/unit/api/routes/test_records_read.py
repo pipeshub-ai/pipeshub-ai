@@ -85,12 +85,14 @@ def _demo_data_visible() -> Iterator[None]:
 
 
 class TestAccess:
-    async def test_no_access_is_a_403_and_nothing_is_read(self) -> None:
+    async def test_no_access_is_the_404_a_missing_record_gets_and_nothing_is_read(self) -> None:
+        # The access check returns no ids alike for a record the caller can't open and for an id that names
+        # no record, so both get this answer and a refusal never says whether the record exists.
         request, _, _ = _request(access=False)
         fetch = AsyncMock()
         with patch.object(route, "_fetch_multiple_records_impl", fetch), pytest.raises(HTTPException) as err:
             await _read(request)
-        assert err.value.status_code == 403
+        assert (err.value.status_code, err.value.detail) == (404, "Record not found")
         fetch.assert_not_awaited()
 
     async def test_one_access_check_is_made_and_the_fetch_reuses_it(self) -> None:
@@ -102,12 +104,12 @@ class TestAccess:
         graph.check_access.assert_awaited_once()
         assert fetch.await_args.kwargs["accessible"] == {"r-1"}
 
-    async def test_no_access_to_the_thread_record_is_a_403_too(self) -> None:
+    async def test_no_access_to_the_thread_record_is_the_same_404(self) -> None:
         request, _, _ = _request(access=False)
         thread = AsyncMock()
         with patch.object(route, "_fetch_thread_records_impl", thread), pytest.raises(HTTPException) as err:
             await _read(request, mode="thread")
-        assert err.value.status_code == 403
+        assert (err.value.status_code, err.value.detail) == (404, "Record not found")
         thread.assert_not_awaited()
 
     async def test_switched_off_demo_data_is_a_404(self) -> None:
@@ -274,7 +276,7 @@ class TestRecordMode:
         with patch.object(route, "_fetch_multiple_records_impl", fetch), pytest.raises(HTTPException) as err:
             await _read(request)
 
-        assert err.value.status_code == 403
+        assert err.value.status_code == 404
         fetch.assert_not_awaited()
 
     async def test_hidden_demo_data_starts_no_parse(self) -> None:

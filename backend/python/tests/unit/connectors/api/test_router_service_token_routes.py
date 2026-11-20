@@ -71,17 +71,17 @@ class TestGetRecordContentInternal:
             await _get_content(_RECORD_CONTENT_CLAIMS, _graph_provider(None))
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
-    async def test_other_org_record_raises_403(self):
+    async def test_other_org_record_is_answered_as_a_missing_one(self):
         with pytest.raises(HTTPException) as exc:
             await _get_content(_RECORD_CONTENT_CLAIMS, _graph_provider(_record(org_id="org-2")))
-        assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
+        assert (exc.value.status_code, exc.value.detail) == (HttpStatusCode.NOT_FOUND.value, "Record not found")
 
-    async def test_record_without_org_raises_403(self):
+    async def test_record_without_org_is_answered_as_a_missing_one(self):
         access = _access()
         graph_provider = _graph_provider(_record(org_id=""), access)
         with pytest.raises(HTTPException) as exc:
             await _get_content(_RECORD_CONTENT_CLAIMS, graph_provider)
-        assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
+        assert (exc.value.status_code, exc.value.detail) == (HttpStatusCode.NOT_FOUND.value, "Record not found")
         assert access.asked_about == []
 
     async def test_acl_denied_raises_404(self) -> None:

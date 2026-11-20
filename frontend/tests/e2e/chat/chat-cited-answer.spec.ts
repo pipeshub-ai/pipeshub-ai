@@ -52,7 +52,7 @@ test.describe('Ask about an uploaded document', () => {
     await page.goto('/chat/');
     // Send only once the page has loaded its model; the composer shows the model's name.
     await expect(page.getByText(modelName!, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
-    const input = page.locator('textarea').last();
+    const input = page.getByTestId('chat-composer').last();
     await input.fill(`What launch codename did the team choose for Project Kestrel ${stamp}?`);
     await input.press('Enter');
 

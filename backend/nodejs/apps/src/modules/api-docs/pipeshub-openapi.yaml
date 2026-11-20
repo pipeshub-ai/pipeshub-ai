@@ -48580,9 +48580,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Forbidden. Returned when the OAuth token is missing the required `kb:read` scope
-            (`ErrorResponse`), or as `{"error": "You do not have permission to access this record"}`
-            when the caller has no access to the record or the record is in the trash.
+            Forbidden. Returned when the OAuth token is missing the required `kb:read` scope.
           content:
             application/json:
               schema:
@@ -48591,9 +48589,11 @@ paths:
                   - $ref: '#/components/schemas/StreamRecordErrorResponse'
         '404':
           description: |
-            `{"error": "Record not found"}`: the record does not exist, belongs to another
-            organization, or the id is not a record (for example a knowledge base id). Also
-            returned when the organization or the backing connector is not found.
+            `{"error": "Record not found"}`: the record does not exist, the caller has no access
+            to it, it is in the trash, it belongs to another organization, or the id is not a
+            record (for example a knowledge base id). The answer is the same in every case, so a
+            refusal never says whether a record exists. Also returned when the organization or
+            the backing connector is not found.
           content:
             application/json:
               schema:
@@ -65925,18 +65925,18 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            OAuth token is missing the `connector:read` scope, or the
-            authenticated user does not have access to this record. A record
-            ID that does not exist is answered the same way, so the route
-            never reveals whether a record exists.
+            OAuth token is missing the `connector:read` scope.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            The record belongs to demo data the caller has switched off
-            (`Record not found`).
+            `Record not found`: no record has this ID, the authenticated user
+            can't open it, or it belongs to demo data the caller has switched
+            off. The answer is the same in every case, for a whole-record read
+            and a budgeted one, so the route never reveals whether a record
+            exists.
           content:
             application/json:
               schema:

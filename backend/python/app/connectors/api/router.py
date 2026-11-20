@@ -914,16 +914,14 @@ async def get_record_content_internal(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         # Org mismatch: reject rather than widen. A record with no org cannot be
-        # confined to one, so it is refused as well.
+        # confined to one, so it is refused as well. Same response as a missing
+        # record, as `stream_record` gives, so no caller can probe another org's ids.
         if not record.org_id or record.org_id != org_id:
             logger.warning(
                 "get_record_content_internal: org mismatch record=%s record_org=%r token_org=%s",
                 record_id, record.org_id, org_id,
             )
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Record does not belong to your organization",
-            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         # Independent ACL check — never trust the caller. Denied reads look
         # exactly like a missing record so the route is no existence oracle.

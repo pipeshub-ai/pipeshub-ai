@@ -137,7 +137,7 @@ async function mockStreamEndpoint(
   question: string,
   answer: string,
 ) {
-  await page.route('**/api/v1/conversations/stream', (route) => {
+  await page.route('**/api/v1/conversations/stream**', (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     return route.fulfill({
       status: 200,
@@ -155,7 +155,7 @@ async function mockStreamEndpoint(
  * Type a message and submit via Enter. Returns after the keypress.
  */
 async function sendMessage(page: import('@playwright/test').Page, message: string) {
-  const textarea = page.locator('textarea').last();
+  const textarea = page.getByTestId('chat-composer').last();
   await textarea.click();
   await textarea.fill(message);
   await textarea.press('Enter');
@@ -228,7 +228,7 @@ test.describe('Chat — SSE streaming (mocked backend)', () => {
     await mockBaselineApis(page);
     await mockStreamEndpoint(page, QUESTION, ANSWER);
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   // ── User message rendering ─────────────────────────────────────────────
@@ -252,7 +252,7 @@ test.describe('Chat — SSE streaming (mocked backend)', () => {
 
   test('streaming spinner / status indicator is visible while answer is loading', async ({ page }) => {
     // Use a delayed mock so we can observe the in-progress state
-    await page.route('**/api/v1/conversations/stream', async (route) => {
+    await page.route('**/api/v1/conversations/stream**', async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       // Delay fulfillment so React renders the loading state first
       await new Promise<void>((resolve) => setTimeout(resolve, 400));
@@ -302,7 +302,7 @@ test.describe('Chat — SSE streaming (mocked backend)', () => {
 
   test('error event from stream shows an error message in the thread', async ({ page }) => {
     // Override the stream mock with an error response
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -323,7 +323,7 @@ test.describe('Chat — SSE streaming (mocked backend)', () => {
   // ── HTTP error from stream endpoint ────────────────────────────────────
 
   test('HTTP 500 from stream shows an error in the thread', async ({ page }) => {
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 500,
@@ -347,7 +347,7 @@ test.describe('Chat — multi-turn conversation (mocked backend)', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   test('second message in the same conversation uses the /messages/stream endpoint', async ({
@@ -359,7 +359,7 @@ test.describe('Chat — multi-turn conversation (mocked backend)', () => {
     const A2 = 'Follow-up answer from mock.';
 
     // First turn — new conversation endpoint
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -372,7 +372,7 @@ test.describe('Chat — multi-turn conversation (mocked backend)', () => {
     await expect(page.locator(`text=${A1}`).first()).toBeVisible({ timeout: 20_000 });
 
     // Second turn — existing conversation endpoint (after URL gets conversationId)
-    await page.route(`**/api/v1/conversations/${CONV_ID}/messages/stream`, (route) => {
+    await page.route(`**/api/v1/conversations/${CONV_ID}/messages/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -431,7 +431,7 @@ async function stopWhileThinking(page: import('@playwright/test').Page, harness:
   };
   let stored = buildAguiConversation(firstTurn);
   await mockConversationDetail(page, () => stored);
-  await page.route('**/api/v1/conversations/stream', (route) => {
+  await page.route('**/api/v1/conversations/stream**', (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     return route.fulfill({
       status: 200,
@@ -453,7 +453,7 @@ async function stopWhileThinking(page: import('@playwright/test').Page, harness:
     question: 'A question that never gets an answer',
     modelInfo: MOCK_MODEL_INFO,
   };
-  await page.route(`**/api/v1/conversations/${convId}/messages/stream`, async (route) => {
+  await page.route(`**/api/v1/conversations/${convId}/messages/stream**`, async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     // Saved before any answer streams.
     const question = buildAguiConversation(secondTurn);
@@ -495,7 +495,7 @@ async function stopWhileThinking(page: import('@playwright/test').Page, harness:
 
   // `buildStoppedMessages` drops the trailing assistant row entirely when
   // no text ever streamed — an empty "Stopped" bubble would just be noise.
-  await expect(page.locator('[data-testid="chat-stopped-marker"]')).not.toBeVisible();
+  await expect(page.locator('[data-testid="chat-stopped-card"]')).not.toBeVisible();
   await expect(page.locator('text=A question that never gets an answer').first()).toBeVisible();
 
   // The backend saved that run as an empty stopped reply (see the cancel
@@ -503,7 +503,7 @@ async function stopWhileThinking(page: import('@playwright/test').Page, harness:
   await page.reload();
   await expect(page.locator('text=A question that never gets an answer').first()).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('text=First answer.').first()).toBeVisible();
-  await expect(page.locator('[data-testid="chat-stopped-marker"]')).not.toBeVisible();
+  await expect(page.locator('[data-testid="chat-stopped-card"]')).not.toBeVisible();
 
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 }
@@ -512,7 +512,7 @@ test.describe('Chat — stop streaming (assistant)', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   test('stop posts a cancel request with the runId, preserves the partial answer, and shows the Stopped marker', async ({ page }) => {
@@ -560,7 +560,7 @@ test.describe('Chat — stop streaming (assistant)', () => {
     // synthesize the `status: 'stopped'` message from the streamed text.
     await expect(stopBtn).not.toBeVisible({ timeout: 8_000 });
     await expect(page.locator('text=Partial answer before stop').first()).toBeVisible();
-    await expect(page.locator('[data-testid="chat-stopped-marker"]').first()).toBeVisible({ timeout: 3_000 });
+    await expect(page.locator('[data-testid="chat-stopped-card"]').first()).toBeVisible({ timeout: 3_000 });
   });
 
   test('a backend RUN_FINISHED confirming the stop is honored without waiting for the grace timeout', async ({ page }) => {
@@ -578,7 +578,7 @@ test.describe('Chat — stop streaming (assistant)', () => {
     // Stored as the backend saves a stopped run, so a history load after
     // RUN_FINISHED still shows the Stopped marker.
     await mockConversationDetail(page, buildAguiConversation({ ...turn, stopped: true }));
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -592,7 +592,7 @@ test.describe('Chat — stop streaming (assistant)', () => {
     // RUN_FINISHED clears `isStreaming`/`stopping` synchronously — no 5s wait.
     await expect(page.locator('text=Answer truncated by a confirmed stop').first())
       .toBeVisible({ timeout: 10_000 });
-    await expect(page.locator('[data-testid="chat-stopped-marker"]').first())
+    await expect(page.locator('[data-testid="chat-stopped-card"]').first())
       .toBeVisible({ timeout: 3_000 });
     await expect(page.locator('[data-testid="chat-stop-button"]')).not.toBeVisible({ timeout: 3_000 });
   });
@@ -697,7 +697,7 @@ test.describe('Chat — stop streaming (assistant)', () => {
     await expect(stopBtn).not.toBeVisible({ timeout: 8_000 });
 
     // Second (fresh) run on the same conversation, with its own runId.
-    await page.route(`**/api/v1/conversations/${convId}/messages/stream`, (route) => {
+    await page.route(`**/api/v1/conversations/${convId}/messages/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const body = route.request().postDataJSON();
       secondStreamRunId = typeof body?.runId === 'string' ? body.runId : undefined;
@@ -739,7 +739,7 @@ test.describe('Chat — stop streaming (assistant)', () => {
       modelInfo: MOCK_MODEL_INFO,
     };
     await mockConversationDetail(page, buildAguiConversation(firstTurn));
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -793,7 +793,7 @@ test.describe('Chat — stop streaming (assistant)', () => {
     // `regenerateMessageId` branch in chat/streaming.ts).
     await expect(page.locator('text=Regenerated partial answer').first()).toBeVisible();
     await expect(page.locator('text=Original answer before regenerate.')).not.toBeVisible();
-    await expect(page.locator('[data-testid="chat-stopped-marker"]').first()).toBeVisible({ timeout: 3_000 });
+    await expect(page.locator('[data-testid="chat-stopped-card"]').first()).toBeVisible({ timeout: 3_000 });
 
     await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
@@ -882,7 +882,7 @@ test.describe('Chat — stop streaming (agent chat)', () => {
     await mockBaselineApis(page);
     await mockAgentApis(page);
     await page.goto(`/chat/?agentId=${AGENT_ID}`);
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   test('stop on an agent conversation posts to the agent cancel endpoint and preserves the partial answer', async ({ page }) => {
@@ -926,7 +926,7 @@ test.describe('Chat — stop streaming (agent chat)', () => {
 
     await expect(stopBtn).not.toBeVisible({ timeout: 8_000 });
     await expect(page.locator('text=Agent partial answer before stop').first()).toBeVisible();
-    await expect(page.locator('[data-testid="chat-stopped-marker"]').first()).toBeVisible({ timeout: 3_000 });
+    await expect(page.locator('[data-testid="chat-stopped-card"]').first()).toBeVisible({ timeout: 3_000 });
   });
 
   test('an agent RUN_FINISHED confirming the stop shows the Stopped marker without the grace timeout', async ({ page }) => {
@@ -939,7 +939,7 @@ test.describe('Chat — stop streaming (agent chat)', () => {
       modelInfo: MOCK_MODEL_INFO,
     };
     await mockConversationDetail(page, buildAguiConversation({ ...turn, stopped: true }), AGENT_CONVERSATIONS_API);
-    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
+    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -952,7 +952,7 @@ test.describe('Chat — stop streaming (agent chat)', () => {
 
     await expect(page.locator('text=Agent answer truncated by a confirmed stop').first())
       .toBeVisible({ timeout: 10_000 });
-    await expect(page.locator('[data-testid="chat-stopped-marker"]').first())
+    await expect(page.locator('[data-testid="chat-stopped-card"]').first())
       .toBeVisible({ timeout: 3_000 });
   });
 });
@@ -965,7 +965,7 @@ test.describe('Chat — sidebar conversation list', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   test('new conversation title appears in the sidebar after streaming completes', async ({ page }) => {
@@ -973,7 +973,7 @@ test.describe('Chat — sidebar conversation list', () => {
     const ANSWER = 'AI is transforming the world.';
     const TITLE = 'Tell me about AI';
 
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,

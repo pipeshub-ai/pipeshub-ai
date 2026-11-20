@@ -57,19 +57,17 @@ _MAX_QUERY_CHARS = 2_000
 
 
 async def _check_access(request: Request, graph_provider: Any, record_id: str) -> set[str]:  # noqa: ANN401
-    """The same gate as the connector service's content route: no access is a
-    403, a switched-off demo record a 404. Returns the accessible ids, for the
-    fetch to reuse."""
+    """The same gate as the connector service's content route: a record the caller
+    can't open, and a switched-off demo record, get the 404 an id that names no
+    record gets, so a refusal never says whether the record exists. Returns the
+    accessible ids, for the fetch to reuse."""
     container: QueryAppContainer = request.app.container
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     try:
         accessible = await accessible_node_ids(graph_provider, {record_id}, user_id, org_id)
         if record_id not in accessible:
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record",
-            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
         doc = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
         await refuse_hidden_demo_record(
             graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId"),

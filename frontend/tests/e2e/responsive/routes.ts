@@ -288,7 +288,8 @@ export const ROUTES: AuditRoute[] = [
     path: '/chat/',
     action: async (page) => {
       await openNavIfMobile(page);
-      await icon(page, 'keyboard_arrow_up').last().click({ timeout: ACTION_TIMEOUT });
+      // The footer's menu button, by its name: the glyph beside the workspace's name is not a stable handle.
+      await page.getByRole('button', { name: /workspace and account menu/i }).click({ timeout: ACTION_TIMEOUT });
       await page.getByText('Appearance').first().click({ timeout: ACTION_TIMEOUT });
     },
   },
@@ -445,7 +446,8 @@ export const ROUTES: AuditRoute[] = [
     path: '/chat/',
     action: async (page) => {
       await openNavIfMobile(page);
-      await icon(page, 'keyboard_arrow_up').last().click({ timeout: ACTION_TIMEOUT });
+      // The footer's menu button, by its name: the glyph beside the workspace's name is not a stable handle.
+      await page.getByRole('button', { name: /workspace and account menu/i }).click({ timeout: ACTION_TIMEOUT });
       await page.getByText('Language').first().click({ timeout: ACTION_TIMEOUT });
     },
   },

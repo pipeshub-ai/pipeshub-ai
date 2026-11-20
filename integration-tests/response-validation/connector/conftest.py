@@ -32,6 +32,7 @@ from helper.clients.connectors_client import ConnectorOAuthConfigsClient, Connec
 from helper.clients.kb_client import KBClient
 from helper.http.session_client import SessionClient
 from helper.mcp_oauth import authorization_code_token, create_oauth_app, delete_oauth_app
+from helper.second_user import SecondUser, create_second_user, delete_second_user
 from helper.web_fixtures import WebFixtures
 from messaging.test_e2e_record_pipeline import (
     TERMINAL_STATUSES,
@@ -142,6 +143,43 @@ def indexed_text_record(
             logger.info("Deleted KB %s", kb_id)
         except Exception as e:  # noqa: BLE001
             logger.warning("Failed to delete KB %s: %s", kb_id, e)
+
+
+@pytest.fixture(scope="module")
+def unopened_record(pipeshub_client: PipeshubClient) -> Iterator[str]:
+    """A record in a KB of the admin's own, which nobody else can open.
+
+    Only refusals of it are asked for, and access is checked before any content
+    is read, so it is not waited on to index and needs no model.
+    """
+    kb_client = KBClient(pipeshub_client)
+    kb_id = _extract_kb_id(kb_client.create_kb(name=f"connector-unopened-it-kb-{uuid4().hex[:8]}"))
+    assert kb_id, "KB create returned no id"
+    try:
+        record_id = _extract_record_id(
+            kb_client.upload_file(
+                kb_id, f"connector-unopened-it-{uuid4().hex[:8]}.txt", b"Not yours to read.\n", mimetype="text/plain"
+            )
+        )
+        assert record_id, "Upload returned no record id"
+        yield record_id
+    finally:
+        try:
+            kb_client.delete_kb(kb_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to delete KB %s: %s", kb_id, e)
+
+
+@pytest.fixture(scope="module")
+def other_member(pipeshub_client: PipeshubClient) -> Iterator[SecondUser]:
+    """A non-admin person, who can open nothing the admin made."""
+    pipeshub_client._ensure_access_token()
+    user = create_second_user(pipeshub_client)
+    try:
+        yield user
+    finally:
+        # Raised, not logged: an account that outlives its test is a login nobody knows exists.
+        delete_second_user(pipeshub_client, user, strict=True)
 
 
 # ---------------------------------------------------------------------------

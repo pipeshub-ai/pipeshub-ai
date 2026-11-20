@@ -180,7 +180,7 @@ async function mockChatApis(page: Page, onStream: (body: Record<string, unknown>
       });
     },
   );
-  await page.route('**/api/v1/conversations/stream', (route) => {
+  await page.route('**/api/v1/conversations/stream**', (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     onStream(route.request().postDataJSON() as Record<string, unknown>);
     return route.fulfill({
@@ -192,7 +192,7 @@ async function mockChatApis(page: Page, onStream: (body: Record<string, unknown>
 }
 
 async function send(page: Page, message: string) {
-  const textarea = page.locator('textarea').last();
+  const textarea = page.getByTestId('chat-composer').last();
   await textarea.click();
   await textarea.fill(message);
   await textarea.press('Enter');
@@ -233,7 +233,7 @@ test.describe('Chat — web tools (mocked backend)', () => {
     });
     await mockChatApis(page, (body) => streamBodies.push(body));
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   test('the search card lists every result with a link to it', async ({ page }) => {
@@ -284,7 +284,7 @@ test.describe('Chat — web tools (mocked backend)', () => {
       JSON.stringify({ internalSearch: true, webSearch: true, deepSearch: true }),
     ));
     await page.reload();
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
 
     await plusMenuButton(page).click();
     await expect(page.getByRole('switch', { name: /^Web search$/i })).toBeVisible();

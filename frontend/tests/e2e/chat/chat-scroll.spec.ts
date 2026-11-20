@@ -236,7 +236,7 @@ async function grow(page: Page, chat: string, from: number, to: number) {
 }
 
 async function send(page: Page, text: string) {
-  const textarea = page.locator('textarea').last();
+  const textarea = page.getByTestId('chat-composer').last();
   await textarea.click();
   await textarea.fill(text);
   await textarea.press('Enter');

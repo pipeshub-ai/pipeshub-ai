@@ -272,7 +272,8 @@ def _create_body(scope: str) -> dict[str, str]:
 _MALFORMED_FILTERS = {"filters": {"sync": "it-not-an-object"}}
 _FILTERS_REFUSED = "filters.sync must be an object"
 _DELETING = "Connector deletion initiated"
-_NO_RECORD_ACCESS = "You do not have permission to access this record"
+# A record the caller can't open gets the answer an id that names no record gets.
+_RECORD_NOT_FOUND = "Record not found"
 _SERVICE_TOKEN_ONLY = "This route requires a service token"
 _ADMIN_ONLY_SKILL = "only an organization admin can change its availability"
 _WRONG_SKILL_STATE = "cannot transition"
@@ -553,14 +554,15 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
         body={"tools": {}},
     ),
     # Being an admin opens no record: the admin is refused a member's private
-    # note exactly as a member is refused the admin's.
+    # note exactly as a member is refused the admin's, and both get the answer an
+    # id that names no record gets (response-validation pins that the two match).
     ConditionalRoute(
         f"{_ROUTER}::stream_record", "GET", "/api/v1/knowledgeBase/stream/record/{target}",
         cases=(
-            Case("admin_record", MEMBER, False, 403, _NO_RECORD_ACCESS),
+            Case("admin_record", MEMBER, False, 404, _RECORD_NOT_FOUND),
             Case("admin_record", ADMIN, True, 200, "{admin_record_text}"),
             Case("member_record", CREATOR, True, 200, "{member_record_text}"),
-            Case("member_record", ADMIN, False, 403, _NO_RECORD_ACCESS),
+            Case("member_record", ADMIN, False, 404, _RECORD_NOT_FOUND),
         ),
     ),
     # A download link works only for the person it was made out to.
@@ -568,7 +570,7 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
         f"{_ROUTER}::download_file", "GET", "/api/v1/index/{org}/knowledgebase/record/{target}",
         cases=(
             Case("admin_record", ADMIN, True, 200, "{admin_record_text}"),
-            Case("admin_record", MEMBER, False, 404, "Record not found"),
+            Case("admin_record", MEMBER, False, 404, _RECORD_NOT_FOUND),
         ),
         params={"token": "{signed_token}"}, service=CONNECTOR_SERVICE,
     ),
@@ -591,7 +593,7 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("admin_record", ADMIN, False, 403, _SERVICE_TOKEN_ONLY),
             Case("admin_record", MEMBER, False, 403, _SERVICE_TOKEN_ONLY),
             Case("admin_record", SERVICE_FOR_ADMIN, True, 200, "{admin_record_text}"),
-            Case("admin_record", SERVICE_FOR_MEMBER, False, 403, _NO_RECORD_ACCESS),
+            Case("admin_record", SERVICE_FOR_MEMBER, False, 404, _RECORD_NOT_FOUND),
         ),
         service=CONNECTOR_SERVICE,
     ),

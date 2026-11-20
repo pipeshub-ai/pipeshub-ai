@@ -274,14 +274,14 @@ async function mockAgentApis(page: import('@playwright/test').Page) {
  */
 async function gotoAgentChat(page: import('@playwright/test').Page) {
   await page.goto(`/chat/?agentId=${AGENT_ID}`);
-  await page.waitForSelector('textarea', { timeout: 15_000 });
+  await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
 }
 
 /**
  * Type a message and press Enter to submit.
  */
 async function sendMessage(page: import('@playwright/test').Page, message: string) {
-  const textarea = page.locator('textarea').last();
+  const textarea = page.getByTestId('chat-composer').last();
   await textarea.click();
   await textarea.fill(message);
   await textarea.press('Enter');
@@ -308,7 +308,7 @@ test.describe('Ask User Question — single-select card', () => {
     await mockAgentApis(page);
 
     // Agent stream: returns ask_user_question SSE
-    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
+    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -387,7 +387,7 @@ test.describe('Ask User Question — single-select card', () => {
 
     // Mock the follow-up stream (existing conversation endpoint)
     await page.route(
-      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream**`,
       (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         followUpStreamFired = true;
@@ -418,7 +418,7 @@ test.describe('Ask User Question — single-select card', () => {
     // stays rendered long enough to assert.  Without the delay, onComplete
     // fires immediately and replaces messages before Playwright can check.
     await page.route(
-      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream**`,
       async (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         // Use Node setTimeout (not page.waitForTimeout) so the timer is not
@@ -452,7 +452,7 @@ test.describe('Ask User Question — single-select card', () => {
   test('in the submitted state the receipt names the selected answers whole (UXINT-2, was "Show more")', async ({ page }) => {
     // Same delayed-response trick: keep the turn open while the receipt is read.
     await page.route(
-      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream**`,
       async (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         await new Promise<void>(resolve => setTimeout(resolve, 8_000));
@@ -480,7 +480,7 @@ test.describe('Ask User Question — single-select card', () => {
     let capturedBody = '';
 
     await page.route(
-      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream**`,
       (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         skipStreamFired = true;
@@ -525,7 +525,7 @@ test.describe('Ask User Question — "Something else" custom input', () => {
   async function setup(page: import('@playwright/test').Page) {
     await mockBaselineApis(page);
     await mockAgentApis(page);
-    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
+    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -589,7 +589,7 @@ test.describe('Ask User Question — "Something else" custom input', () => {
 
     let capturedQuery = '';
     await page.route(
-      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream**`,
       (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         capturedQuery = route.request().postData() ?? '';
@@ -639,7 +639,7 @@ test.describe('Ask User Question — multi-select card', () => {
   async function setup(page: import('@playwright/test').Page) {
     await mockBaselineApis(page);
     await mockAgentApis(page);
-    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
+    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -710,7 +710,7 @@ test.describe('Ask User Question — multi-select card', () => {
     let capturedQuery = '';
 
     await page.route(
-      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream**`,
       (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         capturedQuery = route.request().postData() ?? '';
@@ -769,7 +769,7 @@ test.describe('Ask User Question — multi-step (2 questions)', () => {
   async function setup(page: import('@playwright/test').Page) {
     await mockBaselineApis(page);
     await mockAgentApis(page);
-    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
+    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -872,7 +872,7 @@ test.describe('Ask User Question — multi-step (2 questions)', () => {
     let streamFired = false;
 
     await page.route(
-      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream**`,
       (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         streamFired = true;
@@ -968,7 +968,7 @@ test.describe('Ask User Question — agent endpoint routing', () => {
     await mockAgentApis(page);
 
     // First stream — ask_user_question
-    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
+    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
@@ -979,7 +979,7 @@ test.describe('Ask User Question — agent endpoint routing', () => {
 
     // Follow-up stream — capture URL
     await page.route(
-      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream**`,
       (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         followUpUrl = route.request().url();
@@ -1015,12 +1015,12 @@ test.describe('Ask User Question — agent endpoint routing', () => {
     await mockAgentApis(page);
 
     // Intercept the MAIN (non-agent) stream endpoint to detect accidental calls
-    await page.route('**/api/v1/conversations/stream', (route) => {
+    await page.route('**/api/v1/conversations/stream**', (route) => {
       if (route.request().method() === 'POST') mainStreamCalled = true;
       return route.continue();
     });
 
-    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
+    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,

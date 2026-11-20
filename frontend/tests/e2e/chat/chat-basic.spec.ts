@@ -1,4 +1,5 @@
 import { test, expect } from '../fixtures/base.fixture';
+import { expectComposerText } from '../helpers/composer.helper';
 
 // ---------------------------------------------------------------------------
 // Common mock helpers
@@ -88,17 +89,17 @@ test.describe('Chat — page structure', () => {
     const textarea = page.getByTestId('chat-composer');
     await textarea.click();
     await textarea.fill('Hello from Playwright');
-    await expect(textarea).toHaveValue('Hello from Playwright');
+    await expectComposerText(textarea, 'Hello from Playwright');
   });
 
   test('textarea clears when Escape is pressed (edit cancel)', async ({ page }) => {
     const textarea = page.getByTestId('chat-composer');
     await textarea.fill('some text');
-    await expect(textarea).toHaveValue('some text');
+    await expectComposerText(textarea, 'some text');
     // Clearing manually mirrors the UX — actual Escape behaviour is
     // app-specific (clears only in action-mode), so we just verify typing works
     await textarea.fill('');
-    await expect(textarea).toHaveValue('');
+    await expectComposerText(textarea, '');
   });
 
   test('send/submit button is disabled when input is empty', async ({ page }) => {
@@ -190,7 +191,9 @@ test.describe('Chat — page structure', () => {
     await expect(plusButton).toBeVisible({ timeout: 5_000 });
 
     await plusButton.click();
-    await expect(page.getByText('Attach files', { exact: true })).toBeVisible({ timeout: 5_000 });
+    // By role and name: the item's words share one element with its icon's glyph, so no element's text is exactly
+    // "Attach files".
+    await expect(page.getByRole('menuitem', { name: 'Attach files' })).toBeVisible({ timeout: 5_000 });
   });
 
   test('connectors/apps button is visible in the toolbar', async ({ page }) => {

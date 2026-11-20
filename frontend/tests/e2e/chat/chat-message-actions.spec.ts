@@ -112,7 +112,7 @@ async function mockBaselineApis(page: import('@playwright/test').Page) {
 }
 
 async function mockStreamEndpoint(page: import('@playwright/test').Page) {
-  await page.route('**/api/v1/conversations/stream', (route) => {
+  await page.route('**/api/v1/conversations/stream**', (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     return route.fulfill({
       status: 200,
@@ -132,9 +132,9 @@ async function setupChatWithAnswer(page: import('@playwright/test').Page) {
   await mockStreamEndpoint(page);
 
   await page.goto('/chat/');
-  await page.waitForSelector('textarea', { timeout: 15_000 });
+  await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
 
-  const textarea = page.locator('textarea').last();
+  const textarea = page.getByTestId('chat-composer').last();
   await textarea.click();
   await textarea.fill(TEST_QUESTION);
   await textarea.press('Enter');
@@ -448,7 +448,7 @@ test.describe('Chat — message actions: regenerate', () => {
     page,
   }) => {
     let regenerateRequests = 0;
-    await page.route(`**/api/v1/conversations/${CONV_ID}/message/*/regenerate`, (route) => {
+    await page.route(`**/api/v1/conversations/${CONV_ID}/message/*/regenerate**`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       regenerateRequests += 1;
       return route.fulfill({
