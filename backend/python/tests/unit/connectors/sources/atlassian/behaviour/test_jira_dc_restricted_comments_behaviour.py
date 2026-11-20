@@ -630,9 +630,8 @@ async def test_the_retry_list_keeps_what_a_search_did_not_answer_for(site, db, s
     connector = await retry_list_of_two(site, search, db, store)
     search.pages.clear()
     for start, page in pages.items():
-        if "issues" not in page:  # the first issue alone, with the given total
-            page = {"issues": two_issues_with_role_comments()[:1], **page}
-        search.pages[("ENG", start)] = page
+        # Without an issues list: the first issue alone, with the given total.
+        search.pages[("ENG", start)] = page if "issues" in page else {"issues": two_issues_with_role_comments()[:1], **page}
 
     await connector.run_sync()
 
