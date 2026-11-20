@@ -635,3 +635,14 @@ async def test_the_late_keep_discards_the_embed_marker_only_while_the_run_still_
     with patch("app.events.events.content_revision", return_value=REV):
         await world.run(UPDATE)
     assert (discard.await_count == 1) is discards
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_hands_the_events_virtual_record_id_to_the_un_index() -> None:
+    """A retry of a refusal whose first run detached the id: the record has none, the event still carries it."""
+    world = World({"indexingStatus": "QUEUED"})
+    world.count(600)
+    world.extra_payload["virtualRecordId"] = "v-old"
+    await world.run()
+    assert world.refused
+    assert world.unindex.await_args.kwargs["fallback_vrid"] == "v-old"

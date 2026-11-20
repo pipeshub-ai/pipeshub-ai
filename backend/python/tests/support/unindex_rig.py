@@ -67,7 +67,7 @@ class Rig:
         self.clear_for_record = note("mentions")
         self.points = note("taxonomy_points")
 
-    async def run(self, record: dict | None = None) -> None:
+    async def run(self, record: dict | None = None, **kwargs: object) -> None:
         # Each attempt is a new event: it reads the record as the earlier attempt left it.
         record = dict(record or RECORD)
         with (
@@ -78,4 +78,4 @@ class Rig:
         ):
             transformer.return_value.clear_classification = self.clear_classification
             writer.return_value.clear_for_record = self.clear_for_record
-            await unindex_record(record, "org-1", processor=self.processor, logger=MagicMock())
+            await unindex_record(record, "org-1", processor=self.processor, logger=MagicMock(), **kwargs)

@@ -1418,6 +1418,7 @@ class EventProcessor:
             md5=md5,
             force_reindex=bool(event_data.get("forceReindex")),
             host=self,
+            released_vrid=event_data.get("virtualRecordId"),
         )
         decision = await check_page_limit(long_doc)
         inspected: InspectedPdf | None = None
@@ -1487,6 +1488,7 @@ class EventProcessor:
                     inspected=inspected,
                     keep_eligible=long_doc.keep_eligible,
                     host=self,
+                    released_vrid=long_doc.released_vrid,
                 )
                 late_decision = await check_page_limit(late)
                 if isinstance(late_decision, Refuse):

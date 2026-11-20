@@ -81,3 +81,26 @@ async def test_a_record_with_no_taxonomy_links_has_no_point_cleanup() -> None:
     rig = Rig(links=[])
     await rig.run()
     assert "taxonomy_points" not in rig.calls
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_the_detach_releases_the_virtual_record_id_the_event_carries() -> None:
+    """The detach is written before the points and stored content go: a record read again has no id, the event still does."""
+    rig = Rig()
+    await rig.run({"_key": "rec-1", "orgId": "org-1"}, fallback_vrid="v-old")
+    assert "release" in rig.calls
+    assert rig.processor._release_skipped_content.await_args.args == ("org-1", "rec-1", "v-old")
+
+
+@pytest.mark.asyncio
+async def test_the_records_own_virtual_record_id_wins_over_the_events() -> None:
+    rig = Rig()
+    await rig.run({"_key": "rec-1", "orgId": "org-1", "virtualRecordId": "v-1"}, fallback_vrid="v-old")
+    assert rig.processor._release_skipped_content.await_args.args == ("org-1", "rec-1", "v-1")
+
+
+@pytest.mark.asyncio
+async def test_a_twin_that_still_holds_the_events_id_keeps_the_stage_states() -> None:
+    rig = Rig(holders=["twin-1"])
+    await rig.run({"_key": "rec-1", "orgId": "org-1"}, fallback_vrid="v-old")
+    assert "stage_states" not in rig.calls

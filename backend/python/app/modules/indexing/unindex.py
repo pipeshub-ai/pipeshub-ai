@@ -35,16 +35,21 @@ async def unindex_record(
     *,
     processor: Any,  # noqa: ANN401 - the indexing ``Processor``; typing it imports the events package
     logger: Logger,
+    fallback_vrid: str | None = None,
 ) -> None:
     """Remove everything indexing produced for ``record_doc``. ``processor`` is the ``Processor`` (graph provider,
     indexing pipeline, sink orchestrator). The record's title point stays: the record still exists and is findable by name.
+
+    The detach of the virtual record id is written before its vectors and stored content are deleted, so a retry of a run
+    that failed in between reads a record with no id. ``fallback_vrid`` (the id the event carries) is then released instead;
+    a copy another record still references is kept, as for any id.
     """
     graph = processor.graph_provider
     record_key = record_doc.get("_key") or record_doc.get("id")
     if not record_key:
         raise DocumentProcessingError("A record to un-index has no key")
     record_key = str(record_key)
-    virtual_record_id = record_doc.get("virtualRecordId")
+    virtual_record_id = record_doc.get("virtualRecordId") or fallback_vrid
     sink = getattr(processor, "sink_orchestrator", None)
 
     # Read before anything is cleared, and allowed to raise: the refs cannot be found again once the edges are gone.

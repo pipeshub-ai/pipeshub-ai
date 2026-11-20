@@ -44,7 +44,9 @@ _logger = logging.getLogger(__name__)
 @dataclass
 class LongDocument:
     """What the page-limit check sees. ``snapshot`` is the record document as read before any write; ``inspected`` is the
-    whole-file inspection, None for the early check; ``host`` is the event processor running the check."""
+    whole-file inspection, None for the early check; ``host`` is the event processor running the check; ``released_vrid`` is
+    the virtual record id the event carried, which a refusal releases when the record no longer holds one (an earlier
+    attempt detached it before it failed)."""
 
     record_id: str
     snapshot: Mapping[str, Any]
@@ -56,6 +58,7 @@ class LongDocument:
     inspected: Any = None
     keep_eligible: bool = False
     host: Any = None
+    released_vrid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -327,4 +330,6 @@ async def apply_refuse(doc: LongDocument, refuse: Refuse) -> None:
     await host.processor._mark_record(
         doc.record_id, ProgressStatus(refuse.status), reason=refuse.reason, extra_fields=extra
     )
-    await unindex_record(doc.snapshot, doc.org_id, processor=host.processor, logger=host.logger)
+    await unindex_record(
+        doc.snapshot, doc.org_id, processor=host.processor, logger=host.logger, fallback_vrid=doc.released_vrid
+    )
