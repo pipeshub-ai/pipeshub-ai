@@ -221,9 +221,6 @@ class CloudflareR2Connector(S3CompatibleBaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         **kwargs: object,
     ) -> "CloudflareR2Connector":
-        org_id = kwargs.pop("org_id", None)
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await data_entities_processor.initialize(org_id=org_id)
         return cls(
             logger,
             data_entities_processor,

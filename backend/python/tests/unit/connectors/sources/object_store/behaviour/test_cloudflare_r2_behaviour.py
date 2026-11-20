@@ -120,6 +120,16 @@ class TestSettings:
             await build(db, checkpoints, config).init()
 
 
+    @pytest.mark.asyncio
+    async def test_the_connector_keeps_the_processor_the_factory_initialized(self, db, checkpoints, config) -> None:
+        r2 = await CloudflareR2Connector.create_connector(
+            logging.getLogger("test.objstore.r2"), checkpoints, config, CONNECTOR_ID, "team", "creator-1",
+            data_entities_processor=db, org_id="org-1",
+        )
+
+        assert r2.data_entities_processor is db
+
+
 class TestSync:
     @pytest.mark.asyncio
     async def test_a_first_sync_writes_the_bucket_folders_and_files_with_dashboard_links(
