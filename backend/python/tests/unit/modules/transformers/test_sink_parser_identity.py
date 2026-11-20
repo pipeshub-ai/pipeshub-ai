@@ -98,3 +98,20 @@ def test_the_context_takes_the_identity_the_run_began_with() -> None:
     pi.begin_run_identity("inproc:txt@1")
     assert TransformContext(record=record).parser_identity == "inproc:txt@1"
     assert TransformContext(record=record, parser_identity=None).parser_identity is None
+
+
+@pytest.mark.asyncio
+async def test_the_run_identity_does_not_outlive_its_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A context built later in the same task for another record must not carry the identity of the run that just ended."""
+    from tests.support.parser_identity_world import World
+
+    monkeypatch.delenv("USE_PARSING_SERVICE", raising=False)
+    world = World()
+    world.identified("inproc:txt@1")
+    world.renamed_to_markdown()
+    await world.run(world.event(mime="text/markdown", ext="md", name="notes.md"))
+    assert world.parses == 1
+
+    other = file_record("report.pdf", "pdf", "application/pdf", record_id="rec-2")
+
+    assert TransformContext(record=other).parser_identity is None

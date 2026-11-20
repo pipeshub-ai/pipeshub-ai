@@ -278,14 +278,16 @@ class EventProcessor:
 
         The record is judged as the graph holds it now (never by the event's payload, which can be older), through the same
         derivation that stored the identity. An identity that is not tracked on the graph side, or a record with no identity
-        while the identity is not being written, skips as it always did. An absent identity skips and is adopted. A stale one
+        while the identity is not being written (the setting off), skips as it always did whatever is stored. An absent identity skips and is adopted. A stale one
         (the copy was rebuilt or moved by a writer that stored none) runs in full, as does a known one of another parser.
         A graph read that fails runs in full.
         """
+        if not parser_identity.identity_write_enabled():
+            # Off: no identity is written, so a stored one cannot be kept current (a run that rebuilds the copy leaves it stale and
+            # nothing re-stamps it). Stored identities are ignored: the skip is the one the same bytes alone give.
+            return True, None
         stored = record.get(parser_identity.IDENTITY_FIELD)
         has_stored = isinstance(stored, str) and bool(stored)
-        if not has_stored and not parser_identity.identity_write_enabled():
-            return True, None
         try:
             key = parser_identity.graph_parser_key(record, await self._files_document(record_id))
         except Exception as exc:
@@ -1883,6 +1885,8 @@ class EventProcessor:
             raise
         finally:
             await inner.aclose()
+            # The run's parser identity belongs to this event: a context built later in the task for another record must not read it.
+            parser_identity.end_run_identity()
 
     async def _dispatch_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         """

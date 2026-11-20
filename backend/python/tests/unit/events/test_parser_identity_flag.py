@@ -63,15 +63,80 @@ async def test_a_run_writes_no_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_identity_written_earlier_is_still_compared() -> None:
-    """Switched off after a time on: the records that carry one keep the protection (a read, not a write)."""
+async def test_a_stored_identity_is_ignored_while_the_setting_is_off() -> None:
+    """Off is the behaviour of the same bytes alone: nothing keeps a stored identity current, so it must not decide."""
     world = World()
     world.identified("inproc:txt@1")
     world.renamed_to_markdown()
 
     await world.run(world.event(mime="text/markdown", ext="md", name="notes.md"))
 
-    assert world.parses == 1
+    assert world.parses == 0
+    assert world.conditional_writes == []
+
+
+@pytest.mark.asyncio
+async def test_the_setting_turned_off_after_it_was_on_does_not_rerun_every_same_bytes_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rollback: the identity was written while on; a full run with the setting off rebuilds the copy (the identity goes stale)."""
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "true")
+    world = World()
+    world.identified("inproc:txt@1")
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "false")
+    world.state["lastIndexTimestamp"] += 5000
+
+    for _ in range(4):
+        await world.run(world.event())
+
+    assert world.parses == 0
+
+
+@pytest.mark.asyncio
+async def test_a_forced_run_with_the_setting_off_then_same_bytes_updates_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "true")
+    world = World()
+    world.identified("inproc:txt@1")
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "false")
+    await world.run(world.event(forceReindex=True))
+    forced = world.parses
+
+    for _ in range(3):
+        await world.run(world.event())
+
+    assert world.parses == forced
+
+
+@pytest.mark.asyncio
+async def test_the_setting_back_on_costs_one_full_run_per_stale_record_then_heals(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "true")
+    world = World()
+    world.identified("inproc:txt@1")
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "false")
+    await world.run(world.event(forceReindex=True))
+    forced = world.parses
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "true")
+
+    for _ in range(4):
+        await world.run(world.event())
+
+    assert world.parses - forced == 1
+    assert pi.known_identity(world.state) == "inproc:txt@1"
+
+
+@pytest.mark.asyncio
+async def test_a_fleet_mixed_on_the_setting_runs_a_stale_record_in_full_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One process has the setting on, another off, the same record: the process that is off never re-arms the stale state for good."""
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "true")
+    world = World()
+    world.identified("inproc:txt@1")
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "false")
+    await world.run(world.event(forceReindex=True))  # a process that is off rebuilds the copy
+    forced = world.parses
+
+    for i in range(8):
+        monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "true" if i % 2 == 0 else "false")
+        await world.run(world.event())
+
+    assert world.parses - forced <= 1
 
 
 @pytest.mark.asyncio

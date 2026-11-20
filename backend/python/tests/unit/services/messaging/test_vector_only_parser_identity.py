@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.config.constants.arangodb import EventTypes, MimeTypes, OriginTypes, ProgressStatus, RecordTypes
+from app.config.constants.arangodb import (
+    EventTypes,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+    RecordTypes,
+)
 from app.modules.pipeline import parser_identity as pi
 from tests.support.record_handler import make_record_handler
 
