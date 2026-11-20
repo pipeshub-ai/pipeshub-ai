@@ -17,6 +17,7 @@ import { expect } from 'chai';
 import { randomBytes, randomUUID } from 'crypto';
 import { CopyObjectCommand, CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import mongoose from 'mongoose';
+import { purgePaidResultsOlderThan } from '../../src/modules/storage/utils/paid-results-purge';
 import AmazonS3Adapter from '../../src/modules/storage/providers/s3.provider';
 import AzureBlobStorageAdapter from '../../src/modules/storage/providers/azure.provider';
 import { StorageServiceInterface } from '../../src/modules/storage/services/storage.service';
@@ -713,6 +714,26 @@ describe('Storage adapters against a real storage server', function () {
         expect(await etagOf(key(30))).to.equal(before);
       });
     }
+
+    it('a cutoff purge keeps an object written after its listing, on a store that does or does not delete by version', async () => {
+      const k = key(300);
+      await put(k, '{"old":true}');
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      const cutoff = Date.now() + 60_000;                // after the object: the purge lists it as older
+      const realList = target.adapter.listObjects!.bind(target.adapter);
+      let listings = 0;
+      const adapter = Object.create(target.adapter) as typeof target.adapter;
+      adapter.listObjects = async (prefix, options) => {
+        const page = await realList(prefix, options);
+        listings += 1;
+        if (listings === 1) await put(k, '{"refreshed":true}');       // the refresh's own write lands after the listing
+        return page;
+      };
+      await purgePaidResultsOlderThan(adapter as never, root, cutoff, Error as never);
+      // The object was listed older than the cutoff and replaced before the delete: it is not the object listed.
+      expect(await exists(k), 'the replacement was purged').to.equal(true);
+      expect((await etagOf(k)) !== undefined).to.equal(true);
+    });
 
     it('a bump and a conditional delete racing on one version never both win, over many keys', async () => {
       if (!(await target.adapter.conditionalCapabilities!()).conditionalDelete) return; // this store ignores the condition

@@ -86,6 +86,7 @@ import {
   REFRESH_MARKER_PATH,
   paidResultsRecordRoot,
 } from '../utils/paid-results';
+import { purgePaidResultsOlderThan } from '../utils/paid-results-purge';
 import { localEtagOf } from '../utils/storage-fingerprint';
 import { UploadDocumentService } from './storage.upload.service';
 import { withWriteWindow } from './storage.write-window';
@@ -1696,56 +1697,17 @@ export class StorageController {
     }
   }
 
-  /**
-   * Removes the objects under `root` last written before `before` (ms). Object versions are not read: a store's
-   * write time is its own clock (whole seconds on S3 and Azure), so the caller passes an instant a margin earlier
-   * than its purge started. An object overwritten between the listing and the delete is the one gap (a conditional
-   * delete on the listed etag would close it, which the storage adapters do not offer yet).
-   */
   private async deletePaidResultsOlderThan(
     adapter: StorageServiceAdapter,
     root: string,
     before: number,
   ): Promise<void> {
-    let after: string | undefined;
-    const capabilities = await adapter.conditionalCapabilities();
-    if (capabilities.inconclusive === true) {
-      // The probe could not tell (a transient failure): purging unconditionally now could delete a result written
-      // after the listing, so the purge is retried by its caller.
-      throw new ServiceUnavailableError(
-        'The store could not say whether it deletes by version; try again',
-      );
-    }
-    const conditional = capabilities.conditionalDelete;
-    for (;;) {
-      const page = await adapter.listObjects(`${root}/`, {
-        after,
-        limit: PAID_RESULT_LIST_PAGE,
-      });
-      // The refresh marker outlives every cutoff purge: it is how a late bump or re-store knows a refresh began.
-      const doomedObjects = page.objects.filter(
-        (o) =>
-          o.key.startsWith(`${root}/`) &&
-          !o.key.startsWith(`${root}/${REFRESH_MARKER_FOLDER}/`) &&
-          o.lastModifiedMs < before,
-      );
-      const withEtag = doomedObjects.flatMap((o) =>
-        o.etag === undefined ? [] : [{ key: o.key, etag: o.etag }],
-      );
-      if (conditional && withEtag.length > 0) {
-        // The objects with no version to name go first, so they do not wait for an unrelated guarded delete (their
-        // list-to-delete window is the unavoidable one of a plain delete, and no longer). An object overwritten since the
-        // listing (a refresh's own result) is not the one listed: the guarded delete leaves it.
-        const rest = doomedObjects.filter((o) => o.etag === undefined);
-        if (rest.length > 0)
-          await adapter.deleteObjects(rest.map((o) => o.key));
-        await adapter.deleteObjectsIfMatch(withEtag);
-      } else if (doomedObjects.length > 0) {
-        await adapter.deleteObjects(doomedObjects.map((o) => o.key));
-      }
-      if (page.next === undefined) return;
-      after = page.next;
-    }
+    await purgePaidResultsOlderThan(
+      adapter,
+      root,
+      before,
+      ServiceUnavailableError,
+    );
   }
 
   /**
