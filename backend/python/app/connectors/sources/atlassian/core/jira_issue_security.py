@@ -1030,8 +1030,9 @@ def _reads_alone(
 ) -> tuple[list[Permission], bool]:
     """Who reads a leveled issue without browsing its project: a person the project's Browse holders name on this issue (its
     reporter, say) whom the level names too, on this issue, as a user holder, through a group, role or project lead
-    (``context.level_readers``), or through a group a group picker on the issue selects (``context.group_members``). Jira shows it to them: Browse names them, and "these allow the visibility of individual
-    issues to be adjusted, within the bounds of the project's permissions"
+    (``context.level_readers``), or through a group a group picker on the issue selects (``context.group_members``).
+    Jira shows it to them: Browse names them, and "these allow the visibility of individual issues to be adjusted,
+    within the bounds of the project's permissions"
     (https://support.atlassian.com/jira/kb/jira-permissions-general-overview/). Also returns whether someone Browse names
     may be in the level through members that were not read."""
     if not context.browse_holders:
