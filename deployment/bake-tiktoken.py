@@ -34,7 +34,7 @@ def main(argv: list[str]) -> int:
             data = response.read()
     digest = hashlib.sha256(data).hexdigest()
     if digest != SHA256:
-        print(f"cl100k_base has sha256 {digest}, expected {SHA256}", file=sys.stderr)
+        print(f"cl100k_base has sha256 {digest}, expected {SHA256}", file=sys.stderr)  # noqa: T201
         return 1
     out.mkdir(parents=True, exist_ok=True)
     (out / name).write_bytes(data)

@@ -90,6 +90,21 @@ check "entrypoint sources it only when it exists" 'grep -qxF "if [ -f \"\$(dirna
 check "image installs it next to the entrypoint" 'grep -q "deployment/offline-env.sh /usr/local/bin/" "$ROOT/Dockerfile"'
 check "scripts parse" 'sh -n "$SCRIPT" && bash -n "$ENTRYPOINT"'
 
+echo "dev frontend telemetry"
+DEV="$ROOT/deployment/docker-compose/scripts/dev_process_monitor.sh"
+block=$(sed -n '/^# offline-switch:/,/^# end offline-switch/p' "$DEV")
+check "dev_process_monitor.sh has the offline block" '[[ -n "$block" ]]'
+first_npm=$(grep -n '^npm run dev' "$DEV" | head -1 | cut -d: -f1)
+block_line=$(grep -n '^# offline-switch:' "$DEV" | head -1 | cut -d: -f1)
+check "the block runs before the first npm run dev" '[[ -n "$block_line" && "$block_line" -lt "$first_npm" ]]'
+next_telemetry() { env -i PATH="$PATH" "$@" bash -c "$block"$'\n''printf %s "${NEXT_TELEMETRY_DISABLED:-<unset>}"'; }
+check "offline disables Next.js telemetry" '[[ "$(next_telemetry PIPESHUB_OFFLINE=1)" == "1" ]]'
+check "offline keeps an explicit value" '[[ "$(next_telemetry PIPESHUB_OFFLINE=true NEXT_TELEMETRY_DISABLED=0)" == "0" ]]'
+check "empty leaves telemetry as it was" '[[ "$(next_telemetry PIPESHUB_OFFLINE=)" == "<unset>" ]]'
+check "unset leaves telemetry as it was" '[[ "$(next_telemetry)" == "<unset>" ]]'
+check "off values leave telemetry as it was" '[[ "$(next_telemetry PIPESHUB_OFFLINE=0)" == "<unset>" ]]'
+check "dev script parses" 'bash -n "$DEV"'
+
 if [ "$FAILS" -ne 0 ]; then
   echo "$FAILS failed"
   exit 1

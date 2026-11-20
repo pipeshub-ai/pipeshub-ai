@@ -14,7 +14,9 @@ offline refusal.
 Run by offline_image_smoke.sh (CI) with the image's own Python.
 """
 
+# ruff: noqa: T201, FBT001
 import asyncio
+import ipaddress
 import logging
 import os
 import socket
@@ -22,21 +24,43 @@ import sys
 from io import BytesIO
 
 ATTEMPTS: list[str] = []
-LOOPBACK = ("127.", "::1", "localhost", "0.0.0.0")
+
+
+def is_local(event: str, target: object) -> bool:
+    """True for a Unix socket, an empty host, ``localhost`` and a loopback or unspecified address.
+
+    Exact matches only: ``localhost.example.com`` and ``127.evil.example`` are external names, so a
+    prefix test would let a lookup for them pass unrecorded."""
+    if event == "socket.connect" and isinstance(target, (str, bytes)):
+        return True  # AF_UNIX path (or abstract name)
+    host = target[0] if isinstance(target, (tuple, list)) and target else target
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    if host is None or host == "":
+        return True
+    name = str(host).strip().lower().rstrip(".")
+    if name == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(name.split("%", 1)[0].strip("[]"))
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped or address).is_loopback or address.is_unspecified
 
 
 def _audit(event: str, args: tuple) -> None:
     if event not in ("socket.connect", "socket.getaddrinfo", "socket.gethostbyname"):
         return
     target = args[1] if event == "socket.connect" and len(args) > 1 else args[0]
-    host = str(target[0] if isinstance(target, (tuple, list)) else target)
-    if host.startswith(LOOPBACK) or host.startswith("/"):
+    if is_local(event, target):
         return
-    ATTEMPTS.append(f"{event}:{host}")
+    ATTEMPTS.append(f"{event}:{target[0] if isinstance(target, (tuple, list)) else target}")
 
 
 # Before anything imports: a library that connects at import time is caught too.
-sys.addaudithook(_audit)
+if __name__ == "__main__":
+    sys.addaudithook(_audit)
 
 EXPECTED = {
     "PIPESHUB_OFFLINE": "1",

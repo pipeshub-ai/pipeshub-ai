@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import logging
+import os
 import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -55,6 +56,27 @@ class TestSwitchMapping:
         assert env["TELEMETRY_COLLECTION_FLAG"] == "true"
         assert env["HF_HUB_OFFLINE"] == "0"
         assert "HF_HUB_OFFLINE" not in changed
+
+    def test_the_flag_and_explicit_values_in_dotenv_count(self, tmp_path, monkeypatch) -> None:
+        """A service started directly reads .env only after the package import: the switch must see it."""
+        (tmp_path / ".env").write_text("PIPESHUB_OFFLINE=1\nHF_HUB_OFFLINE=0\nDO_NOT_TRACK=\n")
+        monkeypatch.chdir(tmp_path)
+        _clean(monkeypatch)
+        assert offline_enabled()
+        changed = apply_offline_env()
+        assert "HF_HUB_OFFLINE" not in changed and "HF_HUB_OFFLINE" not in os.environ  # .env keeps precedence
+        assert os.environ["TRANSFORMERS_OFFLINE"] == "1" and os.environ["DO_NOT_TRACK"] == "1"
+        import dotenv
+
+        dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
+        assert os.environ["HF_HUB_OFFLINE"] == "0"
+
+    def test_the_process_environment_beats_dotenv_for_the_flag(self, tmp_path, monkeypatch) -> None:
+        (tmp_path / ".env").write_text("PIPESHUB_OFFLINE=1\n")
+        monkeypatch.chdir(tmp_path)
+        _clean(monkeypatch)
+        monkeypatch.setenv(OFFLINE_FLAG, "0")
+        assert not offline_enabled() and apply_offline_env() == []
 
     def test_shell_script_sets_the_same_switches(self) -> None:
         script = (REPO / "deployment" / "offline-env.sh").read_text()
@@ -230,3 +252,29 @@ class TestTableMode:
         dm = self._baked(tmp_path, monkeypatch, "accurate", "fast")
         monkeypatch.setenv(OFFLINE_FLAG, "1")
         assert dm.effective_table_mode("fast") == "fast"
+
+
+class TestSmokeLoopbackMatching:
+    """The image smoke records every non-loopback connect or lookup; only exact loopback names pass."""
+
+    @staticmethod
+    def _smoke() -> object:
+        path = REPO / "deployment" / "docker-compose" / "tests" / "offline_image_smoke.py"
+        spec = importlib.util.spec_from_file_location("offline_image_smoke_under_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.mark.parametrize("host", ["localhost", "LOCALHOST", "localhost.", "127.0.0.1", "127.9.9.9", "::1", "0.0.0.0", "::ffff:127.0.0.1", "", None])
+    def test_local_hosts_pass(self, host) -> None:
+        assert self._smoke().is_local("socket.getaddrinfo", host)
+
+    @pytest.mark.parametrize("host", ["localhost.example.com", "127.evil.example", "127.0.0.1.example.com", "::1.example.com", "1.1.1.1", "example.com", "10.0.0.1"])
+    def test_external_names_are_recorded(self, host) -> None:
+        assert not self._smoke().is_local("socket.getaddrinfo", host)
+        assert not self._smoke().is_local("socket.connect", (host, 443))
+
+    def test_a_unix_socket_path_is_local_only_for_connect(self) -> None:
+        smoke = self._smoke()
+        assert smoke.is_local("socket.connect", "/var/run/x.sock")
+        assert not smoke.is_local("socket.getaddrinfo", "/var/run/example.com")

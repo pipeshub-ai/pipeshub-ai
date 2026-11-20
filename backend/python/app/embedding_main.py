@@ -1051,7 +1051,7 @@ class ModelManager:
                             model_name, status, self._download_status_lock
                         )
                     except Exception as download_exc:
-                        if hfhf_hub_offline():
+                        if hf_hub_offline():
                             err = RuntimeError(
                                 "HuggingFace offline mode is on (HF_HUB_OFFLINE=1), so "
                                 f"'{model_name}' cannot be downloaded. Set HF_HUB_OFFLINE=0 "

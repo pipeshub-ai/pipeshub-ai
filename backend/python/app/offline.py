@@ -25,17 +25,40 @@ OFFLINE_ENV_DEFAULTS: dict[str, str] = {
 _TRUE = ("1", "true", "yes", "on")
 
 
-def offline_enabled(environ: MutableMapping[str, str] = os.environ) -> bool:
-    return environ.get(OFFLINE_FLAG, "").strip().lower() in _TRUE
+def _dotenv_values() -> dict[str, str]:
+    """Values in the ``.env`` file the services load later (``ConfigurationService``), without loading it.
+
+    The package ``__init__`` runs before that load, so a switch written only in ``.env`` would be missed.
+    ``load_dotenv`` never overrides a variable that is already set, so the process environment still wins.
+    """
+    try:
+        from dotenv import dotenv_values, find_dotenv
+
+        path = find_dotenv(usecwd=True)
+        return {k: v for k, v in dotenv_values(path).items() if v is not None} if path else {}
+    except Exception:
+        return {}
 
 
-def apply_offline_env(environ: MutableMapping[str, str] = os.environ) -> list[str]:
-    """Set the offline switches that the operator has not set; return the names changed."""
-    if not offline_enabled(environ):
+def _setting(name: str, environ: MutableMapping[str, str], dotenv: dict[str, str]) -> str:
+    return environ[name] if name in environ else dotenv.get(name, "")
+
+
+def offline_enabled(environ: MutableMapping[str, str] = os.environ, dotenv: dict[str, str] | None = None) -> bool:
+    values = _dotenv_values() if dotenv is None and environ is os.environ and OFFLINE_FLAG not in environ else (dotenv or {})
+    return _setting(OFFLINE_FLAG, environ, values).strip().lower() in _TRUE
+
+
+def apply_offline_env(environ: MutableMapping[str, str] = os.environ, dotenv: dict[str, str] | None = None) -> list[str]:
+    """Set the offline switches that the operator has not set; return the names changed.
+
+    "Set" means in the environment or in ``.env``: an explicit ``.env`` value keeps precedence over the default."""
+    values = _dotenv_values() if dotenv is None and environ is os.environ else (dotenv or {})
+    if not offline_enabled(environ, values):
         return []
     changed = []
     for name, value in OFFLINE_ENV_DEFAULTS.items():
-        if not environ.get(name, "").strip():
+        if not environ.get(name, "").strip() and not values.get(name, "").strip():
             environ[name] = value
             changed.append(name)
     return changed

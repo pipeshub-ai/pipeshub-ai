@@ -85,6 +85,18 @@ describe('self-hosted fonts', () => {
     expect(offenders).toEqual([]);
   });
 
+  // Google's stylesheet gave .material-icons-outlined its 24px size, line-height 1 and ligature settings;
+  // consumers that set no inline fontSize rendered at the inherited size once it was removed.
+  it('.material-icons-outlined keeps the icon reset the Google stylesheet used to apply', () => {
+    const rule = read('app/globals.css').match(/\n\.material-icons-outlined\s*{([^}]*)}/)?.[1] ?? '';
+    expect(rule).toMatch(/font-size:\s*24px/);
+    expect(rule).toMatch(/line-height:\s*1;/);
+    expect(rule).toMatch(/letter-spacing:\s*normal/);
+    expect(rule).toMatch(/text-transform:\s*none/);
+    expect(rule).toMatch(/white-space:\s*nowrap/);
+    expect(rule).toMatch(/font-feature-settings:\s*'liga'/);
+  });
+
   it('declares the packages as dependencies, not dev tooling', () => {
     const pkg = JSON.parse(read('package.json'));
     expect(pkg.dependencies['@fontsource/manrope']).toBeTruthy();
