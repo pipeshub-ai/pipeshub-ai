@@ -313,11 +313,12 @@ class _QueryPlan:
     served_exact: bool = False
 
     def incomplete_notice(self) -> str | None:
-        if not self.failed_collections:
-            return None
-        return SEARCH_INCOMPLETE_MESSAGE.format(
-            failed=len(self.failed_collections), total=self.collections_searched,
-        )
+        if self.failed_collections:
+            return SEARCH_INCOMPLETE_MESSAGE.format(
+                failed=len(self.failed_collections), total=self.collections_searched,
+            )
+        # A store that stopped short (``degraded``) can answer with nothing at all: said in words, so no reader takes it for "nothing matched".
+        return SEARCH_DEGRADED_MESSAGE if self.degraded else None
 
 # User-facing guidance when the graph/permissions yield no searchable corpus
 ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
@@ -360,6 +361,11 @@ EMBEDDING_OUT_OF_CREDIT_MESSAGE = (
 SEARCH_INCOMPLETE_MESSAGE = (
     "{failed} of {total} parts of the search index could not be searched, so this "
     "search may have missed documents."
+)
+# The search index answered from less than its full search (it ran out of time or was too busy).
+SEARCH_DEGRADED_MESSAGE = (
+    "The search index could not finish this search in time, so this search may have "
+    "missed documents."
 )
 
 # Every empty outcome of an entity-filtered search reads the same, whether nothing

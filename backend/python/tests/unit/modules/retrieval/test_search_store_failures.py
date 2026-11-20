@@ -297,6 +297,25 @@ async def test_an_empty_partial_answer_flags_the_dense_search(service, mock_vect
     assert degraded_notice.was_degraded() is True
 
 
+async def test_an_empty_partial_answer_says_so_in_words(service, mock_vector_db_service, tracked_request) -> None:
+    """An empty answer the store gave up on reads as such to every reader (agents read the message and ``searchIncomplete``, not the flag)."""
+    mock_vector_db_service.query_nearest_points = _partial_and_empty("overload")
+
+    result = await _search(service)
+
+    assert result["status"] == Status.EMPTY_RESPONSE.value
+    assert result["searchIncomplete"] == mod.SEARCH_DEGRADED_MESSAGE
+    assert result["message"].startswith(mod.SEARCH_DEGRADED_MESSAGE)
+
+
+async def test_a_degraded_answer_with_hits_says_so_in_words(service, mock_vector_db_service) -> None:
+    point = _point()
+    point.degraded = "timeout"
+    mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[point]])
+
+    assert (await _search(service))["searchIncomplete"] == mod.SEARCH_DEGRADED_MESSAGE
+
+
 async def test_an_empty_partial_answer_flags_the_dense_search_outside_a_tracked_request(service, mock_vector_db_service) -> None:
     mock_vector_db_service.query_nearest_points = _partial_and_empty()
 
