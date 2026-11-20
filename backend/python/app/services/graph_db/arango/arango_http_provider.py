@@ -8527,7 +8527,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
-            self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.get_user_by_user_id.failed", e, include_error_text=False)
             return None
 
     async def apply_verified_user_email(

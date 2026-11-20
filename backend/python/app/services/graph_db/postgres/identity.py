@@ -41,6 +41,7 @@ from app.services.graph_db.user_email_identity import (
     connector_ids_of_users,
     graph_user_key,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -101,7 +102,7 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
             except Exception as e:
                 if flag and k.get("raise_on_error"):  # raised before logging: the caller that handles it logs it once
                     raise
-                self.logger.error("%s failed: %s", fn.__name__, e)
+                error_class.log_failure(self.logger, f"graph.{fn.__name__}.failed", e, include_error_text=False)
                 return default() if callable(default) else default
         return wrapper
     return deco

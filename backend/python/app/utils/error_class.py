@@ -100,9 +100,14 @@ def on_chain(exc: BaseException, target: BaseException) -> bool:
     return any(link is target for link in _chain(exc))
 
 
+def chain_link(exc: BaseException, *types: type[BaseException]) -> BaseException | None:
+    """The first of ``exc`` and the links of its chain (see ``_chain``) that is one of ``types``, or None."""
+    return next((link for link in _chain(exc) if isinstance(link, types)), None)
+
+
 def chain_has(exc: BaseException, *types: type[BaseException]) -> bool:
     """Whether ``exc`` or a link of its chain (see ``_chain``) is one of ``types``."""
-    return any(isinstance(link, types) for link in _chain(exc))
+    return chain_link(exc, *types) is not None
 
 
 def first_leaf(exc: BaseException) -> BaseException:

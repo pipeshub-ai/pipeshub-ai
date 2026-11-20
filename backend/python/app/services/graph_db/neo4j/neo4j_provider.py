@@ -292,6 +292,7 @@ from app.services.graph_db.vector_membership_queries import (
     can_use_membership_cleanup,
 )
 from app.telemetry.backend import METRICS_BACKEND
+from app.utils import error_class
 from app.utils.env_config import env_int, env_seconds
 from app.utils.env_utils import env_bool
 from app.utils.logging_fields import log_event
@@ -6512,9 +6513,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             user = await memo(("user_by_user_id", user_id), lambda: self._get_user_by_user_id(user_id))
         except Exception as e:
-            self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            error_class.log_failure(self.logger, "graph.get_user_by_user_id.failed", e, include_error_text=False)
             return None
         return copy.deepcopy(user)
 
