@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
-
 from app.capacity import cgroup
 from app.services.resource_governor import probe
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 GIB = 2**30
 UNLIMITED_V1 = str(2**63 - 4096)
