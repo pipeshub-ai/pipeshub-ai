@@ -108,9 +108,10 @@ async def test_the_recovery_deadline_also_bounds_a_write_that_succeeds_late() ->
 
 async def test_the_widening_record_holds_begins_from_the_list_to_the_change(monkeypatch: pytest.MonkeyPatch) -> None:
     """A begin already sent is answered (and listed) before the list is taken, and one started meanwhile reaches the server only
-    after the change has returned, so the list is what was open when the change was sent."""
+    after the change has returned, so the list is what was open when the change was sent. Ordered by events, not by time."""
     server: list[str] = []
     running: list[str] = []
+    a_sent, a_answer, change_sent, change_answer = (asyncio.Event() for _ in range(4))
 
     class Begin:
         def __init__(self, txn: str) -> None:
@@ -118,7 +119,9 @@ async def test_the_widening_record_holds_begins_from_the_list_to_the_change(monk
 
         async def __aenter__(self) -> None:
             server.append(f"begin {self.txn}")
-            await asyncio.sleep(0.2)
+            if self.txn == "a":
+                a_sent.set()
+                await a_answer.wait()  # still in flight until the test answers it
             running.append(self.txn)
 
         async def __aexit__(self, *exc: object) -> None:
@@ -133,7 +136,8 @@ async def test_the_widening_record_holds_begins_from_the_list_to_the_change(monk
 
         async def update_collection_schema(self, *_: object) -> bool:
             server.append("change")
-            await asyncio.sleep(0.2)
+            change_sent.set()
+            await change_answer.wait()  # still in flight until the test answers it
             server.append("change answered")
             return True
 
@@ -145,13 +149,18 @@ async def test_the_widening_record_holds_begins_from_the_list_to_the_change(monk
             pass
 
     in_flight = asyncio.create_task(begin("a"))
-    await asyncio.sleep(0.05)
+    await a_sent.wait()
     change = asyncio.create_task(client.update_collection_schema("records", {}, 5))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0)  # the change runs to its first await: begins are held and the unanswered one is counted
+    assert waited == [1] and sent == []
     later = asyncio.create_task(begin("b"))
+    await asyncio.sleep(0)  # b runs to its first await, the hold
+    a_answer.set()
+    await change_sent.wait()
+    assert sent == [["a"]] and "begin b" not in server
+    change_answer.set()
     await asyncio.gather(in_flight, change, later)
 
-    assert (sent, waited) == ([["a"]], [1])
     assert server == ["begin a", "change", "change answered", "begin b"]
 
 
