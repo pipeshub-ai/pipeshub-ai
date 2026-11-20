@@ -38,13 +38,23 @@ ORG = "org-1"
 class _Cache:
     def __init__(self) -> None:
         self.done: set[tuple[str, str, str]] = set()
+        self.last: dict[tuple[str, str], int] = {}
+        self.unavailable = False
         self.purges: list[str] = []
 
-    async def refresh_done(self, org: str, record: str, intent_id: str) -> bool:
-        return (org, record, intent_id) in self.done
+    async def refresh_state(self, org: str, record: str, intent_id: str, requested_at: int | None = None) -> str:
+        if self.unavailable:
+            return "unavailable"
+        if (org, record, intent_id) in self.done:
+            return "done"
+        if requested_at is not None and self.last.get((org, record), -1) >= requested_at:
+            return "done"
+        return "open"
 
-    async def mark_refresh_done(self, org: str, record: str, intent_id: str) -> bool:
+    async def mark_refresh_done(self, org: str, record: str, intent_id: str, requested_at: int | None = None) -> bool:
         self.done.add((org, record, intent_id))
+        if requested_at is not None:
+            self.last[(org, record)] = max(self.last.get((org, record), -1), requested_at)
         return True
 
     @asynccontextmanager
@@ -299,7 +309,7 @@ async def test_a_retry_of_an_older_refresh_runs_under_the_newer_requests_token(e
     with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"):
         await _drive(handler, _refresh("A", is_final_failure=False))
     assert env.purges == ["B"], env.purges
-    assert ri.ID_FIELD not in record and {(ORG, "r1", "A"), (ORG, "r1", "B")} <= env.done
+    assert ri.ID_FIELD not in record and (ORG, "r1", "B") in env.done
 
 
 async def test_a_terminal_status_write_that_did_not_land_keeps_the_request(env) -> None:
@@ -350,6 +360,21 @@ async def test_a_delivery_for_a_record_whose_connector_is_off_or_gone_ends_the_r
     await _drive(handler, _refresh(is_final_failure=False))
     assert ri.ID_FIELD not in record
     assert (ORG, "r1", "A") not in env.done
+
+
+async def test_an_unreadable_completion_marker_is_a_counted_failure_with_writes_on_and_a_miss_with_writes_off(env) -> None:
+    handler, record = _world(intent=None, status=ProgressStatus.COMPLETED.value)
+    env.unavailable = True
+    handler.event_processor.on_event = AsyncMock(side_effect=AssertionError("must not run"))
+    with patch.object(paid_cache_access, "writes_enabled", lambda: True), pytest.raises(Exception, match="completion marker"):
+        await _drive(handler, _refresh(is_final_failure=False))
+    handler, record = _world(intent=None)
+    handler.event_processor.on_event = _on_event_that(record)
+    with patch.object(paid_cache_access, "writes_enabled", lambda: False), patch.object(
+        handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf",
+    ):
+        await _drive(handler, _refresh(is_final_failure=False))
+    assert record["indexingStatus"] == ProgressStatus.COMPLETED.value
 
 
 def test_the_record_module_still_imports_unpatched() -> None:

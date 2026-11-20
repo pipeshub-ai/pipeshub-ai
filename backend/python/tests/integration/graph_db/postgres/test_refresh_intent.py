@@ -126,3 +126,13 @@ async def test_a_promotion_checks_each_copy_in_the_statement_that_writes_it(w: W
     left = await doc(w, "p2")
     assert left["indexingStatus"] == "QUEUED" and left[ri.ID_FIELD] == "late" and "reason" not in left
     assert "reason" not in await doc(w, "p3")
+
+
+async def test_the_completion_is_kept_with_the_clear_and_survives_the_next_request(w: World) -> None:
+    await record(w, "d", **ri.intent_fields("mine", 5))
+    assert await ri.clear_intent(w.p, "d", "mine", {ri.DONE_FIELD: 5})
+    d = await doc(w, "d")
+    assert ri.ID_FIELD not in d and d[ri.DONE_FIELD] == 5 and ri.done_at(d) == 5
+    await w.p.update_record_fields_for_ids(["d"], ri.intent_fields("next", 9))
+    d = await doc(w, "d")
+    assert d[ri.DONE_FIELD] == 5 and d[ri.ID_FIELD] == "next" and not ri.served(d)

@@ -81,10 +81,10 @@ class _Store:
         return found
 
 
-async def _stores(backend: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Store]:
+async def _stores(backend: str, monkeypatch: pytest.MonkeyPatch, *, arango_db: str = ARANGO_DB) -> AsyncIterator[_Store]:
     async with contextlib.AsyncExitStack() as cleanup:
         try:
-            graph = await (connect_neo4j(logger, monkeypatch) if backend == "neo4j" else connect_arango(logger, ARANGO_DB))
+            graph = await (connect_neo4j(logger, monkeypatch) if backend == "neo4j" else connect_arango(logger, arango_db))
         except Exception as exc:
             backend_unavailable(backend, exc)
         disconnect = getattr(graph, "disconnect", None)
@@ -112,9 +112,17 @@ async def store(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 
 @pytest.fixture(params=["arango"])
 async def arango_store(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Store]:
-    """For a test that only makes sense on ArangoDB; parametrized rather than skipped at run time."""
-    async for s in _stores(request.param, monkeypatch):
-        yield s
+    """For a test that swaps the records schema: its own database, dropped afterwards, so no other test (on another xdist worker)
+    writes to a database whose schema is the previous release's while the swap is active."""
+    name = f"{ARANGO_DB}_schema_{uuid.uuid4().hex[:8]}"
+    async for s in _stores(request.param, monkeypatch, arango_db=name):
+        try:
+            yield s
+        finally:
+            client = s.graph.http_client  # type: ignore[attr-defined]
+            session = await client._get_session()
+            async with session.delete(f"{client.base_url}/_api/database/{name}") as response:
+                assert response.status in (200, 404), await response.text()
 
 
 async def test_the_walks_status_statement_stores_the_request_with_the_status(store: _Store) -> None:
@@ -238,3 +246,14 @@ async def test_a_promotion_checks_each_copy_in_the_statement_that_writes_it(stor
     left = await store.doc("p2")
     assert left["indexingStatus"] == QUEUED and left[ri.ID_FIELD] == "late" and left.get("reason") != "promoted"
     assert (await store.doc("p3")).get("reason") != "promoted"
+
+
+async def test_the_completion_is_kept_with_the_clear_and_survives_the_next_request(store: _Store) -> None:
+    k = await store.add("d", **ri.intent_fields("mine", 5))
+    assert await ri.clear_intent(store.graph, k, "mine", {ri.DONE_FIELD: 5})
+    doc = await store.doc("d")
+    assert ri.ID_FIELD not in doc and doc[ri.DONE_FIELD] == 5 and ri.done_at(doc) == 5
+    await store.graph.update_record_fields_for_ids([k], ri.intent_fields("next", 9))
+    doc = await store.doc("d")
+    assert doc[ri.DONE_FIELD] == 5 and doc[ri.ID_FIELD] == "next" and not ri.served(doc)
+    assert ri.served({**doc, ri.AT_FIELD: 5})

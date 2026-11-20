@@ -19,6 +19,7 @@ export const INTERNAL_RECORD_FIELDS: ReadonlySet<string> = new Set([
   'rateLimitedSinceMs',
   'refreshIntentId',
   'refreshIntentAtMs',
+  'refreshDoneAtMs',
   'lastRepublishedAt',
   'republishCount',
   'firstQueuedAt',

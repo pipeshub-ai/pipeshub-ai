@@ -22,7 +22,7 @@ from app.services.graph_db.arango.record_schema_guard import (
 PINNED = {
     2: "53cf2c2c1dd02fc6616e59bc8d67814a25887b4debf7f26399178514fa03b829",
     3: "f3f0ab23062f1b5875c4788e74cfd6da94c6a617e8195eb4a69918890ff962b6",  # + pendingVirtualRecordId
-    4: "c2deef8ef4e884862c14c90884f000e966389e2aa6888b0ffa56943e17d56fa9",  # + refreshIntentId, refreshIntentAtMs
+    4: "5f649803484ce996bfa8503681ccd279549e68ecd79d0276c0a5b08a30a8ab04",  # + refreshIntentId, refreshIntentAtMs, refreshDoneAtMs
 }
 
 

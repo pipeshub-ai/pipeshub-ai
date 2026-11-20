@@ -184,7 +184,7 @@ async def test_two_events_of_one_refresh_run_once(w: World) -> None:
     # the walk's own stamped event of the same request (not built from the record, so it is not demoted): a no-op now
     again = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: handover[ri.PAYLOAD_ID_KEY]}
     run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, again, dict(w.row), KEY, parse_now=False)
-    assert run is not None and await w.handler._refresh_already_ran(run, dict(w.row), again)
+    assert run is not None and await w.handler._refresh_state(run, dict(w.row), again) == "done"
 
 
 # ---- the life of a request that waited, and the expiry
@@ -596,33 +596,138 @@ async def test_a_retry_of_an_older_refresh_that_finds_a_newer_request_runs_as_th
     w.active = {"run": run, "payload": older, "start": 1, "derived": False}
     await w.finish(allow_crash=False)
     assert ri.ID_FIELD not in w.row
-    assert {(ORG, KEY, "A"), (ORG, KEY, "B")} <= w.cache.done                            # A is done with it: no later event of A runs
+    assert (ORG, KEY, "B") in w.cache.done
 
 
-async def test_the_marker_is_written_before_the_request_is_cleared_and_a_marker_that_failed_keeps_it(w: World) -> None:
+async def test_the_completion_is_written_on_the_record_with_the_clear_and_needs_no_marker_store(w: World) -> None:
+    """A worker whose marker store is its own (Redis unreachable) still leaves the completion where every replica reads it."""
     w.row.update(ri.intent_fields("A", w.now_ms))
-    order: list[str] = []
-    real_mark = w.cache.mark_refresh_done
-
-    async def mark(org: str, record: str, intent_id: str) -> bool:
-        order.append("marker" + ("+held" if w.row.get(ri.ID_FIELD) == "A" else "+gone"))
-        return await real_mark(org, record, intent_id)
-
-    w.cache.mark_refresh_done = mark                                                      # type: ignore[method-assign]
+    at = w.row[ri.AT_FIELD]
     run = await w.handler._settle_refresh_intent(
         EventTypes.UPDATE_RECORD.value, {"recordId": KEY, "orgId": ORG}, dict(w.row), KEY, parse_now=False,
     )
-    await w.handler._end_refresh_run(KEY, run, {"recordId": KEY, "orgId": ORG})
-    assert order == ["marker+held"] and ri.ID_FIELD not in w.row                         # marker first, then the clear
+    assert run.requested_at == at
 
-    w.row.update(ri.intent_fields("C", w.now_ms))
-    run = await w.handler._settle_refresh_intent(
-        EventTypes.UPDATE_RECORD.value, {"recordId": KEY, "orgId": ORG}, dict(w.row), KEY, parse_now=False,
-    )
-
-    async def refused(*_a: object) -> bool:
+    async def refused(*_a: object, **_k: object) -> bool:
         return False
 
     w.cache.mark_refresh_done = refused                                                   # type: ignore[method-assign]
     await w.handler._end_refresh_run(KEY, run, {"recordId": KEY, "orgId": ORG})
-    assert w.row[ri.ID_FIELD] == "C", "a request whose marker could not be written stays for the sweep"
+    assert ri.ID_FIELD not in w.row and w.row[ri.DONE_FIELD] == at
+    # a second worker, with an empty marker store, refuses the late event of that request (and of an older one) on the record alone
+    for requested_at in (at, at - 5):
+        late = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "A",
+                ri.REQUESTED_AT_KEY: requested_at}
+        again = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, late, dict(w.row), KEY, parse_now=False)
+        assert await w.handler._refresh_state(again, dict(w.row), late) == "done"
+    newer = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "N",
+             ri.REQUESTED_AT_KEY: at + 5}
+    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, newer, dict(w.row), KEY, parse_now=False)
+    assert await w.handler._refresh_state(run, dict(w.row), newer) == "open"
+
+
+async def test_a_leftover_request_that_a_completed_refresh_covers_is_cleared_not_sent(w: World) -> None:
+    w.row.update(ri.intent_fields("A", w.now_ms - 2 * HOUR_MS))
+    w.row[ri.DONE_FIELD] = w.row[ri.AT_FIELD]
+    await w.intent_sweep()
+    assert not w.msgs and ri.ID_FIELD not in w.row and w.row[ri.DONE_FIELD]
+
+
+# ---- review round 3: the sweep under the lease, the connector confirmed at the clear, the order of requests
+
+async def _stale_snapshot(w: World, snapshot: dict) -> None:
+    """The sweep reads ``snapshot`` and the row has changed by the time it takes the lease."""
+    async def listing(org_id: str, *, after_key: str | None = None, limit: int = 100) -> list[dict]:
+        return [dict(snapshot, _key=KEY)] if after_key is None else []
+
+    w.graph.get_records_with_refresh_intent = listing                                      # type: ignore[method-assign]
+    await w.intent_sweep()
+
+
+async def test_an_expired_request_is_rechecked_under_the_lease_before_it_is_cleared(w: World) -> None:
+    expired = ri.intent_fields("A", w.now_ms - 25 * HOUR_MS)
+    w.row.update(ri.intent_fields("B", w.now_ms))                                          # a newer request since the scan
+    await _stale_snapshot(w, {**w.row, **expired})
+    assert w.row[ri.ID_FIELD] == "B" and w.row.get("reason") is None
+    w.row.update(ri.intent_fields("A", w.now_ms))                                          # the same request, handed over since the scan
+    await _stale_snapshot(w, {**w.row, **expired})
+    assert w.row[ri.ID_FIELD] == "A" and w.row[ri.AT_FIELD] == w.now_ms
+    w.row.update(expired, extractionStatus=IN_PROGRESS)                                    # still expired, but enrichment is running
+    await _stale_snapshot(w, dict(w.row))
+    assert w.row[ri.ID_FIELD] == "A"
+    w.row.update(extractionStatus=COMPLETED)
+    w.active = {"run": None, "payload": {}, "start": 1, "derived": False}                  # a run holds the lease
+    await w.intent_sweep()
+    assert w.row[ri.ID_FIELD] == "A"
+    w.active = None
+    counted = _Counted()
+    with patch.object(ri, "REFRESH_INTENT_EVENTS", counted):
+        await w.intent_sweep()                                                             # idle and still expired: cleared, counted
+    assert ri.ID_FIELD not in w.row and counted.events == ["expired"]
+
+
+async def test_a_handed_over_request_is_not_sent_again_at_once_and_a_moved_claim_stops_a_stale_sender(w: World) -> None:
+    due = ri.intent_fields("B", w.now_ms - 3 * HOUR_MS)
+    w.row.update(due)
+    stale = dict(w.row)
+    w.row.update(ri.intent_fields("B", w.now_ms))                                          # handed over right after the scan: not due now
+    await _stale_snapshot(w, stale)
+    assert not w.msgs
+    w.row.update(due, lastRepublishedAt=None)
+    real = w.graph.update_node_fields_if_match
+
+    async def another_hand_over_first(key: str, collection: str, updates: dict, expected: dict, *a: object, **kw: object) -> bool:
+        w.row[ri.AT_FIELD] = w.now_ms - 1                                                   # the time moves between the read and the claim
+        return await real(key, collection, updates, expected, *a, **kw)
+
+    w.graph.update_node_fields_if_match = another_hand_over_first                          # type: ignore[method-assign]
+    await w.intent_sweep()
+    assert not w.msgs
+
+
+async def test_a_connector_that_came_back_since_it_was_cached_keeps_the_request(w: World) -> None:
+    w.graph.docs["c1"] = {"_key": "c1", "isActive": False}
+    w.row.update(ri.intent_fields("A", w.now_ms - 2 * HOUR_MS))
+    real = w.graph.get_document
+    reads = 0
+
+    async def connector_comes_back_at_the_clear(key: str, collection: str, **kw: object) -> dict | None:
+        nonlocal reads
+        if collection == "apps":
+            reads += 1
+            if reads >= 2:
+                w.graph.docs["c1"] = {"_key": "c1", "isActive": True}
+        return await real(key, collection, **kw)
+
+    w.graph.get_document = connector_comes_back_at_the_clear                               # type: ignore[method-assign]
+    await w.intent_sweep()
+    assert w.row[ri.ID_FIELD] == "A", "the connector state is confirmed where the request is cleared"
+    assert not w.msgs                                                                       # and nothing is sent in the same pass
+
+
+async def test_a_late_event_of_an_older_request_does_not_refresh_after_a_newer_one_ran(w: World) -> None:
+    w.cache.last[(ORG, KEY)] = 200                                                         # request B (time 200) has run and cleared
+    late = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "A",
+            ri.REQUESTED_AT_KEY: 100}
+    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, late, dict(w.row), KEY, parse_now=False)
+    assert run is not None and run.requested_at == 100
+    assert await w.handler._refresh_state(run, dict(w.row), late) == "done"
+    newer = {**late, ri.PAYLOAD_ID_KEY: "C", ri.REQUESTED_AT_KEY: 300}
+    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, newer, dict(w.row), KEY, parse_now=False)
+    assert await w.handler._refresh_state(run, dict(w.row), newer) == "open"
+
+
+async def test_a_long_runs_request_survives_a_sweep_that_read_the_row_before_its_hand_over(w: World) -> None:
+    """Stored during a run older than the life, the record already COMPLETED: the sweep that observed the pre-hand-over row does not
+    drop it, and the run's end hands it over once."""
+    await w.plain_update()
+    await w.consume()
+    await w.user_force()                                                                   # stored mid-run
+    pre = dict(w.row)
+    w.now_ms += 25 * HOUR_MS                                                               # the run outlasts the life
+    w.row["indexingStatus"] = COMPLETED                                                    # indexing wrote COMPLETED before the run's end
+    await _stale_snapshot(w, {**pre, "indexingStatus": COMPLETED})
+    assert w.row.get(ri.ID_FIELD), "the sweep must not drop it before the hand-over"
+    await w.finish(allow_crash=False)
+    handed = [m for m in w.msgs if m["payload"].get(ri.PAYLOAD_ID_KEY)]
+    assert len(handed) == 1 and w.row[ri.AT_FIELD] == w.now_ms

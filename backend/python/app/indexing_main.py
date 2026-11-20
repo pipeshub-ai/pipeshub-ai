@@ -1684,86 +1684,157 @@ async def _republish_refresh_intents(
                     logger.warning("Could not read the indexing queue's backlog for the refresh sweep: %s: %s", type(e).__name__, e)
         return backlog
 
+    @contextlib.asynccontextmanager
+    async def _record_lease(key: str) -> AsyncGenerator[bool, None]:
+        """The per-record lease every change this sweep makes to a request is made under; False when someone holds it."""
+        owner = f"refresh-intent:{uuid4().hex}"
+        pool = f"record:{key}"
+        held = False
+        try:
+            if concurrency_manager is None:
+                yield True
+                return
+            held = await concurrency_manager.try_acquire(pool, owner, 1, messaging_env.concurrency_lease_seconds)
+            yield held
+        finally:
+            if held and concurrency_manager is not None:
+                try:
+                    await concurrency_manager.release(pool, owner)
+                except Exception as release_exc:
+                    logger.warning("Failed to release the refresh-sweep lease for %s: %s", key, release_exc)
+
+    def _due(row: dict[str, Any], now_ms: int) -> bool:
+        """Whether the request on ``row`` has waited long enough for its next send (the sweep's wait, from the request's own writes)."""
+        touched = max(_clock_or(row.get(refresh_intent.AT_FIELD), 0), _clock_or(row.get("lastRepublishedAt"), 0))
+        return now_ms - touched >= _intent_resend_wait_ms(row, after_seconds)
+
+    async def _fresh(key: str) -> dict[str, Any] | None:
+        return await graph_provider.get_document(key, CollectionNames.RECORDS.value, raise_on_error=True)
+
     async def _expire(record: dict[str, Any], key: str) -> None:
         held = refresh_intent.stored_intent(record)
-        updates: dict[str, Any] = {}
-        if record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
-            updates["reason"] = refresh_intent.REFRESH_EXPIRED_REASON
-        if await refresh_intent.clear_intent(graph_provider, key, held[0] if held else None, updates):
-            refresh_intent.REFRESH_INTENT_EVENTS.inc("expired")
-            logger.warning(
-                "The Force reindex requested for record %s was not served within its life and is dropped (record status %s)",
-                key, record.get("indexingStatus"),
-            )
+        if held is None:
+            return
+        try:
+            async with _record_lease(key) as leased:
+                if not leased:
+                    return
+                # Decided on the row as it is now, under the lease: a hand-over or a new request since the scan has moved the time
+                # or the id, and a run that holds the record (or still enriches it) does not age out under it.
+                fresh = await _fresh(key)
+                now_ms = get_epoch_timestamp_in_ms()
+                if (
+                    fresh is None or refresh_intent.stored_intent(fresh) is None or refresh_intent.stored_intent(fresh)[0] != held[0]  # type: ignore[index]
+                    or not refresh_intent.expired_intent(fresh, now_ms)
+                    or ProgressStatus.IN_PROGRESS.value in (fresh.get("indexingStatus"), fresh.get("extractionStatus"))
+                ):
+                    return
+                updates: dict[str, Any] = {}
+                if fresh.get("indexingStatus") != ProgressStatus.COMPLETED.value:
+                    updates["reason"] = refresh_intent.REFRESH_EXPIRED_REASON
+                if await refresh_intent.clear_intent(graph_provider, key, held[0], updates):
+                    refresh_intent.REFRESH_INTENT_EVENTS.inc("expired")
+                    logger.warning(
+                        "The Force reindex requested for record %s was not served within its life and is dropped (record status %s)",
+                        key, fresh.get("indexingStatus"),
+                    )
+        except Exception as exc:
+            logger.error("Failed to expire the Force reindex of record %s: %s", key, exc)
 
     connector_state: dict[str, bool | None] = {}
 
+    async def _read_connector(connector_id: str) -> bool | None:
+        try:
+            app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+        except Exception as exc:
+            logger.warning("Could not read connector %s for the refresh sweep; leaving its requests for the next pass: %s", connector_id, exc)
+            return None
+        return bool(app and app.get("isActive", False) and app.get("status") != APP_STATUS_DELETING)
+
     async def _connector_can_run(record: dict[str, Any]) -> bool | None:
-        """True when the record's connector is on, False when it is confirmed off, removed or being deleted, None when it
-        could not be read (the record is left for the next pass). A record with no connector is always fine."""
+        """True when the record's connector is on, False when it is off, removed or being deleted, None when it could not be
+        read (the record is left for the next pass). A cached answer for this pass: advisory only, a clear reads it again."""
         connector_id = record.get("connectorId")
         if not connector_id or record.get("origin") != OriginTypes.CONNECTOR.value:
             return True
         cid = str(connector_id)
         if cid not in connector_state:
-            try:
-                app = await graph_provider.get_document(cid, CollectionNames.APPS.value, raise_on_error=True)
-            except Exception as exc:
-                logger.warning("Could not read connector %s for the refresh sweep; leaving its requests for the next pass: %s", cid, exc)
-                connector_state[cid] = None
-            else:
-                connector_state[cid] = bool(app and app.get("isActive", False) and app.get("status") != APP_STATUS_DELETING)
+            connector_state[cid] = await _read_connector(cid)
         return connector_state[cid]
 
-    async def _send(record: dict[str, Any], key: str, intent_id: str) -> bool:
-        owner = f"refresh-intent:{uuid4().hex}"
-        pool = f"record:{key}"
-        lock_held = False
+    async def _end_for_connector(record: dict[str, Any], key: str, intent_id: str) -> None:
+        """Ends a request whose connector looked off: confirmed under the lease, on the row and the connector as they are now."""
         try:
-            if concurrency_manager is not None:
-                lock_held = await concurrency_manager.try_acquire(pool, owner, 1, messaging_env.concurrency_lease_seconds)
-                if not lock_held:
+            async with _record_lease(key) as leased:
+                if not leased:
+                    return
+                fresh = await _fresh(key)
+                if fresh is None or refresh_intent.live_intent(fresh, get_epoch_timestamp_in_ms()) != intent_id:
+                    return
+                if await _read_connector(str(record.get("connectorId"))) is not False:
+                    connector_state.pop(str(record.get("connectorId")), None)    # it came back, or could not be read: keep the request
+                    return
+                if await refresh_intent.clear_intent(graph_provider, key, intent_id):
+                    refresh_intent.REFRESH_INTENT_EVENTS.inc("connector_off")
+                    logger.info("The Force reindex of record %s ended: its connector is off or removed", key)
+        except Exception as exc:
+            logger.error("Failed to end the Force reindex of record %s for its connector: %s", key, exc)
+
+    async def _end_served(record: dict[str, Any], key: str, intent_id: str) -> None:
+        try:
+            async with _record_lease(key) as leased:
+                if not leased:
+                    return
+                fresh = await _fresh(key)
+                if fresh is not None and refresh_intent.live_intent(fresh, get_epoch_timestamp_in_ms()) == intent_id and refresh_intent.served(fresh):
+                    await refresh_intent.clear_intent(graph_provider, key, intent_id)
+        except Exception as exc:
+            logger.error("Failed to end the served Force reindex of record %s: %s", key, exc)
+
+    async def _send(record: dict[str, Any], key: str, intent_id: str) -> bool:
+        try:
+            async with _record_lease(key) as leased:
+                if not leased:
                     return False
-            # The snapshot may be old: read the record again under the lease, and send only the request it still holds.
-            fresh = await graph_provider.get_document(key, CollectionNames.RECORDS.value, raise_on_error=True)
-            now_ms = get_epoch_timestamp_in_ms()
-            if (
-                fresh is None or not is_live_record(fresh) or is_deferred_until_later(fresh, now_ms)
-                or refresh_intent.live_intent(fresh, now_ms) != intent_id
-            ):
-                return False
-            republishes = int(fresh.get("republishCount") or 0) if _is_clock(fresh.get("lastRepublishedAt")) else 0
-            claim_expected = {refresh_intent.ID_FIELD: intent_id, "lastRepublishedAt": fresh.get("lastRepublishedAt")}
-            claim = {"lastRepublishedAt": now_ms, "republishCount": republishes + 1}
-            # Claimed before the send and only when nobody claimed since the read (a compare-and-set on the value read).
-            if not await graph_provider.update_node_fields_if_match(key, CollectionNames.RECORDS.value, claim, claim_expected):
-                return False
-            event_type, payload = record_event(
-                fresh, record_key=key, connector_id=str(fresh.get("connectorId") or ""), restored_upload=False,
-            )
-            try:
-                await run_coordination(
-                    producer.send_event(topic=Topic.RECORD_EVENTS.value, event_type=event_type, payload=payload, key=str(key))
+                # The snapshot may be old: read the record again under the lease, and send only the request it still holds, and
+                # only if it is due on the row as it is now (a hand-over or another sender since the scan has moved its clocks).
+                fresh = await _fresh(key)
+                now_ms = get_epoch_timestamp_in_ms()
+                if (
+                    fresh is None or not is_live_record(fresh) or is_deferred_until_later(fresh, now_ms)
+                    or refresh_intent.live_intent(fresh, now_ms) != intent_id or not _due(fresh, now_ms)
+                ):
+                    return False
+                republishes = int(fresh.get("republishCount") or 0) if _is_clock(fresh.get("lastRepublishedAt")) else 0
+                # Claimed before the send, and only if nobody changed the request or claimed since the read (a compare-and-set on the
+                # id, the request's time and the last send).
+                claim_expected = {
+                    refresh_intent.ID_FIELD: intent_id, refresh_intent.AT_FIELD: fresh.get(refresh_intent.AT_FIELD),
+                    "lastRepublishedAt": fresh.get("lastRepublishedAt"),
+                }
+                claim = {"lastRepublishedAt": now_ms, "republishCount": republishes + 1}
+                if not await graph_provider.update_node_fields_if_match(key, CollectionNames.RECORDS.value, claim, claim_expected):
+                    return False
+                event_type, payload = record_event(
+                    fresh, record_key=key, connector_id=str(fresh.get("connectorId") or ""), restored_upload=False,
                 )
-            except Exception:
-                with contextlib.suppress(Exception):
-                    await graph_provider.update_node_fields_if_match(
-                        key, CollectionNames.RECORDS.value,
-                        {"lastRepublishedAt": fresh.get("lastRepublishedAt"), "republishCount": fresh.get("republishCount")},
-                        {refresh_intent.ID_FIELD: intent_id, "lastRepublishedAt": now_ms},
+                try:
+                    await run_coordination(
+                        producer.send_event(topic=Topic.RECORD_EVENTS.value, event_type=event_type, payload=payload, key=str(key))
                     )
-                raise
-            refresh_intent.REFRESH_INTENT_EVENTS.inc("resent")
-            return True
+                except Exception:
+                    with contextlib.suppress(Exception):
+                        await graph_provider.update_node_fields_if_match(
+                            key, CollectionNames.RECORDS.value,
+                            {"lastRepublishedAt": fresh.get("lastRepublishedAt"), "republishCount": fresh.get("republishCount")},
+                            {refresh_intent.ID_FIELD: intent_id, "lastRepublishedAt": now_ms},
+                        )
+                    raise
+                refresh_intent.REFRESH_INTENT_EVENTS.inc("resent")
+                return True
         except Exception as exc:
             logger.error("Failed to re-send the Force reindex of record %s: %s", key, exc)
             return False
-        finally:
-            if lock_held and concurrency_manager is not None:
-                try:
-                    await concurrency_manager.release(pool, owner)
-                except Exception as release_exc:
-                    logger.warning("Failed to release the refresh-sweep lease for %s: %s", key, release_exc)
 
     while True:
         page = await graph_provider.get_records_with_refresh_intent(org_id, after_key=after_key, limit=page_size)
@@ -1781,26 +1852,27 @@ async def _republish_refresh_intents(
             intent_id = refresh_intent.live_intent(record, pass_started_ms)
             if intent_id is None or is_deferred_until_later(record, pass_started_ms):
                 continue
-            touched = max(
-                _clock_or(record.get(refresh_intent.AT_FIELD), 0),
-                _clock_or(record.get("lastRepublishedAt"), 0),
-            )
-            if pass_started_ms - touched < _intent_resend_wait_ms(record, after_seconds):
+            if refresh_intent.served(record):
+                # A refresh of a request at least this new has run on the record (a leftover of a clear that did not land): it is not
+                # sent again; it is cleared under the lease.
+                await _end_served(record, str(key), intent_id)
+                continue
+            if not _due(record, pass_started_ms):
                 continue
             can_run = await _connector_can_run(record)
             if can_run is None:
                 continue
             if can_run is False:
                 # A Force reindex of a record whose connector is off, removed or being deleted cannot run: the request ends
-                # here, as it does when stale recovery parks the record, and the record's own state says why it did not.
-                if await refresh_intent.clear_intent(graph_provider, str(key), intent_id):
-                    refresh_intent.REFRESH_INTENT_EVENTS.inc("connector_off")
-                    logger.info("The Force reindex of record %s ended: its connector is off or removed", key)
+                # here, as it does when stale recovery parks the record, and the record's own state says why it did not. The
+                # state is confirmed again where the request is cleared.
+                await _end_for_connector(record, str(key), intent_id)
                 continue
             lanes = await _lanes()
             if lanes is not None:
                 _, preview = record_event(record, record_key=str(key), connector_id=str(record.get("connectorId") or ""))
                 oldest = lanes.oldest_waiting_for(preview)
+                touched = max(_clock_or(record.get(refresh_intent.AT_FIELD), 0), _clock_or(record.get("lastRepublishedAt"), 0))
                 if oldest is not None and oldest <= touched + STRANDED_QUEUE_CLOCK_ALLOWANCE_MS:
                     continue
             if await _send(record, str(key), intent_id):

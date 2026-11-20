@@ -229,7 +229,9 @@ _FULL_RECORD_EVENTS = frozenset({
     EventTypes.UPDATE_RECORD.value,
     EventTypes.REINDEX_RECORD.value,
 })
-_INTENT_PAYLOAD_KEYS = ("forceReindex", "refreshPaidOutputs", refresh_intent.PAYLOAD_ID_KEY, refresh_intent.FROM_INTENT_KEY)
+_INTENT_PAYLOAD_KEYS = (
+    "forceReindex", "refreshPaidOutputs", refresh_intent.PAYLOAD_ID_KEY, refresh_intent.FROM_INTENT_KEY, refresh_intent.REQUESTED_AT_KEY,
+)
 
 
 class RefreshRun:
@@ -242,12 +244,14 @@ class RefreshRun:
     request turned into a refresh.
     """
 
-    __slots__ = ("adopted", "intent_id", "refresh", "seen", "started_ms", "superseded")
+    __slots__ = ("adopted", "intent_id", "refresh", "requested_at", "seen", "started_ms", "superseded")
 
     def __init__(
         self, *, seen: str | None, intent_id: str | None, refresh: bool, started_ms: int = 0,
-        superseded: tuple[str, ...] = (), adopted: bool = False,
+        superseded: tuple[str, ...] = (), adopted: bool = False, requested_at: int | None = None,
     ) -> None:
+        #: When the request this run serves was made (ms), from its event or the record: orders it against other requests.
+        self.requested_at = requested_at
         self.seen = seen
         self.intent_id = intent_id
         self.refresh = refresh
@@ -255,6 +259,11 @@ class RefreshRun:
         self.started_ms = started_ms
         self.superseded = superseded
         self.adopted = adopted
+
+
+def _stored_at(record: dict) -> int | None:
+    held = refresh_intent.stored_intent(record)
+    return held[1] if held else None
 
 
 def is_parse_now(event_type: str | None, payload: dict) -> bool:
@@ -2049,6 +2058,7 @@ class RecordEventHandler(BaseEventService):
                 stored = landed
                 candidate = landed or candidate
             payload[refresh_intent.PAYLOAD_ID_KEY] = stamped = candidate
+            payload.setdefault(refresh_intent.REQUESTED_AT_KEY, now_ms)
         if payload.get(refresh_intent.FROM_INTENT_KEY) is True and (stored is None or stamped != stored):
             # Built from a request that has been served (or replaced) since: it was satisfied meanwhile.
             for key in _INTENT_PAYLOAD_KEYS:
@@ -2063,15 +2073,17 @@ class RecordEventHandler(BaseEventService):
             # A retry of an older refresh that finds a newer request on the record: it runs as the newer one (its token keys the
             # purge and the paid results, so nothing paid for before that request is reused), and the older id is done with it.
             superseded = (stamped,)
-            payload.update(refresh_intent.intent_flags(stored, from_intent=True))
+            payload.update(refresh_intent.intent_flags(stored, from_intent=True, requested_at_ms=_stored_at(record)))
             stamped = stored
         if stored is not None and not paid_cache_run.refresh_requested(payload):
-            payload.update(refresh_intent.intent_flags(stored, from_intent=True))
+            payload.update(refresh_intent.intent_flags(stored, from_intent=True, requested_at_ms=_stored_at(record)))
             stamped = stored
         refresh = paid_cache_run.refresh_requested(payload)
+        at = payload.get(refresh_intent.REQUESTED_AT_KEY)
         return RefreshRun(
             seen=stored if refresh else None, intent_id=stamped if refresh else None, refresh=refresh, started_ms=now_ms,
             superseded=superseded, adopted=refresh and not sent_as_refresh,
+            requested_at=at if isinstance(at, int) and not isinstance(at, bool) else None,
         )
 
     async def _store_intent(self, record_id: str, record: dict, intent_id: str, now_ms: int) -> str | None:
@@ -2105,16 +2117,20 @@ class RecordEventHandler(BaseEventService):
         if run is not None and run.seen:
             await self._clear_intent(record_id, run.seen)
 
-    async def _refresh_already_ran(self, run: RefreshRun, record: dict, payload: dict) -> bool:
-        """Whether a refresh run under this event's id has already ended (a second event of one request is a no-op)."""
+    async def _refresh_state(self, run: RefreshRun, record: dict, payload: dict) -> str:
+        """``"done"`` when this request's refresh (or a newer request's) has run, ``"open"`` when it has not, ``"unavailable"`` when
+        the completion markers could not be read."""
         if not run.refresh or not run.intent_id:
-            return False
+            return "open"
         bound = peek_org_context()
         org_id = bound.org_id if bound is not None else None
         if not org_id:
-            return False
+            return "open"
+        done = refresh_intent.done_at(record)
+        if done is not None and run.requested_at is not None and done >= run.requested_at:
+            return "done"                      # the record itself says a refresh of this request, or a newer one, ran
         cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
-        return bool(await cache.refresh_done(str(org_id), str(payload.get("recordId")), run.intent_id))
+        return await cache.refresh_state(str(org_id), str(payload.get("recordId")), run.intent_id, run.requested_at)
 
     async def _clear_intent(self, record_id: str, intent_id: str | None) -> bool:
         """Clear the request ``intent_id`` and only that one: a newer request on the record stays."""
@@ -2126,17 +2142,19 @@ class RecordEventHandler(BaseEventService):
         try:
             bound = peek_org_context()
             org_id = bound.org_id if bound is not None else None
-            # The marker first, then the clear: a worker that stops between them leaves the request (the dedupe finds the marker
-            # and clears it), never a cleared request with no marker, which a queued duplicate would run again. A marker that
-            # could not be written leaves the request on the record for the sweep.
-            marked = True
-            if run.refresh and org_id:
-                cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
-                for done_id in dict.fromkeys(i for i in (run.intent_id, *run.superseded) if i):
-                    marked = await cache.mark_refresh_done(str(org_id), record_id, done_id) and marked
-            if run.seen and marked and await self._clear_intent(record_id, run.seen):
-                refresh_intent.REFRESH_INTENT_EVENTS.inc("cleared")
             graph = self.event_processor.graph_provider
+            # The completion goes on the record, in the statement that clears the request (one compare-and-set on its id): every
+            # replica reads the record, so a worker whose marker store is its own (Redis unreachable) still leaves the fact where the
+            # others see it. The cache markers are the same fact for events of requests the record never held.
+            before = await graph.get_document(record_id, CollectionNames.RECORDS.value)
+            if run.seen:
+                done = max(filter(None, (refresh_intent.done_at(before), run.requested_at)), default=None)
+                extra = {refresh_intent.DONE_FIELD: done} if done is not None else {}
+                if await refresh_intent.clear_intent(graph, record_id, run.seen, extra):
+                    refresh_intent.REFRESH_INTENT_EVENTS.inc("cleared")
+            if run.refresh and run.intent_id and org_id:
+                cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
+                await cache.mark_refresh_done(str(org_id), record_id, run.intent_id, run.requested_at)
             row = await graph.get_document(record_id, CollectionNames.RECORDS.value)
             now_ms = get_epoch_timestamp_in_ms()
             waiting = refresh_intent.waiting_intent(row, now_ms, run.started_ms) if row is not None and is_live_record(row) else None
@@ -2642,7 +2660,14 @@ class RecordEventHandler(BaseEventService):
             # Before any hand-back below: a request the event carries is stored first, so a hand-back that is lost
             # still leaves it on the record; and a request the record holds makes this event a refresh.
             refresh_run = await self._settle_refresh_intent(event_type, payload, record, record_id, parse_now=parse_now)
-            if refresh_run is not None and await self._refresh_already_ran(refresh_run, record, payload):
+            state = await self._refresh_state(refresh_run, record, payload) if refresh_run is not None else "open"
+            if state == "unavailable" and paid_cache_access.writes_enabled():
+                # Not a miss: the markers could not be read, and a refresh started on that could pay for the same calls twice. A
+                # counted failure, so the broker retries it a bounded number of times (as a refresh whose purge lease cannot be taken).
+                raise IndexingError(
+                    f"The refresh completion marker of record {record_id} cannot be read", details={"record_id": record_id},
+                )
+            if refresh_run is not None and state == "done":
                 refresh_intent.REFRESH_INTENT_EVENTS.inc("deduped")
                 # The refresh ran: a stored copy of its id (a clear that did not land) goes now, so the sweep does not send it
                 # again and it does not age out as a request that was never served.

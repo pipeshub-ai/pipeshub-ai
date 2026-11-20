@@ -105,11 +105,13 @@ def _intent_sweep_gated_by_status() -> Iterator[None]:
 
 @contextmanager
 def _clear_whatever_is_stored() -> Iterator[None]:
-    async def clear(self, record_id, intent_id):  # noqa: ANN202
-        stored = (await self.event_processor.graph_provider.get_document(record_id, "records")) or {}
-        return await ri.clear_intent(self.event_processor.graph_provider, record_id, stored.get(ri.ID_FIELD) if intent_id else None)
+    real = ri.clear_intent
 
-    with patch.object(RecordEventHandler, "_clear_intent", clear):
+    async def clear(graph, record_id, intent_id, extra=None):  # noqa: ANN202
+        stored = (await graph.get_document(record_id, "records")) or {}
+        return await real(graph, record_id, stored.get(ri.ID_FIELD) if intent_id else None, extra)
+
+    with patch.object(ri, "clear_intent", clear):
         yield
 
 
@@ -118,12 +120,12 @@ def _no_origin_marker() -> Iterator[None]:
     original = ri.intent_flags
 
     async def never_done(self, *_a, **_k):  # noqa: ANN202
-        return False                      # the done-marker also answers a satisfied id; without Redis only the marker rule is left
+        return "open"                     # the done-marker also answers a satisfied id; without Redis only the marker rule is left
 
-    def flags(intent_id: str, *, from_intent: bool) -> dict:
-        return original(intent_id, from_intent=False)
+    def flags(intent_id: str, *, from_intent: bool, requested_at_ms: int | None = None) -> dict:
+        return original(intent_id, from_intent=False, requested_at_ms=requested_at_ms)
 
-    with patch.object(ri, "intent_flags", flags), patch.object(RecordEventHandler, "_refresh_already_ran", never_done):
+    with patch.object(ri, "intent_flags", flags), patch.object(RecordEventHandler, "_refresh_state", never_done):
         yield
 
 

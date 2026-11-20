@@ -7,6 +7,7 @@ handler that walks the records sets this for the length of the walk, and the rei
 from __future__ import annotations
 
 import contextlib
+import time
 import uuid
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 
 _user_forced: ContextVar[bool] = ContextVar("user_forced_reindex", default=False)
 _intent_id: ContextVar[str | None] = ContextVar("user_forced_reindex_intent_id", default=None)
+_intent_at: ContextVar[int | None] = ContextVar("user_forced_reindex_requested_at_ms", default=None)
 
 
 def user_forced_reindex() -> bool:
@@ -31,12 +33,19 @@ def user_forced_intent_id() -> str | None:
     return _intent_id.get()
 
 
+def user_forced_requested_at_ms() -> int | None:
+    """When the Force reindex being walked was requested (ms), or None outside one."""
+    return _intent_at.get()
+
+
 @contextlib.contextmanager
 def forced_by_user(*, forced: bool) -> Iterator[None]:
     token = _user_forced.set(bool(forced))
     id_token = _intent_id.set(uuid.uuid4().hex if forced else None)
+    at_token = _intent_at.set(int(time.time() * 1000) if forced else None)
     try:
         yield
     finally:
+        _intent_at.reset(at_token)
         _intent_id.reset(id_token)
         _user_forced.reset(token)

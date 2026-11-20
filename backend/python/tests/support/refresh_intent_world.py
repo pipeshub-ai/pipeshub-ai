@@ -125,12 +125,22 @@ class _Leases:
 class _Cache:
     def __init__(self) -> None:
         self.done: set[tuple[str, str, str]] = set()
+        self.last: dict[tuple[str, str], int] = {}
+        self.unavailable = False
 
-    async def refresh_done(self, org: str, record: str, intent_id: str) -> bool:
-        return (org, record, intent_id) in self.done
+    async def refresh_state(self, org: str, record: str, intent_id: str, requested_at: int | None = None) -> str:
+        if self.unavailable:
+            return "unavailable"
+        if (org, record, intent_id) in self.done:
+            return "done"
+        if requested_at is not None and self.last.get((org, record), -1) >= requested_at:
+            return "done"
+        return "open"
 
-    async def mark_refresh_done(self, org: str, record: str, intent_id: str) -> bool:
+    async def mark_refresh_done(self, org: str, record: str, intent_id: str, requested_at: int | None = None) -> bool:
         self.done.add((org, record, intent_id))
+        if requested_at is not None:
+            self.last[(org, record)] = max(self.last.get((org, record), -1), requested_at)
         return True
 
 
@@ -202,7 +212,8 @@ class World:
             return
         payload = {
             "recordId": KEY, "orgId": ORG, "version": 1, "virtualRecordId": "v1", "forceReindex": True,
-            "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: intent_id, "_event_id": f"e{k}", "_delivery_id": f"d{k}",
+            "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: intent_id, ri.REQUESTED_AT_KEY: self.now_ms,
+            "_event_id": f"e{k}", "_delivery_id": f"d{k}",
         }
         self.msgs.append({"event_type": EventTypes.REINDEX_RECORD.value, "payload": payload})
         await self.graph.compare_and_set_indexing_status([KEY], ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
@@ -241,7 +252,7 @@ class World:
         # request turned into a refresh. Kept by the world, not read off the payload, so removing a payload marker is seen.
         was_refresh = paid_cache_run.refresh_requested(payload)
         run = await self.handler._settle_refresh_intent(event_type, payload, dict(self.row), KEY, parse_now=False)
-        if run is not None and await self.handler._refresh_already_ran(run, dict(self.row), payload):
+        if run is not None and await self.handler._refresh_state(run, dict(self.row), payload) == "done":
             self.notes["deduped"] += 1
             return
         derived = bool(msg.get("derived")) or bool(run is not None and run.refresh and not was_refresh)

@@ -405,6 +405,9 @@ record_schema = {
             # (ms). Read by every record event and the intent sweep (app/modules/indexing/refresh_intent.py).
             "refreshIntentId": {"type": ["string", "null"]},
             "refreshIntentAtMs": {"type": ["number", "null"]},
+            # The request time (ms) of the newest Force reindex whose refresh ran on the record: written in the statement that clears the
+            # request, so every replica sees that a request was served (a late event of an older one is refused).
+            "refreshDoneAtMs": {"type": ["number", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",
