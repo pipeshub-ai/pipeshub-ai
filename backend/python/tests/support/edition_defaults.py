@@ -46,3 +46,9 @@ def parser_identity_writers_extra() -> dict[tuple[str, str], str]:
     """Writers of ``hasIndexedCopy`` this build adds, ``(file under app/, function) -> why it writes no parser
     identity``, for ``tests/unit/modules/indexing/test_parser_identity_writers.py``. Here there are none."""
     return {}
+
+
+def extension_routers() -> bool:
+    """Whether the build mounts routes of its own beside the shared query and entity routers
+    (``query_extension_router``, ``entity_extension_router`` in ``app.edition_config``). Here it does not."""
+    return False
