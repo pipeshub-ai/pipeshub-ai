@@ -85,11 +85,11 @@ def test_the_payload_and_the_graph_give_the_same_identity(name: str, extension: 
 
 
 def test_a_graph_read_without_the_files_document_differs_from_the_payload_for_octet_stream() -> None:
-    """The negative control of the parity test: reading the records node alone (no files document) loses the type."""
-    record = file_record("notes.txt", "txt", "application/octet-stream")
+    """The negative control of the parity test: the records node alone (no files document) loses the type of a file named without its suffix."""
+    record = file_record("notes", "txt", "application/octet-stream")
     node, _ = graph_of(record)
     assert pi.graph_parser_key(node, None) != pi.key_of(
-        pi.parser_identity("application/octet-stream", "txt", "notes.txt", "FILE", pipeline="inproc")
+        pi.parser_identity("application/octet-stream", "txt", "notes", "FILE", pipeline="inproc")
     )
 
 
