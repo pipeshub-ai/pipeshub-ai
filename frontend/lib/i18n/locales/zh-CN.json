@@ -6381,6 +6381,7 @@
     "submit": "提交",
     "needReply": "需要回复？联系支持",
     "success": "谢谢，我们已收到你的反馈。",
+    "pending": "发送到 {{email}} 的邮件耗时比平时更长。如果您没有收到回复，请联系我们。",
     "submitError": "提交失败，请重试。",
     "descriptionTooShort": "请再补充一些细节（至少 10 个字符）。",
     "invalidType": "不支持该文件类型。",

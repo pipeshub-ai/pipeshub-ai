@@ -6381,6 +6381,7 @@
     "submit": "送出",
     "needReply": "需要回覆嗎？聯絡支援團隊",
     "success": "謝謝，我們已收到你的回饋。",
+    "pending": "寄送到 {{email}} 的郵件耗時比平常更久。如果您沒有收到回覆，請聯絡我們。",
     "submitError": "送出失敗，請再試一次。",
     "descriptionTooShort": "請再補充一些細節（至少 10 個字元）。",
     "invalidType": "不支援該檔案類型。",

@@ -6507,6 +6507,7 @@
     "submit": "Enviar",
     "needReply": "¿Necesitas una respuesta? Contacta con soporte",
     "success": "Gracias, hemos recibido tus comentarios.",
+    "pending": "El correo a {{email}} está tardando más de lo habitual. Si no recibes respuesta, contáctanos.",
     "submitError": "No se pudo enviar. Inténtalo de nuevo.",
     "descriptionTooShort": "Añade un poco más de detalle (al menos 10 caracteres).",
     "invalidType": "Ese tipo de archivo no es compatible.",
