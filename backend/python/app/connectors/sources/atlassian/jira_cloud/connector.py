@@ -118,8 +118,8 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     level_readers,
     level_reads_alike,
     levels_after_walk,
-    plan_level_reread,
     picker_group_external_id,
+    plan_level_reread,
     pre_walk_marker,
     read_security_level,
     refuses_a_scope,
@@ -5124,8 +5124,10 @@ class JiraConnector(BaseConnector):
                 )
 
         if readable and not security.defer_checkpoint:  # otherwise nothing was settled: the saved groups stay
-            await self._save_field_groups(project_key, field_levels, stored_field_groups, is_new_project or reread in (
-                "leveled", "project") or placement_reread, set(changed_levels or []) if reread == "levels" else set())
+            await self._save_field_groups(
+                project_key, field_levels, stored_field_groups,
+                every_issue=is_new_project or reread in ("leveled", "project") or placement_reread,
+                reread_levels=set(changed_levels or []) if reread == "levels" else set())
         saved_retry = await self._save_issues_to_retry(project_key, saved_retry)
         if self._parents_to_retry:
             # Their children kept where they were filed; the next sync reads them first.
@@ -5236,7 +5238,7 @@ class JiraConnector(BaseConnector):
                       if any(isinstance(h, dict) and h.get("type") == HOLDER_GROUP_FIELD for h in holders))
 
     async def _save_field_groups(
-        self, project_key: str, field_levels: list[str], stored: dict[str, Any], every_issue: bool, reread_levels: set[str],
+        self, project_key: str, field_levels: list[str], stored: dict[str, Any], *, every_issue: bool, reread_levels: set[str],
     ) -> None:
         """Save, per level of ``field_levels``, the groups the group pickers of its issues select with a digest of their
         members, so the next sync reads the level's issues again when one of those groups changes (and only then).
@@ -5248,7 +5250,7 @@ class JiraConnector(BaseConnector):
             kept = stored.get(lid) if isinstance(stored.get(lid), dict) else {}
             seen = self._field_groups_seen.get(lid, set())
             if self._issue_build_failures:
-                to_save[lid] = {**{gid: "?" for gid in seen}, **kept}
+                to_save[lid] = {**dict.fromkeys(seen, "?"), **kept}
                 continue
             groups = seen if every_issue or lid in reread_levels else {*kept, *seen}
             to_save[lid] = {gid: group_members_digest(self._group_members.get(gid, [] if self._groups_complete else None))
