@@ -2869,6 +2869,61 @@ class TestSharedPages:
         assert self.memory(checkpoints)["1"]["grants"] == first["grants"]
 
     @pytest.mark.asyncio
+    async def test_an_open_unshare_drops_the_org_and_keeps_a_share_whose_members_are_unread(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Shared into open 13 and protected 14. 13 unshares it while 14's members are unread: the
+        # org grant goes, the page stays OPEN with the readers this run resolved (its home's), and
+        # 14 stays remembered with grants, so the run that reads 14's members but cannot list 14
+        # gives its readers back.
+        alice = Permission(external_id=None, email="alice@example.com", type=PermissionType.READ, entity_type=EntityType.USER)
+        group7 = Permission(external_id="7", email=None, type=PermissionType.READ, entity_type=EntityType.GROUP)
+        listed: dict[int, object] = {12: [self.PAGE], 13: [self.PAGE], 14: [self.PAGE], 15: []}
+        checkpoints = self.wiki(connector, processor, listed)
+        connector._space_grants = {12: [alice], 13: [ORG_GRANT], 14: [group7], 15: []}
+        await connector._sync_pages(self.SPACES)
+        assert self.rewrites(processor) == [("page:1", "OPEN", False, keys([ORG_GRANT]))]
+
+        processor.on_updated_record_permissions.reset_mock()
+        listed[13] = []
+        checkpoints = self.wiki(connector, processor, listed, shares=self.memory(checkpoints), stored_open=True)
+        del connector._space_status[14], connector._space_grants[14]
+        connector._spaces_kept = {14}
+        await connector._sync_pages({s: v for s, v in self.SPACES.items() if s != 14})
+        assert self.rewrites(processor) == [("page:1", "OPEN", False, keys([alice]))]
+        memory = self.memory(checkpoints)["1"]
+        assert 14 in memory["spaces"] and memory["grants"] and memory["open"] == []
+
+        processor.on_updated_record_permissions.reset_mock()
+        connector._spaces_kept = set()
+        connector._space_grants[14] = [group7]
+        listed[14] = response(status=500)
+        self.wiki(connector, processor, listed, shares=self.memory(checkpoints), stored_open=True)
+        await connector._sync_pages(self.SPACES)
+        assert self.rewrites(processor) == [("page:1", "OPEN", False, keys([alice, group7]))]
+
+    @pytest.mark.asyncio
+    async def test_an_edited_page_unshared_from_an_open_space_keeps_a_share_whose_members_are_unread(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        alice = Permission(external_id=None, email="alice@example.com", type=PermissionType.READ, entity_type=EntityType.USER)
+        edited = page_payload(1, space_id=12, last_modified=6000)
+        shares = {"1": {"spaces": [13, 14], "grants": _grants_digest([ORG_GRANT]), "open": [13]}}
+        checkpoints = self.wiki(connector, processor, {12: [edited], 13: [], 15: []}, shares=shares, stored_open=True)
+        del connector._space_status[14]
+        connector._space_grants = {12: [alice], 13: [ORG_GRANT], 15: []}
+        connector._spaces_kept = {14}
+
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}, 15: {"id": 15}})
+
+        # Written while open 13 was still unlisted (the org it remembers giving), then settled by the
+        # share pass once 13 listed it no more.
+        assert self.page_writes(processor, "page:1") == [("OPEN", False, keys([ORG_GRANT]), True)]
+        assert self.rewrites(processor) == [("page:1", "OPEN", False, keys([alice]))]
+        memory = self.memory(checkpoints)["1"]
+        assert 14 in memory["spaces"] and memory["grants"] and memory["open"] == []
+
+    @pytest.mark.asyncio
     async def test_an_edited_page_keeps_its_share_readers_while_its_spaces_members_cannot_be_read(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
