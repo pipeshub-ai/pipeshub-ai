@@ -1344,6 +1344,31 @@ class TestEnsureSchema:
         seeded.assert_awaited_once()      # the rest of the schema is still ensured
 
     @pytest.mark.asyncio
+    async def test_an_apps_collection_not_created_fails_the_ensure(self, connected_provider) -> None:
+        from app.config.constants.arangodb import CollectionNames
+
+        connected_provider.http_client.has_collection = AsyncMock(return_value=False)
+        connected_provider.http_client.create_collection = AsyncMock(
+            side_effect=lambda name, **_: name != CollectionNames.APPS.value
+        )
+        connected_provider.http_client.has_graph = AsyncMock(return_value=True)
+        with patch.object(connected_provider, "_ensure_departments_seed", new_callable=AsyncMock) as seeded:
+            assert await connected_provider.ensure_schema() is False
+        seeded.assert_awaited_once()      # the rest of the schema is still ensured
+
+    @pytest.mark.asyncio
+    async def test_another_collection_not_created_does_not_fail_the_ensure(self, connected_provider) -> None:
+        from app.config.constants.arangodb import CollectionNames
+
+        connected_provider.http_client.has_collection = AsyncMock(return_value=False)
+        connected_provider.http_client.create_collection = AsyncMock(
+            side_effect=lambda name, **_: name != CollectionNames.FILES.value
+        )
+        connected_provider.http_client.has_graph = AsyncMock(return_value=True)
+        with patch.object(connected_provider, "_ensure_departments_seed", new_callable=AsyncMock):
+            assert await connected_provider.ensure_schema() is True
+
+    @pytest.mark.asyncio
     async def test_another_collection_schema_not_applied_does_not_fail_the_ensure(self, connected_provider) -> None:
         from app.config.constants.arangodb import CollectionNames
 

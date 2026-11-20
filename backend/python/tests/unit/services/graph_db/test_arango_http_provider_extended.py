@@ -101,7 +101,7 @@ class TestEnsureSchemaExtended:
 
     @pytest.mark.asyncio
     async def test_ensure_schema_collection_creation_fails_continues(self, connected_provider):
-        """If a collection creation fails, schema continues."""
+        """If a collection creation fails, schema continues; the apps collection among them is reported."""
         client = connected_provider.http_client
         client.has_collection = AsyncMock(return_value=False)
         client.create_collection = AsyncMock(return_value=False)
@@ -110,7 +110,9 @@ class TestEnsureSchemaExtended:
         connected_provider.batch_upsert_nodes = AsyncMock(return_value=True)
 
         result = await connected_provider.ensure_schema()
-        assert result is True
+        assert result is False
+        assert client.create_collection.await_count > 1      # every collection was still tried
+        connected_provider.execute_query.assert_awaited()     # and the departments seed still ran
 
     @pytest.mark.asyncio
     async def test_ensure_schema_graph_creation_no_valid_definitions(self, connected_provider):

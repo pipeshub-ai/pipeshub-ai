@@ -771,7 +771,8 @@ class IGraphDBProvider(ABC):
 
         Returns:
             bool: True if schema was ensured successfully, False otherwise. The connector
-            service does not start on False.
+            service tries 3 times at startup; if every try returns False it logs one error,
+            counts ``graph_schema_not_ensured`` and starts anyway.
         """
         pass
 

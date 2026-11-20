@@ -1354,6 +1354,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         name, edge=is_edge, schema=col_schema
                     ):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
+                        apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
                 else:
                     self.logger.debug(f"Collection '{name}' already exists")
                     # Ensure schema is applied to pre-existing collections too. Not fatal here: the
