@@ -313,6 +313,24 @@ class TestPerCallSlots:
         async with mgr.slot(SandboxType.CODING, sid2):  # the slot is free again
             assert gov.snapshot()["total"] == 1
 
+    async def test_a_stalled_wait_note_does_not_stretch_the_wait(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import app.agent_loop_lib.sandbox.manager as manager_mod
+
+        monkeypatch.setattr(manager_mod, "_SLOT_NOTE_S", 0.05)
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
+
+        async def stalled(tool: str, waiting: bool) -> None:
+            await asyncio.Event().wait()  # an event stream nobody reads
+
+        mgr = SandboxManager(governor=gov, slot_wait_s=0.1, on_slot_wait=stalled)
+        mgr.register_backend_factory(SandboxType.CODING, _PerCallBackend)
+        sid1, _ = await mgr.get_or_create(SandboxType.CODING)
+        sid2, _ = await mgr.get_or_create(SandboxType.CODING)
+        async with mgr.slot(SandboxType.CODING, sid1):
+            with pytest.raises(GovernorLimitExceeded):
+                await asyncio.wait_for(mgr.slot(SandboxType.CODING, sid2).__aenter__(), 2)
+        assert gov.snapshot()["total"] == 0
+
     async def test_a_failing_wait_note_does_not_fail_the_call(self) -> None:
         gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
 

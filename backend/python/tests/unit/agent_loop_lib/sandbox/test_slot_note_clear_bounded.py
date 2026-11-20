@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 async def test_a_note_that_never_clears_does_not_hold_the_granted_slot(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(manager_mod, "_SLOT_NOTE_CLEAR_S", 0.05, raising=False)
+    monkeypatch.setattr(manager_mod, "_SLOT_NOTE_S", 0.05)
     governor = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
     stalled = asyncio.Event()
     queued = asyncio.Event()
