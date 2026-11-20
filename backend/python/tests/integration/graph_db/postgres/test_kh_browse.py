@@ -234,6 +234,75 @@ async def test_an_arrow_counts_hierarchy_children_only_and_a_child_whose_class_k
     assert rows["f"] is True and [r["id"] for r in (await browse(p, org, "f", granted, start_type="record"))["rows"]] == ["k"]
 
 
+def _statements(monkeypatch) -> list[tuple[str, tuple]]:
+    """The tag and the arguments of every statement read from here on."""
+    from app.core.db.uow import Tx
+    seen: list[tuple[str, tuple]] = []
+    for name in ("fetch", "fetchrow", "fetchval"):
+        real = getattr(Tx, name)
+
+        async def traced(self, sql, *args, real=real) -> object:
+            m = re.search(r"pipeshub:([\w.]+)", sql)
+            seen.append((m.group(1) if m else "", args))
+            return await real(self, sql, *args)
+        monkeypatch.setattr(Tx, name, traced)
+    return seen
+
+
+async def test_a_browse_decides_by_the_classes_of_the_rows_it_reads_not_by_every_class_of_the_connector(pg_db, monkeypatch) -> None:
+    """A node held whole is decided by the classes of its children, of the start and its ancestors, and of its page's children (what their arrows read): the literals of the
+    connector's other classes are not read. Here m, under k, inherits from k: browsing top reads f and k, and the class that names k is not decided; browsing f is, and lights k."""
+    p, org = prov(pg_db), new_org()
+    await _group_with_a_folder(p, pg_db, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "m", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", "recordName": "M"}], "records")
+        await p.batch_create_edges([edge("k", "records", "m", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_create_edges([edge("m", "records", "k", "records")], "inheritPermissions")
+        await p.batch_create_edges([edge("m", "records", "top", "recordGroups")], "belongsTo")
+        await p.batch_create_edges([edge("u1", "users", "m", "records", type="USER", role="READER")], "permission")
+    await flip(pg_db, org)
+    granted = ["top", "side", "f", "k", "m"]
+    from asyncpg import connect
+    con = await connect(os.environ["PG_ADMIN_URL"])
+    try:
+        k_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 3 AND id = 'k'", org)
+        assert k_sk in {x for r in await con.fetch("SELECT clauses::text AS c FROM kg.scope_classes WHERE org_id = $1", org) for c in json.loads(r["c"]) for x in c}      # k is a literal
+    finally:
+        await con.close()
+    seen = _statements(monkeypatch)
+    assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "top", granted, start_type="recordGroup"))["rows"]} == {"f": True, "side": False}
+    literals = {sk for tag, args in seen if tag == "kg.read_literals" for sk in args[1]}
+    assert "kg.listing_classes" not in {t for t, _ in seen} and literals and k_sk not in literals, (literals, k_sk)
+    assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "f", granted, start_type="record"))["rows"]} == {"k": True}
+    assert [r["id"] for r in (await browse(p, org, "k", granted, start_type="record"))["rows"]] == ["m"]
+    monkeypatch.setattr(kh_listing, "CLASS_COVER", 0)      # the page's rows have more children than it reads the classes of: every class of the connector decides them
+    seen.clear()
+    assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "top", granted, start_type="recordGroup"))["rows"]} == {"f": True, "side": False}
+    assert "kg.listing_classes" in {t for t, _ in seen}
+
+
+async def test_a_placeholders_walk_below_the_rows_a_browse_decides_by_class_asks_the_check(pg_db) -> None:
+    """fold -> S1 (stub) -> S2 (stub) -> L, L inheriting from S2: the browse of fold decides by the classes of fold, S1 and S2 only, so L's class (which names S2) is the
+    check's, which admits L when S2 is granted. S1 is listed (it leads to L) exactly then."""
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        recs = [{"_key": "fold", "recordName": "Folder", "mimeType": "application/vnd.folder"}, {"_key": "S1", "recordName": "S1", "isPlaceholder": True}, {"_key": "S2", "recordName": "S2", "isPlaceholder": True}, {"_key": "L", "recordName": "Leaf"}]
+        await p.batch_upsert_nodes([{**r, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for r in recs], "records")
+        await p.batch_create_edges([edge("fold", "records", "S1", "records", relationshipType="PARENT_CHILD"), edge("S1", "records", "S2", "records", relationshipType="PARENT_CHILD"),
+                                    edge("S2", "records", "L", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_create_edges([edge("L", "records", "S2", "records")], "inheritPermissions")
+        await p.batch_create_edges([edge(r["_key"], "records", "g1", "recordGroups") for r in recs], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in ("fold", "S1", "S2")], "permission")
+    await flip(pg_db, org)
+    assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "fold", ["fold", "S1", "S2"]))["rows"]} == {"S1": True}
+    assert [r["id"] for r in (await browse(p, org, "S2", ["fold", "S1", "S2"], start_type="record"))["rows"]] == ["L"]
+    assert (await browse(p, org, "fold", ["fold", "S1"]))["rows"] == []      # S2 not granted: neither it nor L is readable, and S1 leads nowhere
+
+
 async def test_a_browse_reads_the_viewers_grants_in_the_connector_with_those_of_the_source_accounts_they_authenticated_as(pg_db) -> None:
     """Asked with the viewer's key and no grants, the browse reads the viewer's grants in the node's connector itself: a grant held by a source account the viewer authenticated as
     inside that connector counts, as in ``get_knowledge_hub_access_v3``."""
@@ -537,6 +606,7 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                        ("arrows", arrows, q.values), ("linked_children", kgl.LINKED_CHILDREN, [org, g1, 5001, hide]),
                        ("start", kgl.BROWSE_START, [org, "fold"]), ("start_connector", kh_browse.START_CONNECTOR, [org, "fold"]), ("up", kgl.BROWSE_UP, [org, [sk]]),
                        ("state", kgl.STATE, [org, "app1"]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]), ("classes", kgl.CLASSES, [org, app_sk, 50_001]),
+                       ("classes_of", kgl.CLASSES_OF, [org, app_sk, [1, 2, 3]]), ("child_classes", kgl.CHILD_CLASSES, [org, [sk, g1], 20_001, hide]),
                        ("links", kh_listing.LINKS, [org, [sk]]), ("keys", kh_listing.KEYS, [org, [sk]]), ("docs", kh_listing.DOCS, [org, ["records"], ["fold"]]),
                        ("files", kh_listing.FILES, [org, ["fold"]])]
         for name, sql, args in statements:
@@ -599,6 +669,7 @@ async def test_a_browse_in_a_callers_transaction_asks_the_check_and_never_admits
         calls.append(True)
         return await real(*a, **kw)
     monkeypatch.setattr(kh_listing, "class_sets", spy)
+    monkeypatch.setattr(kh_browse, "class_sets", spy)
     with ctx(org):
         tid = await p.begin_transaction([], [])
         try:
