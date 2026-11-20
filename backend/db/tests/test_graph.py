@@ -530,8 +530,21 @@ def test_a_page_of_a_hot_lookup_reads_one_page_of_matches_from_its_cursor(rdb):
         ]
         for call, lead, prefix, index in cases:
             plan = _analyzed(c, A, f"SELECT node_id FROM {call}", (*lead, json.dumps(A), f"{prefix}04999"))
-            scans = re.findall(rf"Index (?:Only )?Scan using \S*{index} on \S+ n[^\n]*rows=(\d+)", plan)
-            assert scans and all(int(r) <= 1000 for r in scans), (index, scans, plan)        # one page of entries, not the 6,000 matches
+            lines = plan.splitlines()
+            scans = []
+            for i, line in enumerate(lines):
+                m = re.search(rf"Index (?:Only )?Scan using \S*{index} on \S+ n(?:_\d+)?\b.*actual rows=(\d+)(?:\.\d+)? loops=(\d+)", line)
+                if m:
+                    own = []                        # the node's own detail lines: up to its first child or the next node
+                    for nxt in lines[i + 1:]:
+                        if nxt.strip().startswith("->") or not nxt.startswith(" "):
+                            break
+                        own.append(nxt.strip())
+                    cond = next((x for x in own if x.startswith("Index Cond: ")), "")
+                    removed = sum(int(x.split(": ")[1]) for x in own if x.startswith("Rows Removed by Filter: "))
+                    scans.append((int(m[1]), int(m[2]), cond, removed))
+            # one page of entries read once, from the cursor inside the index: not the 6,000 matches, nor 5,000 of them dropped by a filter
+            assert scans and all(rows <= 1000 and loops == 1 and re.search(r"\bid > ", cond) and removed == 0 for rows, loops, cond, removed in scans), (index, scans, plan)
             as_role(c, "pipeshub_connectors", A)
             ids, after = [], ""
             while True:
