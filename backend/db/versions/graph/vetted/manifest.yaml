@@ -83,7 +83,7 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0015): a page reads one page of matches, not
+      -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0017): a page reads one page of matches, not
       -- every match before it. The key itself is rechecked, since two keys can share a hash, with IS NOT DISTINCT FROM (the arguments are never
       -- null): no index serves it, so the graph_0001 index of the key text cannot be picked for the page and sorted;
       -- only the ids are materialized, and the page's docs are fetched by key. The order names the index's whole key: under row security the key's
@@ -115,7 +115,7 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0015): a page reads one page of matches, not
+      -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0017): a page reads one page of matches, not
       -- every match before it. The key itself is rechecked, since two keys can share a hash, with IS NOT DISTINCT FROM (the arguments are never
       -- null): no index serves it, so the graph_0001 index of the key text cannot be picked for the page and sorted;
       -- only the ids are materialized, and the page's docs are fetched by key. The order names the index's whole key: under row security the key's
@@ -147,7 +147,7 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0015): a page reads one page of matches, not
+      -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0017): a page reads one page of matches, not
       -- every match before it. The key itself is rechecked, since two keys can share a hash, with IS NOT DISTINCT FROM (the arguments are never
       -- null): no index serves it, so the graph_0001 index of the key text cannot be picked for the page and sorted;
       -- only the ids are materialized, and the page's docs are fetched by key. The order names the index's whole key: under row security the key's
@@ -565,6 +565,8 @@ functions:
       RETURN QUERY SELECT s.doc->>'virtualRecordId', s.doc->>'rev', s.doc->>'updatedAtMs' FROM graph.nodes s
         WHERE s.org_id = v_org AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(p_virtual_record_ids) AND s.doc->>'rev' IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = v_org AND r.coll = 'records' AND r.doc->>'virtualRecordId' = s.doc->>'virtualRecordId' AND r.doc->>'contentRev' = s.doc->>'rev')
+          AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = v_org AND r.coll = 'records' AND r.doc->>'virtualRecordId' = s.doc->>'virtualRecordId'
+            AND r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED' AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true')
         LIMIT 100000;
 
   # One page of a connector's live records at FILE_TYPE_NOT_SUPPORTED after an id (byte order, as records_page_by_connector), for the file-type re-queue

@@ -16,9 +16,10 @@ EQ = "eq"
 IS_NULL = "is_null"
 NULL_OR_EQ = "null_or_eq"
 NULL_OR_LE = "null_or_le"
+ONE_OF = "one_of"
 
 #: Operators that compare against a value; ``is_null`` takes none.
-VALUE_OPS = frozenset({EQ, NULL_OR_EQ, NULL_OR_LE})
+VALUE_OPS = frozenset({EQ, NULL_OR_EQ, NULL_OR_LE, ONE_OF})
 OPS = VALUE_OPS | {IS_NULL}
 
 
@@ -43,6 +44,10 @@ class Cond:
             raise ValueError(f"{self.op} needs a value that is not None or a bool")
         if self.op == NULL_OR_LE and not isinstance(self.value, (int, float)):
             raise ValueError("null_or_le compares numbers")
+        if self.op == ONE_OF and (
+            not isinstance(self.value, (list, tuple)) or not self.value or not all(isinstance(v, str) for v in self.value)
+        ):
+            raise ValueError("one_of takes a non-empty list of strings")
 
 
 def check_conditions(conditions: Sequence[Cond]) -> None:
@@ -63,6 +68,8 @@ def holds(cond: Cond, document: Mapping[str, Any]) -> bool:
         return current is not None and current == cond.value
     if cond.op == NULL_OR_EQ:
         return current is None or current == cond.value
+    if cond.op == ONE_OF:
+        return current is not None and current in cond.value
     # NULL_OR_LE: a non-number never passes (a stray string is not "older").
     if current is None:
         return True

@@ -33,9 +33,14 @@ def _no_background_sample(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-async def pg_db() -> AsyncIterator[KernelDB]:
+def pg_required() -> None:
+    """Skips a test that builds its own ``KernelDB`` where no database is configured; ``pg_db`` has it too."""
     if not os.environ.get("PG_CORE_URL"):
         pytest.skip("PG_CORE_URL is not set")
+
+
+@pytest.fixture
+async def pg_db(pg_required: None) -> AsyncIterator[KernelDB]:
     db = KernelDB(DbConfig.from_env("connectors"))
     await db.start()
     yield db

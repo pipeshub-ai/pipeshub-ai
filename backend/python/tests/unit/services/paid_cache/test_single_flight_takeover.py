@@ -151,7 +151,7 @@ async def test_with_no_lock_service_every_caller_computes_and_is_counted_not_blo
         async def renew(self, name: str, token: str, ttl_ms: int) -> Never:
             raise AssertionError("nothing was acquired")
 
-        async def mark(self, name: str, ttl_ms: int) -> Never:
+        async def mark(self, name: str, ttl_ms: int, value: str = "1") -> Never:
             raise ConnectionError("redis down")
 
         async def is_marked(self, name: str) -> Never:

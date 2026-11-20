@@ -14,7 +14,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     left_out = [
         item for item in items
         if item.get_closest_marker("arango_only") and getattr(item, "callspec", None) is not None
-        and item.callspec.params.get("env") == "neo4j"
+        and ("neo4j" in item.callspec.params.values())
     ]
     left_out += [
         item for item in items

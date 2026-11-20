@@ -47,6 +47,7 @@ from app.modules.code_graph.block_projection import (
     drop_code_file_blocks,
     write_code_file_blocks_to_graph,
 )
+from app.modules.indexing import keep_old_copy
 from app.modules.indexing.embed_resume import chain_end_fields
 from app.modules.indexing.parse_now_marker import (
     run_settings,
@@ -94,12 +95,11 @@ from app.services.parsing.interface import (
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor.kinds import ParseKind
-from app.utils.aimodels import is_multimodal_llm
+from app.utils.aimodels import INDEXING_SDK_RETRIES, is_multimodal_llm
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
 from app.utils.error_class import log_failure
 from app.utils.image_utils import fit_inline_images, get_extension_from_mimetype
-from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.indexing_timing import note
 from app.utils.libreoffice_convert import (
     LibreOfficeCouldNotReadFileError,
@@ -1617,11 +1617,17 @@ class Processor:
         if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
             status_update["parsingStatus"] = indexing_status.value
 
-        success = await self.graph_provider.update_node(
-            record_id,
-            CollectionNames.RECORDS.value,
-            shape_status_write(status_update),
-        )
+        swap = keep_old_copy.current_swap(record_id) if indexing_status == ProgressStatus.EMPTY else None
+        if swap is not None and getattr(self.sink_orchestrator, "swap", None) is not None:
+            # An empty result replaces the indexed copy: the record moves to the (empty) new copy and the old one is released after
+            # the grace, as the flag-off order deletes it at the start. Without this the record stays on the old copy for good.
+            success = await self.sink_orchestrator.swap.commit_document(record, swap, shape_status_write(status_update))
+        else:
+            success = await self.graph_provider.update_node(
+                record_id,
+                CollectionNames.RECORDS.value,
+                shape_status_write(status_update),
+            )
         if not success:
             self.logger.warning(
                 "Failed to update indexing status for record %s - record may not exist",

@@ -187,7 +187,8 @@ except Exception as e:
   raised `from` it, is DEBUG unless it asks for a higher level. `include_error_text=False` leaves `error_message` out and prints
   each exception in the stack as `Type: <message omitted>`, for errors whose text can echo what was sent (an MCP or OpenAPI server's
   answer quoting tool arguments). That record carries the stack as `exc_text` only, with no `exc_info`, so a handler that formats
-  `exc_info` itself cannot print the message either.
+  `exc_info` itself cannot print the message either. Tests check such a line with `tests/support/log_capture.py`:
+  `failure_line(records, event, error_class, level, *values)` and `assert_text_free(records, *values)`.
 - `logged_level(exc)` is the highest level `log_failure` already wrote `exc` (or an exception it was raised `from`) at, or `None`.
   A per-unit line that must keep its level when several units fail with one shared exception checks it: `log_failure` when it is
   `None` or lower, else `log_event` at the unit's level with the error fields (see "Tool calls and MCP").
@@ -579,6 +580,8 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
 | `middleware.failed` | `log_failure`, no error text | `middleware`, `context` (the hook context's type); a fail-closed pipeline also denies with `deny_reason=middleware_error` |
 | `orchestrator.dispatch.end` | INFO; `orchestrator.dispatch.failed` `log_failure` (falls back to LLM dispatch) | `steps`, `outcome` |
 | `turn_scope.check_failed`, `prefetch.failed` (no error text), `agent_turn.cleanup_failed` (`step`) | `log_failure` | the turn carries on |
+| `repo_instructions.resolve_failed` | `log_failure`, no error text; a timeout is `timeout` | the repo-instructions refresh failed or timed out and is retried on the next refresh, at most 3 times per run |
+| `repo_instructions.fetch_failed` | `log_failure`, no error text; content that is unavailable is `unavailable` (WARNING), at most 3 times per file per run | `record_id` |
 
 - An approval answer is logged once whatever happens next: on the decided path the line is written first in `_settle`'s `finally`,
   before the outcome is kept and before the card's row is shown, so Stop or a client disconnect while the approved call runs is
@@ -666,10 +669,17 @@ which every Postgres graph provider runs through) write one record per call that
 
 | Event | Level | Fields |
 | --- | --- | --- |
-| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
+| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR), and DEBUG for a code the caller declared expected with `db_query_log.expecting` (claiming an existing stage state: unique-constraint violation) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
 | `db.query.slow` | WARNING | `backend`, `op`, `site`, `caller`, `duration_ms`, `threshold_ms`; Postgres `db_request_id` |
 | `db.query.retry` | WARNING | `backend=neo4j`, `op`, `reason=connection_lost`, `error_type` |
 | `db.connect.failed`, `db.disconnect.failed`, `db.schema.failed`, `db.edge.failed` | `log_failure` | `backend`, `op` (schema or edge) |
+
+- **A graph provider that re-raises writes nothing.** A Neo4j, ArangoDB or PostgreSQL provider method whose handler re-raises
+  (as is, or `raise … from e`) has no log line of its own: `db.query.failed` (with `caller`, the provider line) and the handler
+  that catches the exception are the record of that failure. A Neo4j knowledge-hub listing that ran out of transaction memory
+  still writes `kh.listing.out_of_memory` (WARNING, `connector_id`, `duration_ms`, no error) before it is refused as too large or
+  busy. A handler that logs and carries on with a fallback is not a re-raising handler: the knowledge-hub listing's scope-page
+  enrichment still logs a WARNING (with the driver's text, for now) before it runs the full query, which may then re-raise.
 
 - **One record per call, outside the client's own retries.** A write conflict the ArangoDB or Neo4j client retries and wins
   writes nothing; one it gives up on writes one record. Retries above the client (`KernelDB.run`, the KB push, a provider

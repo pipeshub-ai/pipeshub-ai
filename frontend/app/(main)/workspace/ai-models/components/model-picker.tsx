@@ -5,6 +5,7 @@ import { Box, Button, Flex, RadioGroup, Switch, Text, TextField } from '@radix-u
 import { useTranslation } from 'react-i18next';
 import { PickedModelExtraFields } from '@/config';
 import type { DiscoveredModel, PickedModel } from '../types';
+import { NO_CREDENTIAL_AUTOFILL_PROPS } from '@/app/components/ui/secret-text-field';
 
 export type PerModelFlag = 'isReasoning' | 'isMultimodal';
 
@@ -183,6 +184,7 @@ function PickedModelRow({
         </Flex>
         <Flex gap="2" wrap="wrap">
           <TextField.Root
+            {...NO_CREDENTIAL_AUTOFILL_PROPS}
             value={item.modelFriendlyName ?? ''}
             placeholder={placeholder}
             aria-label={t('workspace.aiModels.modelPickerFriendlyName', { model: item.id })}

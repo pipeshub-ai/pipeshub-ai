@@ -15,12 +15,8 @@ import pytest
 import app.modules.transformers.vectorstore as vectorstore_module
 from app.modules.transformers.image_description import ImageDescriber
 from app.modules.transformers.vectorstore import VectorStore
-from tests.support.provider_errors import (
-    MARK,
-    assert_text_free,
-    failure_line,
-    openai_error,
-)
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import MARK, SENTINELS, openai_error
 from tests.unit.modules.transformers.test_entity_vectorstore_write_outcome import (
     _DB,
     _store,
@@ -39,7 +35,7 @@ async def test_an_image_the_model_refuses_is_skipped_with_its_type_only(caplog) 
     assert written == 1
     (note,) = [r for r in caplog.records if "Could not describe image block" in r.getMessage()]
     assert (note.levelno, note.error_type) == (logging.DEBUG, "BadRequestError")
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 def _store_for_retry(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, *outcomes: object) -> SimpleNamespace:
@@ -59,7 +55,7 @@ async def test_a_retried_dense_embedding_names_the_type_only(caplog, monkeypatch
 
     notes = [r for r in caplog.records if "Dense embedding attempt" in r.getMessage()]
     assert [(r.levelno, r.error_type) for r in notes] == [(logging.WARNING, "RateLimitError")] * 2
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 async def test_a_transport_failure_names_its_innermost_cause(caplog, monkeypatch) -> None:
@@ -73,7 +69,7 @@ async def test_a_transport_failure_names_its_innermost_cause(caplog, monkeypatch
 
     notes = [r for r in caplog.records if "Dense embedding attempt" in r.getMessage()]
     assert [(r.error_type, r.cause_type) for r in notes] == [("APIConnectionError", "ConnectError")] * 2
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 async def test_a_failed_entity_embedding_is_one_text_free_line(caplog) -> None:
@@ -84,9 +80,9 @@ async def test_a_failed_entity_embedding_is_one_text_free_line(caplog) -> None:
     outcome = await store.upsert_entities_batch([_topic("a"), _topic("b")], merge_membership=False)
 
     assert outcome.failed == 2
-    fields = failure_line(caplog.records, "entity_index.upsert_failed", "misconfigured", logging.ERROR)
+    fields = failure_line(caplog.records, "entity_index.upsert_failed", "misconfigured", logging.ERROR, *SENTINELS)
     assert (fields["batch_start"], fields["count"]) == (0, 2)
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 async def test_a_failed_entity_write_keeps_the_vector_store_class(caplog) -> None:
@@ -98,4 +94,4 @@ async def test_a_failed_entity_write_keeps_the_vector_store_class(caplog) -> Non
     outcome = await store.upsert_entities_batch([_topic("a")], merge_membership=False)
 
     assert outcome.failed == 1
-    failure_line(caplog.records, "entity_index.upsert_failed", "internal", logging.ERROR)
+    failure_line(caplog.records, "entity_index.upsert_failed", "internal", logging.ERROR, *SENTINELS)

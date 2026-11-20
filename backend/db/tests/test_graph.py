@@ -529,7 +529,7 @@ def _seek_scans(plan: str, index: str) -> list[tuple[int, int, str, int]]:
 
 
 def test_a_page_of_a_hot_lookup_reads_one_page_of_matches_from_its_cursor(rdb):
-    """A read of every match pages after the last id. With the matches of a key in id order inside its index (graph_0015), page k seeks past the cursor
+    """A read of every match pages after the last id. With the matches of a key in id order inside its index (graph_0017), page k seeks past the cursor
     and reads one page of index entries; before, each page read every match of the key and dropped those before the cursor (pages x matches)."""
     cluster, name = rdb
     with connect(cluster, name) as c:
@@ -574,7 +574,7 @@ def test_a_hot_lookup_index_holds_every_row_the_primary_key_holds(db):
     cluster, name = db
     url = cluster.url(name, "pipeshub_migrate")
     assert run_migrate(url).returncode == 0
-    r = run_migrate(url, "downgrade", "graph_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    r = run_migrate(url, "downgrade", "graph_0016", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout + r.stderr
     # the longest arguments the reads take (path 4096, connector 200, name 1000, record 200), and a record id no read takes (3,000)
     path, rec, conn, fold = "src/" + "deep/" * 600 + "x.py", "q" * 200, "c" * 200, "n" * 1000
@@ -1278,7 +1278,8 @@ STALE_PLAIN = """SELECT id FROM graph.nodes WHERE org_id = current_setting('app.
 UNHELD_PLAIN = """WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev, max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s
                     WHERE s.org_id = current_setting('app.org_id') AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(%s::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
                  SELECT g.v, g.rev FROM g WHERE g.newest < %s::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = current_setting('app.org_id') AND r.coll = 'records'
-                    AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev) ORDER BY g.v, g.rev"""
+                    AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED'
+                       AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true'))) ORDER BY g.v, g.rev"""
 
 
 UNHELD_NEW = """SELECT virtual_record_id, revision FROM graph.stage_states_unheld(%s::text[]) GROUP BY 1, 2 HAVING max(coalesce(updated_at_ms::numeric, 0)) < %s::bigint ORDER BY 1, 2"""      # the caller's grouping

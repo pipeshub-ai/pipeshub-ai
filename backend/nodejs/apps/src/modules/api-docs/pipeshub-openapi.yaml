@@ -42952,6 +42952,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/stream/record/{recordId}:
+    # Response headers on this operation (ETag, Content-Range, Retry-After, ...) are described in
+    # prose only. Declaring one under `headers:` changes the TypeScript SDK's return type to
+    # {headers, result} and breaks every caller; SDK Tests' surface check fails on it.
     get:
       tags:
         - Knowledge Base
@@ -43121,13 +43124,8 @@ paths:
         '503':
           description: |
             The record, its organization or its connector could not be read because the database
-            was unreachable. The record may well exist. Safe to retry after the `Retry-After` seconds.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying.
-              schema:
-                type: integer
-                example: 5
+            was unreachable. The record may well exist. The response carries `Retry-After` (seconds,
+            usually 5); retry after that long.
           content:
             application/json:
               schema:
