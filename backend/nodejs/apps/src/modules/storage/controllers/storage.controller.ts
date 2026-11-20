@@ -18,6 +18,7 @@ import {
   ARTIFACT_RETIRING_HEARTBEAT_MS,
   PAID_RESULT_URL_TTL_SECONDS,
   PAID_RESULT_LIST_PAGE,
+  PAID_RESULT_PURGE_BATCH_MAX,
 } from '../constants/constants';
 import {
   AzureBlobStorageConfig,
@@ -76,6 +77,7 @@ import {
 } from '../utils/utils';
 import {
   paidResultsOrgRoot,
+  RECORD_ID,
   isPaidResultManifestPath,
   isPaidResultObjectPath,
   paidResultsRecordRoot,
@@ -230,6 +232,8 @@ const PURGE_CUTOFF_FUTURE_LIMIT_MS = 15 * 60_000;
 const PURGE_CUTOFF_FUTURE_WARN_MS = 60_000;
 /** The record folder's sentinel area: listings leave it out and the purge that follows it removes it with the folder. */
 const PURGE_CUTOFF_FOLDER = 'purge-cutoff';
+/** Folder deletes in flight at once within one batch purge. */
+const PAID_RESULT_PURGE_BATCH_CONCURRENCY = 8;
 
 @injectable()
 export class StorageController {
@@ -1487,6 +1491,74 @@ export class StorageController {
         );
       }
       res.status(HTTP_STATUS.OK).json({ purged: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Removes the folders of up to `PAID_RESULT_PURGE_BATCH_MAX` records in one request (the same removal as the
+   * per-record DELETE without `before`, which is what a re-purge hop does). Each id gets its own result: one folder
+   * that cannot be removed never hides the others, and the caller repeats just the failed ones. Safe to repeat.
+   */
+  async purgePaidResultsBatch(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const body = req.body as { recordIds?: unknown };
+      const ids = body.recordIds;
+      // The validator has run; this refuses anything it did not (fail closed, and the bound holds on its own).
+      if (
+        !Array.isArray(ids) ||
+        ids.length === 0 ||
+        ids.length > PAID_RESULT_PURGE_BATCH_MAX ||
+        !ids.every(
+          (id) => typeof id === 'string' && RECORD_ID.test(id) && id !== 'org',
+        )
+      ) {
+        throw new BadRequestError('recordIds must be 1 to 100 record ids');
+      }
+      const recordIds = ids as string[];
+      const adapter = await this.initializeStorageAdapter(req);
+      const results: Array<{
+        recordId: string;
+        purged: boolean;
+        error?: string;
+      }> = [];
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const i = cursor++;
+          if (i >= recordIds.length) return;
+          const recordId = recordIds[i] as string;
+          try {
+            await adapter.deleteTree(paidResultsRecordRoot(orgId, recordId));
+            results[i] = { recordId, purged: true };
+          } catch (error) {
+            // The detail stays in the log: a store error can carry a path or a credential hint.
+            this.logger.error('Could not purge a paid-result folder', {
+              recordId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            results[i] = { recordId, purged: false, error: 'purge failed' };
+          }
+        }
+      };
+      await Promise.all(
+        Array.from(
+          {
+            length: Math.min(
+              PAID_RESULT_PURGE_BATCH_CONCURRENCY,
+              recordIds.length,
+            ),
+          },
+          worker,
+        ),
+      );
+      res.status(HTTP_STATUS.OK).json({ results });
     } catch (error) {
       next(error);
     }

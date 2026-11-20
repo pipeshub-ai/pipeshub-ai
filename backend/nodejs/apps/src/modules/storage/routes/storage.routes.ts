@@ -35,6 +35,7 @@ import {
   DeletePaidResultsSchema,
   PurgeCutoffPaidResultsSchema,
   PurgePaidResultsSchema,
+  PurgeBatchPaidResultsSchema,
   PurgeOrgPaidResultsSchema,
 } from '../validators/validators';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -372,6 +373,24 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         await storageController.paidResultsPurgeCutoff(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Registered ahead of the per-record routes: "purge-batch" is also a well-formed record id.
+  router.post(
+    '/internal/paid-results/purge-batch',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeBatchPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.purgePaidResultsBatch(req, res, next);
       } catch (error) {
         next(error);
       }

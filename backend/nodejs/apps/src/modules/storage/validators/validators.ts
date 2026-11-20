@@ -7,6 +7,7 @@ import {
   ARTIFACT_MAX_FILES_PER_CALL,
   PAID_RESULT_LIST_PAGE,
   PAID_RESULT_MAX_FILES_PER_CALL,
+  PAID_RESULT_PURGE_BATCH_MAX,
 } from '../constants/constants';
 import {
   isPaidResultListPrefix,
@@ -483,6 +484,22 @@ export const DeletePaidResultsSchema = z.object({
 export const PurgeCutoffPaidResultsSchema = z.object({
   headers: Headers,
   params: z.object({ recordId: paidResultRecordIdSchema }),
+});
+
+// The org is the token's: a body that names one (or any other field) is refused, not ignored.
+export const PurgeBatchPaidResultsSchema = z.object({
+  headers: Headers,
+  body: z
+    .object({
+      recordIds: z
+        .array(paidResultRecordIdSchema)
+        .min(1)
+        .max(PAID_RESULT_PURGE_BATCH_MAX)
+        .refine(uniqueItems, {
+          message: 'Each record id may appear only once',
+        }),
+    })
+    .strict(),
 });
 
 export const PurgePaidResultsSchema = z.object({

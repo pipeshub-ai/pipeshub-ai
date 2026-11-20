@@ -28,6 +28,12 @@ class FakePaidResultStorage:
     # What a signed GET of a missing key answers: S3 says 403 when the signer may not list the bucket.
     missing_status: int = 404
     list_page: int = 1000
+    # The batch purge route: absent (an older storage service) answers 404; ``batch_error`` answers that status instead;
+    # ids in ``batch_failing`` come back as not purged.
+    batch_present: bool = True
+    batch_error: int | None = None
+    batch_failing: set[str] = field(default_factory=set)
+    batch_bodies: list[dict[str, Any]] = field(default_factory=list)
     presign_calls: list[dict[str, Any]] = field(default_factory=list)
     put_headers: list[dict[str, str]] = field(default_factory=list)
     calls: list[tuple[str, str]] = field(default_factory=list)
@@ -40,6 +46,7 @@ class FakePaidResultStorage:
         app = web.Application(client_max_size=64 * 1024 * 1024)
         app.router.add_post(f"{BASE}/presign", self._presign)
         app.router.add_delete(f"{BASE}/org", self._purge_org)
+        app.router.add_post(f"{BASE}/purge-batch", self._purge_batch)
         app.router.add_post(f"{BASE}/{{record}}/delete", self._delete)
         app.router.add_get(f"{BASE}/{{record}}", self._list)
         app.router.add_delete(f"{BASE}/{{record}}", self._purge_record)
@@ -141,6 +148,25 @@ class FakePaidResultStorage:
         for p in (await request.json())["paths"]:
             self.objects.pop(self.key(org, record, p), None)
         return web.json_response({"deleted": 1})
+
+    async def _purge_batch(self, request: web.Request) -> web.Response:
+        org = self._org(request)
+        self.calls.append(("purge_batch", org))
+        body = await request.json()
+        self.batch_bodies.append(body)
+        if not self.batch_present:
+            return web.json_response({"error": {"message": "no route"}}, status=404)
+        if self.batch_error is not None:
+            return web.json_response({"error": {"message": "boom"}}, status=self.batch_error)
+        results = []
+        for record in body["recordIds"]:
+            if record in self.batch_failing:
+                results.append({"recordId": record, "purged": False, "error": "purge failed"})
+                continue
+            for k in [k for k in self.objects if k.startswith(self.key(org, record, ""))]:
+                del self.objects[k]
+            results.append({"recordId": record, "purged": True})
+        return web.json_response({"results": results})
 
     async def _purge_record(self, request: web.Request) -> web.Response:
         org, record = self._org(request), request.match_info["record"]

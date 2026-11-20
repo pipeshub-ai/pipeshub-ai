@@ -195,6 +195,42 @@ async def test_a_partial_failure_does_not_fail_the_page_and_the_next_hop_carries
     assert broker.sent[0].payload["hop"] == 2
 
 
+def _many(bad: set[str], *, leave_out: set[str] = frozenset()) -> Any:  # noqa: ANN401
+    calls: list[list[str]] = []
+
+    async def purge_many(org: str, ids: Any) -> dict[str, BaseException | None]:  # noqa: ANN401
+        calls.append(list(ids))
+        return {i: (ConnectionError("down") if i in bad else None) for i in ids if i not in leave_out}
+    purge_many.calls = calls  # type: ignore[attr-defined]
+    return purge_many
+
+
+async def test_a_page_hop_with_a_batch_purge_purges_the_page_in_one_call_and_carries_every_id_on(clock: list[float]) -> None:
+    broker = Broker(clock)
+    ids = [f"r{i}" for i in range(500)]
+    per_id, many = _flaky(set()), _many({"r3"})
+    await repurge_window.handle_page_hop(broker, ORG, _hop(clock, ids), purge=per_id, purge_many=many)
+    assert many.calls == [ids] and per_id.calls == []                       # one batch call, no per-id purge
+    assert [m.type for m in broker.sent] == [BATCH] and broker.sent[0].payload["recordIds"] == ids
+
+
+async def test_a_page_hop_with_a_batch_purge_retries_failed_and_unanswered_ids_in_the_tail(clock: list[float]) -> None:
+    broker = Broker(clock)
+    ids = ["a", "b", "c"]
+    await repurge_window.handle_page_hop(
+        broker, ORG, _hop(clock, ids, hop=50, deleted_at=clock[0] - repurge_horizon_s() - 1), purge=_flaky(set()), purge_many=_many({"b"}, leave_out={"c"}),
+    )
+    tails = [m.payload for m in broker.sent if m.payload.get("tail")]
+    assert len(tails) == 1 and tails[0]["recordIds"] == ["b", "c"]
+
+
+async def test_a_page_hop_whose_batch_purge_fails_for_every_id_raises_so_the_page_is_redelivered(clock: list[float]) -> None:
+    with pytest.raises(ConnectionError):
+        await repurge_window.handle_page_hop(
+            Broker(clock), ORG, _hop(clock, ["a", "b"]), purge=_flaky(set()), purge_many=_many({"a", "b"}),
+        )
+
+
 async def test_every_id_failing_or_the_successor_not_publishing_raises_so_the_page_is_redelivered(clock: list[float]) -> None:
     ids = ["a", "b"]
     with pytest.raises(ConnectionError):
