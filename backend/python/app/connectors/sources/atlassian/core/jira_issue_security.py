@@ -82,6 +82,13 @@ def level_group_external_id(project_id: str, level_id: str) -> str:
     return f"level:{project_id}:{level_id}"
 
 
+def picker_group_external_id(project_id: str, level_id: str, group_ids: set[str] | frozenset[str]) -> str:
+    """The external id of the record group of a level's issues whose group pickers select ``group_ids``: the level's
+    holders that name the same people on every issue, and those groups (one per project, level and set of groups)."""
+    digest = hashlib.sha256(",".join(sorted(group_ids)).encode()).hexdigest()[:16]
+    return f"{level_group_external_id(project_id, level_id)}:groups:{digest}"
+
+
 class SchemeKnowledge(str, Enum):
     """Whether this project has an issue security scheme."""
 
@@ -120,6 +127,14 @@ class IssueSecurityContext:
     reindex_groups: dict[str, list[Any] | None] = field(default_factory=dict)
     # Project role or lead (``<key>_<role id>``, ``<key>_projectLead``) -> its members a reindex read, None when not read.
     reindex_roles: dict[str, list[Any] | None] = field(default_factory=dict)
+    # Group id -> its members, None for a group not read: how a person is in the group a group picker on an issue selects
+    # (``_reads_alone``). The sync's groups, or a reindex's ``reindex_groups``; None when not tracked. With ``groups_complete``
+    # every group of the site was listed, so a group this map does not hold has no member (it was deleted).
+    group_members: dict[str, list[Any] | None] | None = None
+    groups_complete: bool = False
+    # Whether a group picker entry may name its group by name, as on Data Center, whose groups are keyed by name. Jira Cloud
+    # sets False: there ``groupId`` "uniquely identifies the group" (GroupName) and a name may be another group's id.
+    group_names_are_ids: bool = True
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -542,6 +557,7 @@ def _permissions_for_holder(
     seen: set[str],
     reporter_account: str | None = None,
     assignee_account: str | None = None,
+    names_are_ids: bool = True,
 ) -> tuple[list[Permission], bool, str | None]:
     """Return ``(grants, field_unreadable, skipped_type)``.
 
@@ -641,21 +657,15 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type in _FIELD_HOLDERS:
-        raw = parameter or value
-        field_obj = holder.get("field")
-        if not raw and isinstance(field_obj, dict):
-            raw = field_obj.get("id") or field_obj.get("key")
-        if not raw:
+        present, value_at_field = _holder_field_value(holder, fields)
+        if not present:
             return grants, True, holder_type
-        keys = {_normalize_field_key(str(raw)), str(raw)}
-        if not any(key in fields for key in keys):
-            return grants, True, holder_type
-        present_key = next(key for key in keys if key in fields)
-        value_at_field = fields.get(present_key)
         unresolved = False
         for entry in _field_entries(value_at_field):
             if holder_type == HOLDER_GROUP_FIELD:
-                add_group(entry.get("groupId") or entry.get("name") or entry.get("value"))
+                group_id = _entry_group_id(entry, names_are_ids=names_are_ids)
+                add_group(group_id)
+                unresolved = unresolved or not group_id  # a group not named by id grants nobody: unread, not granted
             else:
                 email, inactive, account = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
@@ -664,6 +674,68 @@ def _permissions_for_holder(
         return grants, False, holder_type if unresolved else None
 
     return grants, False, str(holder_type) if holder_type else "unknown"
+
+
+def _holder_field_value(holder: dict[str, Any], fields: dict[str, Any]) -> tuple[bool, object]:
+    """``(present, value)`` of the issue field a user or group field holder reads; not present when the holder names
+    no field or the payload does not carry it."""
+    raw = holder.get("parameter") or holder.get("value")
+    field_obj = holder.get("field")
+    if not raw and isinstance(field_obj, dict):
+        raw = field_obj.get("id") or field_obj.get("key")
+    if not raw:
+        return False, None
+    key = next((k for k in (_normalize_field_key(str(raw)), str(raw)) if k in fields), None)
+    return (key is not None), (fields.get(key) if key is not None else None)
+
+
+def _entry_group_id(entry: dict[str, Any], *, names_are_ids: bool) -> str | None:
+    """The id of the group a group picker entry names: its ``groupId``, or, where names are ids, its name."""
+    group_id = entry.get("groupId")
+    if isinstance(group_id, str) and group_id:
+        return group_id
+    if not names_are_ids:
+        return None
+    fallback = entry.get("name") or entry.get("value")
+    return str(fallback) if fallback else None
+
+
+def field_group_entries(holders: list[dict[str, Any]], fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """The entries this issue's group pickers hold for a level's ``groupCustomField`` holders, as the payload gives them."""
+    return [entry for holder in holders if isinstance(holder, dict) and holder.get("type") == HOLDER_GROUP_FIELD
+            for entry in _field_entries(_holder_field_value(holder, fields)[1])]
+
+
+def field_group_ids(
+    holders: list[dict[str, Any]], fields: dict[str, Any], *, names_are_ids: bool = False,
+) -> tuple[set[str], bool]:
+    """The ids of the groups this issue's group pickers select for a level's ``groupCustomField`` holders ("Grant for a
+    user in the group selected in the specified custom field", api-group-permission-schemes), and whether one is not
+    known: its field not returned, or an entry without ``groupId``, which "uniquely identifies the group" (GroupName,
+    https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json). The value's shape on an issue is not in the
+    spec; a group's name may be another group's id, so a name alone is never matched."""
+    ids: set[str] = set()
+    unknown = False
+    for holder in holders:
+        if not isinstance(holder, dict) or holder.get("type") != HOLDER_GROUP_FIELD:
+            continue
+        present, value = _holder_field_value(holder, fields)
+        unknown = unknown or not present
+        for entry in _field_entries(value):
+            group_id = _entry_group_id(entry, names_are_ids=names_are_ids)
+            if group_id:
+                ids.add(group_id)
+            else:
+                unknown = True
+    return ids, unknown
+
+
+def group_members_digest(members: list[Any] | None) -> str:
+    """A digest of who is in a group (``user_grant_key`` of each member), "?" when its members were not read."""
+    if members is None:
+        return "?"
+    keys = {user_grant_key(getattr(u, "email", None), getattr(u, "source_user_id", None)) for u in members}
+    return hashlib.sha256(",".join(sorted(f"{k}={v}" for k, v in keys)).encode()).hexdigest()[:16]
 
 
 def _field_entries(value: object) -> list[dict[str, Any]]:
@@ -696,7 +768,7 @@ def browse_issue_holders(permission_grants: object) -> list[dict[str, Any]]:
 def browse_holder_grants(
     holders: list[dict[str, Any]], *, project_key: str, fields: dict[str, Any], user_by_id: dict[str, Any],
     reporter_email: str | None, assignee_email: str | None,
-    reporter_account: str | None = None, assignee_account: str | None = None,
+    reporter_account: str | None = None, assignee_account: str | None = None, names_are_ids: bool = True,
 ) -> list[Permission]:
     """The people a project's Browse holders name on this issue. A holder whose field is not
     in the payload grants nobody; it does not stop the others."""
@@ -706,7 +778,7 @@ def browse_holder_grants(
         portion, _unreadable, _skipped = _permissions_for_holder(
             holder, project_key=project_key, fields=fields, user_by_id=user_by_id, app_roles_mapping=None,
             reporter_email=reporter_email, assignee_email=assignee_email, seen=seen,
-            reporter_account=reporter_account, assignee_account=assignee_account,
+            reporter_account=reporter_account, assignee_account=assignee_account, names_are_ids=names_are_ids,
         )
         grants.extend(portion)
     return grants
@@ -723,6 +795,7 @@ def level_grants(
     assignee_email: str | None,
     reporter_account: str | None = None,
     assignee_account: str | None = None,
+    names_are_ids: bool = True,
 ) -> tuple[list[Permission], bool, list[str]]:
     grants: list[Permission] = []
     skipped: list[str] = []
@@ -741,6 +814,7 @@ def level_grants(
             seen=seen,
             reporter_account=reporter_account,
             assignee_account=assignee_account,
+            names_are_ids=names_are_ids,
         )
         if unreadable:
             return [], True, skipped
@@ -894,6 +968,7 @@ def apply_issue_access_settled(
             context.browse_holders or [], project_key=project_key, fields=fields or {},
             user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
             reporter_account=reporter_account, assignee_account=assignee_account,
+            names_are_ids=context.group_names_are_ids,
         ) if top_level else []
         record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
         record.rewrite_permissions = True
@@ -936,12 +1011,25 @@ def apply_issue_access_settled(
         assignee_email=assignee_email,
         reporter_account=reporter_account,
         assignee_account=assignee_account,
+        names_are_ids=context.group_names_are_ids,
     )
     if unreadable:
         return close()
     record.rewrite_permissions = True
     if grouped:
         record.access_group_external_id = level_group_external_id(project_id, level_id)
+        # An entry not named by id grants nobody (``_entry_group_id``) and is reported unresolved; the groups named by id
+        # still go to the record group below, so a person Browse names who is in one of them reads the issue alone.
+        picked, _ = field_group_ids(context.members_by_level.get(level_id, []), fields or {},
+                                    names_are_ids=context.group_names_are_ids)
+        # Only where the caller tracks group members (``group_members``) and so writes that record group.
+        if context.browse_holders and context.group_members is not None and picked \
+                and not getattr(record, "is_placeholder", False):
+            # The picked groups' members read the issue with the project, and someone Browse names on it may read it alone
+            # through them: on the issue a group grant would need the project too (STRICT) or admit all its members alone
+            # (OPEN). Held by a record group under the project, as the level's own holders are, both hold.
+            grants = [g for g in grants if not (g.entity_type == EntityType.GROUP and str(g.external_id) in picked)]
+            record.access_group_external_id = picker_group_external_id(project_id, level_id, picked)
         alone, members_unread = _reads_alone(
             context, level_id, grants, project_key=project_key, fields=fields or {}, users=users,
             app_roles_mapping=app_roles_mapping, reporter_email=reporter_email, assignee_email=assignee_email,
@@ -973,9 +1061,10 @@ def _reads_alone(
     assignee_email: str | None, reporter_account: str | None = None, assignee_account: str | None = None,
 ) -> tuple[list[Permission], bool]:
     """Who reads a leveled issue without browsing its project: a person the project's Browse holders name on this issue (its
-    reporter, say) whom the level names too, on this issue, as a user holder, or through a group, role or project lead
-    (``context.level_readers``). Jira shows it to them: Browse names them, and "these allow the visibility of individual
-    issues to be adjusted, within the bounds of the project's permissions"
+    reporter, say) whom the level names too, on this issue, as a user holder, through a group, role or project lead
+    (``context.level_readers``), or through a group a group picker on the issue selects (``context.group_members``).
+    Jira shows it to them: Browse names them, and "these allow the visibility of individual issues to be adjusted,
+    within the bounds of the project's permissions"
     (https://support.atlassian.com/jira/kb/jira-permissions-general-overview/). Also returns whether someone Browse names
     may be in the level through members that were not read."""
     if not context.browse_holders:
@@ -983,7 +1072,8 @@ def _reads_alone(
     # The same people the level's grants name, by account where the directory holds no email for them.
     browse = browse_holder_grants(context.browse_holders, project_key=project_key, fields=fields, user_by_id=users,
                                   reporter_email=reporter_email, assignee_email=assignee_email,
-                                  reporter_account=reporter_account, assignee_account=assignee_account)
+                                  reporter_account=reporter_account, assignee_account=assignee_account,
+                                  names_are_ids=context.group_names_are_ids)
     static, _ = level_group_grants(context.members_by_level.get(level_id, []), project_key=project_key,
                                    user_by_id=users, app_roles_mapping=app_roles_mapping)
     named = {_grant_key(g) for g in dynamic} | {_grant_key(g) for g in static if g.entity_type == EntityType.USER}
@@ -991,9 +1081,20 @@ def _reads_alone(
     readers = context.level_readers.get(level_id) if tracked else None
     if readers is not None:
         named |= readers
+    # The members of the groups this issue's group pickers select are in the level on this issue (admin guide: "anyone
+    # listed in a Group picker (single or multi-select) type field on a work item").
+    picked, picked_unread = field_group_ids(context.members_by_level.get(level_id, []), fields,
+                                            names_are_ids=context.group_names_are_ids)
+    if context.group_members is not None:
+        for group_id in picked:
+            members = context.group_members.get(group_id, [] if context.groups_complete else None)
+            picked_unread = picked_unread or members is None
+            named |= {user_grant_key(getattr(u, "email", None), getattr(u, "source_user_id", None)) for u in members or []}
     alone = [g for g in browse if _grant_key(g) in named or (readers is not None and _ANY_READER in readers)]
     # Not read: someone Browse names may be a member, unless the level has no holder beyond its users.
-    unread = tracked and readers is None and len(alone) < len(browse) and any(g.entity_type != EntityType.USER for g in static)
+    unread = len(alone) < len(browse) and (
+        (tracked and readers is None and any(g.entity_type != EntityType.USER for g in static))
+        or (context.group_members is not None and picked_unread))
     return alone, unread
 
 
