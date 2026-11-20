@@ -54,6 +54,11 @@ import {
   toasts,
   clearToasts,
 } from '../../../__tests__/fixtures';
+import { SECRET_FIELD_MASK_CLASS } from '@/app/components/ui/secret-text-field';
+
+/** A secret is hidden when its text input sits inside (or is) the mask class. */
+const isMasked = (input: HTMLInputElement) =>
+  input.type === 'text' && input.closest(`.${SECRET_FIELD_MASK_CLASS}`) !== null;
 
 const oauthFields: AuthSchemaField[] = [
   { name: 'clientId', displayName: 'Client ID', fieldType: 'TEXT', required: true },
@@ -94,7 +99,7 @@ describe('AuthenticateTab: credential form', () => {
     expect(screen.getByText('Enter your Jira authentication details')).toBeTruthy();
     expect(inputByLabel('Site URL').type).toBe('url');
     expect(inputByLabel('Account email').type).toBe('email');
-    expect(inputByLabel('API token').type).toBe('password');
+    expect(isMasked(inputByLabel('API token'))).toBe(true);
   });
 
   it('stores what the user types in the form state', () => {
@@ -236,7 +241,7 @@ describe('AuthenticateTab: OAuth app', () => {
       expect(useConnectorsStore.getState().formData.auth.oauthInstanceName).toBe('Jira')
     );
     expect(screen.getByText('OAuth app name')).toBeTruthy();
-    expect(inputByLabel('Client secret').type).toBe('password');
+    expect(isMasked(inputByLabel('Client secret'))).toBe(true);
     expect(
       screen.getByText(/pick one above, or choose Create new OAuth app and enter client credentials/)
     ).toBeTruthy();

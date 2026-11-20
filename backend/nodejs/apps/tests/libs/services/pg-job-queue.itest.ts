@@ -159,18 +159,21 @@ type D = { n?: number; tag?: string }
   it('runs a one-time delayed job once, and a job id that is taken adds nothing', async () => {
     const queue = new PgJobQueue<D>(q, { attempts: 1 })
     const ran: number[] = []
-    worker(async (j) => { ran.push(j.data.n ?? -1) })
+    // Nothing is claimed until the worker starts, so "not run yet" is a fact of the order here, not a race against the 400 ms
+    // delay (a runner that stalled the old 150 ms wait past it saw the job already run).
     const first = await queue.add('once', { n: 1 }, { delay: 400, jobId: 'crawl-once-1' })
     const again = await queue.add('once', { n: 2 }, { delay: 400, jobId: 'crawl-once-1' })
     expect(again.id).to.equal(first.id)
     expect(again.data.n).to.equal(1)                                          // the first one wins
     expect(await first.getState()).to.equal('delayed')
-    await sleep(150)
     expect(ran).to.deep.equal([])
-    await until(() => ran.length === 1)
-    await sleep(500)
-    expect(ran).to.deep.equal([1])
+    worker(async (j) => { ran.push(j.data.n ?? -1) })
     await until(async () => (await first.getState()) === 'completed')
+    expect(ran).to.deep.equal([1])
+    const done = (await queue.getCompleted())[0]
+    expect(done.processedOn! - done.timestamp).to.be.at.least(400)             // not before its delay, whatever the load
+    // a second row would have been inserted by the second add and would be run, waiting or delayed by now
+    expect((await queue.getJobs(['waiting', 'delayed', 'active', 'completed', 'failed'])).length).to.equal(1)
     expect((await queue.add('once', { n: 3 }, { jobId: 'crawl-once-1' })).data.n).to.equal(1)   // finished jobs still hold the id
   })
 

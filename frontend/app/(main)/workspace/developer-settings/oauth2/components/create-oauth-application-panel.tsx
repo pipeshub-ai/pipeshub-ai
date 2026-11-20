@@ -33,6 +33,7 @@ import {
   isValidHttpUrl,
   isValidOAuthRedirectUri,
 } from '../redirect-uri-validation';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 // ========================================
 // Constants
@@ -762,10 +763,10 @@ export function CreateOAuthApplicationPanel({
                   {t('workspace.oauth2.create.clientSecretLabel')}
                 </Text>
                 <Flex align="center" gap="2" style={{ width: '100%' }}>
-                  <TextField.Root
+                  <SecretTextField
                     size="2"
                     readOnly
-                    type={showClientSecret ? 'text' : 'password'}
+                    masked={!showClientSecret}
                     value={createdCredentials.clientSecret}
                     style={{ flex: 1, minWidth: 0, ...CREDENTIAL_MONO }}
                   />

@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
+from app.modules.indexing import keep_old_copy
 from app.modules.indexing.embed_resume import cleared_fields, current_attempt
 from app.modules.indexing.parse_now_marker import shape_status_write
 from app.modules.reconciliation.block_identity import ID_SCHEME, BlockIdentity
@@ -22,6 +23,7 @@ from app.modules.transformers.transformer import (
 )
 from app.modules.transformers.vectorstore import VirtualRecordBusy
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.services.paid_cache.orphan import ensure_record_alive
 from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
 
@@ -182,6 +184,8 @@ class IndexingPipeline:
         try:
             store_only = bool(ctx.settings.get(STORE_ONLY))
             record = ctx.record
+            # A record deleted while its run was in flight is not embedded or written (see paid_cache/orphan.py).
+            await ensure_record_alive(record.org_id, record.id, "embed")
             block_containers = record.block_containers
 
             if block_containers is not None:
@@ -259,11 +263,18 @@ class IndexingPipeline:
                     "isDirty": False,
                     "extractionStatus": ProgressStatus.NOT_STARTED.value,
                 }
-                success = await self.document_extraction.graph_provider.update_node(
-                    record_id,
-                    CollectionNames.RECORDS.value,
-                    shape_status_write(status_fields),
-                )
+                swap_run = keep_old_copy.current_swap(record_id, record.virtual_record_id)
+                if swap_run is not None:
+                    # The new copy is empty: the record moves to it and the old copy is released after the commit.
+                    success = await self.sink_orchestrator.swap.commit(ctx, swap_run, shape_status_write(status_fields))
+                    if success:
+                        await self.sink_orchestrator.swap.finish(ctx, swap_run)
+                else:
+                    success = await self.document_extraction.graph_provider.update_node(
+                        record_id,
+                        CollectionNames.RECORDS.value,
+                        shape_status_write(status_fields),
+                    )
                 if not success:
                     self.logger.warning(
                         "⚠️ Failed to update indexing status for record %s - record may not exist",
