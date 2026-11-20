@@ -23,6 +23,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
+from app.agents.actions.knowledge_graph.listing_citations import (
+    LISTING_CITATIONS_OFF_KEY,
+)
 from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     _named_entities_enabled,
     execute_search_entities,
@@ -31,7 +34,12 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.views import _compact_date
-from app.api.middlewares.auth import require_scopes
+from app.agents.agent_loop.entity_search_tool import (
+    ENTITY_SEARCH_OFFERED_STATE_KEY,
+    NAMED_ENTITIES_ENABLED_STATE_KEY,
+    entity_search_tool_offered,
+)
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes
 from app.core.org_context import (
@@ -40,6 +48,7 @@ from app.core.org_context import (
     current,
     spawn_in_request,
 )
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import resolve_weburl
 from app.models.source_dates import RecordDates
 from app.modules.artifacts.reader import record_artifact_reader
@@ -51,6 +60,14 @@ from app.modules.retrieval.entity_permissions import (
 from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.retrieval_service import (
     RetrievalService,  # noqa: TC001 - FastAPI reads the annotation
+)
+from app.modules.retrieval.selection_scope import (
+    SelectionNotReadyError,
+    SelectionTooLargeError,
+    prepare_turn_scope,
+)
+from app.services.featureflag.platform_settings import (
+    is_named_entity_extraction_enabled,
 )
 from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,  # noqa: TC001 - FastAPI reads the annotation
@@ -438,20 +455,43 @@ async def grep(
 # entities
 # ---------------------------------------------------------------------------
 async def _entity_state(request: Request, graph_provider: IGraphDBProvider) -> dict[str, Any]:
-    """The state the knowledge-graph tools read, for one request: no chat, no
-    scope beyond the caller's own access."""
+    """The state the knowledge-graph tools read, for one request: no chat, and
+    no scope beyond the caller's own access and the limit of the connected app
+    making the request, bound as a chat turn binds it.
+
+    The named-entity flag and whether ``search_by_entities`` is offered are
+    read once here, as the agent reads them once per request, so a route and
+    the capabilities it reports never disagree within a request."""
     from app.api.routes.chatbot import load_entity_vector_store
 
     org_id, user_id = _user(request)
     container = request.app.container
-    return {
+    config_service = container.config_service()
+    user = request.state.user or {}
+    try:
+        filters = await prepare_turn_scope(
+            graph_provider, user_id, org_id, {}, connection_sources=connection_limit(user),
+        )
+    except SelectionTooLargeError as exc:
+        raise HTTPException(status_code=400, detail="This connection's limit is too large to search.") from exc
+    except (SelectionNotReadyError, PermissionVerificationUnavailableError) as exc:
+        raise HTTPException(status_code=503, detail="Access could not be checked right now; try again.") from exc
+    store = await load_entity_vector_store(container, container.logger(), org_id)
+    named = await is_named_entity_extraction_enabled(config_service)
+    state: dict[str, Any] = {
         "org_id": org_id,
         "user_id": user_id,
+        "user_email": user.get("email"),
         "graph_provider": graph_provider,
-        "config_service": container.config_service(),
-        "entity_vector_store": await load_entity_vector_store(container, container.logger(), org_id),
-        "filters": {},
+        "config_service": config_service,
+        "entity_vector_store": store,
+        "filters": filters,
+        "query": "",
+        NAMED_ENTITIES_ENABLED_STATE_KEY: named,
+        LISTING_CITATIONS_OFF_KEY: True,
     }
+    state[ENTITY_SEARCH_OFFERED_STATE_KEY] = entity_search_tool_offered(state)
+    return state
 
 
 class EntitySearchQuery(BaseModel):

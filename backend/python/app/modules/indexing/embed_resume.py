@@ -65,6 +65,8 @@ EMBED_FIELDS: tuple[str, ...] = (
 #: Payload keys of a point written by an attempt that carries a marker (under ``metadata``).
 POINT_REV = "contentRev"
 POINT_KEY = "embedKey"
+#: Which weights made a point: ``fp32`` or ``int8-w`` for a text point, ``image`` for an image point, ``stamp`` for a collection stamp.
+POINT_PRECISION = "embedPrecision"
 
 #: Payload key of the event payload where each consumer puts the identity of the delivery.
 DELIVERY_ID_KEY = "_delivery_id"

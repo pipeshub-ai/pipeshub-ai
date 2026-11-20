@@ -126,7 +126,7 @@ class PermissionConformanceShardsTest(unittest.TestCase):
         passes: dict[tuple[str, str], list[int]] = {}
         for shard, entry in self.shards.items():
             if entry.get("browse_mode"):
-                self.assertEqual(entry["browse_mode"], "split", shard)
+                self.assertEqual(entry["browse_mode"], "legacy", shard)
                 self.assertEqual(len(self.args[shard]), 1, f"shard {shard}: a second pass runs one file")
                 passes.setdefault((entry["browse_mode"], self.args[shard][0]), []).append(shard)
         for (mode, path), shards in passes.items():
