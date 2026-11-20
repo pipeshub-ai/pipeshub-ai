@@ -3875,6 +3875,7 @@ class JiraConnector(BaseConnector):
             self._group_members = {k: v for k, v in groups_members_map.items() if v is not None}
             unread = {group_id: (user_group, group_name) for group_id, group_name, user_group, app_users in
                       (r for r in results if r is not None) if group_id and app_users is None}
+            closed_groups: list[tuple[AppUserGroup, list[AppUser]]] = []
             for group_id in await self._unread_streaks(
                     "user_group", set(unread), {k for k, v in groups_members_map.items() if v is not None}):
                 user_group, group_name = unread[group_id]
@@ -3882,13 +3883,15 @@ class JiraConnector(BaseConnector):
                     f"Group {group_name}: its members could not be read for {UNREAD_SYNCS_BEFORE_CLOSE} syncs in a row; "
                     "writing it with no members, so no one Jira removed keeps access"
                 )
-                user_groups_batch.append((user_group or AppUserGroup(
+                closed_groups.append((user_group or AppUserGroup(
                     app_name=self.connector_name, connector_id=self.connector_id, source_user_group_id=group_id,
                     name=group_name or group_id, org_id=self.data_entities_processor.org_id,
                     description=f"Jira user group: {group_name or group_id}"), []))
 
             if self._user_read_unfinished:
                 user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
+            # After the short-read filter: the stored members it would keep are what the bound drops.
+            user_groups_batch.extend(closed_groups)
 
             # One transaction per group, as the Confluence connector writes them: a large
             # site's groups in a single transaction (one user lookup per membership) outlive
@@ -4308,6 +4311,7 @@ class JiraConnector(BaseConnector):
             total_members += sum(len(members) for _, members in project_roles)
         closed = await self._unread_streaks(
             "role", {role.source_role_id for role, _, _ in self._roles_unread}, {role.source_role_id for role, _ in roles_to_sync})
+        closed_roles: list[tuple[AppRole, list[AppUser]]] = []
         for role, members, group in self._roles_unread:
             if role.source_role_id in closed:
                 # Its level readers stay unknown (no ``_role_members`` entry): issues that read through it wait.
@@ -4315,7 +4319,7 @@ class JiraConnector(BaseConnector):
                     f"Role {role.name}: the members of its group '{group}' could not be read for {UNREAD_SYNCS_BEFORE_CLOSE} "
                     "syncs in a row; writing it with the members that were read, so no one Jira removed keeps access"
                 )
-                roles_to_sync.append((role, members))
+                closed_roles.append((role, members))
 
         if failed_project_keys:
             preview = ", ".join(failed_project_keys[:10])
@@ -4339,6 +4343,8 @@ class JiraConnector(BaseConnector):
 
         if self._user_read_unfinished:
             roles_to_sync = await self._without_stored_members("role", roles_to_sync)
+        # After the short-read filter: the stored members it would keep are what the bound drops.
+        roles_to_sync.extend(closed_roles)
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
