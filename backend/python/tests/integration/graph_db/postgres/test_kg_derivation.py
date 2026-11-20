@@ -201,14 +201,16 @@ async def test_has_children_reads_one_child_per_parent_not_all_of_them(pg_db) ->
         if state == "analysed":
             await _admin("ANALYZE graph.nodes; ANALYZE graph.edges")
 
-        async def go(tx) -> int:
-            ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + reader.HAS_CHILDREN, org, colls, ids, list(reader.HIERARCHY), list(reader.RECORD_COLLS))
+        async def go(tx) -> tuple[int, list]:
+            async with reader.seeks(tx):         # as load_has_children runs it
+                ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + reader.HAS_CHILDREN, org, colls, ids, list(reader.HIERARCHY), list(reader.RECORD_COLLS))
             # every edge row a scan produced or filtered away, over all its loops (EXPLAIN shows both per loop)
-            return sum(round((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0) + n.get("Rows Removed by Index Recheck", 0)) * n.get("Actual Loops", 1))
-                       for n in plan_gate.scans(ran, "edges"))
+            return (sum(round((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0) + n.get("Rows Removed by Index Recheck", 0)) * n.get("Actual Loops", 1))
+                        for n in plan_gate.scans(ran, "edges")),
+                    [(n["Node Type"], n.get("Index Name"), plan_gate.bounds(n)) for n in plan_gate.nodes(ran)])
         with ctx(org):
-            read = await pg_db.run(go, custom_plan=True)
-        assert read <= 2, f"{state}: {read} edge rows read to learn that 2 parents have a child"
+            read, plan = await pg_db.run(go, custom_plan=True)
+        assert read <= 2, f"{state}: {read} edge rows read to learn that 2 parents have a child; plan {plan}"
 
 
 async def test_the_children_of_a_page_of_records_are_read_by_seeks_not_by_the_orgs_relations(pg_db) -> None:
