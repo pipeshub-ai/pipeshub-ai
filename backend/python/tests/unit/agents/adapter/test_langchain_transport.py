@@ -292,6 +292,16 @@ class TestComplete:
         assert response.stop_reason == StopReason.MAX_TOKENS
         assert response.message.truncated is True
 
+    @pytest.mark.parametrize("reason", ["MAX_TOKENS", "Length"])
+    async def test_max_tokens_stop_reason_is_case_insensitive(self, reason: str) -> None:
+        """Cohere v2 and Gemini (via LangChain) report the finish reason in
+        upper case (`MAX_TOKENS`); it must still map to a truncation."""
+        ai_message = AIMessage(content="cut off mid-sen", response_metadata={"finish_reason": reason})
+        transport = LangChainTransport(_FakeModel(ai_message))
+        response = await transport.complete([UserMessage(content="write an essay")])
+        assert response.stop_reason == StopReason.MAX_TOKENS
+        assert response.message.truncated is True
+
     async def test_max_tokens_stop_reason_from_responses_api_incomplete_details(self) -> None:
         """The Responses API reports truncation as `incomplete_details`
         instead of the Chat Completions `finish_reason="length"`."""
