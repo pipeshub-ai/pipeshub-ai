@@ -679,6 +679,21 @@ export class Logger {
     }
   }
 
+  /** Every console line to stderr, for a command whose stdout is its result (docstore-migrate prints a JSON report there). */
+  static consoleToStderr(): void {
+    const root = Logger.getInstance().logger;
+    for (const t of root.transports.filter(
+      (x) => x instanceof winston.transports.Console,
+    ))
+      root.remove(t);
+    root.add(
+      new winston.transports.Console({
+        format: consoleFormat(),
+        stderrLevels: Object.keys(customLevels.levels),
+      }),
+    );
+  }
+
   /** Adds to this logger's own metadata only; its service is fixed by the name it was created with. */
   updateDefaultMeta(metadata: Record<string, any>): void {
     this.defaultMeta = {
