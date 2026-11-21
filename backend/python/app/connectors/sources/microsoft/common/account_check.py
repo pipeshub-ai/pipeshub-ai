@@ -135,7 +135,8 @@ async def withdraw_unconfirmed_accounts(
 
     rest_ids = {u.source_user_id for u in rest}
     still_unconfirmed = {u.source_user_id for u in unlisted} - confirmed
-    pending = _ids(saved_state.get("pending_notice")) | {u.source_user_id for u in closed}
+    # An owed notice for an account this listing shows enabled again is dropped: its link is already back.
+    pending = (_ids(saved_state.get("pending_notice")) - (listed - disabled)) | {u.source_user_id for u in closed}
     new_state = {
         # Closed accounts keep counting until their withdrawal commits; the next sync no longer finds them linked.
         "streaks": json.dumps({k: v for k, v in streaks.items() if k in still_unconfirmed}, sort_keys=True),
@@ -148,7 +149,7 @@ async def withdraw_unconfirmed_accounts(
         # Without the saved notice a close would go untold if the notice then failed; this sync closes nobody.
         log.error(f"Could not save the owed notice; {len(closed)} account(s) past the grace keep access this sync")
         closed = []
-        pending = _ids(saved_state.get("pending_notice"))
+        pending = _ids(saved_state.get("pending_notice")) - (listed - disabled)
     lost = gone + closed
     if lost:
         # The link is the connector's only gate for these connectors, so the user's own grants stay: an account restored
