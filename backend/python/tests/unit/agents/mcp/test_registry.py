@@ -107,6 +107,27 @@ class TestMCPRegistry:
         assert "fathom" in type_ids
         assert "miro" in type_ids
         assert "instantly" in type_ids
+        assert "apollo" in type_ids
+
+    def test_apollo_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        apollo = registry.get_template("apollo")
+
+        assert apollo is not None
+        assert apollo.default_url == "https://mcp.apollo.io/mcp"
+        assert apollo.transport == MCPTransport.STREAMABLE_HTTP
+        assert apollo.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert apollo.supports_dcr
+        assert not apollo.require_oauth_client
+        assert not apollo.url_editable
+        assert apollo.default_scopes == [
+            "read_user_profile",
+            "mcp_scope",
+            "mixed_people_api_search",
+            "mixed_companies_search",
+        ]
+        assert apollo.icon == "/icons/connectors/apollo.svg"
 
     def test_miro_catalog_entry(self) -> None:
         registry = MCPRegistry()

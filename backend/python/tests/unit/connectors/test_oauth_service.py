@@ -13,10 +13,13 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
     OAuthStateError,
+    OAuthStoreUnavailableError,
     OAuthToken,
     OAuthTokenRequestError,
     RefreshTokenInvalidError,
 )
+from app.utils.encryption.encryption_service import DecryptionError
+from app.utils.error_class import classify_error
 from app.utils.logger import JsonFormatter, TextFormatter, log_record_fields
 from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
 from app.utils.oauth_errors import MAX_TOKEN_LIFETIME_S
@@ -552,6 +555,7 @@ def mock_config_service():
     svc = MagicMock()
     svc.get_config = AsyncMock(return_value={})
     svc.set_config = AsyncMock()
+    svc.create_config_if_absent = AsyncMock(return_value=True)  # the callback's claim on its code
     return svc
 
 
@@ -1811,6 +1815,113 @@ class TestHandleCallback:
 
         with pytest.raises(OAuthStateError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
+
+
+def _matching() -> dict:
+    """A sign-in in progress (a fresh copy: the callback appends to its used_codes)."""
+    return {"oauth": {"state": "valid-state", "used_codes": []}, "credentials": {"access_token": "old-tok"}}
+
+
+class TestHandleCallbackStore:
+    """The callback's own store: an outage is told apart from "nothing stored", and only one callback exchanges a code."""
+
+    @pytest.mark.asyncio
+    async def test_the_config_is_read_asking_the_store_to_raise(self, oauth_provider, mock_config_service) -> None:
+        mock_config_service.get_config = AsyncMock(side_effect=ConnectionError("kv down"))
+        oauth_provider.exchange_code_for_token = AsyncMock()
+
+        with pytest.raises(OAuthStoreUnavailableError) as raised:
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        assert mock_config_service.get_config.await_args.kwargs == {"raise_on_error": True}
+        assert isinstance(raised.value.__cause__, ConnectionError)
+        oauth_provider.exchange_code_for_token.assert_not_awaited()
+        mock_config_service.create_config_if_absent.assert_not_awaited()
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unreadable", [ValueError("Stored value could not be decoded"),
+                                            DecryptionError("Decryption failed")])
+    async def test_a_value_that_does_not_decode_reads_as_unset_not_as_an_outage(
+        self, oauth_provider, mock_config_service, unreadable: Exception,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(side_effect=unreadable)
+
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+    @pytest.mark.asyncio
+    async def test_the_code_is_claimed_once_hashed_and_expiring(self, oauth_provider, mock_config_service) -> None:
+        mock_config_service.get_config = AsyncMock(return_value=_matching())
+        oauth_provider.exchange_code_for_token = AsyncMock(return_value=OAuthToken(access_token="new-tok"))
+
+        await oauth_provider.handle_callback(code="CODE-MARKER", state="valid-state")
+
+        (key, value), kwargs = mock_config_service.create_config_if_absent.await_args
+        assert key.startswith("/services/oauth-code-claims/") and "CODE-MARKER" not in key
+        assert (value, kwargs) == ({"claimed": True}, {"ttl_seconds": 600})
+        assert key == oauth_service._code_claim_path("/test/creds/path", "CODE-MARKER")
+        assert key != oauth_service._code_claim_path("/other/creds/path", "CODE-MARKER")
+        assert key != oauth_service._code_claim_path("/test/creds/path", "other-code")
+
+    @pytest.mark.asyncio
+    async def test_a_code_another_callback_claimed_is_refused_without_an_exchange_or_a_write(
+        self, oauth_provider, mock_config_service,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(return_value=_matching())
+        mock_config_service.create_config_if_absent = AsyncMock(return_value=False)
+        oauth_provider.exchange_code_for_token = AsyncMock()
+
+        with pytest.raises(OAuthStateError, match="already submitted") as raised:
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        assert "start a new sign-in" in extract_oauth_error_message(raised.value)
+        oauth_provider.exchange_code_for_token.assert_not_awaited()
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_claim_the_store_cannot_make_is_unavailable(self, oauth_provider, mock_config_service) -> None:
+        mock_config_service.get_config = AsyncMock(return_value=_matching())
+        mock_config_service.create_config_if_absent = AsyncMock(side_effect=ConnectionError("kv down"))
+        oauth_provider.exchange_code_for_token = AsyncMock()
+
+        with pytest.raises(OAuthStoreUnavailableError):
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        oauth_provider.exchange_code_for_token.assert_not_awaited()
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_credentials_the_store_did_not_save_are_unavailable_not_a_token(
+        self, oauth_provider, mock_config_service,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(return_value=_matching())
+        mock_config_service.set_config = AsyncMock(return_value=False)
+        oauth_provider.exchange_code_for_token = AsyncMock(return_value=OAuthToken(access_token="new-tok"))
+
+        with pytest.raises(OAuthStoreUnavailableError, match="could not be saved"):
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        # Only the save of the new credentials: the exchange's failure path, which would re-save, does not run.
+        (call,) = mock_config_service.set_config.await_args_list
+        assert call.args[1]["credentials"]["access_token"] == "new-tok"
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_after_a_finished_sign_in_reuses_the_token_without_a_claim(
+        self, oauth_provider, mock_config_service,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(return_value={
+            "oauth": {"used_codes": ["auth-code"]}, "credentials": {"access_token": "saved-tok"}})
+
+        token = await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        assert token.access_token == "saved-tok"
+        mock_config_service.create_config_if_absent.assert_not_awaited()
+
+    def test_an_outage_is_classed_unavailable_and_answered_with_a_retry_message(self) -> None:
+        error = OAuthStoreUnavailableError("The OAuth config could not be read")
+        assert classify_error(error) == "unavailable"
+        assert "try again" in extract_oauth_error_message(error)
 
 
 class TestSlackTokenEndpoint:

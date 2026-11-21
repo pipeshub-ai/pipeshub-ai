@@ -7,6 +7,7 @@ in the parse-now marker rather than in the record's status.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -15,11 +16,13 @@ import pytest
 from app.config.constants.arangodb import CollectionNames, EventTypes
 from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.indexing.parse_now_marker import current_run, store_only_active
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
     StreamMessage,
+    messaging_env,
 )
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
@@ -393,3 +396,18 @@ class TestFailuresEndInTheMarker:
 
         assert not any("parseNowStatus" in write for write in harness.writes())
 
+
+@pytest.mark.parametrize(("stored", "pdf"), [("application/pdf", True), ("application/octet-stream", False)])
+async def test_a_parse_now_event_gets_the_budget_its_client_sends(stored: str, pdf: bool) -> None:
+    """A RECORDS document as production stores it (no `extension`) and the payload `parse_now_event` builds from it: the
+    consumer's budget after the handler equals what the parsing client sends (F23g). An octet-stream PDF gets the general
+    budget on both sides; reading its extension from the FILES document is F23f's PR-0."""
+    record = {k: v for k, v in _record(mimeType=stored, recordName="report.pdf").items() if k != "extension"}
+    harness = Harness(record)
+    general = messaging_env.record_processing_timeout
+    async with asyncio.timeout(general) as timeout, record_budget.armed(timeout, general) as budget:
+        await harness.run(_payload(mimeType=stored))
+    sent = harness.runs[0]["payload"]
+    client = messaging_env.record_processing_timeout_for(sent.get("extension"), sent.get("mimeType"))
+    assert budget.seconds == client
+    assert client == (messaging_env.pdf_record_processing_timeout if pdf else general)

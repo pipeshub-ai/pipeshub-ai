@@ -32,6 +32,7 @@ from app.api.middlewares.auth import (
     require_service_token,
     service_token_org,
 )
+from app.config import file_types
 from app.config.constants.service import TokenScopes
 from app.exceptions.indexing_exceptions import (
     MultimodalModelNotConfiguredError,
@@ -74,9 +75,9 @@ from app.services.parsing.registry import ParserRegistry
 from app.services.parsing.thread_work import ThreadWork, track
 from app.services.resource_governor import (
     acquire_gate_with_backpressure,
-    classify,
     gate_pool,
     parse_cost,
+    reader_tier,
 )
 from app.services.resource_governor.kinds import (
     EXCESS_WAIT_SECONDS,
@@ -390,7 +391,8 @@ async def _parse_file(
             })
 
     message_id = current_display_id()
-    tier = classify(extension, mime_type)
+    # The parser the registry resolves decides a heavy tier: a PDF labelled txt is parsed by the PDF parser.
+    tier = reader_tier(extension, mime_type, file_types.format_tier(file_types.parse_format(mime_type, extension)))
     cost = parse_cost(tier, len(content))
     logger.debug(
         "Received parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s cost=%d",

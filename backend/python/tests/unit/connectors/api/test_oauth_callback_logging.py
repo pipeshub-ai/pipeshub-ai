@@ -380,11 +380,11 @@ async def test_a_callback_for_another_sign_in_changes_nothing(
     assert (fields["reason"], fields["connector_id"], fields["error_type"]) == ("server_error", CONNECTOR_ID, "OAuthStateError")
 
 
-async def test_a_config_read_failure_after_the_checks_still_signs_the_connector_out(
+async def test_a_config_read_failure_after_the_checks_is_temporarily_unavailable_and_writes_nothing(
     client: httpx.AsyncClient, store: InMemoryConfigService, registry: MagicMock, monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # The caller passed the checks, so a failure from here on is this sign-in's: main's write is kept.
+    # Our own store failed, not the sign-in: the connector is left as it was (test_oauth_callback_store.py has the rest).
     read = store.get_config
 
     async def failing_read(key: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
@@ -396,12 +396,10 @@ async def test_a_config_read_failure_after_the_checks_still_signs_the_connector_
 
     body = await _callback(client, code="auth-code", state=_state())
 
-    assert (body["success"], body["error"]) == (False, "server_error")
-    fields = failure_line(caplog.records, EVENT, "internal", logging.ERROR)
-    assert (fields["reason"], fields["connector_id"]) == ("server_error", CONNECTOR_ID)
-    registry.update_connector_instance.assert_awaited_once()
-    assert registry.update_connector_instance.await_args.kwargs["connector_id"] == CONNECTOR_ID
-    assert registry.update_connector_instance.await_args.kwargs["updates"]["isAuthenticated"] is False
+    assert (body["success"], body["error"]) == (False, "temporarily_unavailable")
+    registry.update_connector_instance.assert_not_awaited()
+    fields = failure_line(caplog.records, EVENT, "unavailable", logging.WARNING)
+    assert (fields["reason"], fields["connector_id"]) == ("temporarily_unavailable", CONNECTOR_ID)
 
 
 # The code was used and what it saved no longer parses: the connector is broken, whether or not the state still matches.

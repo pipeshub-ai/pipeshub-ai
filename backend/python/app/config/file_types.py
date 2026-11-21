@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Final, Literal
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-REGISTRY_VERSION: Final = 3
+REGISTRY_VERSION: Final = 4
 
 Tier = Literal["heavy", "light"]
 MimeRole = Literal["gate", "parse", "tier", "kind", "ext_hint", "code", "reconcile", "ooxml"]
@@ -521,6 +521,11 @@ FILE_TYPES: tuple[FileType, ...] = (
     _new(key="potx", format="potx", password_check_by_name=False, extensions=("potx",), mimes=(f"{_PPTX_BASE}.template",),
          tier="heavy", mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx",
          route=Route.PPTX, prep=Prep.OOXML_SLIDES, ooxml_container=True, blocks_like="pptx"),
+    # Read as the pptx it is: python-pptx opens a macro-enabled deck, so nothing rewrites it first.
+    _new(key="pptm", format="pptx", extensions=("pptm",),
+         mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), tier="heavy",
+         mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx", route=Route.PPTX,
+         ooxml_container=True, blocks_like="pptx", since=3, route_since=4),
     # Exclude-only, in filter order.
     _exclude("zip", "application/zip", file_mime_map=True),
     _exclude("7z", "application/x-7z-compressed"),
@@ -565,12 +570,6 @@ FILE_TYPES: tuple[FileType, ...] = (
                               "tf", "tfvars")),
     _repo_text("css", "text/css"),
     _repo_text("sql", "application/sql"),
-    # An Office container only the password check knows.
-    # Read by its mime only, as the pptx it is: python-pptx opens a macro-enabled deck as it is.
-    FileType(key="pptm", format="pptx", extensions=("pptm",),
-             mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), mime_indexable=True,
-             mime_tier="heavy", mime_kind="docling_docx", route=Route.PPTX, ooxml_container=True,
-             since=3, route_since=3),
     # PipesHub's own types: connectors write these mimes, no file carries them.
     _internal("gmail", "text/gmail_content", "application/vnd.google-apps.gmail", format="html",
               mime_indexable=True, mime_tier="light", route=Route.GMAIL),
@@ -852,6 +851,7 @@ _FORMAT_BY_MIME: Final = {
     **{normalize_mime(m): ft.format for m, ft in _spellings("parse") if ft.format},
     **{m: ft.format for m, ft in _routed_spellings("format").items()},
 }
+_TIER_BY_FORMAT: Final = {ft.format: ft.tier or ft.mime_tier for ft in FILE_TYPES if ft.format and (ft.tier or ft.mime_tier)}
 
 
 # The mimes the dispatch matched before the registry's second version, each as it matched it
@@ -1114,6 +1114,24 @@ def legacy_route(
         # file by its name, and a specific mime, readable or not, is never overruled by it.
         found = _widened_route(mime_type, code_ext)
     return found
+
+
+def read_tier(dispatch: Dispatch | None) -> Tier | None:
+    """The parse tier of the in-process reader *dispatch* names (the code parser is light), or None for no reader.
+
+    A type with no tier of its own (a Google Docs export) is read as its parsing format (docx), so it has that one's.
+    """
+    if dispatch is None:
+        return None
+    ft = dispatch.file_type
+    if ft is None:
+        return "light"
+    return ft.tier or ft.mime_tier or format_tier(ft.format)
+
+
+def format_tier(format_key: str | None) -> Tier | None:
+    """The parse tier of the parsing service's reader for *format_key* (see `parse_format`), or None."""
+    return _TIER_BY_FORMAT.get(format_key) if format_key else None
 
 
 def _names_nothing(mime_type: object) -> bool:

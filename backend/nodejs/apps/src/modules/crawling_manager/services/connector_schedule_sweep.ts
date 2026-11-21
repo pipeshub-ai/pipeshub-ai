@@ -93,7 +93,7 @@ export class ConnectorScheduleSweepService {
         // an emitted 'error' with no listener would crash the process on a transient database error
         worker.on('error', (e: unknown) => {
           this.logger.error('connector schedule sweep worker error', {
-            error: e instanceof Error ? e.message : String(e),
+            error: e,
           });
         });
         this.worker = worker;
@@ -132,7 +132,7 @@ export class ConnectorScheduleSweepService {
       // BullMQ emits 'error' asynchronously; without a listener Node treats it as uncaught.
       const logAsyncError = (message: string) => (error: unknown) => {
         this.logger.error(message, {
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error,
         });
       };
       this.queue.on(
@@ -164,7 +164,7 @@ export class ConnectorScheduleSweepService {
     } catch (error) {
       // Defensive job only; never block app startup on it.
       this.logger.error('Failed to start connector schedule sweep', {
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error,
       });
     }
   }
@@ -197,7 +197,7 @@ export class ConnectorScheduleSweepService {
           {
             attempt,
             retryInMs: delay,
-            error: error instanceof Error ? error.message : 'Unknown error',
+            error,
           },
         );
         if (await this.sleepUnlessClosed(delay)) throw error;
@@ -259,7 +259,7 @@ export class ConnectorScheduleSweepService {
       live = await this.scheduler.listRepeatableSchedules();
     } catch (error) {
       this.logger.error('Connector schedule sweep aborted; nothing changed', {
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error,
       });
       summary.aborted = true;
       return finish();
@@ -270,9 +270,9 @@ export class ConnectorScheduleSweepService {
     for (const item of desired) {
       summary.checked++;
       const ctx = {
-        connectorId: item.connectorId,
-        type: item.type,
-        orgId: item.orgId,
+        connector_id: item.connectorId,
+        connector_type: item.type,
+        org_id: item.orgId,
       };
       try {
         const name = this.scheduler.jobNameFor(item.type, item.connectorId);
@@ -347,7 +347,7 @@ export class ConnectorScheduleSweepService {
         failedConnectorIds.add(item.connectorId);
         this.logger.error('Sweep failed for connector', {
           ...ctx,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error,
         });
       }
     }
@@ -397,7 +397,7 @@ export class ConnectorScheduleSweepService {
         summary.errors++;
         this.logger.error('Sweep failed to remove orphaned schedule', {
           name: r.name,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error,
         });
       }
     }

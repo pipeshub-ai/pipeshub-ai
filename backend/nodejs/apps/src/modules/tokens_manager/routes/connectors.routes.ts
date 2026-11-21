@@ -23,6 +23,7 @@ import axiosRetry, { retryAfter } from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { bindConnectorLogFields } from '../utils/connector.utils';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import { createKeyedRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
@@ -36,6 +37,7 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { withCause } from '../../../libs/errors/base.error';
 import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../edition';
 import { AppConfig, loadAppConfig } from '../config/config';
 import { Logger } from '../../../libs/services/logger.service';
@@ -120,6 +122,23 @@ import { CrawlingSchedulerService } from '../../crawling_manager/services/crawli
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
 });
+
+const GOOGLE_CLIENT_NOT_CONFIGURED =
+  'Google Workspace client id or secret is not configured';
+
+/**
+ * A configuration-manager call that did not answer 200. A 5xx's status is the cause, so the error line
+ * classes it as the service's (`upstream_5xx`, `unavailable`, `timeout`); any other answer stays our
+ * `internal` failure (a 408 cause would read as `timeout`). Its body is never kept, since it can hold
+ * stored credentials. The client still gets our 500.
+ */
+const failedCall = (
+  message: string,
+  response: { statusCode?: number },
+): Error =>
+  response.statusCode !== undefined && response.statusCode >= 500
+    ? withCause(new InternalServerError(message), { status: response.statusCode })
+    : new InternalServerError(message);
 
 // A 429 whose Retry-After is longer than this goes straight back to the caller
 // with its Retry-After: waiting it out would hold the request open (a preview
@@ -667,6 +686,7 @@ export function createConnectorRouter(
     'filterKey',
     'recordId',
   );
+  bindConnectorLogFields(router);
   let config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const eventService = container.get<EntitiesEventProducer>('EntitiesEventProducer');
@@ -1340,11 +1360,6 @@ export function createConnectorRouter(
           throw new NotFoundError('User not found');
         }
 
-        logger.info('Processing Google Workspace token exchange', {
-          userId: req.user.userId,
-          orgId: req.user.orgId,
-        });
-
         // Get Google Workspace configuration
         const configResponse = await getGoogleWorkspaceConfig(
           req,
@@ -1353,18 +1368,12 @@ export function createConnectorRouter(
         );
 
         if (configResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            'Error getting Google Workspace config',
-            configResponse?.data
-          );
+          throw failedCall('Error getting Google Workspace config', configResponse);
         }
 
         const configData = configResponse.data;
-        if (!configData.clientId) {
-          throw new NotFoundError('Client ID is missing');
-        }
-        if (!configData.clientSecret) {
-          throw new NotFoundError('Client secret is missing');
+        if (!configData.clientId || !configData.clientSecret) {
+          throw new InternalServerError(GOOGLE_CLIENT_NOT_CONFIGURED);
         }
 
         const enableRealTimeUpdates = configData?.enableRealTimeUpdates;
@@ -1417,10 +1426,7 @@ export function createConnectorRouter(
         );
 
         if (credentialsResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            'Error storing access token',
-            credentialsResponse?.data,
-          );
+          throw failedCall('Error storing access token', credentialsResponse);
         }
 
         const connectorId = ConnectorId.GOOGLE_WORKSPACE;
@@ -1474,7 +1480,7 @@ export function createConnectorRouter(
             )) ?? connector;
 
           logger.info('Google Workspace connector enabled', {
-            connectorId: connector._id,
+            connector_config_id: connector._id,
             apps: enabledApps,
           });
 
@@ -1516,7 +1522,7 @@ export function createConnectorRouter(
           await eventService.stop();
 
           logger.info('Google Workspace connector created and enabled', {
-            connectorId: connector._id,
+            connector_config_id: connector._id,
           });
 
           res.status(201).json({
@@ -1525,10 +1531,6 @@ export function createConnectorRouter(
           });
         }
       } catch (error) {
-        logger.error('Error in Google Workspace token exchange', {
-          error: error instanceof Error ? error.message : String(error),
-          userId: req.user?.userId,
-        });
         next(error);
       }
     },
@@ -1548,8 +1550,6 @@ export function createConnectorRouter(
       next: NextFunction,
     ): Promise<void> => {
       try {
-        logger.info('Refreshing individual connector token');
-
         // Get refresh token from storage
         const refreshTokenResponse = await getRefreshTokenCredentials(
           req,
@@ -1560,28 +1560,19 @@ export function createConnectorRouter(
           refreshTokenResponse.statusCode !== 200 ||
           !refreshTokenResponse.data.refresh_token
         ) {
-          throw new InternalServerError(
-            'Error getting refresh token from storage',
-            refreshTokenResponse?.data,
-          );
+          throw failedCall('Error getting refresh token from storage', refreshTokenResponse);
         }
 
         // Get connector configuration
         const configResponse = await getRefreshTokenConfig(req, config.cmBackend);
 
         if (configResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            'Error getting connector config',
-            configResponse?.data
-          );
+          throw failedCall('Error getting connector config', configResponse);
         }
 
         const configData = configResponse.data;
-        if (!configData.clientId) {
-          throw new NotFoundError('Client ID is missing');
-        }
-        if (!configData.clientSecret) {
-          throw new NotFoundError('Client secret is missing');
+        if (!configData.clientId || !configData.clientSecret) {
+          throw new InternalServerError(GOOGLE_CLIENT_NOT_CONFIGURED);
         }
 
         const enableRealTimeUpdates = configData?.enableRealTimeUpdates;
@@ -1607,20 +1598,8 @@ export function createConnectorRouter(
             tokenData = data;
             tokenExchangeSuccessful = true;
           } catch (error) {
+            // Each attempt already has its upstream.call.end line.
             retryCount++;
-            
-            if (error instanceof Error) {
-              logger.error('Error refreshing individual connector token', {
-                error: error.message,
-                stack: error.stack,
-                retryCount,
-              });
-            } else {
-              logger.error('Error refreshing individual connector token', {
-                unknownError: String(error),
-                retryCount,
-              });
-            }
 
             if (retryCount < 3) {
               // Exponential backoff with jitter
@@ -1650,10 +1629,7 @@ export function createConnectorRouter(
         );
 
         if (updateResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            'Error updating access token',
-            updateResponse?.data,
-          );
+          throw failedCall('Error updating access token', updateResponse);
         }
 
         logger.info('Access token refreshed successfully');
@@ -1662,9 +1638,6 @@ export function createConnectorRouter(
           message: 'Access token updated successfully',
         });
       } catch (error) {
-        logger.error('Error refreshing individual connector token', {
-          error: error instanceof Error ? error.message : String(error),
-        });
         next(error);
       }
     },
@@ -1684,8 +1657,6 @@ export function createConnectorRouter(
       next: NextFunction,
     ): Promise<void> => {
       try {
-        logger.info('Updating connector configuration');
-
         config = await loadAppConfig();
         container.rebind<AppConfig>('AppConfig').toDynamicValue(() => config);
 
@@ -1695,9 +1666,6 @@ export function createConnectorRouter(
           message: 'Connectors configuration updated successfully',
         });
       } catch (error) {
-        logger.error('Error updating connector configuration', {
-          error: error instanceof Error ? error.message : String(error),
-        });
         next(error);
       }
     },

@@ -145,6 +145,7 @@ import {
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
+import { createAgentActivityRouter } from './modules/agent_activity/agent-activity.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 import { mcpJsonBodyParser } from './modules/mcp/middlewares/mcp-body.middleware';
 import { releaseOnClientClose } from './libs/utils/release-on-close';
@@ -882,6 +883,11 @@ export class Application {
     this.app.use(
       '/api/v1/service-account-delegations',
       createDelegationRouter(this.oauthProviderContainer),
+    );
+
+    this.app.use(
+      '/api/v1/agent-activity',
+      createAgentActivityRouter(this.oauthProviderContainer),
     );
 
     this.app.use(
