@@ -649,6 +649,7 @@ async def create_instance(
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
+    org_id = user_context["org_id"]
     if payload.scope not in (None, mcp_service.SCOPE_ORG, mcp_service.SCOPE_PERSONAL):
         raise _bad_request("scope must be 'org' or 'personal'.")
     # Only administrators create org-wide instances; everyone else's are their own. A request
@@ -665,19 +666,19 @@ async def create_instance(
     _refuse_replaced_template(payload, registry)
     if scope == mcp_service.SCOPE_PERSONAL:
         _validate_personal_instance(payload)
-        existing = await mcp_service.load_user_instances(config_service, user_context["org_id"], user_context["user_id"])
+        existing = await mcp_service.load_user_instances(config_service, org_id, user_context["user_id"])
         if len(existing) >= _max_personal_instances():
             raise HTTPException(
                 status_code=HttpStatusCode.CONFLICT.value,
                 detail=f"You can have at most {_max_personal_instances()} personal MCP servers. Remove one first.",
             )
     await _refuse_taken_name(
-        config_service, payload.name, scope=scope, org_id=user_context["org_id"], user_id=user_context["user_id"],
+        config_service, payload.name, scope=scope, org_id=org_id, user_id=user_context["user_id"],
     )
 
     instance_id = str(uuid.uuid4())
     record = _build_instance_record(
-        payload, instance_id, user_context["org_id"], user_context["user_id"], registry, scope=scope,
+        payload, instance_id, org_id, user_context["user_id"], registry, scope=scope,
     )
     _assert_instance_urls_allowed(record)
 
@@ -714,7 +715,8 @@ async def update_instance(
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
-    existing = await _get_org_instance(instance_id, config_service, user_context["org_id"], user_context["user_id"])
+    org_id = user_context["org_id"]
+    existing = await _get_org_instance(instance_id, config_service, org_id, user_context["user_id"])
     if not existing:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
     await _require_manage_access(existing, user_context, request, config_service, "update")
@@ -733,10 +735,10 @@ async def update_instance(
     if _name_key(payload.name) != _name_key(existing.get("name")):
         await _refuse_taken_name(
             config_service, payload.name, scope=scope,
-            org_id=user_context["org_id"], user_id=user_context["user_id"], instance_id=instance_id,
+            org_id=org_id, user_id=user_context["user_id"], instance_id=instance_id,
         )
     record = _build_instance_record(
-        payload, instance_id, user_context["org_id"], user_context["user_id"], registry, existing=existing, scope=scope,
+        payload, instance_id, org_id, user_context["user_id"], registry, existing=existing, scope=scope,
     )
     _assert_instance_urls_allowed(record)
 
