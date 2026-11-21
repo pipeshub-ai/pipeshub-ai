@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from app.connectors.core.base.sync_point.sync_point import SyncPoint
+from app.connectors.sources.microsoft.common.msgraph_client import EmptyGraphAnswer
 from app.services.notification.types import (
     NotificationOutcome,
     NotificationSeverity,
@@ -112,7 +113,7 @@ async def withdraw_unconfirmed_accounts(
             status = await lookup(sid)
         except Exception as e:
             trusted = False
-            if not isinstance(e, ODataError):
+            if not isinstance(e, (ODataError, EmptyGraphAnswer)):
                 # Not an answer from Microsoft (no client, a transport failure): kept, and not counted.
                 log.error(f"Could not read user {sid}; keeping the access: {e}")
                 continue
