@@ -754,7 +754,7 @@ which every Postgres graph provider runs through) write one record per call that
 | `db.query.retry` | WARNING | `backend=neo4j`, `op`, `reason=connection_lost`, `error_type` |
 | `db.connect.failed`, `db.disconnect.failed`, `db.schema.failed`, `db.edge.failed` | `log_failure` | `backend`, `op` (schema or edge) |
 | `graph.provider.step_failed` | `log_failure` with `include_error_text=False`; an explicit level where the step says so (DEBUG for an expected fallback such as full-text search being unavailable); the PostgreSQL code-graph sweep's per-org line is a `log_event` at WARNING, with `error_class` and `error_type` and no stack, because the pass raises its first failure after the loop and that handler logs it | `op` (the provider method), `step` (snake_case: `departments_seed`, `kh_scope_page_enrichment`, `rollback`, `batch_delete`, ...; Neo4j schema setup names the statement group, such as `unique id constraints`, and adds `statement`, our own DDL), and the step's id fields (`connector_id`, `record_id`, `agent_id`, `kb_id`, `collection`, `target_org_id`, `attempt`) |
-| `graph.provider.failed` | `log_failure` with `include_error_text=False` | `op` (the provider method that answered its default instead of raising) |
+| `graph.provider.failed` | `log_failure` with `include_error_text=False`; DEBUG for Neo4j's edition read (`op=_supports_existence_constraints`: an edition that cannot be read is tried as Enterprise) | `op` (the provider method that answered its default instead of raising), and the id fields its old message named (`connector_id`, `record_id`, `agent_id`, `kb_id`, `collection`); `service_type` on ArangoDB `update_user_sync_state` |
 | `graph.provider.duplicates_removed` | WARNING | `op=ensure_pipeline_schema`, `removed` (stage states removed so their unique constraint could be created) |
 
 - **A graph provider that re-raises writes nothing.** A Neo4j, ArangoDB or PostgreSQL provider method whose handler re-raises
@@ -768,6 +768,14 @@ which every Postgres graph provider runs through) write one record per call that
   not the driver's (a row's validation, a `KeyError` naming a value), so the text is left out even when nothing stamped it.
   Where such a handler can also re-raise (`if raise_on_error: raise`), the raise comes first, so a re-raised failure is logged
   once, by the handler that catches it. A public method whose whole body is the `try` writes `graph.provider.failed`.
+- **A graph provider that answers a default writes one text-free line.** A handler that answers `None`, `[]`, `False`, `0` or a
+  failure dict instead of raising writes `graph.provider.failed` with `op` through `log_failure(..., include_error_text=False)`.
+  Where it can also re-raise (`if raise_on_error: raise`, ArangoDB's `if transaction: raise`), the raise comes first. No other
+  log call sits in a provider `except` handler. A handler that falls back and answers anyway is a step, not the method's
+  failure: a cached or batched read that falls back to the live or per-record query (`step=cache_lookup`, `batch_query`), a
+  Neo4j knowledge-hub shadow or verify read that fails (`shadow_split`, `scope_query`), and a Neo4j hinted read whose index is
+  still being built (`op=_execute_hinted`, `step=unhinted_fallback`, `index`, WARNING, once per index). A shadow browse that
+  split cannot decide writes `kh.browse.shadow_skipped` (INFO, `reason=split_undecided`).
 
 - **One record per call, outside the client's own retries.** A write conflict the ArangoDB or Neo4j client retries and wins
   writes nothing; one it gives up on writes one record. Retries above the client (`KernelDB.run`, the KB push, a provider
