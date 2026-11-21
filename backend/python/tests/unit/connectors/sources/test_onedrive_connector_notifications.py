@@ -12,6 +12,7 @@ from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveUserStatus,
 )
 from app.services.notification.types import NotificationSeverity, NotificationType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ def _make_connector() -> OneDriveConnector:
         "creator-user-id",
     )
     connector.notify = AsyncMock()
-    return connector
+    return stub_source_accounts(connector)
 
 
 def _make_403_odata_error() -> ODataError:

@@ -3838,8 +3838,9 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Every user of the org linked to the connector with a source user id, guests
         included (``get_app_users`` lists org members only). Each item is
-        ``{"id": <user key>, "sourceUserId": <id at the source>}``. Used to find the links
-        to withdraw. Reads inside ``transaction`` when given. A failed read raises.
+        ``{"id": <user key>, "sourceUserId": <id at the source>, "email": <the user's address>}``.
+        Used to find the links to withdraw, and which account an address was linked to.
+        Reads inside ``transaction`` when given. A failed read raises.
         """
         pass
 

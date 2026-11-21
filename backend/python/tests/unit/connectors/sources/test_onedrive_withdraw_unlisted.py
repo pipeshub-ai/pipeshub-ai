@@ -14,6 +14,9 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
 )
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.models.entities import AppUser
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 
 def _user(sid: str, active: bool = True) -> AppUser:
@@ -38,7 +41,16 @@ def _connector(stored_ids: list[str], listing: object, complete: bool = True, st
             stored.pop(u.source_user_id)
 
     proc.withdraw_app_user_access = AsyncMock(side_effect=withdraw)
-    c = OneDriveConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator")
+
+    async def reported(cid: str, source_ids: set[str]) -> None:
+        # As DataSourceEntitiesProcessor.withdraw_reported_unusable: the stored links of the accounts named.
+        gone = [u for u in await proc.get_app_user_links(cid) if u.source_user_id in source_ids]
+        if gone:
+            await proc.withdraw_app_user_access(cid, gone)
+
+    proc.withdraw_reported_unusable = AsyncMock(side_effect=reported)
+    proc.get_user_by_email = AsyncMock(return_value=None)
+    c = stub_source_accounts(OneDriveConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator"))
     c.msgraph_client = MagicMock()
     c.msgraph_client.get_user_status = AsyncMock(side_effect=status) if isinstance(status, Exception) else AsyncMock(return_value=status)
     if isinstance(listing, Exception):
@@ -130,6 +142,14 @@ async def test_incomplete_listing_syncs_but_withdraws_nobody() -> None:
     await c._sync_users()
     c.data_entities_processor.on_new_app_users.assert_awaited_once()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+    assert set(stored) == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_incomplete_listing_still_withdraws_an_account_it_lists_disabled() -> None:
+    """b is missing from the cut listing and stays; off is listed disabled, which is stated, so it is withdrawn."""
+    c, stored = _connector(["a", "b", "off"], [_user("a"), _user("off", active=False)], complete=False)
+    await c._sync_users()
     assert set(stored) == {"a", "b"}
 
 
@@ -321,6 +341,70 @@ async def test_listing_with_an_empty_page_then_users_and_a_matching_count_is_com
 async def test_listing_with_an_empty_page_and_lost_users_is_incomplete_through_the_count() -> None:
     client, _ = _client(_result([_graph_user("a")], "https://next", count=3), _result([], "https://next2"), _result([_graph_user("b")]))
     assert (await client.get_all_users()).complete is False
+
+
+@pytest.mark.asyncio
+async def test_a_grant_to_the_deleted_account_behind_a_reused_address_is_not_written() -> None:
+    """A Graph grant names its account by object id: one to the old account that held ana@x.com stays unwritten."""
+    c, _ = _connector([], [])
+    c.source_accounts.current = {"ana@x.com": "new-oid"}
+    c.source_accounts.reused = {"ana@x.com": "new-oid"}
+
+    def grant(oid: str) -> MagicMock:
+        user = MagicMock(id=oid, additional_data={"email": "ana@x.com"})
+        return MagicMock(granted_to_v2=MagicMock(user=user, group=None), granted_to_identities_v2=None, roles=["read"])
+
+    shared = MagicMock(granted_to_v2=None, granted_to_identities_v2=[MagicMock(user=MagicMock(id="old-oid", additional_data={"email": "ana@x.com"}), group=None)], roles=["read"])
+    out = await c._convert_to_permissions([grant("old-oid"), grant("new-oid"), shared])
+    assert [p.external_id for p in out] == ["new-oid"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("upn", ["0d1c2b3a4f5e6d7c8b9a0f1e2d3c4b5aana@x.com", "0d1c2b3a-4f5e-6d7c-8b9a-0f1e2d3c4b5aana@x.com"])
+async def test_a_deleted_users_upn_is_read_without_its_object_id_prefix(upn: str) -> None:
+    """uYFd: deleted items return userPrincipalName with the object id in front; mail is kept as it was."""
+    from app.connectors.sources.microsoft.common.msgraph_client import (
+        list_deleted_users,
+    )
+
+    gone = MagicMock(id="0d1c2b3a-4f5e-6d7c-8b9a-0f1e2d3c4b5a", mail=None, user_principal_name=upn)
+    other = MagicMock(id="11111111-2222-3333-4444-555555555555", mail="Bo.Mail@x.com",
+                      user_principal_name="11111111222233334444555555555555bo@x.com")
+    graph = MagicMock()
+    graph.directory.deleted_items.graph_user.get = AsyncMock(return_value=MagicMock(value=[gone, other], odata_next_link=None))
+    assert await list_deleted_users(graph) == {"ana@x.com": gone.id, "bo.mail@x.com": other.id, "bo@x.com": other.id}
+
+
+@pytest.mark.asyncio
+async def test_a_reindex_batch_is_checked_again_against_an_admission_that_came_while_it_was_read() -> None:
+    """uYjG: reindex judges each record's grants as it reads it and writes the batch at the end; a sync that admitted a
+    new account for ana@ in between must not see the old account's grant written."""
+    from app.connectors.core.base.data_processor.source_accounts import (
+        source_accounts_key,
+    )
+    from app.models.permission import EntityType, Permission, PermissionType
+    from tests.support.in_memory_config import InMemoryConfigService
+
+    c, _ = _connector([], [])
+    config = InMemoryConfigService()
+    c.source_accounts.config_service = config
+    record = MagicMock(id="r1", external_record_group_id="d1")
+    old = Permission(external_id="old-oid", email="ana@x.com", type=PermissionType.READ, entity_type=EntityType.USER)
+    owner = Permission(external_id="u-bo", email="bo@x.com", type=PermissionType.OWNER, entity_type=EntityType.USER)
+
+    async def read_then_admission_elsewhere(_org: str, _record: object) -> tuple:
+        await config.set_config(source_accounts_key("c1"), {"reused": {"ana@x.com": "new-oid"}})
+        return record, [old, owner]
+
+    c._check_and_fetch_updated_record = AsyncMock(side_effect=read_then_admission_elsewhere)
+    c._settle_reindexed_drives = AsyncMock()
+    c.data_entities_processor.on_new_records = AsyncMock()
+    c.data_entities_processor.reindex_existing_records = AsyncMock()
+
+    await c.reindex_records([record])
+
+    ((written,),) = c.data_entities_processor.on_new_records.await_args.args
+    assert written[1] == [owner]
 
 
 class _Checkpoints:

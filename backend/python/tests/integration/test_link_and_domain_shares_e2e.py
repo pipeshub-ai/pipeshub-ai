@@ -59,6 +59,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -201,7 +202,7 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
             collection=CollectionNames.USER_APP_RELATION.value,
         )
 
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.org_id = org_id
         processor.messaging_producer = AsyncMock()
         processor.messaging_producer.send_messages.side_effect = lambda _topic, messages: [True] * len(messages)

@@ -22,6 +22,12 @@ class InMemoryConfigService:
         self.values[key] = copy.deepcopy(value)
         return True
 
+    async def compare_and_set_config(self, key: str, expected: Any, new: Any) -> bool:  # noqa: ANN401
+        if self.values.get(key) != expected:
+            return False
+        self.values[key] = copy.deepcopy(new)
+        return True
+
     async def delete_config(self, key: str) -> bool:
         return self.values.pop(key, None) is not None
 

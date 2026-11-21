@@ -33,7 +33,7 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -57,6 +57,7 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.chat_helpers import enrich_virtual_record_id_to_result_with_fk_children
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.test_soft_delete_e2e import _connect_arango, _connect_neo4j
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -189,7 +190,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
             cleanup.push_async_callback(disconnect)
         monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
         suffix = uuid.uuid4().hex[:10]
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.messaging_producer = _Producer()
         w = _World(
             graph=graph, processor=processor, org_id=f"org-fk-{suffix}", connector_id=f"postgres-fk-{suffix}",

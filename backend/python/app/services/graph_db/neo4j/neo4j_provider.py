@@ -6874,12 +6874,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         query = """
         MATCH (u:User {orgId: $org_id})-[r:USER_APP_RELATION]->(app:App {id: $connector_id})
         WHERE r.sourceUserId IS NOT NULL
-        RETURN u.id AS id, r.sourceUserId AS sourceUserId
+        RETURN u.id AS id, r.sourceUserId AS sourceUserId, u.email AS email
         """
         results = await self.client.execute_query(
             query, parameters={"connector_id": connector_id, "org_id": org_id}, txn_id=transaction
         )
-        return [{"id": r["id"], "sourceUserId": r["sourceUserId"]} for r in results]
+        return [{"id": r["id"], "sourceUserId": r["sourceUserId"], "email": r.get("email")} for r in results]
 
     # ==================== Group Operations ====================
 

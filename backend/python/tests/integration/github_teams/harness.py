@@ -20,7 +20,6 @@ import types
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
 
 import httpx
 
@@ -50,6 +49,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from app.models.entities import Record
@@ -132,6 +132,7 @@ class ConfigService:
         self.config = config
         self.platform: dict[str, Any] = {}
         self.fail_reads = 0  # the next N reads of the connector config raise
+        self.other: dict[str, Any] = {}  # every other key (the processor's per-connector account state), kept
 
     async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
@@ -141,7 +142,17 @@ class ConfigService:
             return json.loads(json.dumps(self.config))
         if path == "/services/platform/settings":
             return self.platform or default
-        return default
+        return json.loads(json.dumps(self.other[path])) if path in self.other else default
+
+    async def set_config(self, path: str, value: Any) -> bool:  # noqa: ANN401
+        self.other[path] = json.loads(json.dumps(value))
+        return True
+
+    async def compare_and_set_config(self, key, expected, new) -> bool:
+        # The connector processor keeps its per-connector account state by compare-and-set (SourceAccounts).
+        if await self.get_config(key) != expected:
+            return False
+        return await self.set_config(key, new)
 
 
 class LogCapture(logging.Handler):
@@ -196,7 +207,7 @@ class World:
         self.logger.addHandler(self.logs)
         self.producer = Producer()
         self.store = GraphDataStore(self.logger, graph)
-        self.processor = DataSourceEntitiesProcessor(self.logger, self.store, MagicMock())
+        self.processor = DataSourceEntitiesProcessor(self.logger, self.store, InMemoryConfigService())
         self.processor.org_id = self.org_id
         self.processor.messaging_producer = self.producer
         self.users: dict[str, str] = {}  # email -> PipesHub userId

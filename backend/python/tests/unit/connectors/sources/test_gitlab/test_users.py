@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.sources.gitlab.users import UsersSync, _filter_op_val
+from app.connectors.sources.gitlab.users import UsersSync, _filter_op_val, _note_member
 
 from .conftest import make_mock_connector, paged_res, failed_res
 
@@ -283,6 +283,18 @@ class TestEnrichMembersWithFullUser:
         enriched = await users._enrich_members_with_full_user({7: member})
 
         assert enriched[7] is profile
+
+    async def test_a_profile_read_keeps_the_membership_state_of_the_member_row(self) -> None:
+        """The profile (GET /users/:id) has no membership: an awaiting membership must not read as active after it."""
+        c = make_mock_connector()
+        users = UsersSync(c)
+        member = SimpleNamespace(id=7, attributes={"public_email": None, "membership_state": "awaiting"})
+        profile = SimpleNamespace(id=7, attributes={"id": 7, "email": "private@example.com", "state": "active"})
+        c.runtime.ds_call = AsyncMock(return_value=SimpleNamespace(success=True, data=profile))
+
+        enriched = await users._enrich_members_with_full_user({7: member})
+
+        assert enriched[7].membership_state == "awaiting" and enriched[7].email == "private@example.com"
 
     async def test_a_member_listed_with_its_email_is_not_looked_up(self) -> None:
         c = make_mock_connector()
@@ -690,3 +702,60 @@ class TestSyncUsersFromProjectsGroups:
         # Should not raise
         await users._sync_users_from_projects_groups(dict_member)
         c.logger.warning.assert_called()
+
+    async def test_an_account_that_cannot_use_gitlab_is_not_linked(self) -> None:
+        """Blocked, banned, deactivated or awaiting accounts sharing an active user's address must not take it."""
+        c = make_mock_connector()
+        c._gitlab_user_id = None
+        c.creator_email = None
+        rows = {"active": ("active", None), "blocked": ("blocked", None), "banned": ("banned", None),
+                "deactivated": ("deactivated", None), "awaiting": ("active", "awaiting"), "plain": (None, None)}
+        dict_member = {
+            i: SimpleNamespace(id=i, username=key, name=key, public_email="maya@example.com", email="",
+                               **({"state": state} if state else {}),
+                               **({"membership_state": membership} if membership else {}))
+            for i, (key, (state, membership)) in enumerate(rows.items(), start=1)
+        }
+        users = UsersSync(c)
+        c.data_entities_processor.on_new_app_users = AsyncMock()
+        c.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
+
+        await users._sync_users_from_projects_groups(dict_member)
+
+        linked = c.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.full_name for u in linked] == ["active", "plain"]
+
+    async def test_a_linked_account_listed_blocked_is_withdrawn(self) -> None:
+        """Linked before it was blocked, banned or deactivated, it keeps no grant; an awaiting membership alone
+        withdraws nobody, as the user may be an active member elsewhere."""
+        c = make_mock_connector()
+        c._gitlab_user_id = None
+        c.creator_email = None
+        rows = {1: ("active", None), 2: ("blocked", None), 3: ("banned", None), 4: ("deactivated", None),
+                5: ("active", "awaiting")}
+        dict_member = {
+            i: SimpleNamespace(id=i, username=f"u{i}", name=f"u{i}", public_email=f"u{i}@example.com", email="",
+                               state=state, **({"membership_state": membership} if membership else {}))
+            for i, (state, membership) in rows.items()
+        }
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[
+            SimpleNamespace(id=f"n-{i}", source_user_id=str(i), email=None) for i in rows
+        ])
+        c.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
+
+        await UsersSync(c)._sync_users_from_projects_groups(dict_member)
+
+        gone = c.data_entities_processor.withdraw_app_user_access.await_args.args[1]
+        assert sorted(u.source_user_id for u in gone) == ["2", "3", "4"]
+
+
+def test_a_membership_awaiting_approval_never_replaces_an_active_one() -> None:
+    """One row per user: a user active in one group and awaiting approval in another stays an active member,
+    whichever row is read last."""
+    active = SimpleNamespace(id=7, membership_state="active")
+    awaiting = SimpleNamespace(id=7, membership_state="awaiting")
+    for rows in ((active, awaiting), (awaiting, active)):
+        dict_member: dict = {}
+        for row in rows:
+            _note_member(dict_member, row)
+        assert dict_member[7] is active

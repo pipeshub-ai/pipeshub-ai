@@ -56,6 +56,7 @@ class ServiceNowFields:
     DESCRIPTION = "description"
     EMAIL = "email"
     ACTIVE = "active"
+    LOCKED_OUT = "locked_out"
     PUBLISHED = "published"
     WORKFLOW_STATE = "workflow_state"
     PARENT = "parent"

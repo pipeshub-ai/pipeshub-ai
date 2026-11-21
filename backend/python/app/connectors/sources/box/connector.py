@@ -235,6 +235,12 @@ class BoxConnector(BaseConnector):
 
     # Box only retains admin_logs_streaming events for 2 weeks. If last sync was longer ago, do full sync.
     BOX_EVENT_STREAM_RETENTION_DAYS = 14
+    # User `status` is one of "active", "inactive", "cannot_delete_edit", "cannot_delete_edit_upload"
+    # (https://developer.box.com/reference/resources/user/). Box says inactive "will freeze the user's account"
+    # (https://support.box.com/hc/en-us/articles/360043693014-Best-Practice-Terminating-Employees) and documents
+    # no more, so an inactive user, or a status Box does not list, is not linked: linked, one sharing an active
+    # user's login would read as that address changing hands. The other two name edit limits, not a lock-out.
+    USABLE_USER_STATUSES = frozenset({"active", "cannot_delete_edit", "cannot_delete_edit_upload"})
 
     # Cleared when part of Box could not be read, so the stream position is not moved past it:
     # a full sync then skips saving its anchor, and an incremental batch is held and retried.
@@ -768,7 +774,7 @@ class BoxConnector(BaseConnector):
                         org_id=self.data_entities_processor.org_id,
                         email=user.get('login', ''),
                         full_name=user.get('name', ''),
-                        is_active=user.get('status') == 'active',
+                        is_active=user.get('status') in self.USABLE_USER_STATUSES,
                         title=user.get('job_title')
                     )
                     app_users.append(app_user)
@@ -880,6 +886,29 @@ class BoxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to remove folder access recursively: {e}", exc_info=True)
             self._mark_read_incomplete(e)
+
+    async def _withdraw_inactive_users(self, users: list[AppUser]) -> None:
+        """A stored user the complete list shows inactive (USABLE_USER_STATUSES), or no longer lists, loses the
+        connector, as it is not linked either; a cut or empty list withdraws nobody. Made active again, it is linked
+        on the next read. ``creator_`` links are the connector creator's stand-in, not a Box account."""
+        if not users:
+            return
+        if not self._user_list_complete:
+            # A cut list still withdraws the users its pages reported inactive.
+            await self.data_entities_processor.withdraw_reported_unusable(
+                self.connector_id, {u.source_user_id for u in users if not u.is_active})
+            return
+        active = {u.source_user_id for u in users if u.is_active}
+        # A failed withdrawal must not stop the group sync after it, which already leaves these users out.
+        try:
+            gone = [
+                u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
+                if u.source_user_id and u.source_user_id not in active and not u.source_user_id.startswith("creator_")
+            ]
+            if gone:
+                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+        except Exception as e:
+            self.logger.error(f"Withdrawing inactive or unlisted users failed; tried again next sync: {e}", exc_info=True)
 
     async def _sync_user_groups(self) -> None:
         """
@@ -1383,7 +1412,8 @@ class BoxConnector(BaseConnector):
             self._read_complete = True
             self.logger.info("📦 [Full Sync] Syncing users...")
             users = await self._sync_users()
-            await self.data_entities_processor.on_new_app_users(users)
+            await self.data_entities_processor.on_new_app_users([u for u in users if u.is_active])
+            await self._withdraw_inactive_users(users)
 
             self.logger.info("📦 [Full Sync] Creating virtual groups...")
             await self._ensure_virtual_groups()
@@ -1511,7 +1541,8 @@ class BoxConnector(BaseConnector):
             users = await self._sync_users()
 
             # Update the in-memory or DB map of users so we can link files to them later
-            await self.data_entities_processor.on_new_app_users(users)
+            await self.data_entities_processor.on_new_app_users([u for u in users if u.is_active])
+            await self._withdraw_inactive_users(users)
             users_complete = self._read_complete
 
             # Box user IDs that belong to our org (for distinguishing external vs internal shares)

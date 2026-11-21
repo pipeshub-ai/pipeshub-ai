@@ -192,6 +192,16 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 logger.debug("⚠️ Key not found")
             return None
 
+    async def compare_and_set(self, key: str, expected: Optional[T], new: T) -> bool:
+        with self.lock:
+            self._cleanup_expired_keys()
+            current = self.store[key].value if key in self.store else None
+            if current != expected:
+                return False
+            self.store[key] = KeyData(new)
+            self._notify_watchers(key, new)
+            return True
+
     async def delete_key(self, key: str) -> bool:
         """
         Delete a key-value pair from the store.

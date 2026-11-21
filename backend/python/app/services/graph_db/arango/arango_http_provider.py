@@ -8960,7 +8960,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER edge.sourceUserId != null
                 LET user = DOCUMENT(edge._from)
                 FILTER user != null AND user.orgId == @org_id
-                RETURN {{ id: user._key, sourceUserId: edge.sourceUserId }}
+                RETURN {{ id: user._key, sourceUserId: edge.sourceUserId, email: user.email }}
         """
         return await self.http_client.execute_aql(
             query, bind_vars={"connector_id": connector_id, "org_id": org_id}, txn_id=transaction

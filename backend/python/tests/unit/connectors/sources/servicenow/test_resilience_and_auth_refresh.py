@@ -492,6 +492,8 @@ async def test_app_users_read_once_per_run(servicenow_connector) -> None:
     permissions = await sc._users_to_permissions({"u1"}, PermissionType.READ)
 
     assert [p.email for p in permissions] == ["u1@x.com"]
+    # The sys_id rides along, so a re-used address's current holder is told from the earlier account.
+    assert [p.external_id for p in permissions] == ["u1"]
     sc.data_entities_processor.get_all_app_users.assert_awaited_once()
 
 

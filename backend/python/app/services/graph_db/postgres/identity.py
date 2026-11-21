@@ -446,11 +446,11 @@ class IdentityMixin(PgBase):
         """Every user of the org linked to the app with a source user id, guests included; a failed read raises."""
         if not self._mine(org_id):
             return []
-        rows = await self._id_rows("""/* pipeshub:graph.get_app_user_links */ SELECT r.from_id AS id, r.doc->>'sourceUserId' AS sid
+        rows = await self._id_rows("""/* pipeshub:graph.get_app_user_links */ SELECT r.from_id AS id, r.doc->>'sourceUserId' AS sid, u.doc->>'email' AS email
             FROM graph.edges r JOIN graph.nodes u ON u.org_id = r.org_id AND u.coll = 'users' AND u.id = r.from_id
             WHERE r.org_id = $1 AND r.coll = 'userAppRelation' AND r.from_coll = 'users' AND r.to_id = $2
               AND r.doc->>'sourceUserId' IS NOT NULL""", [current_org_id(), connector_id], transaction)
-        return [{"id": r["id"], "sourceUserId": r["sid"]} for r in rows]
+        return [{"id": r["id"], "sourceUserId": r["sid"], "email": r["email"]} for r in rows]
 
     async def batch_upsert_app_users(self, users: list, transaction: str | None = None, *, org_id: str) -> None:
         if not users:

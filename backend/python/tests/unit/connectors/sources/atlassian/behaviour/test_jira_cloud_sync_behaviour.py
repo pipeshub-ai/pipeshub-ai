@@ -471,8 +471,8 @@ def site_db() -> SiteDb:
     return SiteDb()
 
 
-def acl(db: SiteDb) -> list[tuple[str, Optional[str]]]:
-    return sorted((str(p.entity_type), p.external_id or p.email) for p in db.record_group_permissions["10000"])
+def acl(db: SiteDb, group: str = "10000") -> list[tuple[str, Optional[str], Optional[str]]]:
+    return sorted(((str(p.entity_type), p.external_id, p.email) for p in db.record_group_permissions[group]), key=str)
 
 
 def saved_members(db: SiteDb, group_id: str) -> list[str]:
@@ -512,7 +512,7 @@ class TestAccessControlSafety:
 
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.USER", "sync@acme.com")]
+        assert acl(site_db) == [("EntityType.USER", None, "sync@acme.com")]
 
     async def test_an_unreadable_permission_scheme_still_syncs_the_projects_issues(self, api, site_db, checkpoints, search) -> None:
         stub_site(api)
@@ -1020,7 +1020,7 @@ class TestUnfinishedUserRead:
         assert before["devs"] == ["ana@acme.com", "bo@acme.com"]
         assert before["developers"] == ["bo@acme.com"]
         assert before["lead"] == ["bo@acme.com"]
-        assert ("EntityType.USER", "bo@acme.com") in before["project"]
+        assert ("EntityType.USER", "acc-bo", "bo@acme.com") in before["project"]
 
         self._second_page(api, answer)
         groups_saved = len(site_db.user_groups)
@@ -1064,7 +1064,8 @@ class TestUnfinishedUserRead:
         assert after["devs"] == ["ana@acme.com"]
         assert after["developers"] == []
         assert after["lead"] == []
-        assert ("EntityType.USER", "bo@acme.com") not in after["project"]
+        # No user grant may name Bo, by account or by address alone.
+        assert not [g for g in after["project"] if g[0] == "EntityType.USER" and (g[1] == "acc-bo" or g[2] == "bo@acme.com")]
 
     async def test_a_short_read_that_shows_a_user_deactivated_withdraws_them(self, api, site_db, checkpoints, search) -> None:
         """Absence from a list cut short says nothing, but a row marked inactive does: Bo is withdrawn with his own
@@ -1101,6 +1102,29 @@ class TestUnfinishedUserRead:
         # A refused list says nothing about who left Jira: nobody is withdrawn, nor loses their own grants.
         assert site_db.withdrawn_users == []
 
+    async def test_a_short_user_read_still_withdraws_an_account_it_reports_deactivated(
+        self, api, site_db, checkpoints, search,
+    ) -> None:
+        """Bo's account is listed deactivated ("active": false) on a page that was read, then a later page fails: Bo
+        loses the connector all the same; only access by absence waits for a complete read."""
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert site_db.withdrawn_users == []
+
+        off = {**person("acc-bo", "bo@acme.com"), "active": False}
+        first = [*self.FIRST_PAGE[:-1], off]
+
+        def users(request: httpx.Request) -> httpx.Response:
+            start = AtlassianApiStub.query(request).get("startAt")
+            return json_response(first) if start == "0" else json_response({"errorMessages": ["expired"]}, status=401)
+
+        api.on("GET", f"{JIRA}/users/search", users)
+        await connector.run_sync()
+
+        assert "acc-bo" in [u.source_user_id for u in site_db.withdrawn_users]
+
     async def test_a_first_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
         self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
@@ -1114,7 +1138,7 @@ class TestUnfinishedUserRead:
         assert access["devs"] == ["ana@acme.com"]
         assert access["developers"] == []
         assert access["lead"] == []
-        assert ("EntityType.GROUP", "grp-dev") in access["project"], "the grants that were read are saved"
+        assert ("EntityType.GROUP", "grp-dev", None) in access["project"], "the grants that were read are saved"
 
     async def test_a_full_sync_whose_prep_deleted_the_grants_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
@@ -1134,7 +1158,7 @@ class TestUnfinishedUserRead:
 
         access = self._access(site_db)
         assert access["devs"] == ["ana@acme.com"]
-        assert ("EntityType.GROUP", "grp-dev") in access["project"]
+        assert ("EntityType.GROUP", "grp-dev", None) in access["project"]
 
     async def test_a_failed_lookup_after_the_user_list_is_refused_outright_still_fails_closed(
         self, api, site_db, checkpoints, search
@@ -1171,7 +1195,7 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert len(site_db.user_groups) == groups_saved, "groups the first sync saved are kept"
-        assert ("EntityType.GROUP", "grp-dev") in acl(site_db), "a project it never saved is saved with what was read"
+        assert ("EntityType.GROUP", "grp-dev", None) in acl(site_db), "a project it never saved is saved with what was read"
 
     async def test_a_group_list_that_fails_on_the_first_sync_is_saved_from_a_later_short_read(
         self, api, site_db, checkpoints, search
@@ -1214,8 +1238,7 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert acl(site_db) == eng_before, "ENG's saved access is kept"
-        ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
-        assert ops == [("EntityType.GROUP", "grp-dev")], "OPS had nothing stored, so the grants that were read are saved"
+        assert acl(site_db, "20000") == [("EntityType.GROUP", "grp-dev", None)], "OPS had nothing stored, so the grants that were read are saved"
 
     async def test_a_renamed_project_keeps_its_saved_access_on_a_short_read(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
@@ -1223,7 +1246,7 @@ class TestUnfinishedUserRead:
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
         before = acl(site_db)
-        assert ("EntityType.USER", "bo@acme.com") in before
+        assert ("EntityType.USER", "acc-bo", "bo@acme.com") in before
 
         # The same project (id 10000) now has the key NEW.
         api.on("GET", f"{JIRA}/project/search", {"values": [{"id": "10000", "key": "NEW", "name": "Engineering"}], "isLast": True})
@@ -1279,7 +1302,7 @@ class TestUnfinishedUserRead:
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
         before = acl(site_db)
-        assert before == [("EntityType.GROUP", "grp-dev"), ("EntityType.ROLE", "ENG_10002"), ("EntityType.ROLE", "ENG_projectLead")]
+        assert before == [("EntityType.GROUP", "grp-dev", None), ("EntityType.ROLE", "ENG_10002", None), ("EntityType.ROLE", "ENG_projectLead", None)]
         assert [m.email for m in site_db.app_roles["ENG_projectLead"]] == ["bo@acme.com"]
 
         # The same project (id 10000) now has the key NEW; Bo, its lead, is on the page that fails.
@@ -1404,7 +1427,7 @@ class TestUnfinishedUserRead:
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
         before = acl(site_db)
-        assert before == [("EntityType.GROUP", "grp-dev"), ("EntityType.ROLE", "ENG_10002"), ("EntityType.ROLE", "ENG_projectLead")]
+        assert before == [("EntityType.GROUP", "grp-dev", None), ("EntityType.ROLE", "ENG_10002", None), ("EntityType.ROLE", "ENG_projectLead", None)]
 
         # The same project (id 10000) now has the key NEW; a full sync (#4119) with a short read.
         api.on("GET", f"{JIRA}/project/search", {"values": [
@@ -1462,7 +1485,7 @@ class TestUnfinishedUserRead:
         assert connector.full_sync_coverage().complete is True, "a refusal does not make every full sync incomplete"
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert [m.email for m in site_db.app_roles["ENG_10002"]] == ["bo@acme.com"], "the kept role keeps its members"
-        assert ("EntityType.ROLE", "ENG_10002") in acl(site_db)
+        assert ("EntityType.ROLE", "ENG_10002", None) in acl(site_db)
 
     async def test_a_full_sync_with_one_unreadable_role_keeps_it_and_reports_incomplete(
         self, api, site_db, checkpoints, search
@@ -1783,7 +1806,7 @@ class TestUnreadApplicationRoles:
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
         before = acl(site_db)
-        assert ("EntityType.GROUP", "grp-sw") in before
+        assert ("EntityType.GROUP", "grp-sw", None) in before
 
         def roles(request: httpx.Request) -> httpx.Response:
             if isinstance(answer, Exception):
@@ -1836,7 +1859,7 @@ class TestUnreadApplicationRoles:
         ]})
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.GROUP", "grp-qa")]
+        assert acl(site_db) == [("EntityType.GROUP", "grp-qa", None)]
 
     async def test_a_first_sync_with_unread_application_roles_saves_the_grants_that_were_read(
         self, api, site_db, checkpoints, search
@@ -1848,7 +1871,7 @@ class TestUnreadApplicationRoles:
         await connector.run_sync()
 
         # Nothing was stored before, so holding the project back would leave it with no access.
-        assert acl(site_db) == [("EntityType.GROUP", "grp-dev")]
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev", None)]
 
     async def test_a_first_sync_cut_short_after_saving_the_project_keeps_its_access(
         self, api, site_db, checkpoints, search, monkeypatch
@@ -1895,8 +1918,7 @@ class TestUnreadApplicationRoles:
         await connector.run_sync()
 
         assert acl(site_db) == eng_before, "ENG's saved access is kept"
-        ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
-        assert ops == [("EntityType.GROUP", "grp-dev")], "OPS had nothing stored, so the grants that were read are saved"
+        assert acl(site_db, "20000") == [("EntityType.GROUP", "grp-dev", None)], "OPS had nothing stored, so the grants that were read are saved"
 
     async def test_a_full_sync_after_its_prep_kept_the_grants_keeps_the_roles_groups(
         self, api, site_db, checkpoints, search
@@ -1935,7 +1957,7 @@ class TestUnreadApplicationRoles:
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
         before = acl(site_db)
-        assert ("EntityType.GROUP", "grp-sw") in before
+        assert ("EntityType.GROUP", "grp-sw", None) in before
 
         # A full sync (#4119): sync points go, stored edges stay, and after the sync returns
         # whatever it did not write is unlinked, unless it reports an incomplete read.
@@ -1979,7 +2001,7 @@ class TestUnreadApplicationRoles:
         api.on("GET", f"{JIRA}/applicationrole", json_response([{"key": "jira-software", "groupDetails": [{"groupId": "grp-new", "name": "new-licensees"}]}]))
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.GROUP", "grp-dev"), ("EntityType.GROUP", "grp-new")]
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev", None), ("EntityType.GROUP", "grp-new", None)]
 
     async def test_a_forbidden_application_role_list_still_falls_back_to_the_jira_account(
         self, api, site_db, checkpoints, search
@@ -1991,7 +2013,7 @@ class TestUnreadApplicationRoles:
         api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["no"]}, status=403))
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.GROUP", "grp-dev"), ("EntityType.USER", "sync@acme.com")]
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev", None), ("EntityType.USER", None, "sync@acme.com")]
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helper exception lives in the same module; the builder decorator must still land on the connector.
@@ -2416,7 +2438,7 @@ class TestWhoMayBrowse:
 
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.GROUP", "grp-sd"), ("EntityType.GROUP", "grp-sw")]
+        assert acl(site_db) == [("EntityType.GROUP", "grp-sd", None), ("EntityType.GROUP", "grp-sw", None)]
 
     async def test_unreadable_application_roles_keep_the_access_of_a_project_granted_through_one(
         self, api, site_db, checkpoints, search
@@ -2425,12 +2447,12 @@ class TestWhoMayBrowse:
         browse_by_product_access(api, "jira-software")
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
-        assert acl(site_db) == [("EntityType.GROUP", "grp-sw")]
+        assert acl(site_db) == [("EntityType.GROUP", "grp-sw", None)]
 
         api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["boom"]}, status=500))
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.GROUP", "grp-sw")], "not granted to nobody while the roles are unknown"
+        assert acl(site_db) == [("EntityType.GROUP", "grp-sw", None)], "not granted to nobody while the roles are unknown"
 
     async def test_a_deactivated_user_named_in_the_scheme_gets_no_grant(self, api, site_db, checkpoints, search) -> None:
         stub_site(api)
@@ -2444,7 +2466,7 @@ class TestWhoMayBrowse:
 
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.GROUP", "grp-dev")]
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev", None)]
 
 
 class TestAccountTimezone:
@@ -2560,7 +2582,7 @@ class TestProjectsThatLeftTheSync:
         await connector.run_sync()
         await drain_notifications(connector)
 
-        assert "1" in tickets(site_db) and acl(site_db) == [("EntityType.GROUP", "grp-dev")]
+        assert "1" in tickets(site_db) and acl(site_db) == [("EntityType.GROUP", "grp-dev", None)]
         assert any(t.endswith("found selected projects under new keys") for t in titles(connector))
 
     async def test_roles_of_a_project_the_sync_no_longer_covers_are_removed(self, api, site_db, checkpoints, search) -> None:

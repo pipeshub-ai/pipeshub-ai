@@ -56,6 +56,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -197,7 +198,7 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
             CollectionNames.ORG_APP_RELATION.value,
         )
 
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.org_id = ORG_ID
         processor.messaging_producer = _RecordingProducer()
         names = ["queued-1", "queued-2", "in-flight", "manual-only", "failed", "trashed", "refused"]

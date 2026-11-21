@@ -3,7 +3,7 @@ import contextlib
 import contextvars
 import functools
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from types import SimpleNamespace
@@ -31,6 +31,11 @@ from app.connectors.core.base.data_processor.record_organizations import (
 )
 from app.connectors.core.base.data_processor.record_people import link_record_people
 from app.connectors.core.base.data_processor.pr_links import Linked, write_modifies
+from app.connectors.core.base.data_processor.source_accounts import (
+    NOT_SOURCE_ACCOUNTS,
+    SourceAccounts,
+    grant_fence,
+)
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_store.data_store import (
@@ -576,6 +581,37 @@ class DataSourceEntitiesProcessor:
         self._storage_cleanup: StorageCleanupHelper | None = None
         # Per connector, the nodes its running full sync has written so far.
         self._full_sync_runs: dict[str, FullSyncSeen] = {}
+        self._source_accounts: dict[str, SourceAccounts] = {}
+
+    def source_accounts(self, connector_id: str, *, deleted_users: Callable[[], Awaitable[dict[str, str]]] | None = None) -> SourceAccounts:
+        """Which source account holds each address this connector's users were linked by (see SourceAccounts). A
+        connector whose source lists deleted accounts passes ``deleted_users`` (read once per connector)."""
+        accounts = self._source_accounts.get(connector_id)
+        if accounts is None:
+            accounts = self._source_accounts[connector_id] = SourceAccounts(
+                self, connector_id, self.config_service, self.logger
+            )
+        if deleted_users is not None:
+            accounts.deleted_users = deleted_users
+        return accounts
+
+    async def _holds_address(self, connector_id: str | None, email: str, source_id: str | None, user_id: str) -> bool:
+        """Whether a grant naming ``email`` (and the source account ``source_id``, when the source named one) may be
+        written for the PipesHub user ``user_id``. A re-used address takes only grants naming the account that holds
+        it now; one naming only the address cannot be told apart from the earlier account's. An unreadable saved
+        state raises, so nothing is written unchecked."""
+        if not connector_id:
+            return True
+        accounts = self.source_accounts(connector_id)
+        await accounts.ensure_loaded([email])
+        if accounts.admits(email, source_id):
+            return True
+        self.logger.info(
+            "Skipped a grant on connector %s to user %s: its address belonged to another account (re-used, or a "
+            "deleted account still listed with it), and the grant does not name the account that holds it now",
+            connector_id, user_id,
+        )
+        return False
 
     # ==================== Full sync: what the sync saw ====================
     #
@@ -636,7 +672,8 @@ class DataSourceEntitiesProcessor:
         try:
             # A reindex's block must be able to roll back whole when its stamp check fails.
             options = {"explicit": True} if stamp is not None else {} if explicit is None else {"explicit": explicit}
-            async with self.data_store_provider.transaction(**options) as tx_store:
+            # Grants are judged and written inside: an address's change of hands waits for it (GrantFence).
+            async with grant_fence().shared(), self.data_store_provider.transaction(**options) as tx_store:
                 yield tx_store
                 if stamp is not None:
                     await stamp.check(tx_store)
@@ -2505,7 +2542,9 @@ class DataSourceEntitiesProcessor:
 
             if permission.entity_type == EntityType.USER.value:
                 if permission.email:
-                    resolved = await self._resolve_principal(permission.email, tx_store)
+                    resolved = await self._resolve_principal(
+                        permission.email, tx_store, account=(record.connector_id, permission.external_id)
+                    )
                     if resolved:
                         from_id, from_collection = resolved
                 elif permission.external_id:
@@ -2586,7 +2625,8 @@ class DataSourceEntitiesProcessor:
             await tx_store.batch_create_edges(edges, collection=CollectionNames.PERMISSION.value)
 
     async def _resolve_principal(
-        self, email: str, tx_store: TransactionStore, create_if_missing: bool = True
+        self, email: str, tx_store: TransactionStore, create_if_missing: bool = True,
+        *, account: tuple[str | None, str | None] | None = None,
     ) -> tuple[str, str] | None:
         """
         Resolve an email to the graph principal a permission edge can originate from,
@@ -2614,6 +2654,10 @@ class DataSourceEntitiesProcessor:
         than before for members, and at most two extra queries for an external
         collaborator — which is the only case that reaches past the first branch.
 
+        ``account`` is ``(connector_id, source id the grant names)`` for a grant from a connector: a user whose
+        address that connector saw pass to another account is resolved only when the grant names the current one
+        (``_holds_address``); otherwise None, and no Person stands in.
+
         None means the email has no principal. A lookup that fails raises instead:
         every caller writes the principals it is given, several by replacing what was
         there, so "could not be read" answered as None took a grant or a membership
@@ -2621,6 +2665,8 @@ class DataSourceEntitiesProcessor:
         """
         user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
         if user:
+            if account and not await self._holds_address(account[0], email, account[1], user.id):
+                return None
             return (user.id, CollectionNames.USERS.value)
 
         person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
@@ -5572,7 +5618,10 @@ class DataSourceEntitiesProcessor:
                         if permission.entity_type == EntityType.USER:
                             resolved = None
                             if permission.email:
-                                resolved = await self._resolve_principal(permission.email, tx_store)
+                                resolved = await self._resolve_principal(
+                                    permission.email, tx_store,
+                                    account=(record_group.connector_id, permission.external_id),
+                                )
 
                             if resolved:
                                 from_id, from_collection = resolved
@@ -5769,13 +5818,34 @@ class DataSourceEntitiesProcessor:
             if not users:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
                 return
+            async def link() -> None:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.batch_upsert_app_users(users, self.org_id)
 
-            async with self.data_store_provider.transaction() as tx_store:
-                await tx_store.batch_upsert_app_users(users, self.org_id)
+            if users[0].app_name in NOT_SOURCE_ACCOUNTS:
+                await link()
+            elif not await self.source_accounts(users[0].connector_id).before_link(users, write=link):
+                # Raised, not returned: a caller taking the call as done would move its checkpoint past these users.
+                raise RuntimeError(
+                    f"the stored users of connector {users[0].connector_id} could not be read; nobody is linked")
 
         except Exception as e:
             self._log_failure(f"Transaction on_new_users failed: {str(e)}", e)
             raise e
+
+    async def withdraw_reported_unusable(self, connector_id: str, source_ids: set[str]) -> None:
+        """Withdraw the stored links of the accounts the source reported unusable (disabled, suspended, invited) on the
+        rows it returned. That is stated, not inferred from absence, so it holds when the listing was cut short too. A
+        failure is logged and tried again next sync, as it must not stop the rewrites that follow."""
+        if not source_ids:
+            return
+        try:
+            gone = [u for u in await self.get_app_user_links(connector_id) if u.source_user_id in source_ids]
+            if gone:
+                await self.withdraw_app_user_access(connector_id, gone)
+        except Exception as e:
+            self.logger.error(f"Withdrawing accounts connector {connector_id} reported unusable failed; tried again "
+                              f"next sync: {e}", exc_info=True)
 
     @retry_on_deadlock()
     async def withdraw_app_user_access(
@@ -5786,6 +5856,8 @@ class DataSourceEntitiesProcessor:
         passed another way (the org's All team), so ``drop_grants`` also removes the user's own grants
         on the connector's records, record groups, user groups and roles in the same transaction.
         The connector then writes them again for a user it lists again."""
+        if users and getattr(users[0], "app_name", None) not in NOT_SOURCE_ACCOUNTS:
+            await self.source_accounts(connector_id).note_withdrawn(users)
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
                 # Grants first: where each statement commits alone (Neo4j without explicit transactions), a
@@ -6083,7 +6155,9 @@ class DataSourceEntitiesProcessor:
         for member in members:
             resolved = None
             if member.email:
-                resolved = await self._resolve_principal(member.email, tx_store)
+                resolved = await self._resolve_principal(
+                    member.email, tx_store, account=(user_group.connector_id, member.source_user_id)
+                )
 
             if not resolved:
                 self.logger.warning(f"Could not resolve principal for email {member.email} for UserGroup permission.")
@@ -6163,6 +6237,10 @@ class DataSourceEntitiesProcessor:
                             # Find the user's internal DB ID. A read that fails is raised:
                             # answered as "no such user", the rewrite below dropped the member.
                             user = await tx_store.get_user_by_email(member.email, raise_on_error=True, org_id=self.org_id)
+                            if user and not await self._holds_address(
+                                role.connector_id, member.email, member.source_user_id, user.id
+                            ):
+                                continue
 
                         if not user:
                             self.logger.warning(f"Could not find user with email {member.email} for AppRole permission.")
@@ -6373,7 +6451,7 @@ class DataSourceEntitiesProcessor:
         failed read raises."""
         async with self.data_store_provider.transaction() as tx_store:
             links = await tx_store.get_app_user_links(self.org_id, connector_id)
-        return [SimpleNamespace(id=link["id"], source_user_id=link["sourceUserId"]) for link in links]
+        return [SimpleNamespace(id=link["id"], source_user_id=link["sourceUserId"], email=link.get("email")) for link in links]
 
     async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[AppUserGroup]:
         async with self.data_store_provider.transaction() as tx_store:
@@ -6712,7 +6790,8 @@ class DataSourceEntitiesProcessor:
     ) -> bool:
         try:
             # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
-            async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            async with self._drop_access_after({connector_id}), grant_fence().shared(), \
+                    self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user by email
                 user = await tx_store.get_user_by_email(user_email, org_id=self.org_id)
                 if not user:
@@ -6720,6 +6799,8 @@ class DataSourceEntitiesProcessor:
                         f"Cannot add member to group {external_group_id}: "
                         f"User with email {user_email} not found in database"
                     )
+                    return False
+                if not await self._holds_address(connector_id, user_email, None, user.id):
                     return False
 
                 # 2. Look up the user group by external ID
@@ -6871,6 +6952,12 @@ class DataSourceEntitiesProcessor:
                 if external_id in run.groups_members_unsure:
                     await self._give_every_copy_all_stored_members(tx_store, group_ids, pending)
                     pending = []
+                # Recorded earlier in the sync: an address that changed hands since keeps no membership of its earlier
+                # account (the change of hands already removed it), so each member is judged again now.
+                accounts = self.source_accounts(connector_id)
+                await accounts.ensure_loaded([email for _, email in members.values() if email])
+                members = {user_id: (sid, email) for user_id, (sid, email) in members.items()
+                           if not email or accounts.admits(email, sid)}
                 for group_id in pending:
                     edges = [
                         Permission(
@@ -6884,7 +6971,8 @@ class DataSourceEntitiesProcessor:
                     await tx_store.replace_edges_to(group_id, groups, edges, CollectionNames.PERMISSION.value)
                 return group_ids
 
-            group_ids = await self.data_store_provider.execute_in_transaction(give_members, external_id, members)
+            async with grant_fence().shared():      # judged and written with no change of hands in between
+                group_ids = await self.data_store_provider.execute_in_transaction(give_members, external_id, members)
             for group_id in group_ids:
                 run.add(groups, group_id)
         await self._access_changed([connector_id])
@@ -7469,7 +7557,7 @@ class DataSourceEntitiesProcessor:
     async def add_permission_to_record(self, record: Record, permissions: list[Permission]) -> None:
         """Add permissions to a record."""
 
-        async with self.data_store_provider.transaction() as tx_store:
+        async with grant_fence().shared(), self.data_store_provider.transaction() as tx_store:
             await self._handle_record_permissions(record, permissions, tx_store)
 
     @retry_on_deadlock()

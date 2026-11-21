@@ -550,8 +550,35 @@ class ZendeskConnector(BaseConnector):
             )
 
         users, user_email_map, users_complete = await self._fetch_users()
-        if users:
-            await self.data_entities_processor.on_new_app_users(users)
+        # A deleted user ("false if the user has been deleted") and a suspended one ("these users cannot sign in")
+        # are not linked (https://developer.zendesk.com/api-reference/ticketing/users/users/): linked, one sharing an
+        # active user's address would read as that address changing hands. One linked before is withdrawn when the
+        # export is complete, as is one the export no longer lists (deleted, or demoted to end user, who is never
+        # linked). Restored, it is linked on the next read. An empty export withdraws nobody: it lists the admin.
+        linkable = [
+            u for u in users
+            if (data := self._user_id_to_data.get(u.source_user_id, {})).get("active") is not False
+            and not data.get("suspended")
+        ]
+        if linkable:
+            await self.data_entities_processor.on_new_app_users(linkable)
+        kept = {u.source_user_id for u in linkable}
+        if not users_complete:
+            # A cut export still withdraws the accounts its pages reported deleted or suspended.
+            await self.data_entities_processor.withdraw_reported_unusable(
+                self.connector_id, {u.source_user_id for u in users} - kept)
+        elif users:
+            # A failed withdrawal must not stop the group and role rewrites after it, which leave these users out.
+            try:
+                gone = [
+                    u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
+                    if u.source_user_id not in kept
+                ]
+                if gone:
+                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            except Exception as e:
+                self.logger.error(f"Withdrawing suspended, deleted or demoted users failed; tried again next sync: {e}",
+                                  exc_info=True)
         self.logger.info(f"Zendesk: synced {len(users)} users")
 
         self._role_ticket_access, self._roles_complete = (

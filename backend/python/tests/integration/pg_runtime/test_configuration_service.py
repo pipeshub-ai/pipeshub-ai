@@ -50,3 +50,22 @@ async def test_values_are_encrypted_in_the_table(monkeypatch, runtime, uid) -> N
         assert await svc.get_config(key) == {"password": "hunter2"}
     finally:
         await svc.close()
+
+
+async def test_read_modify_write_from_two_services_loses_no_update(monkeypatch, runtime, uid) -> None:
+    """Two processes append to one encrypted list at once; compare_and_set_config makes the loser re-read."""
+    a, b = make(monkeypatch, runtime), make(monkeypatch, runtime)
+    key = f"/services/connectors/test{uid}/sourceAccounts/00"     # a prefix the connectors service may write
+    try:
+        async def append(svc: ConfigurationService, item: str) -> None:
+            for _ in range(50):
+                current = await svc.get_config(key, use_cache=False, raise_on_error=True)
+                if await svc.compare_and_set_config(key, current, [*(current or []), item]):
+                    return
+            raise AssertionError("never won the compare-and-set")
+
+        await asyncio.gather(*(append(svc, f"{n}-{i}") for i in range(5) for n, svc in (("a", a), ("b", b))))
+        assert sorted(await a.get_config(key, use_cache=False)) == sorted(f"{n}-{i}" for i in range(5) for n in "ab")
+    finally:
+        await a.close()
+        await b.close()
