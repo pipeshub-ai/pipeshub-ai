@@ -11,13 +11,16 @@ AG-UI formatter, serialised exactly as `stream_bridge.py` writes them.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.agents.actions.storage_search.storage_search import StoragePatternMatch
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
 from app.utils.logger import log_record_fields
 from tests.support.agent_routes import (
@@ -468,6 +471,100 @@ class TestChatStreamKnowledge:
         (call,) = loop.calls
         assert call["user_info"]["userId"] == "u-svc"
         assert self._knowledge(call) == {"pg-team", "drive-team", "kb-1"}
+
+    @staticmethod
+    def _storage_tool(call: dict) -> StoragePatternMatch:
+        """The storage tools as the turn would run them: its filters, its knowledge, its identity."""
+        provider = MagicMock()
+        provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
+        tool = StoragePatternMatch({
+            "org_id": "org-1", "user_id": call["user_info"]["userId"], "graph_provider": provider,
+            "filters": call["query_info"]["filters"], "agent_knowledge": call["query_info"]["knowledge"],
+            "config_service": AsyncMock(), "logger": MagicMock(),
+        })
+        # Stops each command where it would open the connector's records: only the scope refuses earlier.
+        tool._resolve_connector_path = AsyncMock(return_value=(None, "stopped at the records"))
+        return tool
+
+    @staticmethod
+    def _reaches_records(tool: StoragePatternMatch, connector_id: str) -> bool:
+        """Whether the storage tools get as far as the connector's stored records."""
+        asyncio.run(tool.run_command(connector_id, 'grep -r "x" .'))
+        asyncio.run(tool.find_records(connector_id, 'grep -rl "x" .'))
+        return tool._resolve_connector_path.await_count > 0
+
+    def _only(self, graph: InMemoryGraph, agent: str, keys: tuple[str, ...]) -> None:
+        """The agent's sources, of those `_sources` adds, are `keys` alone."""
+        self._sources(graph, agent)
+        for key in ("pg-alice", "pg-team", "pg-other-org", "drive-alice", "drive-team", "kb-1"):
+            if key in keys:
+                continue
+            del graph.nodes["agentKnowledge"][f"k-{key}"]
+            graph.edges["agentHasKnowledge"] = [
+                e for e in graph.edges["agentHasKnowledge"] if e["_to"] != f"agentKnowledge/k-{key}"
+            ]
+
+    def test_a_service_account_agent_with_no_source_reads_no_records_through_the_storage_tools(
+        self, graph, loop,
+    ) -> None:
+        self._only(graph, "sa", ())
+        c, _ = make_client(graph)
+        assert _stream(c, "sa", "bob").status_code == 200
+        (call,) = loop.calls
+        assert call["user_info"]["userId"] == "u-alice"
+        tool = self._storage_tool(call)
+        assert not self._reaches_records(tool, "drive-alice")
+        assert not self._reaches_records(tool, "drive-team")
+
+    def test_a_service_account_agent_whose_sources_were_all_left_out_reads_no_records_through_the_storage_tools(
+        self, graph, loop,
+    ) -> None:
+        # A personal source and a collection: an unbound agent searches neither.
+        self._only(graph, "sa", ("drive-alice", "kb-1"))
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert self._knowledge(call) == set()
+        tool = self._storage_tool(call)
+        assert not self._reaches_records(tool, "drive-alice")
+        asyncio.run(tool._check_accessible_vrids(["v1"]))
+        scope = tool.state["graph_provider"].filter_accessible_virtual_record_ids.await_args.kwargs["scope_connector_ids"]
+        assert scope is not None and "drive-alice" not in scope
+
+    def test_a_service_account_agent_reads_its_own_sources_through_the_storage_tools_and_nothing_else(
+        self, graph, loop,
+    ) -> None:
+        self._only(graph, "sa", ("drive-team",))
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert self._reaches_records(self._storage_tool(call), "drive-team")
+        assert not self._reaches_records(self._storage_tool(call), "drive-alice")
+
+    def test_a_service_account_agent_with_internal_search_off_reads_no_records_through_the_storage_tools(
+        self, graph, loop,
+    ) -> None:
+        self._only(graph, "sa", ("drive-team",))
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob", {"query": "hi", "agentCapabilities": {"internalSearch": False}})
+        (call,) = loop.calls
+        assert not self._reaches_records(self._storage_tool(call), "drive-alice")
+        assert not self._reaches_records(self._storage_tool(call), "drive-team")
+
+    def test_an_ordinary_agent_with_no_source_keeps_its_storage_tools_as_they_were(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        _stream(c, "shared", "bob")
+        (call,) = loop.calls
+        assert "strictScope" not in call["query_info"]["filters"]
+
+    def test_a_project_chat_keeps_its_strict_scope_with_internal_search_off(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        _stream(c, "private", "alice", {
+            "query": "hi", "strictScope": True, "agentCapabilities": {"internalSearch": False},
+        })
+        (call,) = loop.calls
+        assert call["query_info"]["filters"] == {"apps": [], "kb": ["NO_KB_SELECTED"], "strictScope": True}
+        assert not self._reaches_records(self._storage_tool(call), "drive-alice")
 
     def test_a_service_account_agent_cannot_be_pointed_at_a_personal_source(self, graph, loop) -> None:
         self._sources(graph, "sa")
