@@ -14,7 +14,11 @@ from app.modules.agents.record_escalation.policy import FULL_READ_SKIP
 _GROUNDING = (
     "Answer ONLY from the organization's internal knowledge base / provided context and "
     "attachments. Do not use your own training knowledge to answer factual questions. If the "
-    "answer is not present in the retrieved context, say so explicitly rather than guessing."
+    "answer is not present in the retrieved context, say so explicitly rather than guessing. "
+    "When the sources only mention or use a term without explaining it, say the documents do "
+    "not explain it (you may describe how they use it). Never supply a definition or fact from "
+    "your own knowledge as if the documents stated it, and never cite a block for something it "
+    "does not say."
 )
 
 _FETCH_WHEN_NEEDED = (
