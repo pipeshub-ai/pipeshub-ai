@@ -166,6 +166,7 @@ from app.utils.error_class import log_failure, quotes_content
 from app.utils.indexing_timing import current_timeline, note, stage
 from app.utils.jwt import generate_jwt
 from app.utils.loop_bridge import run_on_loop
+from app.utils.table_row_memory import end_previous_rows
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
@@ -2053,6 +2054,7 @@ class RecordEventHandler(BaseEventService):
         # Nothing of an earlier delivery's run survives into this one.
         end_run()
         end_attempt()
+        end_previous_rows()
         replay_set.end_delivery()
         try:
             if not event_type:
@@ -3266,6 +3268,7 @@ class RecordEventHandler(BaseEventService):
             # Last, so every status write above is shaped by the run.
             end_run()
             end_attempt()
+            end_previous_rows()
             replay_set.end_delivery()
 
     async def __update_document_status(
