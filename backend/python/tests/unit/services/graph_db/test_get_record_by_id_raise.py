@@ -14,9 +14,13 @@ from app.core.org_context import OrgContext, bind
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support.log_capture import failure_line
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+
+LOGGER = "tests.get_record_by_id"
 
 
 class _Down(ConnectionError):
@@ -59,12 +63,13 @@ def _org() -> Iterator[None]:
 
 @pytest.mark.parametrize("make", [_neo4j, _arango, _postgres], ids=["neo4j", "arango", "postgres"])
 class TestGetRecordByIdRaiseOnError:
-    async def test_a_failed_read_answers_none_by_default(self, make) -> None:
+    async def test_a_failed_read_answers_none_by_default(self, make, caplog) -> None:
         p = make(_Down("graph down"), [])
+        p.logger = logging.getLogger(LOGGER)
         assert await p.get_record_by_id("r1") is None
-        assert [c for c in p.logger.error.call_args_list if "r1" in str(c)], "the default path keeps its ERROR line"
-        # Its own line names the error type, not the driver text (Arango's shared execute_query line is a known limitation).
-        assert not [c for c in p.logger.error.call_args_list if "r1" in str(c) and "graph down" in str(c)]
+        # The default path keeps its line, now one text-free graph.provider.failed (an unreachable graph is a WARNING).
+        fields = failure_line(caplog.records, "graph.provider.failed", "unavailable", logging.WARNING, "graph down")
+        assert (fields["op"], fields["record_id"]) == ("get_record_by_id", "r1")
 
     async def test_a_failed_read_is_raised_when_asked(self, make) -> None:
         with pytest.raises(_Down, match="graph down"):
@@ -85,7 +90,7 @@ class TestGetRecordByIdRaiseOnError:
         backend = request.node.callspec.id
         assert await make(None, _UNBUILDABLE[backend]).get_record_by_id("r1", raise_on_error=True) is None
 
-    async def test_a_build_failure_line_quotes_nothing_from_the_type_document(self, make, request) -> None:
+    async def test_a_build_failure_line_quotes_nothing_from_the_type_document(self, make, request, caplog) -> None:
         """The builders' errors embed the whole type document, which can carry names and URLs."""
         type_doc = {"_key": "r1", "id": "r1", "name": "Plan of Jane Roe"}
         rows = {
@@ -94,7 +99,8 @@ class TestGetRecordByIdRaiseOnError:
             "postgres": [{"rec": {"id": "r1", "recordType": "DRIVE", "orgId": "org-1"}, "typ": type_doc}],
         }[request.node.callspec.id]
         p = make(None, rows)
+        p.logger = logging.getLogger(LOGGER)
         assert await p.get_record_by_id("r1") is None
-        calls = [str(c) for level in ("warning", "error", "exception") for c in getattr(p.logger, level).call_args_list]
-        assert calls, "a record that will not build is still logged"
-        assert not [c for c in calls if "Jane" in c]
+        # A record that will not build is still logged, as our bug (ERROR, a text-free stack), naming nothing from the document.
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Jane", "Plan of")
+        assert (fields["op"], fields["record_id"]) == ("get_record_by_id", "r1")

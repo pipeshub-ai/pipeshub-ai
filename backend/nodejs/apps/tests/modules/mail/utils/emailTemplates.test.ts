@@ -163,6 +163,35 @@ describe('mail/utils/emailTemplates', () => {
       expect(result.length).to.be.greaterThan(0)
     })
 
+    it('connectorAccountConnect names the source, the inviter and the opt-out link', () => {
+      const data = {
+        orgName: 'Acme',
+        connectorName: 'Team Notion',
+        sourceName: 'Notion',
+        link: 'https://app.test/connect-account?token=t1',
+        optOutLink: 'https://app.test/connect-account?token=t1&optOut=1',
+        reconnect: false,
+        inviterName: 'Ada <Admin>',
+        expiresInDays: 7,
+      }
+      const invite = emailTemplates.connectorAccountConnect(data)
+      expect(invite).to.match(/Connect your\s+<strong[^>]*>Notion<\/strong>\s+account/)
+      expect(invite).to.include('Ada &lt;Admin&gt;')
+      expect(invite).to.include('href="https://app.test/connect-account?token=t1&optOut=1"')
+      expect(invite).to.include('This link works for 7 days.')
+
+      expect(invite).to.match(/from Acme asked you to connect\s+your Notion account\./)
+      expect(invite).to.include('Connector: Team Notion')
+
+      const reconnect = emailTemplates.connectorAccountConnect({ ...data, reconnect: true, inviterName: null })
+      expect(reconnect).to.match(/Reconnect your\s+<strong[^>]*>Notion<\/strong>\s+account/)
+      expect(reconnect).to.not.include('asked you to connect')
+
+      const noOrg = emailTemplates.connectorAccountConnect({ ...data, orgName: null })
+      expect(noOrg).to.match(/<\/strong>\s+asked you to connect\s+your Notion account\./)
+      expect(noOrg).to.not.match(/from\s+(asked|null)/)
+    })
+
     it('should throw when templateData is null (compileTemplate guard)', () => {
       expect(() => emailTemplates.loginWithOTPRequest(null as any)).to.throw('Invalid templateData')
     })

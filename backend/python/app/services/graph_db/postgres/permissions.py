@@ -29,6 +29,7 @@ from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kh_listing import UNDECIDED_MAX, class_sets
 from app.services.graph_db.taxonomy import own_record_labels
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -322,6 +323,14 @@ class PermissionsMixin(PgBase):
                               AND l.from_coll = 'users' AND l.from_id = p.from_id AND l.to_coll = 'apps' AND l.to_id = $2)
             RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), connector_id), transaction, write=True) or 0
 
+    async def get_user_granted_records(self, connector_id: str, user_id: str, transaction: str | None = None) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on; grants held by a group, a team or the organization are not included."""
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_user_granted_records */ SELECT DISTINCT n.id, n.doc->>'externalRecordId' AS ext,
+            n.doc->>'recordType' AS rtype FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = 'records' AND n.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'records'
+              AND n.doc->>'connectorId' = $3""", current_org_id(), user_id, connector_id), transaction)
+        return [{"id": r["id"], "externalRecordId": r["ext"], "recordType": r["rtype"]} for r in rows]
+
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
         """Sets the role on each listed user's edge to the team (a user with no edge is skipped); the updated edges come back. A user named twice gets the last role."""
@@ -371,7 +380,8 @@ class PermissionsMixin(PgBase):
                 WHERE a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = $2 AND a.doc->>'isDeleted' IS DISTINCT FROM 'true'
                 ORDER BY (p.doc->>'type' = 'USER') DESC LIMIT 1""", org_id, agent_id, user_id), transaction)
         except Exception as e:
-            self.logger.error("Failed to check agent permission: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_agent_permission")
             return None
         if not r:
             return None
@@ -448,7 +458,8 @@ class PermissionsMixin(PgBase):
                   AND ($3::text[] IS NULL OR a.id = ANY($3::text[])) AND (NOT coalesce((a.doc->>'isHidden')::boolean, false) OR $3::text[] IS NOT NULL)""",
                                                      org, list(access["gated_app_ids"]), sorted(scope_set) if scope_set is not None else None), None)
         except Exception as exc:
-            self.logger.error("get_accessible_containers: failed — %s", exc)
+            error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                    op="get_accessible_containers")
             return AccessibleContainers(fallback_reason="query_failed")
         # points of an App whose membership arrays were never written carry no connectorIds, so a container filter cannot see them at all
         unready = sorted(r["id"] for r in rows if not r["ready"])
@@ -463,7 +474,8 @@ class PermissionsMixin(PgBase):
             user_key = (user or {}).get("id") or (user or {}).get("_key")
             return _distinct_connector_types(await self.get_gated_apps(user_key, org_id)) if user_key else []
         except Exception as e:
-            self.logger.warning("Could not resolve accessible connector types: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_accessible_connector_types")
             return []
 
     async def get_knowledge_hub_node_access(self, node_id: str, user_key: str, org_id: str, folder_mime_types: list[str],
@@ -499,7 +511,8 @@ class PermissionsMixin(PgBase):
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
-            self.logger.error("get_knowledge_hub_node_access failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_node_access")
             return None
 
     # ---- the context role, the record access details, and the accessible search scope ----------------------------
@@ -678,7 +691,8 @@ class PermissionsMixin(PgBase):
                 return _ctx_perms(got[0] if got else "READER")
             return await self._q(go, transaction)
         except Exception as e:
-            self.logger.error("Get knowledge hub context permissions failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_context_permissions")
             return _ctx_perms("READER")
 
     async def check_record_access_with_details(self, user_id: str, org_id: str, record_id: str, transaction: str | None = None) -> dict | None:
@@ -707,7 +721,7 @@ class PermissionsMixin(PgBase):
                   AND m.coll IN ('departments', 'categories', 'subcategories1', 'subcategories2', 'subcategories3', 'topics', 'languages')""", org, record_id)
             return best, meta
         best, meta = await self._q(go, transaction)
-        extra = await self.get_document(record_id, type_coll, transaction) if type_coll else None
+        extra = await self.get_document(record_id, type_coll, transaction, raise_on_error=True) if type_coll else None
         email, connector_name = (user or {}).get("email"), record.get("connectorName")
         if extra and extra.get("webUrl"):
             extra["webUrl"] = substitute_user_email(extra["webUrl"], email, connector_name)
@@ -720,7 +734,7 @@ class PermissionsMixin(PgBase):
                          "migrated": ed.get("migratedFrom") is not None}
             labels[m["mcoll"]].append(item)
         kb_info = None
-        app = await self.get_document(record.get("connectorId"), "apps", transaction) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
+        app = await self.get_document(record.get("connectorId"), "apps", transaction, raise_on_error=True) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
         if app and app.get("type") == _KB_TYPE and await self.get_user_kb_permission(app["id"], user_key, transaction=transaction):
             kb_info = {"id": app["id"], "name": app.get("name"), "orgId": org}
         role, source = best if best else ("READER", "CONNECTOR")      # a connector item carries no role; what the check admitted is read access
@@ -845,9 +859,10 @@ class PermissionsMixin(PgBase):
                     out.setdefault(c["vrid"], c["id"])
             return out
         except Exception as e:
-            self.logger.error("Get accessible virtual record IDs failed: %s", e)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_accessible_virtual_record_ids")
             return {}
 
 

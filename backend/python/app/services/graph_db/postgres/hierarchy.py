@@ -33,6 +33,7 @@ from app.services.graph_db.postgres.base import (
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -117,7 +118,8 @@ class HierarchyMixin(PgBase):
                            transaction, write=True)
             return True
         except Exception as e:
-            self.logger.error(f"❌ Error copying relationships from {source_key} to {target_key}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="copy_document_relationships")
             return False
 
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
@@ -139,9 +141,10 @@ class HierarchyMixin(PgBase):
                 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND e.doc->>'relationshipType' = ANY($5::text[]) AND ($6::int = 0 OR ($6::int = 1 AND e.ekey = '') OR ($6::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1)
                 SELECT count(*) FROM d""", org, colls, from_collection, from_id, relationship_types, kind), transaction, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Delete edges by relationship types failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_edges_by_relationship_types")
             return 0
 
     async def delete_parent_child_edge_to_record(self, record_id: str, transaction: str | None = None) -> bool:
@@ -250,7 +253,7 @@ class HierarchyMixin(PgBase):
             rows = await self._ancestor_chains(record_id, transaction)
             return "/".join(select_canonical_chain_names(rows, ("names",))) if rows else None
         except Exception as e:
-            self.logger.error(f"❌ Get record path failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_record_path")
             return None
 
     async def get_record_path_segments(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> list[str]:
@@ -258,9 +261,10 @@ class HierarchyMixin(PgBase):
         try:
             rows = await self._ancestor_chains(record_id, transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get record path segments failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_path_segments")
             return []
         return select_canonical_chain_names(rows, ("names",))
 
@@ -289,9 +293,10 @@ class HierarchyMixin(PgBase):
                   WHERE NOT p.id = ANY(up.ids) AND cardinality(up.ids) <= 50)
                 SELECT ids, gn, nm FROM up ORDER BY cardinality(ids) DESC, ids LIMIT $3""", org, record_group_id, PATH_MAX_CANDIDATES, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get record group path failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_group_path")
             return []
         return select_canonical_chain_names([{"ids": list(r["ids"]), "groupNames": list(r["gn"]), "names": list(r["nm"])} for r in rows], ("groupNames", "names"))
 
@@ -317,7 +322,8 @@ class HierarchyMixin(PgBase):
                 ORDER BY (e.from_coll = 'records') DESC, e.from_id LIMIT 1""", org, record_id, transaction=transaction)
             return {"id": rows[0]["id"], "type": "recordGroup" if rows[0]["coll"] == "recordGroups" else "record"} if rows else None
         except Exception as e:
-            self.logger.error(f"❌ Get record parent info failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_parent_info")
             return None
 
     async def get_node_depths_batch(self, parent_id: str, node_ids: list[str], max_depth: int = 3, parent_type: str | None = None) -> dict[str, int]:
@@ -361,7 +367,8 @@ class HierarchyMixin(PgBase):
         try:
             return await self._q(walk, None)
         except Exception as e:
-            self.logger.error("get_node_depths_batch failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_node_depths_batch")
             return {}
 
     async def delete_records_and_relations(self, record_key: str, *, hard_delete: bool = False, transaction: str | None = None) -> bool:
@@ -435,7 +442,8 @@ class HierarchyMixin(PgBase):
                         p["taxonomyRefs"] = r
                     payloads.append(p)
         except Exception as e:
-            self.logger.error(f"❌ Failed to prepare deletion event payloads: {e}")
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="_delete_events", step="deletion_event_payload")
         return {"eventType": "deleteRecord", "topic": "record-events", "payloads": payloads} if payloads else None
 
     async def delete_records_recursive(self, record_ids: list[str], connector_id: str, transaction: str | None = None, cascade_children: bool = True,  # noqa: FBT001, FBT002
@@ -487,7 +495,8 @@ class HierarchyMixin(PgBase):
             if transaction is None:
                 await self.rollback_transaction(txn)
                 if isinstance(e, Exception):
-                    self.logger.error(f"❌ Failed to delete records recursively: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                            op="delete_records_recursive")
                     return {"success": False, "reason": str(e), "code": 500, "eventData": None}
             raise  # the caller owns the transaction: it needs the real error to roll back and retry
 
@@ -510,7 +519,7 @@ class HierarchyMixin(PgBase):
             if transaction is None:
                 await self.rollback_transaction(txn)
                 if isinstance(e, Exception):
-                    self.logger.error(f"❌ Failed to delete single record: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_single_record")
                     return {"success": False, "reason": str(e), "code": 500, "eventData": None}
             raise
 
@@ -545,7 +554,8 @@ class HierarchyMixin(PgBase):
                 "recordType": record.get("recordType"),
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_create_deleted_record_event_payload")
             return {}
 
     async def is_record_descendant_of(self, record_id: str, ancestor_id: str, transaction: str | None = None) -> bool:
@@ -564,8 +574,9 @@ class HierarchyMixin(PgBase):
         try:
             got = await kg_hier.answer(self, "pc_ancestor", transaction, lambda tx: kg_hier.pc_ancestor(tx, org, record_id, ancestor_id), walk=walk)
             return got if got is not None else await self._q(walk, transaction)
-        except Exception:
-            self.logger.exception("Is record descendant check failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="is_record_descendant_of")
             return False
 
 # ---- the knowledge hub's root listing, parent and trail --------------------------------------------------------------------------
@@ -598,8 +609,9 @@ class HubMixin(PgBase):
         org = current_org_id()
         try:
             apps = await self.get_gated_apps(user_key, org_id, transaction=transaction) if org_id == org else []
-        except Exception:
-            self.logger.exception("Failed to get knowledge hub filter options")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_filter_options")
             return {"apps": []}
         rows = [{"id": a.get("_key") or a.get("id"), "name": a.get("name"), "type": a.get("type")} for a in apps if (a.get("type") or "") != "KB" and (a.get("_key") or a.get("id"))]
         return {"apps": sorted(rows, key=lambda a: (a.get("name") or "").lower())}
@@ -666,8 +678,9 @@ class HubMixin(PgBase):
                 return []
             visible = (await self.check_access(user_key, org_id, node_ids=[s["id"] for s in trail], transaction=transaction)).node_ids
             return [s for s in reversed(trail) if s["id"] in visible] if trail[0]["id"] in visible else []
-        except Exception:
-            self.logger.exception("Get knowledge hub breadcrumbs failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_breadcrumbs")
             return []
 
     async def get_knowledge_hub_parent_node(self, node_id: str, folder_mime_types: list[str], transaction: str | None = None) -> dict[str, Any] | None:
@@ -711,8 +724,9 @@ class HubMixin(PgBase):
             return {"id": p["id"], "name": p["name"], "nodeType": "app", "subType": p.get("type")} if p and p.get("name") else None
         try:
             return await self._q(go, transaction)
-        except Exception:
-            self.logger.exception("Get knowledge hub parent node failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_parent_node")
             return None
 
     async def get_knowledge_hub_root_nodes_v2(self, user_key: str, org_id: str, user_app_ids: list[str], limit: int, sort_field: str = "name", sort_dir: str = "ASC", *,

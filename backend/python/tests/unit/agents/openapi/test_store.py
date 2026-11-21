@@ -1,3 +1,5 @@
+from app.agents.constants.api_toolset_constants import get_credentials_path
+from app.agents.mcp.models import OAuthTokens
 from app.agents.openapi.models import (
     ApiToolsetCredentials,
     ApiToolsetInstance,
@@ -53,3 +55,34 @@ async def test_an_unreadable_record_is_skipped_when_listing() -> None:
     store, config = await _store_with_two_orgs()
     config.values["/services/api-toolsets/instances/broken"] = {"orgId": "org-1", "name": "half a record"}
     assert [i.id for i in await store.list_instances("org-1")] == ["i1", "i2"]
+
+
+async def test_a_saved_sign_in_with_a_lifetime_past_the_mcp_bound_still_loads() -> None:
+    # MCP bounds expires_in when it parses a token (oauth_client.parse_tokens); the shared model does not, so an
+    # OpenAPI credential that main loads still loads, and its toolset stays listed (F26e review M1).
+    config = InMemoryConfigService()
+    store = ApiToolsetStore(config)
+    await store.save_credentials("i1", "u1", ApiToolsetCredentials(oauth=OAuthTokens(access_token="a")))
+    path = get_credentials_path("i1", "u1")
+    record = await config.get_config(path)
+    record["oauth"]["expiresIn"] = 10**20
+    await config.set_config(path, record)
+
+    loaded = await store.get_credentials("i1", "u1")
+
+    assert loaded is not None and loaded.oauth is not None and loaded.oauth.expires_in == 10**20
+
+
+async def test_a_saved_sign_in_with_a_lifetime_under_a_second_still_expires() -> None:
+    # The shared model drops a fraction toward zero but never to 0, which would read as "no expiry".
+    config = InMemoryConfigService()
+    store = ApiToolsetStore(config)
+    await store.save_credentials("i1", "u1", ApiToolsetCredentials(oauth=OAuthTokens(access_token="a")))
+    record = await config.get_config(get_credentials_path("i1", "u1"))
+    record["oauth"]["expiresIn"] = 0.5
+    await config.set_config(get_credentials_path("i1", "u1"), record)
+
+    loaded = await store.get_credentials("i1", "u1")
+
+    assert loaded is not None and loaded.oauth is not None
+    assert loaded.oauth.expires_in == 1 and loaded.oauth.expires_at_epoch is not None

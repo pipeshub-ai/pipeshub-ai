@@ -35,6 +35,7 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.conditions import Cond
 from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
+from app.utils import error_class
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.kh_breadcrumbs import browse_scope
 from app.utils.kh_chain_tops import place_chain_tops
@@ -4163,32 +4164,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def list_kb_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: str | None,
-        record_types: list[str] | None,
-        origins: list[str] | None,
-        connectors: list[str] | None,
-        indexing_status: list[str] | None,
-        date_from: int | None,
-        date_to: int | None,
-        sort_by: str,
-        sort_order: str,
-        folder_id: str | None = None,
-    ) -> tuple[list[dict], int, dict]:
-        """List records in a KB. Returns (records, total_count, available_filters).
-
-        An empty list means no matching record or no access. A query that could
-        not be read raises; it is never reported as an empty list.
-        """
-        pass
-
-    @abstractmethod
     async def list_accessible_artifacts(
         self,
         user_id: str,
@@ -5476,7 +5451,8 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with record, knowledgeBase, folder, metadata, permissions if accessible;
-            None if not, and always None for a record in the trash.
+            None if not, and always None for a record in the trash. Any failure to read
+            the graph raises: a read that failed is never None.
         """
         pass
 
@@ -6013,6 +5989,17 @@ class IGraphDBProvider(ABC):
         linked meanwhile, say by a verified email taking over a stub, keeps them). Before the org's All team passes
         the connector gate, no grant may wait there for a person the connector does not link. Returns how many
         edges were deleted."""
+        raise NotImplementedError
+
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on, as ``{id, externalRecordId, recordType}``.
+        Grants through groups, teams, the organization or inheritance are not included. A failed read raises: an
+        empty list must mean the user holds no such grant, since callers add and remove grants from it."""
         raise NotImplementedError
 
     @abstractmethod
@@ -7456,6 +7443,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of deleted permission edges (OLD values)
+
+        Raises:
+            Exception: the delete failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 
@@ -7478,6 +7468,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of updated permission edges
+
+        Raises:
+            Exception: the update failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 
@@ -7648,6 +7641,10 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+
+        Raises:
+            Exception: the store's error when it cannot be read. Deletes are
+            refused on this answer, so a failure must never read as no agents.
         """
         pass
 
@@ -7671,6 +7668,10 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+
+        Raises:
+            Exception: the store's error when it cannot be read. Deletes are
+            refused on this answer, so a failure must never read as no agents.
         """
         pass
 
@@ -7863,10 +7864,12 @@ class IGraphDBProvider(ABC):
         except NotImplementedError:
             raise
         except Exception as exc:
-            self.logger.error(
-                "check_access failed for %d nodes and %d vrids: %s",
-                len(asked_nodes), len(asked_vrids), type(exc).__name__,
-            )
+            if not error_class.chain_stamped(exc):  # a client failure already wrote db.query.failed
+                self.logger.log(
+                    error_class.level_for(error_class.classify_error(exc)),
+                    "check_access failed for %d nodes and %d vrids: %s",
+                    len(asked_nodes), len(asked_vrids), type(exc).__name__,
+                )
             raise PermissionVerificationUnavailableError() from exc
         records_by_vrid: dict[str, str] = {}
         for row in rows:

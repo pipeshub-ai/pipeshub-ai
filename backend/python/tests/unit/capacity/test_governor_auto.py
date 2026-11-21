@@ -14,6 +14,7 @@ from app.capacity import runtime
 from app.capacity.member_budget import STATE_BYTES
 from app.services.resource_governor import container_link as cl
 from app.services.resource_governor.controller import ResourceGovernor
+from app.services.resource_governor.feedback import FeedbackWindow
 from app.services.resource_governor.models import (
     ControllerState,
     Limits,
@@ -387,3 +388,25 @@ def test_a_pool_this_process_runs_without_stays_without_when_the_shared_plan_has
     own = (Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 10, Pool.INDEX_LIGHT: 0}), ControllerState.initial())
     limits = _step(link, own, Ceilings(112, 544, 224, 0))  # the local index_light ceiling is zero (collapsed tier)
     assert limits.get(Pool.INDEX_LIGHT) == 0
+
+
+@pytest.mark.parametrize(
+    ("window", "light"),
+    [
+        (FeedbackWindow(unavailable={"DoclingService": 3}), 100),  # only heavy records call Docling
+        (FeedbackWindow(pool_exhaustions={"neo4j": 1}), 50),  # both tiers call neo4j
+    ],
+)
+def test_the_container_ramp_brakes_only_the_pools_whose_records_call_the_reporter(
+    tmp_path: Path, window: FeedbackWindow, light: int,
+) -> None:
+    from app.services.resource_governor.models import Ceilings
+
+    shared = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100})
+    link = _link_with_shared(tmp_path, shared)
+    limits, _ = link.step(
+        own=(shared, ControllerState.initial()), snap=snap(128), ceilings=Ceilings(112, 544, 224, 544), demand={},
+        now=100.0, interval=15.0, feedback=window, heavy_working_set_gb=1.5,
+    )
+    assert limits.get(Pool.INDEX_HEAVY) == 50
+    assert limits.get(Pool.INDEX_LIGHT) == light

@@ -54,4 +54,5 @@ def content_filter_error(context: str, detail: str) -> TransportError:
     return TransportError(
         f"Provider content_filter stopped the response ({context}): {detail}",
         retryable=False,
+        code="content_filter",
     )

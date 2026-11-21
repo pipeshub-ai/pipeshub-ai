@@ -27,6 +27,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.log_capture import failure_line
 
 
 # ---------------------------------------------------------------------------
@@ -76,15 +77,17 @@ class TestNeo4jGetDocumentsByIds:
         assert result["app1"]["_key"] == "app1"  # id → _key conversion
 
     @pytest.mark.asyncio
-    async def test_resilient_on_query_error(self, neo4j_provider):
+    async def test_resilient_on_query_error(self, neo4j_provider, caplog):
         # A transient DB failure must degrade to {} (callers fall back to UNKNOWN),
         # never propagate and abort the whole projection.
+        neo4j_provider.logger = logging.getLogger("tests.agent_toolset_projection")
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("db down"))
         result = await neo4j_provider._get_documents_by_ids(
             ["x"], CollectionNames.RECORD_GROUPS.value
         )
         assert result == {}
-        neo4j_provider.logger.warning.assert_called()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "db down")
+        assert (fields["op"], fields["collection"]) == ("_get_documents_by_ids", CollectionNames.RECORD_GROUPS.value)
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +105,7 @@ def _make_projection_client(toolset_rows, knowledge_rows, doc_store):
     """
     calls = {"toolsets": 0, "knowledge": 0, "docs": 0}
 
-    async def _execute(query, parameters=None, txn_id=None):
+    async def _execute(query, parameters=None, txn_id=None, **_):
         parameters = parameters or {}
         if "agent_ids" in parameters:
             if "AS toolset" in query:
