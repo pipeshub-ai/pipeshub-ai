@@ -351,7 +351,7 @@ class KnowledgeHubService:
         step = getattr(self.graph_provider, "kh_browse_skip_rows" if browse else "kh_skip_rows", 0)
         step = step if type(step) is int and step > limit else limit      # exactly an int: a spec'd test double passes isinstance
         token, left = None, (page - 1) * limit
-        skipping = KH_SKIP_READS.set({})
+        skipping = KH_SKIP_READS.set({"page_rows": limit})
         try:
             while left > 0:
                 got = await fetch(token, min(left, step))

@@ -22207,6 +22207,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if browse_mode == _KH_SPLIT_COMPARE:
             raise undecided
         self.logger.info(f"kh browse in {app_id} answered by legacy: {undecided}")
+        skip_reads = KH_SKIP_READS.get()
+        if skip_reads is not None:
+            # A read before a numbered page takes up to `kh_browse_skip_rows` rows on split; legacy holds every row it keeps in transaction
+            # memory, so it reads a page's worth and the reads before the page go on from its cursor.
+            args = {**args, "limit": min(args["limit"], skip_reads["page_rows"])}
         return await self.get_knowledge_hub_connector_page_v3(**args, browse_mode="legacy")
 
     async def _kh_split_group_ids(self, ids: list[str], *, org_id: str, transaction: str | None) -> set[str]:
