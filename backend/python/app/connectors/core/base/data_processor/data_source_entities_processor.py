@@ -3188,6 +3188,7 @@ class DataSourceEntitiesProcessor:
                 # A new record's vectors are its own: a virtualRecordId chosen by the
                 # caller would serve another record's indexed content under this one.
                 record.virtual_record_id = None
+            carried_from_same_id = False
             if (
                 isinstance(same_id, dict)
                 and record.origin != OriginTypes.UPLOAD
@@ -3204,8 +3205,17 @@ class DataSourceEntitiesProcessor:
                 self._preserve_indexing_state(record, renamed)
                 record.virtual_record_id = record.virtual_record_id or renamed.virtual_record_id
                 self._carry_insert_only_fields(record, renamed)
+                carried_from_same_id = True
             elif publishes_event:
                 self._stamp_queued_at(record)
+            if isinstance(same_id, dict) and not carried_from_same_id:
+                # Stored under this id (a rename or move that changes the revision): the store keeps its date and id, so
+                # the record handed on does too.
+                self._carry_insert_only_fields(record, SimpleNamespace(
+                    created_at=same_id.get("createdAtTimestamp"),
+                    incarnation_id=same_id.get("incarnationId"),
+                    is_placeholder=bool(same_id.get("isPlaceholder")),
+                ))
             # Not stored under this id either: the ArangoDB store inserts first (one call), and a wrong guess only costs a patch.
             record._known_new = not stored_under_its_id
             await self._handle_new_record(record, tx_store)

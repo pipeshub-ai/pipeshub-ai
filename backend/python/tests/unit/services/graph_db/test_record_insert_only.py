@@ -183,6 +183,22 @@ async def test_with_the_kill_switch_off_the_processor_keeps_the_incoming_date(mo
     assert processed.created_at == 900 and processed._promotes_stub is False
 
 
+async def test_a_rename_under_a_new_external_id_keeps_the_stored_date_and_id_even_when_the_revision_changes() -> None:
+    """The record is found by its id, not its external id, and is not indexed under the same revision: the store keeps its date and id,
+    so the record handed on does too."""
+    stored = _file("same-key", created_at=100)
+    stored.incarnation_id = "inc-1"
+    stored.external_revision_id = "r1"
+    incoming = _file("same-key", created_at=999_999)
+    incoming.external_record_id = "renamed-ext"
+    incoming.external_revision_id = "r2"
+    tx = _tx(None)
+    tx.get_record_by_key = AsyncMock(return_value=stored.to_arango_base_record() | {"_key": "same-key"})
+    with patch.object(DataSourceEntitiesProcessor, "_handle_record_group", AsyncMock(return_value=None)):
+        processed, _ = await _processor()._process_record(incoming, [], tx)
+    assert processed.created_at == 100 and processed.incarnation_id == "inc-1"
+
+
 async def test_a_new_record_is_marked_known_new_for_the_insert_first_order() -> None:
     processed, tx = await _resync(None, _file("fresh"))
     assert processed._known_new is True
