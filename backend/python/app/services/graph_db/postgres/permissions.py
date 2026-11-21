@@ -29,6 +29,7 @@ from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kh_listing import UNDECIDED_MAX, class_sets
 from app.services.graph_db.taxonomy import own_record_labels
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -379,7 +380,8 @@ class PermissionsMixin(PgBase):
                 WHERE a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = $2 AND a.doc->>'isDeleted' IS DISTINCT FROM 'true'
                 ORDER BY (p.doc->>'type' = 'USER') DESC LIMIT 1""", org_id, agent_id, user_id), transaction)
         except Exception as e:
-            self.logger.error("Failed to check agent permission: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_agent_permission")
             return None
         if not r:
             return None
@@ -456,7 +458,8 @@ class PermissionsMixin(PgBase):
                   AND ($3::text[] IS NULL OR a.id = ANY($3::text[])) AND (NOT coalesce((a.doc->>'isHidden')::boolean, false) OR $3::text[] IS NOT NULL)""",
                                                      org, list(access["gated_app_ids"]), sorted(scope_set) if scope_set is not None else None), None)
         except Exception as exc:
-            self.logger.error("get_accessible_containers: failed — %s", exc)
+            error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                    op="get_accessible_containers")
             return AccessibleContainers(fallback_reason="query_failed")
         # points of an App whose membership arrays were never written carry no connectorIds, so a container filter cannot see them at all
         unready = sorted(r["id"] for r in rows if not r["ready"])
@@ -471,7 +474,8 @@ class PermissionsMixin(PgBase):
             user_key = (user or {}).get("id") or (user or {}).get("_key")
             return _distinct_connector_types(await self.get_gated_apps(user_key, org_id)) if user_key else []
         except Exception as e:
-            self.logger.warning("Could not resolve accessible connector types: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_accessible_connector_types")
             return []
 
     async def get_knowledge_hub_node_access(self, node_id: str, user_key: str, org_id: str, folder_mime_types: list[str],
@@ -507,7 +511,8 @@ class PermissionsMixin(PgBase):
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
-            self.logger.error("get_knowledge_hub_node_access failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_node_access")
             return None
 
     # ---- the context role, the record access details, and the accessible search scope ----------------------------
@@ -686,7 +691,8 @@ class PermissionsMixin(PgBase):
                 return _ctx_perms(got[0] if got else "READER")
             return await self._q(go, transaction)
         except Exception as e:
-            self.logger.error("Get knowledge hub context permissions failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_context_permissions")
             return _ctx_perms("READER")
 
     async def check_record_access_with_details(self, user_id: str, org_id: str, record_id: str, transaction: str | None = None) -> dict | None:
@@ -853,9 +859,10 @@ class PermissionsMixin(PgBase):
                     out.setdefault(c["vrid"], c["id"])
             return out
         except Exception as e:
-            self.logger.error("Get accessible virtual record IDs failed: %s", e)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_accessible_virtual_record_ids")
             return {}
 
 

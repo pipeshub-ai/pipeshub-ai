@@ -31,6 +31,7 @@ from app.services.graph_db.postgres.base import (
     _node,
     _pgbool,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -110,14 +111,16 @@ class RecordsMixin(PgBase):
         except Exception as e:
             if raise_on_error:  # raised before logging, as get_record_by_external_id: the caller that handles it logs it once
                 raise
-            self.logger.error("Failed to retrieve record for id %s: %s", record_id, type(e).__name__)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_id", record_id=record_id)
             return None
         if not r:
             return None
         try:
             return typed_record(_rec(r["rec"]), _arango(_doc(r["typ"]), "") if r["typ"] else None)
         except Exception as e:  # the builder's error quotes the whole type document
-            self.logger.error("Failed to build record %s: %s", record_id, type(e).__name__)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_id", record_id=record_id)
             return None
 
     async def get_records_by_virtual_record_id(self, virtual_record_id: str, accessible_record_ids: list[str] | None = None, transaction: str | None = None,
@@ -134,9 +137,10 @@ class RecordsMixin(PgBase):
                                   transaction)
             return [r["id"] for r in rows]
         except Exception as e:
-            self.logger.error("Error finding records with virtualRecordId %s: %s", virtual_record_id, e)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_records_by_virtual_record_id")
             return []
 
     async def page_record_ids_by_type(self, org_id: str, record_types: list[str], *, after_key: str | None = None, limit: int = 500) -> list[str]:
@@ -171,7 +175,8 @@ class RecordsMixin(PgBase):
                                 org, connector_id, external_revision_id, _vis(visibility), transaction=transaction)
             return Record.from_arango_base_record(_arango(d, _RECORDS)) if d else None
         except Exception as e:
-            self.logger.error("Get record by external revision ID failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_external_revision_id")
             return None
 
     # ---- lookups by id -----------------------------------------------------------------------------------------
@@ -185,7 +190,8 @@ class RecordsMixin(PgBase):
                 WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])""", org, ids), transaction)
             return {r["id"] for r in rows}
         except Exception as e:
-            self.logger.error("Failed to check record existence: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_existing_record_keys")
             return set()
 
     async def get_records_by_record_ids(self, record_ids: list[str], org_id: str, visibility: RecordVisibility = RecordVisibility.LIVE, *,
@@ -200,9 +206,10 @@ class RecordsMixin(PgBase):
                                                       org, list(record_ids), org_id, _vis(visibility)), None)
             return [_rec(r["doc"]) for r in rows]
         except Exception as e:
-            self.logger.error("Failed to fetch records by record IDs: %s", e)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_records_by_record_ids")
             return []
 
     async def get_typed_records_batch(self, record_ids: list[str], *, raise_on_error: bool = False) -> dict[str, Record]:
@@ -218,7 +225,8 @@ class RecordsMixin(PgBase):
         except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.error("get_typed_records_batch failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_typed_records_batch")
             return {}
         typed: dict[str, Record] = {}
         for r in rows:
@@ -238,7 +246,8 @@ class RecordsMixin(PgBase):
                                                       org, list(record_ids)), transaction)
             return {r["id"]: r["v"] for r in rows}
         except Exception as e:
-            self.logger.warning("Failed to get virtual_record_ids for record_ids: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_virtual_record_ids_for_record_ids")
             return {}
 
     async def get_virtual_record_ids_in_use(self, virtual_record_ids: list[str], *, visibility: RecordVisibility = RecordVisibility.LIVE,
@@ -402,7 +411,7 @@ class RecordsMixin(PgBase):
                   AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)""", run),
                                                  org, ids, status, get_epoch_timestamp_in_ms()), None, write=True)
         except Exception as e:
-            self.logger.error("Failed to update records to %s: %s", status, e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
 
     async def has_records_indexed_since(self, connector_id: str, since_ms: int, *, transaction: str | None = None) -> bool:
         org = current_org_id()
@@ -418,10 +427,10 @@ class RecordsMixin(PgBase):
             d = await self._one("""/* pipeshub:graph.get_sync_point */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND doc->>'syncPointKey' = $3
                 ORDER BY id LIMIT 1""", org, collection, key, transaction=transaction)
             return _arango(d, collection) if d else None
-        except Exception:
-            self.logger.exception("Get sync point failed")
+        except Exception as e:
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_sync_point")
             return None
 
     async def upsert_sync_point(self, sync_point_key: str, sync_point_data: dict, collection: str, transaction: str | None = None) -> bool:

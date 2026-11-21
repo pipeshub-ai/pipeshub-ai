@@ -480,7 +480,7 @@ export class OAuthTokenService {
         });
       });
 
-      return payload;
+      return { ...payload, tokenRowId: storedToken._id };
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {
         throw new ExpiredTokenError('Access token has expired');

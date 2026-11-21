@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
@@ -41,6 +42,7 @@ from app.services.graph_db.user_email_identity import (
     connector_ids_of_users,
     graph_user_key,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -101,7 +103,7 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
             except Exception as e:
                 if flag and k.get("raise_on_error"):  # raised before logging: the caller that handles it logs it once
                     raise
-                self.logger.error("%s failed: %s", fn.__name__, e)
+                error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op=fn.__name__)
                 return default() if callable(default) else default
         return wrapper
     return deco
@@ -435,9 +437,9 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.error("get_app_users failed: %s", e)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_app_users")
             return []
 
     async def get_app_user_links(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
@@ -512,7 +514,8 @@ class IdentityMixin(PgBase):
                     except NotImplementedInPostgres:
                         pass
                     except Exception as e:
-                        self.logger.error("Person adoption failed for user %s in org %s: %s", u.id, org_node, e)
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                                op="batch_upsert_app_users", step="person_adoption")
                 member_edges = [{"from_id": u.id, "from_collection": "users", "to_id": org_node, "to_collection": "organizations", "createdAtTimestamp": u.created_at,
                                  "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"} for u in new.values() if not u.is_guest]
                 await self.batch_create_edges(member_edges, CollectionNames.BELONGS_TO.value, tx)
@@ -1034,6 +1037,19 @@ class IdentityMixin(PgBase):
             await self._join_all_team(team_id, [k for u in users if (k := u.get("id"))], owner_if_empty=True, tid=tid)
 
     # ---- what an agent still uses, and counts of connector instances ----------------------------------------------------------------
+    async def count_active_apps_by_type(self) -> dict[str, int]:
+        """Active connector instances per type (``unknown`` without one): the ambient org's, or every org's under a system context, one count per org."""
+        counts: Counter[str] = Counter()
+        errors: list[tuple[str, Exception]] = []
+        for org_id in await self._sweep_orgs():
+            with self._sweep(org_id, errors):
+                rows = await self._q(lambda tx, org=current_org_id(): tx.fetch("""/* pipeshub:graph.count_active_apps_by_type */
+                    SELECT coalesce(nullif(doc->>'type', ''), 'unknown') AS type, count(*) AS n FROM graph.nodes
+                    WHERE org_id = $1 AND coll = 'apps' AND coalesce((doc->>'isActive')::boolean, false) GROUP BY 1""", org), None)
+                counts.update({r["type"]: r["n"] for r in rows})
+        self._raise_failed(errors)
+        return dict(counts)
+
     async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
         """Names of the live agents with an operation of this API toolset attached (an entry of ``apiToolsetTools`` starting ``<instance>:``)."""
         rows = await self._id_rows("""/* pipeshub:graph.check_api_toolset_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes a
@@ -1067,7 +1083,8 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.error("Error checking name uniqueness: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_connector_name_uniqueness")
             return True
 
     @_soft(0)
@@ -1168,7 +1185,8 @@ class IdentityMixin(PgBase):
             except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
                 raise
             except Exception as e:
-                self.logger.warning("Agent MCP server enrichment failed for %s: %s", agent_id, e)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="get_agent", step="mcp_server_enrichment", agent_id=agent_id)
                 mcp, agent["mcpServersUnavailable"] = {}, True
             agent["mcpServers"] = mcp.get(agent_id, [])
             agent["shareWithOrg"] = bool(rows[0]["shared"])
@@ -1176,7 +1194,7 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.error("Failed to get agent: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_agent")
             return None
 
     async def get_agents_by_model_key(self, org_id: str, model_key: str) -> list[dict]:
@@ -1262,14 +1280,16 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.warning("Agent list enrichment failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="get_all_agents", step="agent_enrichment")
             proj = {}
         try:
             mcp, mcp_failed = await self._project_agents_mcp_servers(ids, transaction), False
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.warning("Agent list MCP server enrichment failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="get_all_agents", step="mcp_server_enrichment")
             mcp, mcp_failed = {}, True
         for a in window:
             got = proj.get(a["_key"], {"toolsets": [], "knowledge": []})

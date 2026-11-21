@@ -41,6 +41,7 @@ from app.services.graph_db.push_claim import (
     PushExpect,
     PushSet,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
 
@@ -445,7 +446,8 @@ class TrashMixin(PgBase):
                             )
                         }
                     except Exception as decode_error:
-                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", decode_error, include_error_text=False,
+                                                op="_create_reindex_event_payload", step="decode_file_content")
 
             # Standard payload for non-MAIL records
             return {
@@ -677,7 +679,8 @@ class TrashMixin(PgBase):
                 }
 
             except Exception as event_error:
-                self.logger.error(f"❌ Failed to create reindex event data: {str(event_error)}")
+                error_class.log_failure(self.logger, "graph.provider.failed", event_error, include_error_text=False,
+                                        op="reindex_single_record")
                 # Return success but indicate event data creation failed
                 return {
                     "success": True,
@@ -690,7 +693,8 @@ class TrashMixin(PgBase):
                 }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to reindex record {record_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reindex_single_record", record_id=record_id)
             return {"success": False, "code": 500, "reason": str(e)}
 
     async def reindex_record_group_records(
@@ -760,8 +764,9 @@ class TrashMixin(PgBase):
                 allowed = record_group_id in (await self.check_access(
                     user_key, org_id, node_ids=[record_group_id],
                 )).node_ids
-            except Exception:
-                self.logger.exception("❌ Access check failed for record group %s", record_group_id)
+            except Exception as exc:
+                error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                        op="reindex_record_group_records")
                 return {"success": False, "code": 500, "reason": action_failed("check access to this record group")}
             if not allowed:
                 return {
@@ -791,5 +796,6 @@ class TrashMixin(PgBase):
             }
 
         except Exception as e:
-            self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reindex_record_group_records")
             return {"success": False, "code": 500, "reason": str(e)}

@@ -115,6 +115,7 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -2707,7 +2708,10 @@ class RecordEventHandler(BaseEventService):
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
-                mime_type = record.get("mimeType") or "unknown"
+                # The dispatch reads the payload's mime: it must be the one judged here.
+                mime_type = payload["mimeType"] = record.get("mimeType") or "unknown"
+            # The consumer sized the budget from the event's labels; the parsing client sizes it from these.
+            record_budget.resize_to(extension, mime_type)
 
             # CODE_FILE records always carry text/plain as their mime type, so the
             # mime-based extension fallback below would resolve to "txt" for every

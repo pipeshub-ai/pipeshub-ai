@@ -6,6 +6,7 @@ duplicate edges, several canonical parents, equal-length ties, cycles.
 """
 
 import inspect
+import logging
 import re
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,6 +16,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.log_capture import failure_line
 
 
 def _arango(rows=None, error=None):
@@ -199,10 +201,11 @@ async def test_neo4j_record_query_excludes_paths_that_repeat_a_vertex():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])
-async def test_record_path_error_default_returns_empty(make):
+async def test_record_path_error_default_returns_empty(make, caplog):
     provider = make(error=RuntimeError("down"))
+    provider.logger = logging.getLogger("tests.record_path_parity")
     assert await provider.get_record_path_segments("f") == []
-    provider.logger.error.assert_called_once()
+    assert failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "down")["op"] == "get_record_path_segments"
 
 
 @pytest.mark.asyncio
@@ -312,10 +315,11 @@ async def test_neo4j_group_query_excludes_paths_that_repeat_a_vertex():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])
-async def test_group_path_error_default_returns_empty(make):
+async def test_group_path_error_default_returns_empty(make, caplog):
     provider = make(error=RuntimeError("down"))
+    provider.logger = logging.getLogger("tests.record_path_parity")
     assert await provider.get_record_group_path("g") == []
-    provider.logger.error.assert_called_once()
+    assert failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "down")["op"] == "get_record_group_path"
 
 
 @pytest.mark.asyncio

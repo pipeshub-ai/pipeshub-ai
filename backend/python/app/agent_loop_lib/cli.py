@@ -555,7 +555,7 @@ async def run_query(
                         print("  " + line)
                     print()
         else:
-            print(RED(f"\n  ✗ {result.error}"), file=sys.stderr)
+            print(RED(f"\n  ✗ {result.error_detail or result.error}"), file=sys.stderr)
 
         usage_line = _fmt_usage(agent.usage, model)
         if usage_line:
@@ -795,7 +795,7 @@ async def repl(
                             print("  " + out_line)
                         print()
             else:
-                print(RED(f"\n  ✗ {result.error}\n"))
+                print(RED(f"\n  ✗ {result.error_detail or result.error}\n"))
 
             usage_line = _fmt_usage(agent.usage, current_model)
             if usage_line:

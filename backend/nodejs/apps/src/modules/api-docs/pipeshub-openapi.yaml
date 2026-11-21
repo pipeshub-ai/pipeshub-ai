@@ -976,6 +976,10 @@ components:
         - name
         - title
         - writes
+        - description
+        - arguments
+        - hints
+        - scopes
       properties:
         name:
           type: string
@@ -986,6 +990,59 @@ components:
         writes:
           type: boolean
           description: True for a tool that is left out while `allowWriteTools` is false.
+        description:
+          type: string
+          description: What the AI model reads before it picks the tool, as the MCP server publishes it. Written for the model, so it names arguments and other tools.
+        arguments:
+          type: array
+          description: The tool's arguments, flattened from the input schema it publishes. Empty for a tool that takes none.
+          items:
+            $ref: '#/components/schemas/McpAccessToolArgument'
+        hints:
+          type: object
+          additionalProperties: false
+          description: What the tool declares it does (MCP tool annotations). A hint the tool does not declare is false.
+          required: [readOnly, destructive, idempotent, openWorld]
+          properties:
+            readOnly:
+              type: boolean
+              description: It changes nothing.
+            destructive:
+              type: boolean
+              description: It can change or remove data, for example by running a connected action.
+            idempotent:
+              type: boolean
+              description: Calling it again with the same arguments has no further effect.
+            openWorld:
+              type: boolean
+              description: It reaches outside PipesHub, for example the web.
+        scopes:
+          type: array
+          description: The OAuth scopes an app or access token needs to call it. Empty for a tool that calls nothing in PipesHub.
+          items:
+            type: string
+          example: [kb:upload]
+    McpAccessToolArgument:
+      type: object
+      additionalProperties: false
+      required: [name, type, required]
+      properties:
+        name:
+          type: string
+          example: collectionId
+        type:
+          type: string
+          description: "`string`, `number`, `integer`, `boolean`, `object`, `enum`, `<type>[]` for a list, or `a|b` for a choice of types."
+          example: string
+        required:
+          type: boolean
+        description:
+          type: string
+        values:
+          type: array
+          description: The allowed values, for an enum or a list of one.
+          items:
+            type: string
     AIGatewayIdentityPolicy:
       type: object
       additionalProperties: false
@@ -3668,6 +3725,53 @@ components:
           type: string
         reason:
           type: string
+        createdAt:
+          type: string
+          format: date-time
+    AgentCallEvent:
+      type: object
+      description: One call made with an access token, or the calls of one minute rolled up.
+      required: [id, userId, tokenId, tokenKind, method, route, statusCode, durationMs, scopeDenied, count, createdAt]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        tokenId:
+          type: string
+          description: The id of the stored token (the id the token lists and revocation use). Never the token or a hash of it.
+        tokenKind:
+          type: string
+          enum: [pat, oauth, delegated]
+        oauthClientId:
+          type: string
+          description: Present for tokens issued to an OAuth application.
+        userAgent:
+          type: string
+          description: The product token of the `User-Agent` header.
+        channel:
+          type: string
+          description: The `X-PipesHub-Channel` header, when it is well formed.
+        method:
+          type: string
+        route:
+          type: string
+          description: The route template, with `:name` placeholders; never the URL or query string.
+        mcpTool:
+          type: string
+          description: The tool name, for an MCP `tools/call`.
+        statusCode:
+          type: integer
+        durationMs:
+          type: integer
+        scopeDenied:
+          type: boolean
+          description: The call was refused because the token lacked a required scope.
+        requestId:
+          type: string
+        count:
+          type: integer
+          description: How many calls this row stands for; above 1 only for rolled-up `GET` calls.
         createdAt:
           type: string
           format: date-time
@@ -18344,7 +18448,10 @@ components:
           enum:
             - sync
             - agent
-          description: '''sync'' flips data synchronization; ''agent'' flips use by agents'
+          description: '''sync'' is data synchronization; ''agent'' is use by agents'
+        enabled:
+          type: boolean
+          description: The state wanted. Omitted, the current state is flipped.
         fullSync:
           type: boolean
           description: When turning sync on, start from scratch
@@ -29080,6 +29187,124 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /agent-activity:
+    get:
+      tags:
+        - OAuth Provider
+      summary: List calls made with access tokens
+      description: |
+        The calls made in your organisation with a personal access token, an OAuth access token or
+        a service token, newest first. Organisation administrators only; the organisation is the
+        one on the credential. Calls made from a signed-in browser session are not recorded.
+
+        Every write (any method other than `GET`), every call that ended with status 400 or above,
+        and every MCP tool call is one row. Successful `GET` calls are rolled up into one row per
+        token, route and minute, with `count` giving how many calls it stands for.
+
+        A row keeps who made the call (user, token id and kind, OAuth client), the client's
+        user-agent product token and channel, the method, the route template (for example
+        `/api/v1/knowledgeBase/{kbId}/records` written with a `:kbId` placeholder), the MCP tool
+        name, the status, whether a scope was missing, the duration and the request id. Request and
+        response bodies, query strings, addresses and token values are never stored. Rows are kept
+        for 30 days.
+
+        Pages are cut by an opaque `cursor`: pass the `nextCursor` of one page to get the next.
+      operationId: listAgentActivity
+      security:
+        - bearerAuth: []
+        - oauth2: [org:admin]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Only rows created at or after this time (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Only rows created at or before this time (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+        - name: userId
+          in: query
+          required: false
+          description: Only calls made as this user.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+        - name: tokenId
+          in: query
+          required: false
+          description: Only calls made with this token (its id in the token lists).
+          schema:
+            type: string
+            maxLength: 128
+        - name: tokenKind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pat, oauth, delegated]
+        - name: client
+          in: query
+          required: false
+          description: Only calls from this client, as named by the product token of its `User-Agent`.
+          schema:
+            type: string
+            maxLength: 80
+        - name: status
+          in: query
+          required: false
+          description: Only calls whose status was in this class.
+          schema:
+            type: string
+            enum: [2xx, 4xx, 5xx]
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page.
+          schema:
+            type: string
+            maxLength: 100
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: One page of calls
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentCallEvent'
+                  nextCursor:
+                    type: string
+                    description: Present when there are older rows.
+        '400':
+          description: A filter or the cursor is malformed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not an organisation administrator, or the token lacks `org:admin`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /service-account-delegations/capability:
     get:
       tags:
@@ -33119,6 +33344,7 @@ paths:
             - `password` given for an address outside `@acme-demo.example`
             - `password` fails the complexity rules or is longer than 72 bytes
             - A live account already uses this `email` (`A user with this email already exists`)
+            - Creating an admin would exceed the organization limit of 5 admins
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -33151,6 +33377,23 @@ paths:
             Internal server error (DB save failure or event publish failure).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." No account was created. Retry after the
+            `Retry-After` seconds.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the account
+            was saved (writing its credential, its everyone-group membership or its creation event), the account is
+            removed again; if that removal fails too, the account stays.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -33518,6 +33761,24 @@ paths:
             Internal server error (DB save or event publish failure, including an `address.country` outside the accepted list, which the database refuses).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." The account was not changed (a
+            requested email change's verification mail may already have been sent). Retry after the `Retry-After`
+            seconds. "This administrator change took too long and was not made. Try again." is a demotion that
+            outlived its turn: the account was not changed either, and this 503 is sent without `Retry-After`.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the account
+            was saved (publishing the update event), the saved fields stay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -34305,6 +34566,24 @@ paths:
             - A `groupIds` entry that is not an ObjectId (the group update fails)
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." No account was restored, created or
+            promoted (the restore activity of removed addresses in the batch may already be recorded). Retry after the
+            `Retry-After` seconds.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the accounts
+            were written (group memberships, creation events, invite mail), the restored, created and promoted
+            accounts stay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -60916,9 +61195,12 @@ paths:
         - Connector Control
       summary: Toggle connector sync or agent
       description: |
-        Flip a connector's sync or agent use: each call turns it on when it is off and
-        off when it is on. Read <code>isActive</code> / <code>isAgentActive</code> first. Turning sync on
-        starts the first sync.<br><br>
+        Turn a connector's sync or agent use on or off. Send <code>enabled</code> with the state you
+        want: a call for the state the connector is already in changes nothing and answers
+        <code>changed: false</code>, so a request can be sent again safely after a dropped connection
+        or a timeout. Without <code>enabled</code> the call flips the current state (on when off, off
+        when on); sent twice, that turns the connector back, so read <code>isActive</code> /
+        <code>isAgentActive</code> first. Turning sync on starts the first sync.<br><br>
         <b>Toggle Types:</b><br>
         <ul>
         <li><code>sync</code> - data synchronization</li>
@@ -60961,7 +61243,7 @@ paths:
               $ref: '#/components/schemas/ConnectorToggleRequest'
       responses:
         '200':
-          description: Flipped
+          description: The connector is in the requested state
           content:
             application/json:
               schema:
@@ -60969,6 +61251,12 @@ paths:
                 properties:
                   success:
                     type: boolean
+                  enabled:
+                    type: boolean
+                    description: The state sync or agent use is in now
+                  changed:
+                    type: boolean
+                    description: False when the connector was already in the requested state
                   message:
                     type: string
                 required:
@@ -61008,6 +61296,13 @@ paths:
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '504':
+          description: The connector service did not answer in time. The change may still have
+            been made; read the connector before sending a flip again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -61171,11 +61466,15 @@ paths:
                       Only when `success` is `false`. The provider's own code when
                       it was passed in `error`, otherwise one of `invalid_state`,
                       `instance_not_found`, `config_not_found`,
-                      `oauth_config_fetch_error`, `invalid_token` or `server_error`.
+                      `oauth_config_fetch_error`, `invalid_token`, `server_error`, or
+                      `temporarily_unavailable` (PipesHub's own storage did not respond; try again). The
+                      connector's signed-in state is left as it was (an existing sign-in is not cleared), but if
+                      only the final status write failed, the new tokens may already be saved, so don't assume
+                      the old token is still in use.
                     example: "access_denied"
                   errorMessage:
                     type: string
-                    description: Only when `error` is `server_error`. A readable reason for the failed token exchange.
+                    description: Only when `error` is `server_error` or `temporarily_unavailable`. A readable reason for the failed sign-in.
                 required:
                   - success
         '400':
@@ -61724,19 +62023,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: |
-            Google Workspace OAuth is not configured for the organization (client
-            ID or secret missing). Checked before `tempCode` is read, so a body
-            without `tempCode` gets this answer too.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             The Google Workspace configuration could not be read, or the
-            credentials could not be stored.
+            credentials could not be stored. Also when Google Workspace OAuth is
+            not configured for the organization (client ID or secret missing):
+            that is checked before `tempCode` is read, so a body without
+            `tempCode` gets this answer too.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -74723,7 +75016,7 @@ paths:
       tags:
         - MCP
       summary: List the tools /mcp can serve
-      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, for choosing which ones to turn off. Admins only.
+      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, with what each one tells the AI model, its arguments, the hints it declares and the OAuth scopes it needs, for choosing which ones to turn off. Admins only.
       operationId: listMcpAccessTools
       security:
         - bearerAuth: []

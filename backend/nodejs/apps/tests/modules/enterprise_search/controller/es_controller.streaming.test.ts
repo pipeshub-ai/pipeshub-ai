@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controllerModule from '../../../../src/modules/enterprise_search/controller/es_controller'
+import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
@@ -520,6 +521,8 @@ describe('es_controller streaming answers', () => {
           toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
           now: Date.now(),
         })
+        // This test is about the heartbeat, so it runs the real one (the harness stubs it); its timer is fake.
+        sinon.stub(searchUtils, 'keepRunAlive').callThrough()
         const run = await startStream(flow)
         run.ai.send('TEXT_MESSAGE_CONTENT', delta('Still working'))
         await settle()

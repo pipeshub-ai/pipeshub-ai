@@ -5,7 +5,7 @@ scheduler holds work it cannot dispatch yet (the partition's previous record
 is still in flight), the read phase used to wait in getmany() for the busy
 poll timeout, and a finish does not wake getmany(). So a partition was paced
 at one record per timeout (50 ms: ~20 records/s) however fast its handler.
-Parallel dispatch keeps that pacing for now (see __read_phase).
+Parallel dispatch waits for a finish the same way (test_kafka_commit_coalesce.py).
 These tests run the real consume loop and worker thread against the
 in-memory broker in ``tests.support.fake_kafka``. Where they need "only a
 finish can make progress", they raise the busy timeout to a minute.
@@ -302,22 +302,6 @@ class TestOnlyAFinishThatCanFreeSomethingIsWaitedFor:
 
         assert 0 not in waiting
         assert waiting.count(consumer_module._BUSY_POLL_TIMEOUT_MS) >= 5
-
-    async def test_the_parallel_path_keeps_its_poll_until_its_commits_are_coalesced(
-        self, harness: Harness, poll_timeouts: list[int]
-    ) -> None:
-        # Parallel dispatch commits once per record and aiokafka commits one at a
-        # time: waking on every finish there outruns the commits. It keeps the
-        # busy poll timeout, never a non-blocking poll and a wait.
-        harness.produce(0, 20, record_id="same-record")
-        handler = Handler()
-        await harness.start(handler, parallel=True)
-
-        await _until(lambda: harness.committed() == 20)
-
-        assert handler.of("p0") == [f"p0-{i:03d}" for i in range(20)]
-        assert 0 not in poll_timeouts
-        assert consumer_module._BUSY_POLL_TIMEOUT_MS in poll_timeouts
 
 
 class TestTheWaitStaysAWait:

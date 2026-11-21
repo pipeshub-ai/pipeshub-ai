@@ -604,3 +604,61 @@ def test_a_free_place_in_the_new_pool_is_taken_without_waiting(monkeypatch: pyte
     before, after = asyncio.run(run())
     assert before == {"small": 1, "big": 0} or sum(before.values()) == 1
     assert sum(after.values()) == 1 and after.get("big") == 1 and after.get("small", 0) == 0
+
+
+# F23g: a PDF labelled `txt` is admitted to parse as heavy (`tiers.reader_tier`), while its class context is still
+# built from the event's labels, which give it no heavy-format estimate.
+_RAISED = {"extension": "txt", "mimeType": "application/pdf", "orgId": "o"}
+
+
+def test_a_raised_record_takes_the_legacy_heavy_gate_and_no_class_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    budget = FakeMemberBudget(4)
+    monkeypatch.setattr("app.capacity.runtime.member_budget", lambda *_a, **_k: budget)
+
+    async def run() -> tuple[int, int, int, int]:
+        h = host()
+        gov = h.governor
+        ctx = cc.class_context(h, _RAISED)
+        assert ctx is not None and wiring.estimate_for(ctx.extension, ctx.mime_type, 1 * MIB, **ctx.facts()) is None
+        before = gov.gate(Pool.HEAVY_PARSE).in_use
+        admission = await asyncio.wait_for(cc.acquire_parsing_slot(h, ParseTier.HEAVY, 1 * MIB, timeout=1, ctx=ctx), 2)
+        held = (gov.gate(Pool.HEAVY_PARSE).in_use - before, gov.gate(Pool.LIGHT_PARSE).in_use,
+                wiring.docling_gate(gov).running(S), budget.snapshot()["used"])
+        cc.release_admission(admission)
+        return held
+
+    heavy_permits, light_permits, docling_tickets, member_tokens = asyncio.run(run())
+    assert (heavy_permits, light_permits) == (1, 0)
+    assert (docling_tickets, member_tokens) == (0, 0)  # the class gate and the member budget are not entered
+
+
+def test_a_raised_record_takes_a_small_remote_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.parsing import remote_concurrency as rc
+
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    monkeypatch.setenv("PARSING_SERVICE_CONCURRENCY", "2")
+    classes: list[CostClass] = []
+    real_remote_gate = wiring.remote_gate
+
+    def spying_gate(size: int) -> object:
+        gate = real_remote_gate(size)
+        real_acquire = gate.acquire
+
+        async def acquire(request: object, **kw: object) -> object:
+            classes.append(request.cls)  # type: ignore[attr-defined]
+            return await real_acquire(request, **kw)
+
+        return SimpleNamespace(acquire=acquire)
+
+    monkeypatch.setattr(wiring, "remote_gate", spying_gate)
+
+    async def run() -> None:
+        rc.reset_remote_parse_slots()
+        h = host()
+        admission = await asyncio.wait_for(
+            cc.acquire_parsing_slot(h, ParseTier.HEAVY, 1 * MIB, timeout=1, ctx=cc.class_context(h, _RAISED)), 2
+        )
+        cc.release_admission(admission)
+
+    asyncio.run(run())
+    assert classes == [S]
