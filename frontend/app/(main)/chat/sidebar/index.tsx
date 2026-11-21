@@ -88,12 +88,14 @@ function ChatSidebarRoot() {
   const searchParams = useSearchParams();
   const agentId = searchParams.get('agentId');
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
-  // A thread can't be scoped to both an agent and a project — agentId wins.
+  // An agent chat linked to a project keeps the project's sidebar: the
+  // conversations about the matter live grouped in the project. A bare
+  // `/chat/?agentId=…` (no project) shows the agent's own sidebar.
   const rawProjectId = searchParams.get('projectId');
   // `/chat/?projectId=…` is both the new-chat resting state and the
   // in-conversation state. Show the project sidebar in either case.
   const projectId =
-    !agentId && projectsEnabled && rawProjectId?.trim()
+    projectsEnabled && rawProjectId?.trim()
       ? rawProjectId
       : null;
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
@@ -137,11 +139,11 @@ function ChatSidebarRoot() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [pathname, router]);
 
-  if (agentId) {
-    return <AgentScopedChatSidebar agentId={agentId} />;
-  }
   if (projectId) {
     return <ProjectConversationsSidebar projectId={projectId} />;
+  }
+  if (agentId) {
+    return <AgentScopedChatSidebar agentId={agentId} />;
   }
   return <ChatSidebarInner />;
 }

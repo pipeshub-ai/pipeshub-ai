@@ -206,11 +206,12 @@ function ChatContent() {
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
   const apiActionsEnabled = useFeatureFlagsStore(selectApiToolsetsEnabled);
-  // A thread can't be scoped to both an agent and a project — agentId wins.
+  // An agent chat may be linked to a project (started from the project
+  // workspace with an agent picked): both scopes ride along in the URL.
   // When the feature flag is off, projectId is always null so the UI degrades
   // to a normal chat without project context.
   const rawProjectParam = searchParams.get('projectId');
-  const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
+  const projectId = projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
   const aui = useAui();
   useHydrateUnreadConversations();
@@ -313,18 +314,14 @@ function ChatContent() {
       const rawAgentInUrl = urlParams?.get('agentId');
       const agentIdInUrl = rawAgentInUrl?.trim() ? rawAgentInUrl : null;
       const rawProjectInUrl = urlParams?.get('projectId');
-      const projectIdInUrl = !agentIdInUrl && rawProjectInUrl?.trim() ? rawProjectInUrl : null;
+      const projectIdInUrl = rawProjectInUrl?.trim() ? rawProjectInUrl : null;
 
       // 1. Detach visible thread only — background streams keep running (parallel chats)
       store.clearActiveSlot();
 
       // 2–3. Sync URL: stay on agent/project new-chat when scoped, else main home
-      if (agentIdInUrl) {
-        const href = buildChatHref({ agentId: agentIdInUrl });
-        window.history.replaceState(null, '', href);
-        router.replace(href);
-      } else if (projectIdInUrl) {
-        const href = buildChatHref({ projectId: projectIdInUrl });
+      if (agentIdInUrl || projectIdInUrl) {
+        const href = buildChatHref({ agentId: agentIdInUrl, projectId: projectIdInUrl });
         window.history.replaceState(null, '', href);
         router.replace(href);
       } else {
@@ -567,6 +564,7 @@ function ChatContent() {
           : {};
         store.updateSlot(existing.slotId, {
           threadAgentId: urlAgentId || null,
+          projectId: projectId ?? null,
           ...toolsPatch,
         });
         if (store.activeSlotId !== existing.slotId) {
@@ -623,6 +621,9 @@ function ChatContent() {
               store.agentStreamTools === null ? null : [...store.agentStreamTools],
           });
         }
+        if (projectId) {
+          store.updateSlot(newSlotId, { projectId });
+        }
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: newSlotId, convId: conversationId, newSlot: true });
         store.setActiveSlot(newSlotId);
       }
@@ -669,13 +670,13 @@ function ChatContent() {
         const loc = new URLSearchParams(window.location.search);
         const rawAid = slot.threadAgentId ?? loc.get('agentId');
         const aid = rawAid?.trim() ? rawAid : null;
-        // A thread can't be scoped to both an agent and a project — agentId wins,
-        // mirroring buildChatHref()'s precedence.
-        const rawPid = aid ? null : (slot.projectId ?? loc.get('projectId'));
+        // The thread keeps both scopes: an agent chat linked to a project
+        // stays linked (mirroring buildChatHref()).
+        const rawPid = slot.projectId ?? loc.get('projectId');
         const pid = rawPid?.trim() ? rawPid : null;
         const q = new URLSearchParams();
         if (aid) q.set('agentId', aid);
-        else if (pid) q.set('projectId', pid);
+        if (pid) q.set('projectId', pid);
         q.set('conversationId', slot.convId);
         window.history.replaceState(null, '', `/chat/?${q.toString()}`);
       }
@@ -851,7 +852,8 @@ function ChatContent() {
           agentStreamTools:
             store.agentStreamTools === null ? null : [...store.agentStreamTools],
         });
-      } else if (projectId) {
+      }
+      if (projectId) {
         store.updateSlot(newSlotId, { projectId });
       }
     }
@@ -916,7 +918,8 @@ function ChatContent() {
         agentStreamTools:
           store.agentStreamTools === null ? null : [...store.agentStreamTools],
       });
-    } else if (projectId) {
+    }
+    if (projectId) {
       store.updateSlot(slotId, { projectId });
     }
 

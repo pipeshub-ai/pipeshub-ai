@@ -32,12 +32,12 @@ describe('ForkOriginHeader', () => {
     });
   });
 
-  it('opens the original inside the same agent, ahead of a project', () => {
+  it('opens the original inside the same agent, keeping the project link', () => {
     render(<ForkOriginHeader origin={origin} agentId="agent-7" projectId="proj-3" />);
 
     expect(hrefOf(screen.getByRole('link'))).toEqual({
       path: '/chat',
-      params: { agentId: 'agent-7', conversationId: 'orig-9', messageId: 'p-5' },
+      params: { agentId: 'agent-7', projectId: 'proj-3', conversationId: 'orig-9', messageId: 'p-5' },
     });
   });
 
@@ -85,12 +85,12 @@ describe('ForkedIntoLine', () => {
     expect(links[0].textContent).toBe('Refund policy, EU only');
   });
 
-  it('opens the forks inside the same agent, ahead of a project', () => {
+  it('opens the forks inside the same agent, keeping the project link', () => {
     render(<ForkedIntoLine forks={forks.slice(0, 1)} agentId="agent-7" projectId="proj-3" />);
 
     expect(hrefOf(screen.getByRole('link'))).toEqual({
       path: '/chat',
-      params: { agentId: 'agent-7', conversationId: 'f-1' },
+      params: { agentId: 'agent-7', projectId: 'proj-3', conversationId: 'f-1' },
     });
   });
 });

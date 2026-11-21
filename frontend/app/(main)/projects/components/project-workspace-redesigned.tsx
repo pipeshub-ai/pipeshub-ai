@@ -21,6 +21,8 @@ import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { chatContentColumnStyle } from '@/chat/constants';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
+import { useAgentDetail } from '@/chat/hooks/use-agent-detail';
+import { bareToolFullName } from '@/chat/tool-groups';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { toast } from '@/lib/store/toast-store';
 import { DeleteProjectDialog, EditProjectDialog, LeaveProjectDialog } from '@/chat/sidebar/dialogs';
@@ -35,6 +37,7 @@ import { ProjectSettingsPanel, type SetupSectionKey } from './settings-panel';
 import { ChatDefaultsCard } from './chat-defaults-card';
 import { AboutCard } from './about-card';
 import { ProjectSharingSettings } from './project-sharing-settings';
+import { ProjectComposerAgentPicker } from './project-composer-agent-picker';
 import { createSerialSaver } from '../utils/serial-saver';
 import { hasDirectMembership } from '../utils/membership';
 
@@ -113,6 +116,10 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const [composerPrefill, setComposerPrefill] = useState<{ text: string; key: number } | null>(null);
   const prefillCounterRef = useRef(0);
 
+  /** Agent picked for new chats here — `null` is the general assistant. */
+  const [composerAgentId, setComposerAgentId] = useState<string | null>(null);
+  const agentDetailState = useAgentDetail(composerAgentId);
+
   const [isMutating, setIsMutating] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -177,6 +184,23 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     (project?.role === 'editor' || project?.role === 'viewer') &&
     hasDirectMembership(project?.members, profile?.userId);
   const isArchived = Boolean(project?.isArchived);
+
+  // The project can only narrow what a picked agent sees: tools the agent
+  // carries that this project's tool list doesn't name are silently lost.
+  // Surface them instead of letting the agent fail mysteriously.
+  const agentToolsOutsideProject = useMemo(() => {
+    if (!composerAgentId || !project) return [];
+    const fullNames = agentDetailState.detail?.toolFullNames ?? [];
+    if (fullNames.length === 0) return [];
+    const allowed = new Set(
+      (project.tools ?? []).map((name) => name.trim()).filter(Boolean),
+    );
+    // An empty project tool list means "no tools" — every agent tool is lost here.
+    if (allowed.size === 0) return fullNames;
+    return fullNames.filter(
+      (name) => !allowed.has(name) && !allowed.has(bareToolFullName(name)),
+    );
+  }, [composerAgentId, project, agentDetailState.detail]);
 
   /** A PATCH response, minus a tool list that newer local toggles have already moved past. */
   const applyServerProject = useCallback(
@@ -363,9 +387,12 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
         pageContext: {},
         referrerPage: pathname,
       });
-      router.push(buildChatHref({ projectId }));
+      // With an agent picked, the new conversation is created with both
+      // scopes: the agent owns the conversation, the project narrows what it
+      // sees (knowledge scope, tools, instructions apply on top).
+      router.push(buildChatHref({ projectId, agentId: composerAgentId }));
     },
-    [projectId, pathname, router, isArchived, t],
+    [projectId, composerAgentId, pathname, router, isArchived, t],
   );
 
   const handleUploadFile = useCallback(async (file: File, signal: AbortSignal): Promise<AttachmentRef> => {
@@ -664,6 +691,9 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               aria-disabled={isArchived || undefined}
               style={isArchived ? { opacity: 0.5, pointerEvents: 'none' } : undefined}
             >
+              <Flex align="center" gap="2" style={{ marginBottom: 'var(--space-3)' }}>
+                <ProjectComposerAgentPicker value={composerAgentId} onChange={setComposerAgentId} />
+              </Flex>
               <ChatInput
                 variant="full"
                 onSend={handleSend}
@@ -671,6 +701,20 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
                 onDeleteFile={handleDeleteFile}
                 prefill={composerPrefill}
               />
+              {agentToolsOutsideProject.length > 0 && (
+                <Callout.Root color="amber" variant="soft" size="1" role="status" style={{ marginTop: 'var(--space-3)' }}>
+                  <Callout.Icon>
+                    <MaterialIcon name="warning_amber" size={16} />
+                  </Callout.Icon>
+                  <Callout.Text size="2">
+                    {t('chat.projects.workspace.agentToolsOutsideProject', {
+                      count: agentToolsOutsideProject.length,
+                      defaultValue:
+                        '{{count}} of this agent\'s tools are not in this project\'s tool list, so the agent loses them in chats here. Add them under Tools & MCP if it should use them.',
+                    })}
+                  </Callout.Text>
+                </Callout.Root>
+              )}
             </Box>
             <Flex
               gap="2"

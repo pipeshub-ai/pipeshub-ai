@@ -1332,7 +1332,11 @@
         },
         "toolNeedsApproval": "승인 필요",
         "toolNeedsApprovalHint": "이 도구는 데이터를 삭제할 수 있습니다. 프로젝트 채팅에서는 누군가 승인한 후에만 실행됩니다.",
-        "indexingStatusLabel": "인덱싱: {{status}}"
+        "indexingStatusLabel": "인덱싱: {{status}}",
+        "assistantDefault": "일반 어시스턴트",
+        "noAgentsAvailable": "사용 가능한 에이전트가 없습니다",
+        "agentToolsOutsideProject_one": "이 에이전트의 도구 1개가 이 프로젝트의 도구 목록에 없어, 여기 채팅에서는 사용할 수 없습니다. 에이전트가 사용해야 한다면 Tools & MCP에 추가하세요.",
+        "agentToolsOutsideProject_other": "이 에이전트의 도구 {{count}}개가 이 프로젝트의 도구 목록에 없어, 여기 채팅에서는 사용할 수 없습니다. 에이전트가 사용해야 한다면 Tools & MCP에 추가하세요."
       },
       "moveDialog": {
         "title": "프로젝트로 이동",

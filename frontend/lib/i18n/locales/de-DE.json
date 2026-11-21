@@ -1240,7 +1240,11 @@
         },
         "toolNeedsApproval": "Erfordert Genehmigung",
         "toolNeedsApprovalHint": "Dieses Tool kann Daten löschen. In einem Projekt-Chat wird es erst nach einer Genehmigung ausgeführt.",
-        "indexingStatusLabel": "Indizierung: {{status}}"
+        "indexingStatusLabel": "Indizierung: {{status}}",
+        "assistantDefault": "Allgemeiner Assistent",
+        "noAgentsAvailable": "Keine Agents verfügbar",
+        "agentToolsOutsideProject_one": "1 der Tools dieses Agents steht nicht in der Werkzeugliste dieses Projekts, daher verliert der Agent es in Chats hier. Fügen Sie es unter Tools & MCP hinzu, wenn der Agent es verwenden soll.",
+        "agentToolsOutsideProject_other": "{{count}} der Tools dieses Agents stehen nicht in der Werkzeugliste dieses Projekts, daher verliert der Agent sie in Chats hier. Fügen Sie sie unter Tools & MCP hinzu, wenn der Agent sie verwenden soll."
       },
       "moveDialog": {
         "title": "In Projekt verschieben",

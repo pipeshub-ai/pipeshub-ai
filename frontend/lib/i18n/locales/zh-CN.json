@@ -1332,7 +1332,11 @@
         },
         "toolNeedsApproval": "需要批准",
         "toolNeedsApprovalHint": "此工具可能会删除数据。在项目对话中，它只有在获得批准后才会运行。",
-        "indexingStatusLabel": "索引：{{status}}"
+        "indexingStatusLabel": "索引：{{status}}",
+        "assistantDefault": "通用助手",
+        "noAgentsAvailable": "暂无可用智能体",
+        "agentToolsOutsideProject_one": "该智能体的 1 个工具不在此项目的工具列表中，因此在此处的对话中将无法使用。若希望智能体使用它，请在“工具与 MCP”中添加。",
+        "agentToolsOutsideProject_other": "该智能体的 {{count}} 个工具不在此项目的工具列表中，因此在此处的对话中将无法使用。若希望智能体使用它们，请在“工具与 MCP”中添加。"
       },
       "moveDialog": {
         "title": "移至项目",

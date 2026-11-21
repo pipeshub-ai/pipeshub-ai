@@ -206,6 +206,16 @@ describe('selectPendingForSidebar — project scope', () => {
     expect(selectPendingForSidebar(pending, slots, new Set(), { projectId: 'p1' })).toEqual([]);
     expect(selectPendingForSidebar(pending, slots, new Set(), { agentId: 'a1' })).toHaveLength(1);
   });
+
+  it('shows an agent chat linked to a project in that project scope', () => {
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'a1', projectId: 'p1' });
+    const pending = { [slotId]: makePending(slotId) };
+    const slots = useChatStore.getState().slots;
+
+    expect(selectPendingForSidebar(pending, slots, new Set(), { projectId: 'p1' })).toHaveLength(1);
+    expect(selectPendingForSidebar(pending, slots, new Set(), 'global')).toEqual([]);
+  });
 });
 
 describe('buildStreamChatRequestForSlot — projectId forwarding', () => {
@@ -227,6 +237,14 @@ describe('buildStreamChatRequestForSlot — projectId forwarding', () => {
     const slotId = useChatStore.getState().createSlot(null);
     const request = buildStreamChatRequestForSlot(slotId, 'hello');
     expect(request).not.toHaveProperty('projectId');
+  });
+
+  it('includes projectId on a brand-new agent conversation (agent chat linked to a project)', () => {
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'a1', projectId: 'p1' });
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request?.agentId).toBe('a1');
+    expect(request?.projectId).toBe('p1');
   });
 });
 

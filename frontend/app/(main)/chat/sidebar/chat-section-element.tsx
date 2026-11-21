@@ -93,8 +93,9 @@ interface ChatSectionElementProps {
   /**
    * Set by `ProjectConversationsSidebar` so the row's href keeps `projectId`
    * in the URL — otherwise navigating away from the project's own sidebar
-   * list would drop back to the main chat sidebar mid-click. Ignored when
-   * `agentId` is set (see `buildChatHref`).
+   * list would drop back to the main chat sidebar mid-click. An agent row
+   * may carry both `agentId` and `projectId` (an agent chat linked to the
+   * project) — see `buildChatHref`.
    */
   projectId?: string;
   /**

@@ -1332,7 +1332,11 @@
         },
         "toolNeedsApproval": "需要核准",
         "toolNeedsApprovalHint": "此工具可能會刪除資料。在專案對話中，它只有在獲得核准後才會執行。",
-        "indexingStatusLabel": "索引：{{status}}"
+        "indexingStatusLabel": "索引：{{status}}",
+        "assistantDefault": "一般助理",
+        "noAgentsAvailable": "沒有可用的代理",
+        "agentToolsOutsideProject_one": "此代理的 1 個工具不在此專案的工具清單中，因此在這裡的對話中將無法使用。若希望代理使用它，請在「工具與 MCP」中新增。",
+        "agentToolsOutsideProject_other": "此代理的 {{count}} 個工具不在此專案的工具清單中，因此在這裡的對話中將無法使用。若希望代理使用它們，請在「工具與 MCP」中新增。"
       },
       "moveDialog": {
         "title": "移至專案",
