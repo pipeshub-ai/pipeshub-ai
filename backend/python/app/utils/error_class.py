@@ -374,6 +374,12 @@ def _stack_text(exc: BaseException, *, with_messages: bool) -> str:
     return redact_secrets_in_text(URL_PATTERN.sub("[url]", text.rstrip("\n")))[-_MAX_STACK:]
 
 
+def stack_text_without_messages(exc: BaseException) -> str:
+    """``exc``'s stack with every exception line cut to its type (frames kept), as ``log_failure(include_error_text=False)``
+    writes it: for a sink outside the logs (a trace) that wants where it failed, not what the error said."""
+    return _stack_text(exc, with_messages=False)
+
+
 def record_exception(record: logging.LogRecord) -> BaseException | None:
     """The exception a record was logged with, also when a text-free stack replaced its ``exc_info``
     (:func:`hide_record_text`, :func:`log_failure`), for a filter that reads it (uvicorn's duplicate-line filter).

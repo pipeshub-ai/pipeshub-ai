@@ -200,6 +200,8 @@ except Exception as e:
   `AgentResult.error`, the timeline or a trace: write `failure_reason(exc)` instead (`bad_request: content_filter
   (BadRequestError, HTTP 400)`: class, the provider's code as `provider_code(exc)` reads it, the innermost type, the status).
   The raw text a user-facing classifier needs is `AgentResult.error_detail`, a private attribute no dump carries.
+  Opik never receives the exception: a failed span or trace records `failure_reason` and a frames-only stack
+  (`stack_text_without_messages`), and the LangChain callback (`TextFreeOpikTracer`) records the same for a failed run.
 - `app.agents.agent_loop.error_classification` also has a `classify_error` (user-facing text). Where both are in scope, import this
   module qualified, as above.
 
