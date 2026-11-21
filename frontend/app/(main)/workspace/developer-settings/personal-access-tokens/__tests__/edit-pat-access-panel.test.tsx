@@ -70,6 +70,18 @@ describe('Changing what a personal access token can see', () => {
     expect(save().disabled).toBe(true);
   });
 
+  it("does not carry one token's picks to the next token opened in the same panel", () => {
+    const { show } = open();
+    show({ ...token, id: 't2', name: 'Docs token', knowledgeLimit: undefined });
+    expect(everything().checked).toBe(true);
+
+    fireEvent.click(only());
+
+    expect(only().checked).toBe(true);
+    // Nothing is picked for this token yet, so there is nothing to save.
+    expect(save().disabled).toBe(true);
+  });
+
   it('opens on everything for a token with no limit', () => {
     open({ ...token, knowledgeLimit: undefined });
     expect(everything().checked).toBe(true);

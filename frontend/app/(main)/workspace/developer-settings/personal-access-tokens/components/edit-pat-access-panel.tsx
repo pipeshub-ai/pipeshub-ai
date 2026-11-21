@@ -64,19 +64,18 @@ export function EditPatAccessPanel({ token, onOpenChange, onSaved, onReload }: E
   }, [tokenId]);
   // Seed on every opening. When the server then reports a new limit for the
   // open token (an Undo, a reload, an earlier save landing), follow it only
-  // while the user has not changed the choice in this session.
+  // while the user has not changed the choice in this session. Seeded during
+  // render, not in an effect, so the choice below never paints with another
+  // token's selection.
   const storedKey = JSON.stringify(token?.knowledgeLimit ?? null);
-  const seeded = useRef<{ id?: string; limit?: KnowledgeLimit }>({});
-  useEffect(() => {
-    const before = seeded.current;
+  const [seeded, setSeeded] = useState<{ id?: string; key: string; limit?: KnowledgeLimit }>({ key: 'null' });
+  if (seeded.id !== tokenId || seeded.key !== storedKey) {
     const stored = token?.knowledgeLimit;
-    seeded.current = { id: tokenId, limit: stored };
-    setValue((current) =>
-      before.id !== tokenId || sameKnowledgeLimit(knowledgeLimitForApi(current), before.limit)
-        ? selectionFromLimit(stored)
-        : current
-    );
-  }, [tokenId, storedKey]);
+    setSeeded({ id: tokenId, key: storedKey, limit: stored });
+    if (seeded.id !== tokenId || sameKnowledgeLimit(knowledgeLimitForApi(value), seeded.limit)) {
+      setValue(selectionFromLimit(stored));
+    }
+  }
 
   const next = knowledgeLimitForApi(value);
   const changed = token !== null && !sameKnowledgeLimit(next, token.knowledgeLimit);
@@ -188,7 +187,9 @@ export function EditPatAccessPanel({ token, onOpenChange, onSaved, onReload }: E
             {t('workspace.personalAccessTokens.access.intro', { name: token.name })}
           </Text>
           <Box style={CARD_STYLE}>
+            {/* A new token starts with no remembered pick: "only" must never offer another token's items. */}
             <KnowledgeLimitChoice
+              key={token.id}
               appName={token.name}
               value={value}
               onChange={setValue}
