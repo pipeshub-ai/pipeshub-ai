@@ -61805,19 +61805,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: |
-            Google Workspace OAuth is not configured for the organization (client
-            ID or secret missing). Checked before `tempCode` is read, so a body
-            without `tempCode` gets this answer too.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             The Google Workspace configuration could not be read, or the
-            credentials could not be stored.
+            credentials could not be stored. Also when Google Workspace OAuth is
+            not configured for the organization (client ID or secret missing):
+            that is checked before `tempCode` is read, so a body without
+            `tempCode` gets this answer too.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
