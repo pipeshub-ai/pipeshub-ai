@@ -332,8 +332,8 @@ async def _saved_filter(
 ) -> tuple[FilterCollection, Filter] | None:
     """The saved sync filters and their ``filter_name`` filter; None unless that filter was read and is set.
 
-    Read here rather than through ``load_connector_filters``, which answers a
-    failed or empty read with no filters, the same as a filter left unset.
+    Read here to distinguish an unreadable config from an unset filter.
+    A failed read must not cause folder-scope cleanup to remove records.
     """
     try:
         config = await config_service.get_config(f"/services/connectors/{connector_id}/config")

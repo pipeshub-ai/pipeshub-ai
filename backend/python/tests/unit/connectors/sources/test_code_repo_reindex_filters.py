@@ -42,7 +42,7 @@ async def test_reads_the_saved_filters_not_the_ones_from_the_last_sync(connector
     c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MERGE_REQUEST)
     saved = (FilterCollection(), _filters(merge_requests=False))
 
-    with patch(f"{module}.load_connector_filters_strict", AsyncMock(return_value=saved)) as load:
+    with patch(f"{module}.load_connector_filters", AsyncMock(return_value=saved)) as load:
         excluded = await connector_cls.records_excluded_by_indexing_filters(
             c, [MERGE_REQUEST, MR_ATTACHMENT, ISSUE],
         )

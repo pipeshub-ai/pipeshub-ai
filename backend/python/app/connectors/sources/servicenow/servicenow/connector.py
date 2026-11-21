@@ -1178,8 +1178,11 @@ class ServiceNowConnector(BaseConnector):
         return ((row.get(ServiceNowFields.KB_CATEGORY) or None) in chosen) == keep_in
 
     async def _load_filters(self) -> None:
-        """The admin's sync and indexing filters. load_connector_filters answers a failed config
-        read with no filters, which would sync every knowledge base: this raises instead."""
+        """Load the admin's sync and indexing filters.
+
+        Configuration read failures propagate rather than allowing an
+        unrestricted knowledge-base sync.
+        """
         config = await self.config_service.get_config(
             ServiceNowConfigPaths.CONNECTOR_CONFIG.format(connector_id=self.connector_id), raise_on_error=True
         )

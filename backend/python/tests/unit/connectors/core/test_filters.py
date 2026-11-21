@@ -1,6 +1,5 @@
 """Tests for app.connectors.core.registry.filters."""
 
-import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,7 +15,6 @@ from app.connectors.core.registry.filters import (
     FilterOption,
     FilterOptionsResponse,
     FilterType,
-    FilterValue,
     IndexingFilterKey,
     ListOperator,
     MultiselectOperator,
@@ -33,7 +31,6 @@ from app.connectors.core.registry.filters import (
     get_operator_enum_class,
     get_operators_for_type,
     load_connector_filters,
-    load_connector_filters_strict,
 )
 
 
@@ -1066,16 +1063,12 @@ class TestLoadConnectorFilters:
         assert indexing_filters.get_value("pages") is True
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_config_error(self):
+    async def test_raises_on_config_error(self):
         config_service = AsyncMock()
         config_service.get_config.side_effect = RuntimeError("connection refused")
 
-        sync_filters, indexing_filters = await load_connector_filters(
-            config_service, "slack", "sl-1"
-        )
-
-        assert len(sync_filters) == 0
-        assert len(indexing_filters) == 0
+        with pytest.raises(RuntimeError, match="connection refused"):
+            await load_connector_filters(config_service, "slack", "sl-1")
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_config(self):
@@ -1135,56 +1128,19 @@ class TestLoadConnectorFilters:
         logger.debug.assert_called()
 
 
-class TestLoadConnectorFiltersStrict:
-    """A filter read that fails raises: a caller that must not act on no filters can stop."""
+    @pytest.mark.asyncio
+    async def test_raises_when_config_store_is_unreachable(self):
+        backend = AsyncMock()
+        backend.get_key = AsyncMock(side_effect=ConnectionError("connection refused"))
 
-    @staticmethod
-    def _config_service_over(backend: object) -> object:
-        """The real ConfigurationService and encrypted store, so a failed read
-        reaches the loader the way it does in production: by default both
-        layers answer a store failure with None, not an exception."""
         from tests.unit.config.test_configuration_service import _build_service
         from tests.unit.config.test_encrypted_store import _make_encrypted_store
 
         encrypted_store, _, _ = _make_encrypted_store(store_mock=backend)
-        return _build_service(store=encrypted_store)
-
-    @pytest.mark.asyncio
-    async def test_an_unreachable_config_store_raises(self) -> None:
-        backend = AsyncMock()
-        backend.get_key = AsyncMock(side_effect=ConnectionError("connection refused"))
-        config_service = self._config_service_over(backend)
+        config_service = _build_service(store=encrypted_store)
 
         with pytest.raises(ConnectionError):
-            await load_connector_filters_strict(config_service, "gitlab", "gl-1")
-
-    @pytest.mark.asyncio
-    async def test_an_unreachable_config_store_still_gives_the_lenient_loader_empty_filters(self) -> None:
-        backend = AsyncMock()
-        backend.get_key = AsyncMock(side_effect=ConnectionError("connection refused"))
-        config_service = self._config_service_over(backend)
-
-        sync_filters, indexing_filters = await load_connector_filters(config_service, "gitlab", "gl-1")
-
-        assert len(sync_filters) == 0
-        assert len(indexing_filters) == 0
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "config",
-        [None, {"enabled": False}, {"enabled": True}],
-        ids=["no-config", "disabled", "no-filters-section"],
-    )
-    async def test_a_connector_with_no_filters_gets_empty_ones(self, config: dict | None) -> None:
-        config_service = AsyncMock()
-        config_service.get_config.return_value = config
-
-        sync_filters, indexing_filters = await load_connector_filters_strict(
-            config_service, "gitlab", "gl-2"
-        )
-
-        assert len(sync_filters) == 0
-        assert len(indexing_filters) == 0
+            await load_connector_filters(config_service, "gitlab", "gl-1")
 
     @pytest.mark.asyncio
     async def test_loads_the_saved_filters(self) -> None:
@@ -1193,13 +1149,19 @@ class TestLoadConnectorFiltersStrict:
             "filters": {
                 "indexing": {
                     "values": {
-                        "merge_requests": {"value": False, "type": "boolean", "operator": "is"},
+                        "merge_requests": {
+                            "value": False,
+                            "type": "boolean",
+                            "operator": "is",
+                        }
                     }
-                },
-            },
+                }
+            }
         }
 
-        _, indexing_filters = await load_connector_filters_strict(config_service, "gitlab", "gl-3")
+        _, indexing_filters = await load_connector_filters(
+            config_service, "gitlab", "gl-3"
+        )
 
         assert indexing_filters.get_value("merge_requests") is False
         config_service.get_config.assert_awaited_once_with(
@@ -1208,7 +1170,7 @@ class TestLoadConnectorFiltersStrict:
 
 
 # ============================================================================
-# Slack diff: SyncFilterKey.CHANNEL_TYPES + IndexingFilterKey new values
+# Slack diff: SyncFilterKey + IndexingFilterKey new values
 # ============================================================================
 
 class TestSyncFilterKeyChannelTypes:

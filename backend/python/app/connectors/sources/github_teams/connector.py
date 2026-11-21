@@ -69,7 +69,6 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
-    load_connector_filters_strict,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
@@ -429,10 +428,10 @@ class GitHubTeamsConnector(BaseConnector):
     def _require_scope_filter(self) -> None:
         """Refuse to sync without a repository or organization filter.
 
-        The repository field is required, so a sync without one means the filters
-        could not be read (``load_connector_filters`` answers a config-store failure
-        with empty filters). Falling back to every repository the token can see would
-        index, and grant access to, repositories the admin never selected.
+        The repository field is required, so a sync without one means no valid
+        scope was configured. Configuration-store read failures propagate from
+        ``load_connector_filters`` before this method is reached. Never fall back
+        to every repository the token can see.
         """
         sf = self.sync_filters
         for key in (SyncFilterKey.REPO_IDS, SyncFilterKey.ORG_IDS):
@@ -481,13 +480,14 @@ class GitHubTeamsConnector(BaseConnector):
 
     async def records_excluded_by_indexing_filters(self, records: list[Record]) -> set[str]:
         # The saved filters, not those of the last sync: a toggle changed since then
-        # decides this reindex. Strict, because empty filters after a failed read
-        # would let the reindex index every type the admin switched off.
-        _, indexing_filters = await load_connector_filters_strict(
+        # decides this reindex. Config read failures propagate rather than allowing
+        # records to bypass the configured indexing restrictions.
+        _, indexing_filters = await load_connector_filters(
             self.config_service, "githubteams", self.connector_id, self.logger
         )
         return await records_excluded_by_repo_indexing_filters(
-            records, indexing_filters,
+            records,
+            indexing_filters,
             lambda external_id: self.data_entities_processor.get_record_by_external_id(
                 self.connector_id, external_id
             ),
