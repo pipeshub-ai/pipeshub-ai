@@ -1142,10 +1142,11 @@ describe('loadHistoricalMessages, feedback', () => {
     ]);
     expect(refused.messages[1].metadata?.custom).toMatchObject({ failed: true, streamError: { code: 'request_not_allowed' } });
 
+    // A failure with no code of its own reads as a failed reply, as a live one does: not a refusal, so Try again stays.
     const plain = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'Q' }),
       message({ _id: 'err', messageType: 'error', content: 'The model failed.' }),
     ]);
-    expect(plain.messages[1].metadata?.custom).not.toHaveProperty('streamError');
+    expect(plain.messages[1].metadata?.custom).toMatchObject({ failed: true, streamError: { code: 'answer_failed' } });
   });
 });

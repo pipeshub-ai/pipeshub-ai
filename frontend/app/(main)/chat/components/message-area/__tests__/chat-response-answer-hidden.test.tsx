@@ -119,6 +119,20 @@ describe('ChatResponse hidden answer', () => {
     ] as never);
     const custom = rows.messages.find((m) => m.id === 'e')?.metadata?.custom as { answerHidden?: unknown };
     expect(custom.answerHidden).toEqual({ redacted: true, reason: 'no_longer_accessible' });
+    // Someone else's failed run reads as any other hidden answer: nothing on the row says it failed.
+    expect(custom).not.toHaveProperty('failed');
+    expect(custom).not.toHaveProperty('streamError');
+  });
+
+  it('draws a hidden answer as its notice, never as a failed reply, whatever code comes with it', () => {
+    renderRow({
+      answerHidden: { redacted: true, reason: 'no_longer_accessible' },
+      streamError: { code: 'answer_failed' },
+      failed: true,
+    });
+
+    expect(screen.getByTestId('answer-hidden')).toBeTruthy();
+    expect(screen.queryByTestId('answer-failed')).toBeNull();
   });
 
   it('shows the notice without Ask again to someone the chat was shared with', () => {

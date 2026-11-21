@@ -1099,7 +1099,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     const spacing: React.CSSProperties = { padding: opts?.padding ?? 'var(--space-4) 0' };
     switch (activeTab) {
       case 'answer':
-        if (failed && !isStreaming && !blockedTools) {
+        if (answerFailed) {
           return (
             <Box style={spacing}>
               <AnswerFailed
@@ -1278,7 +1278,7 @@ export const ChatResponse = React.memo(function ChatResponse({
             )}
 
             {/* The answer went on without tools the asker hasn't connected: offer to connect them once it is done. */}
-            {!isStreaming && !failed && !blockedTools && answerShown && unavailableTools && unavailableTools.length > 0 && (
+            {!isStreaming && !answerFailed && !blockedTools && answerShown && unavailableTools && unavailableTools.length > 0 && (
               <UnavailableToolsNotice
                 items={unavailableTools}
                 answer={answerShown}
