@@ -67,6 +67,10 @@ from app.services.messaging.kafka.consumer.remembered import (
     OffsetFetcher,
     RememberedOffsets,
 )
+from app.services.messaging.kafka.consumer.watermark_committer import (
+    CommitDropped,
+    WatermarkCommitter,
+)
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
@@ -114,6 +118,9 @@ if TYPE_CHECKING:
 
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
 _MAIN_LOOP_OP_TIMEOUT = 5.0
+# Bounds every wait for an offset commit (a settle, the revocation and stop flushes). Under the bridge's
+# _MAIN_LOOP_OP_TIMEOUT, so a slow commit reports itself rather than as a bridge that got no reply.
+_COMMIT_WAIT_SECONDS = 4.0
 # The backlog read opens its own short-lived connection, so it gets longer
 # than a commit does; the caller's wait is a little longer still, so the read
 # reports its own timeout rather than being abandoned mid-way.
@@ -129,7 +136,7 @@ _DWELL_SWEEP_INTERVAL_SECONDS = 30.0
 # Longest the fair loop waits for a delivery to finish while it has work it
 # cannot dispatch yet. A finish ends the wait at once; this bounds it for what
 # no finish signals (a backoff coming due, a downstream pause lifting, records
-# on another partition). Also the poll timeout parallel dispatch keeps.
+# on another partition).
 _BUSY_POLL_TIMEOUT_MS = 50
 # Sentinel CompositeKeyExtractor uses for an absent fairness field.
 _DEFAULT_KEY_LEVEL = "__default__"
@@ -412,6 +419,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             DRRScheduler[tuple[TopicPartition, ConsumerRecord, StreamMessage]] | None
         ) = None
         self._offset_tracker: PartitionOffsetTracker | None = None
+        self._committer = WatermarkCommitter(self.__broker_commit, _COMMIT_WAIT_SECONDS)
         self._last_dwell_sweep = 0.0
         # Lanes (partitions) paused because one key on them is at its cap,
         # mapped to the key that blocked them. Main-loop-only state.
@@ -898,6 +906,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         except Exception as exc:
             self.logger.error("Error stopping worker thread: %s", exc)
 
+        await self._committer.close(None)
         # Stop the Kafka consumer last
         if self.consumer:
             try:
@@ -1051,6 +1060,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 len(purged),
                 len(revoked_set),
             )
+        # Last: everything above runs without an await, so no dispatch can interleave with it.
+        await self._committer.close(revoked_set)
 
     async def _on_partitions_assigned(self, assigned: "list[TopicPartition]") -> None:
         if assigned:
@@ -1956,11 +1967,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             or self._records_released
         )
         with self._partition_lock:
-            in_flight = bool(self._in_flight_partitions)
-        # shortcut: parallel dispatch keeps the busy poll timeout. It commits once
-        # per record and aiokafka commits one at a time, so waking on every finish
-        # outruns the commits; upgrade once commits are coalesced per partition.
-        wait_for_finish = in_flight and not self.__parallel_dispatch()
+            # Parallel dispatch tracks its work per record, not per partition.
+            in_flight = bool(self._in_flight_partitions or self._in_flight_records)
+        wait_for_finish = in_flight
         poll_timeout_ms = (
             0
             if wait_for_finish
@@ -2285,7 +2294,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
         if commits:
             try:
-                await self.consumer.commit(commits)  # type: ignore
+                await self._committer.commit(commits)
             except Exception as e:
                 # The next commit on these partitions carries them.
                 self.logger.warning(
@@ -2745,7 +2754,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if not commits:
             return
         try:
-            await self.consumer.commit(commits)  # type: ignore
+            await self._committer.commit(commits)
         except Exception as e:
             self.logger.warning(
                 "Could not commit past %d resolved offset(s): %s", len(positions), e
@@ -2811,7 +2820,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 )
             )
             if watermark is not None:
-                await self.consumer.commit({tp: watermark})  # type: ignore
+                try:
+                    await self._committer.commit({tp: watermark})
+                except CommitDropped:
+                    return False
             return True
 
         return await self._run_on_main_loop(do_resolve())
@@ -3271,6 +3283,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self, message_id: str
     ) -> tuple[int, bool]:
         return await concurrency.increment_retry_and_check(self, message_id)
+
+    async def __broker_commit(self, offsets: dict[TopicPartition, int]) -> None:
+        consumer = self.consumer
+        if consumer is None:  # stopped while this commit waited for its turn
+            raise CommitDropped
+        await consumer.commit(offsets)  # type: ignore
 
     async def _commit_offset(self, message: ConsumerRecord) -> None:
         """Commit offset on the main loop where the Kafka consumer was started."""
