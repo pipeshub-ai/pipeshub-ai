@@ -118,11 +118,29 @@ async def test_the_licence_is_read_from_the_config_store(value: object, licensed
 
 
 @pytest.mark.asyncio
-async def test_a_failed_licence_read_raises() -> None:
+async def test_a_failed_licence_read_raises_and_is_not_remembered() -> None:
     config = MagicMock()
-    config.get_config = AsyncMock(side_effect=ConnectionError("store down"))
+    config.get_config = AsyncMock(side_effect=[ConnectionError("store down"), UNLICENSED])
     with pytest.raises(ConnectionError):
         await permission_sync_licensed(config)
+    assert await permission_sync_licensed(config) is False, "the next call reads the store again"
+    assert config.get_config.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_missing_key_is_read_once_across_many_records() -> None:
+    """The config cache keeps no entry for a missing key; the gate remembers the answer itself."""
+    proc, tx_store = _gate_processor(None)
+    records = []
+    for n in range(20):
+        record = _make_record(external_record_id=f"ext-{n}")
+        record.id = f"rec-{n}"
+        records.append((record, [Permission(type=PermissionType.READ, entity_type=EntityType.ORG)]))
+
+    await proc.on_new_records(records)
+
+    proc.config_service.get_config.assert_awaited_once()
+    tx_store.batch_upsert_records.assert_awaited()
 
 
 def test_the_open_types_are_storage_database_web_and_collections() -> None:
@@ -351,6 +369,81 @@ async def test_a_permission_update_moves_the_record_but_leaves_its_access() -> N
 
 
 @pytest.mark.asyncio
+async def test_a_slack_file_keeps_its_share_edges_on_a_permission_update() -> None:
+    """A Slack file lists every channel it is shared to (``shared_groups_complete``): licensed, a channel it left loses
+    its edges. Unlicensed, no share or group edge is written or removed."""
+    proc, tx_store = _gate_processor(UNLICENSED, _app("SLACK WORKSPACE"))
+    tx_store.get_edges_from_node.return_value = [{"_to": "recordGroups/c-old"}]
+    tx_store.get_record_group_by_external_id.return_value = MagicMock(id="c-new")
+    tx_store.replace_record_permissions = AsyncMock()
+    proc._drop_shared_groups = AsyncMock()
+    record = _make_record(connector_name=Connectors.SLACK_WORKSPACE, external_record_group_id="c-new")
+    record.id = "rec-1"
+    record.shared_with_me_record_group_ids = ["c-new"]
+    record.shared_groups_complete = True
+
+    await proc.on_updated_record_permissions(record, [])
+
+    proc._drop_shared_groups.assert_not_awaited()
+    tx_store.create_record_group_relation.assert_not_awaited()
+    tx_store.create_inherit_permissions_relation_record_group.assert_not_awaited()
+    tx_store.replace_record_permissions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_record_write_leaves_its_inherit_and_share_edges_as_stored() -> None:
+    proc, tx_store = _gate_processor(UNLICENSED, _app("SLACK WORKSPACE"))
+    tx_store.link_record_to_group = AsyncMock(return_value=0)
+    proc._drop_shared_groups = AsyncMock()
+    stored = _make_record(connector_name=Connectors.SLACK_WORKSPACE)
+    stored.id = "rec-1"
+    stored.record_group_id = "c-old"
+    record = _make_record(connector_name=Connectors.SLACK_WORKSPACE)
+    record.id = "rec-1"
+    record.shared_with_me_record_group_ids = ["c-new"]
+    record.shared_groups_complete = True
+
+    await proc._link_record_to_group(record, "c-old", tx_store, stored)
+
+    assert tx_store.link_record_to_group.await_args.kwargs["inherit"] is None, "the inherit edge is left alone"
+    proc._drop_shared_groups.assert_not_awaited()
+    tx_store.create_record_group_relation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_issue_keeps_its_stored_access_group_and_rule() -> None:
+    """The payload's rule and access group are not applied: the stored group is kept (and counted as seen by
+    ``_keep_access_group``), the stored rule is written back, and no access-group edge is touched."""
+    from app.config.constants.arangodb import AccessRule
+    from app.models.entities import TicketRecord
+
+    proc, tx_store = _gate_processor(UNLICENSED)
+    stored = _make_record(access_rule=AccessRule.RESTRICTED)
+    stored.id = "rec-1"
+    tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
+    proc._keep_access_group = AsyncMock()
+    proc._apply_access_group = AsyncMock()
+    written: list[AccessRule] = []
+
+    async def body(record: object, *_a: object, **_k: object) -> tuple:
+        written.append(record.access_rule)
+        return record, []
+
+    proc._process_record_body = body
+    issue = TicketRecord(
+        org_id="org-1", external_record_id="ext-1", record_name="JIRA-1", origin="CONNECTOR",
+        connector_name=Connectors.JIRA, connector_id=CONNECTOR, record_type="TICKET", version=1,
+        mime_type="text/plain", access_rule=AccessRule.OPEN, access_group_external_id="level-new",
+    )
+
+    await proc._process_record(issue, [], tx_store)
+
+    proc._keep_access_group.assert_awaited_once()
+    proc._apply_access_group.assert_not_awaited()
+    assert written == [AccessRule.RESTRICTED]
+
+
+@pytest.mark.asyncio
 async def test_groups_roles_and_links_are_skipped() -> None:
     proc, tx_store = _gate_processor(UNLICENSED)
     user = AppUser(app_name=Connectors.JIRA, connector_id=CONNECTOR, source_user_id="s1", email="a@x.com", full_name="A")
@@ -435,11 +528,11 @@ def _connector(proc: DataSourceEntitiesProcessor, *, writes: bool = True, covera
         if writes:
             proc._note_full_sync_seen(CONNECTOR, RECORDS, "r1")
         if skip_during_run:
-            proc.config_service.get_config = AsyncMock(return_value=UNLICENSED)
+            proc.config_service = _config(UNLICENSED)  # a new answer: the old one is remembered
             await proc.on_new_app_users([AppUser(
                 app_name=Connectors.JIRA, connector_id=CONNECTOR, source_user_id="s1", email="a@x.com", full_name="A",
             )])
-            proc.config_service.get_config = AsyncMock(return_value=LICENSED)
+            proc.config_service = _config(LICENSED)
 
     connector.run_sync = run_sync
     return connector
@@ -491,7 +584,7 @@ async def test_a_full_sync_that_may_not_have_rewritten_everything_keeps_the_limi
 
         async def then_lapse() -> None:
             await original()
-            proc.config_service.get_config = AsyncMock(return_value=UNLICENSED)
+            proc.config_service = _config(UNLICENSED)
 
         connector.run_sync = then_lapse
 

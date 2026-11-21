@@ -1124,7 +1124,7 @@ class DataSourceEntitiesProcessor:
                 connector_id=record.connector_id,
                 external_id=existing_record.parent_external_record_id,
             )
-            if old_parent:
+            if old_parent and not await self.skips_permission_writes(record.connector_id):
                 await tx_store.delete_inherit_permissions_relation_record(
                     existing_record.id, old_parent.id
                 )
@@ -1214,7 +1214,9 @@ class DataSourceEntitiesProcessor:
                 # caller that must take the audience from the group anyway.
                 permissions_from_group = in_other_group or bool(record.inherit_permissions_from_group)
                 # A record that takes its access from a group of its own is only listed under its parent.
-                if record.inherit_permissions and not permissions_from_group and not record.access_group_external_id:
+                if await self.skips_permission_writes(record.connector_id):
+                    pass  # unlicensed: its inherit edge stays as stored
+                elif record.inherit_permissions and not permissions_from_group and not record.access_group_external_id:
                     await tx_store.create_inherit_permissions_relation_record(
                         record.id, parent_record.id
                     )
@@ -2178,6 +2180,8 @@ class DataSourceEntitiesProcessor:
             moved = True
 
         joining_group_id = record_group_id if record.id else None
+        # Unlicensed: the record's inherit edge and share edges stay as stored; only where it is filed changes.
+        skip = await self.skips_permission_writes(record.connector_id)
         if joining_group_id or leaving_group_id:
             permissions_root = not record.parent_external_record_id or parent_in_other_group
             # Browse follows the parent record when it lives in this group, even if
@@ -2188,7 +2192,9 @@ class DataSourceEntitiesProcessor:
             # inherits from the record above it, and _handle_parent_record owns
             # that edge. on_updated_record_permissions applies the same rule, or
             # the stored state would depend on which ran last.
-            if record.inherit_permissions and permissions_root and not record.access_group_external_id:
+            if skip:
+                inherit = None  # left as stored
+            elif record.inherit_permissions and permissions_root and not record.access_group_external_id:
                 inherit = True
             elif existing_record is not None or stored_under_its_id:
                 inherit = False
@@ -2221,7 +2227,7 @@ class DataSourceEntitiesProcessor:
                 )
 
         prunes_shared = bool(record_group_id) and record.shared_groups_complete
-        if record.shared_with_me_record_group_ids or prunes_shared:
+        if not skip and (record.shared_with_me_record_group_ids or prunes_shared):
             # create_record_group_relation is an idempotent upsert and cannot
             # report insert-vs-noop, so the already-attached groups are read
             # once and diffed. Reporting every call as a move would republish
@@ -2826,7 +2832,7 @@ class DataSourceEntitiesProcessor:
                         publishes_event=False,
                     )
                     pending_moves.extend(inner_moves)
-                elif record.shared_with_me_record_group_ids or record.shared_groups_complete:
+                elif not skip and (record.shared_with_me_record_group_ids or record.shared_groups_complete):
                     # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
                     # the shared-with-me edge for *this* user may still be missing because
                     # _process_record is skipped in the belongs_to_edges branch above.
@@ -3027,7 +3033,17 @@ class DataSourceEntitiesProcessor:
             permissions_fetched=permissions_fetched, replace_permissions=replace_permissions, title_changes=title_changes,
         )
         if await self.skips_permission_writes(record.connector_id):
-            # Its access group is its grant: left as stored, like its other grants.
+            # Unlicensed: the record's access stays as stored. Its stored access group is kept and counted as seen (no
+            # access-group edge is written or removed), the stored rule replaces the payload's, and body() writes the
+            # content and placement only (its inherit and share edges are skipped too).
+            if record.connector_name in ACCESS_GROUP_CONNECTORS and isinstance(record, TicketRecord):
+                record.access_group_external_id = None
+                await self._keep_access_group(record, tx_store)
+            stored = await tx_store.get_record_by_external_id(
+                connector_id=record.connector_id, external_id=record.external_record_id
+            )
+            if stored is not None:
+                record.access_rule = stored.access_rule
             return await body()
         if record.access_group_external_id is None and record.connector_name in ACCESS_GROUP_CONNECTORS \
                 and isinstance(record, TicketRecord):
