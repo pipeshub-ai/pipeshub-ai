@@ -16,6 +16,7 @@ import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context';
 import { accessLog } from '../../../src/libs/middlewares/access-log.middleware';
 import { runWithRequestContext } from '../../../src/libs/context/request-context';
+import { captureLogRecords, inRequestContext, newRequestId, recordsOf } from '../../helpers/log-capture';
 import { ValidationError } from '../../../src/libs/errors/validation.error';
 import { MailController } from '../../../src/modules/mail/controller/mail.controller';
 import { MailSenderService } from '../../../src/modules/mail/services/mail.sender.service';
@@ -68,6 +69,8 @@ const otpMail = (extra: Row = {}) => ({
 describe('mail and notification logging', function () {
   this.timeout(20000);
   let records: Row[];
+  // The request (or broker message) under test; a line from any other context is not this test's.
+  let requestId: string;
   const root = () => (Logger.getInstance() as any).logger as winston.Logger;
   const render = (r: Row): string => {
     const fmt = root().transports.find((t) => t instanceof winston.transports.Console)!.format!;
@@ -81,8 +84,9 @@ describe('mail and notification logging', function () {
   };
   // A typed field is on the record; any other key (`smtp_code`, `email_template_type`) is in its metadata.
   const fields = (r: Row): Row => ({ ...(r.metadata ?? {}), ...r });
-  const atLeastInfo = () => records.filter((r) => level(r) !== 'debug');
-  const named = (message: string) => records.filter((r) => r.message === message);
+  const mine = () => recordsOf(records, requestId);
+  const atLeastInfo = () => mine().filter((r) => level(r) !== 'debug');
+  const named = (message: string) => mine().filter((r) => r.message === message);
   const assertTextFree = () => {
     const lines = records.map(render);
     for (const value of PRIVATE) {
@@ -92,12 +96,8 @@ describe('mail and notification logging', function () {
   };
 
   beforeEach(() => {
-    records = [];
-    root().level = 'debug';
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Row) {
-      records.push(info);
-      return this;
-    } as any);
+    records = captureLogRecords();
+    requestId = newRequestId('mail-logging');
   });
   let recordMailLog: sinon.SinonStub;
   beforeEach(() => {
@@ -173,7 +173,7 @@ describe('mail and notification logging', function () {
         handled,
         deliver: async (value: Row) => {
           await consumer.consume(handled);
-          await handle!({ value });
+          await inRequestContext(requestId, () => handle!({ value }));
         },
       };
     };
@@ -315,11 +315,11 @@ describe('mail and notification logging', function () {
       try {
         const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/v1/mail/emails/sendEmail`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', 'x-request-id': requestId },
           body: JSON.stringify(mail),
         });
         const body = (await res.json()) as Row;
-        for (let i = 0; i < 50 && !records.some((r) => r.message === 'http.request.end'); i += 1) {
+        for (let i = 0; i < 50 && !mine().some((r) => r.message === 'http.request.end'); i += 1) {
           await new Promise((resolve) => setImmediate(resolve));
         }
         const errors = named('http.request.error');
@@ -366,11 +366,8 @@ describe('mail and notification logging', function () {
       expect(auth.status).to.equal(502);
       expect(auth.line.error_class).to.equal('upstream_5xx');
       sinon.restore();
-      records = [];
-      sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Row) {
-        records.push(info);
-        return this;
-      } as any);
+      records = captureLogRecords();
+      requestId = newRequestId('mail-logging');
       const down = await post(sinon.stub().rejects(err({ code: 'ESOCKET', originalCode: 'ECONNREFUSED' })));
       expect(down.status).to.equal(502);
       expect(down.line.error_class).to.equal('upstream_5xx');
@@ -392,7 +389,7 @@ describe('mail and notification logging', function () {
       const broker = { isConnected: () => true, consume: async (h: any) => { handle = h; } } as any;
       const consumer = new NotificationConsumer(broker, Logger.getInstance({ service: 'notification' }), { sendToUser: () => true } as any);
       await consumer.consume(async () => undefined);
-      await handle!({ value });
+      await inRequestContext(requestId, () => handle!({ value }));
     };
 
     it('a store failure: one ERROR with the type, the size and the error', async () => {
@@ -430,7 +427,8 @@ describe('mail and notification logging', function () {
     it('a mail publish is DEBUG, with the event type and topic as fields', async () => {
       const producer = new MailProducer({ isConnected: () => true, connect: async () => undefined, publish: async () => undefined } as any,
         Logger.getInstance({ service: 'mailService' }));
-      await producer.publishEvent({ eventType: 'sendMail', timestamp: 1, payload: { mail: otpMail() } } as any);
+      await inRequestContext(requestId, () =>
+        producer.publishEvent({ eventType: 'sendMail', timestamp: 1, payload: { mail: otpMail() } } as any));
       const lines = named('broker.event.published');
       expect(lines.map(level)).to.deep.equal(['debug']);
       expect(atLeastInfo()).to.have.length(0);
@@ -439,7 +437,7 @@ describe('mail and notification logging', function () {
 
     it('a line about a recipient keeps the recipient as target_user_id inside another user’s request', () => {
       const service = new NotificationService({} as any);
-      runWithRequestContext({ rootId: 'rq-1', userId: '64b0000000000000000000b9' } as any, () => {
+      runWithRequestContext({ rootId: requestId, userId: '64b0000000000000000000b9' } as any, () => {
         service.sendToUser(ADMIN_ID, 'newNotification', {});
       });
       const [line] = atLeastInfo();

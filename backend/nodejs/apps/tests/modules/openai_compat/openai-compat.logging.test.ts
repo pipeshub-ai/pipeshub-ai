@@ -17,6 +17,7 @@ import { requestContextMiddleware } from '../../../src/libs/middlewares/request.
 import { accessLog } from '../../../src/libs/middlewares/access-log.middleware';
 import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 import { runWithRequestContext } from '../../../src/libs/context/request-context';
+import { captureLogRecords, newRequestId, recordsOf } from '../../helpers/log-capture';
 import { callApi } from '../../../src/modules/openai_compat/utils/pipeshub-api';
 import {
   createResponse,
@@ -49,6 +50,8 @@ const originOf = (s: Server) => `http://127.0.0.1:${(s.address() as AddressInfo)
 describe('self-answered failures: one reason on the request’s lines', function () {
   this.timeout(20000);
   let records: Row[];
+  // The request under test; a line from any other context is not this test's.
+  let requestId: string;
   const root = () => (Logger.getInstance() as any).logger as winston.Logger;
   const render = (r: Row): string => {
     const fmt = root().transports.find((t) => t instanceof winston.transports.Console)!.format!;
@@ -60,7 +63,8 @@ describe('self-answered failures: one reason on the request’s lines', function
     const l = String(r.level).toLowerCase();
     return l === 'warning' ? 'warn' : l;
   };
-  const named = (m: string) => records.filter((r) => r.message === m);
+  const mine = () => recordsOf(records, requestId);
+  const named = (m: string) => mine().filter((r) => r.message === m);
   const access = async () => {
     for (let i = 0; i < 400 && named('http.request.end').length === 0; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -69,11 +73,16 @@ describe('self-answered failures: one reason on the request’s lines', function
     expect(lines, 'access line').to.have.length(1);
     return lines[0];
   };
-  const errors = () => records.filter((r) => level(r) === 'error');
+  const errors = () => mine().filter((r) => level(r) === 'error');
 
   /** An app with the request layer around one route. */
   const withRequestLayer = (mount: (app: express.Express) => void) => {
     const app = express();
+    // A request the test sends without an id runs as the test's request, so its lines can be told from any other's.
+    app.use((req, _res, next) => {
+      req.headers['x-request-id'] ??= requestId;
+      next();
+    });
     app.use(requestContextMiddleware);
     app.use(accessLog());
     app.use(express.json());
@@ -83,12 +92,8 @@ describe('self-answered failures: one reason on the request’s lines', function
   };
 
   beforeEach(() => {
-    records = [];
-    root().level = 'debug';
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Row) {
-      records.push(info);
-      return this;
-    } as any);
+    records = captureLogRecords();
+    requestId = newRequestId('openai-compat-logging');
   });
   afterEach(() => {
     sinon.restore();
@@ -172,7 +177,7 @@ describe('self-answered failures: one reason on the request’s lines', function
     const chat = (extra: Row = {}, init: RequestInit = {}) =>
       fetch(`${base}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t', 'x-request-id': 'rq-l11b-outer' },
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t', 'x-request-id': requestId },
         body: JSON.stringify({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }], ...extra }),
         ...init,
       });
@@ -321,10 +326,10 @@ describe('self-answered failures: one reason on the request’s lines', function
     });
 
     it('callApi carries the request id to our own API, through upstreamFetch', async () => {
-      await runWithRequestContext({ rootId: 'rq-callapi-1' } as any, () =>
+      await runWithRequestContext({ rootId: requestId } as any, () =>
         callApi({ baseUrl: originOf(chatApi), authorization: 'Bearer t' }, '/knowledgeBase'),
       );
-      expect(innerRequestId).to.equal('rq-callapi-1');
+      expect(innerRequestId).to.equal(requestId);
       const calls = named('upstream.call.end');
       expect(calls).to.have.length(1);
       expect(calls[0].upstream).to.equal('nodejs');
@@ -349,7 +354,7 @@ describe('self-answered failures: one reason on the request’s lines', function
       const res = await chat();
       expect(res.status).to.equal(200);
       await access();
-      expect(innerRequestId).to.equal('rq-l11b-outer');
+      expect(innerRequestId).to.equal(requestId);
       const calls = named('upstream.call.end');
       expect(calls).to.have.length(1);
       expect(calls[0].upstream).to.equal('nodejs');
@@ -418,7 +423,7 @@ describe('self-answered failures: one reason on the request’s lines', function
         const res = await fetch(`${originOf(app)}/api/v1/artifacts/a1`);
         expect(res.status).to.equal(code === 404 ? 404 : 500);
         await access();
-        const failureLines = records.filter((r) => level(r) !== 'debug' && r.message !== 'http.request.end' && r.message !== 'upstream.call.end');
+        const failureLines = mine().filter((r) => level(r) !== 'debug' && r.message !== 'http.request.end' && r.message !== 'upstream.call.end');
         expect(failureLines.map((r) => r.message)).to.deep.equal(['http.request.error']);
       });
     }
