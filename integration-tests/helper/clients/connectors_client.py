@@ -182,7 +182,15 @@ class ConnectorsClient(APIClient):
         """Create a connector instance.
 
         POST /
+
+        Skips the test when this build does not offer the connector type
+        (helper/connectors_offered.py).
         """
+        from helper.connectors_offered import skip_if_not_offered
+
+        connector_type = body.get("connectorType") if isinstance(body, dict) else None
+        if isinstance(connector_type, str):
+            skip_if_not_offered(connector_type)
         return self.post("/", json=body, **options)
 
     def get_instance(self, connector_id: str, **options: Any) -> requests.Response:

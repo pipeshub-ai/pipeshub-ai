@@ -449,6 +449,8 @@ NODE_ADMIN_ROUTES = suite_extensions.add_rows(
 PYTHON_ADMIN_ROUTES = suite_extensions.add_rows(
     PYTHON_ADMIN_ROUTES, "PYTHON_ADMIN_ROUTES", _extensions, key=lambda row: row.key)
 ADMIN_BODIES = suite_extensions.add_items(ADMIN_BODIES, "ADMIN_BODIES", _extensions)
+PYTHON_BEHIND_NODE_ADMIN = frozenset(suite_extensions.add_rows(
+    sorted(PYTHON_BEHIND_NODE_ADMIN), "PYTHON_BEHIND_NODE_ADMIN", _extensions, key=lambda handler: handler))
 PYTHON_CONDITIONAL_ADMIN = suite_extensions.add_items(
     PYTHON_CONDITIONAL_ADMIN, "PYTHON_CONDITIONAL_ADMIN", _extensions)
 SWITCHED_OFF = suite_extensions.add_rows(

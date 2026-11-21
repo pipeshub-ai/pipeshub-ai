@@ -36,6 +36,35 @@ def test_both_tokens_come_back(monkeypatch) -> None:
     assert local_auth.log_in_with_refresh_token("http://x", "a@b.c", "pw") == (access, "r1")
 
 
+def test_a_two_step_sign_in_returns_the_refresh_token_of_the_switch(monkeypatch) -> None:
+    # authenticate answers an email-only token (no userId) and no refresh token;
+    # the switch to the org issues both.
+    email_only, session = "h.eyJlbWFpbCI6ImFAYi5jIn0.s", "h.eyJ1c2VySWQiOiJ1MSJ9.s"
+
+    def post(url: str, **_kwargs):
+        if url.endswith("/initAuth"):
+            return _Response({})
+        if url.endswith("/auth/token/switch"):
+            return _Response({"accessToken": session, "refreshToken": "r-switch"})
+        return _Response({"accessToken": email_only, "orgId": "o1"})
+
+    monkeypatch.setattr(local_auth.requests, "post", post)
+    assert local_auth.log_in_with_refresh_token("http://x", "a@b.c", "pw") == (session, "r-switch")
+
+
+def test_finish_sign_in_keeps_a_one_step_reply_and_switches_a_two_step_one(monkeypatch) -> None:
+    one_step = {"accessToken": "h.eyJ1c2VySWQiOiJ1MSJ9.s", "refreshToken": "r1"}
+    assert local_auth.finish_sign_in("http://x", one_step) == ("h.eyJ1c2VySWQiOiJ1MSJ9.s", "r1")
+
+    def post(url: str, **_kwargs):
+        assert url == "http://x/api/v1/auth/token/switch"
+        return _Response({"accessToken": "h.eyJ1c2VySWQiOiJ1MiJ9.s", "refreshToken": "r2"})
+
+    monkeypatch.setattr(local_auth.requests, "post", post)
+    two_step = {"accessToken": "h.eyJlbWFpbCI6ImFAYi5jIn0.s", "orgId": "o1"}
+    assert local_auth.finish_sign_in("http://x/", two_step) == ("h.eyJ1c2VySWQiOiJ1MiJ9.s", "r2")
+
+
 @pytest.mark.parametrize(
     "body, named",
     [

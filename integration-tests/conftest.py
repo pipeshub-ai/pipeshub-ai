@@ -638,12 +638,25 @@ _PARALLEL_SAFE_PATHS = ("response-validation/enterprise-search",)
 _SERIAL_XDIST_GROUP = "serial"
 
 
+def _skip_connectors_not_offered(items: List[pytest.Item]) -> None:
+    """Skip the suites of connectors this build leaves out (helper/connectors_offered.py)."""
+    from helper.connectors_offered import skipped_markers
+
+    reasons = skipped_markers()
+    for item in items:
+        for marker in item.iter_markers():
+            if marker.name in reasons:
+                item.add_marker(pytest.mark.skip(reason=reasons[marker.name]))
+                break
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(
     config: pytest.Config,
     items: List[pytest.Item],
 ) -> None:
-    """Pin every non-enterprise-search test to one xdist worker.
+    """Skip the suites of connectors this build does not offer, and pin every
+    non-enterprise-search test to one xdist worker.
 
     The connector suites depend on ``--order-scope=module`` ordering and on
     module-scoped fixtures that drive a whole connector sync, both of which
@@ -667,6 +680,8 @@ def pytest_collection_modifyitems(
       no-ops in precisely the processes that matter. ``workerinput`` is the
       reliable signal.
     """
+    _skip_connectors_not_offered(items)
+
     is_worker = hasattr(config, "workerinput")
     if not is_worker and config.getoption("dist", "no") == "no":
         return

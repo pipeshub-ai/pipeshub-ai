@@ -1,7 +1,8 @@
 """
 Spec-driven response validator for enterprise-search integration tests.
 
-Loads `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` once,
+Loads the spec the stack serves once (`helper/openapi_spec.py`: `pipeshub-openapi.yaml`
+and any spec a downstream build merges into it),
 normalizes OpenAPI 3.0 `nullable: true` into valid JSON Schema **in place**,
 and validates response bodies against the schema declared for a
 `(path, method, status_code)` triple.
@@ -22,24 +23,12 @@ from __future__ import annotations
 
 import json
 import threading
-from pathlib import Path
 from typing import Any
 
 import jsonschema
-import yaml
 from jsonschema import RefResolver
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-SPEC_PATH = (
-    _REPO_ROOT
-    / "backend"
-    / "nodejs"
-    / "apps"
-    / "src"
-    / "modules"
-    / "api-docs"
-    / "pipeshub-openapi.yaml"
-)
+from helper.openapi_spec import SPEC_PATH, load_spec
 
 _spec_cache: dict | None = None
 _spec_lock = threading.Lock()
@@ -85,14 +74,9 @@ def _load_spec() -> dict:
         return _spec_cache
     with _spec_lock:
         if _spec_cache is None:
-            if not SPEC_PATH.exists():
-                raise FileNotFoundError(
-                    f"OpenAPI spec not found at {SPEC_PATH}. "
-                    "Make sure the backend source tree is checked out."
-                )
-            with SPEC_PATH.open(encoding="utf-8") as fh:
-                _spec_cache = yaml.safe_load(fh)
-            _normalize_in_place(_spec_cache)
+            spec = load_spec()
+            _normalize_in_place(spec)
+            _spec_cache = spec
     return _spec_cache
 
 

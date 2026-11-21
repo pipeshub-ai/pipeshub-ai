@@ -934,25 +934,11 @@ jobs:
       - name: 'Neo4j: Skip onboarding'
         id: neo4j-ready
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
+        working-directory: integration-tests
         run: |
-          HEADERS=$(mktemp)
-          jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
-            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
-            -H "Content-Type: application/json" \
-            --data-binary @- \
-            -D "${HEADERS}" -o /dev/null
-          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
-          rm -f "${HEADERS}"
-
-          ACCESS_TOKEN=$(jq -n '{
-              method: "password",
-              credentials: {password: $ENV.PIPESHUB_TEST_USER_PASSWORD},
-              email: $ENV.PIPESHUB_TEST_USER_EMAIL
-            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
-            -H "Content-Type: application/json" \
-            -H "x-session-token: ${SESSION_TOKEN}" \
-            --data-binary @- \
-            | jq -r '.accessToken')
+          # Signs in as the suite does (helper/local_auth.py), which also takes
+          # a backend that hands out the session token in a second step.
+          ACCESS_TOKEN=$(.venv/bin/python -c 'import os; from helper.local_auth import obtain_user_session_token; print(obtain_user_session_token(os.environ["PIPESHUB_BASE_URL"]))')
 
           curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
             -H "Content-Type: application/json" \
@@ -1136,25 +1122,11 @@ jobs:
       - name: 'ArangoDB: Skip onboarding'
         id: arango-ready
         if: ${{ !cancelled() && steps.arango-org.outcome == 'success' }}
+        working-directory: integration-tests
         run: |
-          HEADERS=$(mktemp)
-          jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
-            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
-            -H "Content-Type: application/json" \
-            --data-binary @- \
-            -D "${HEADERS}" -o /dev/null
-          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
-          rm -f "${HEADERS}"
-
-          ACCESS_TOKEN=$(jq -n '{
-              method: "password",
-              credentials: {password: $ENV.PIPESHUB_TEST_USER_PASSWORD},
-              email: $ENV.PIPESHUB_TEST_USER_EMAIL
-            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
-            -H "Content-Type: application/json" \
-            -H "x-session-token: ${SESSION_TOKEN}" \
-            --data-binary @- \
-            | jq -r '.accessToken')
+          # Signs in as the suite does (helper/local_auth.py), which also takes
+          # a backend that hands out the session token in a second step.
+          ACCESS_TOKEN=$(.venv/bin/python -c 'import os; from helper.local_auth import obtain_user_session_token; print(obtain_user_session_token(os.environ["PIPESHUB_BASE_URL"]))')
 
           curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
             -H "Content-Type: application/json" \

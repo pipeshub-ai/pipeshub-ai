@@ -193,7 +193,9 @@ def log_in_with_refresh_token(
     access_token = result.accessToken
     if "userId" not in jwt_claims(access_token):
         access_token = _switch_to_org(base_url, access_token, result.orgId, timeout)
-    return access_token, result.refreshToken
+    # A backend that signs in in two steps hands out the refresh token with the
+    # session token, from the switch to the org.
+    return access_token, result.refreshToken or _switch_refresh_tokens.pop(access_token, "")
 
 
 def jwt_claims(token: str) -> dict:
@@ -204,6 +206,25 @@ def jwt_claims(token: str) -> dict:
         return json.loads(base64.urlsafe_b64decode(payload))
     except (IndexError, ValueError):
         return {}
+
+
+def finish_sign_in(base_url: str, authenticate_body: dict, timeout: int = 30) -> tuple[str, str]:
+    """``(accessToken, refreshToken)`` of a successful ``authenticate`` reply.
+
+    A backend that signs in in two steps answers with an email-only token and
+    the org to sign in to; the session tokens then come from the switch to it.
+    """
+    access_token = authenticate_body.get("accessToken") or ""
+    refresh_token = authenticate_body.get("refreshToken") or ""
+    org_id = authenticate_body.get("orgId")
+    if access_token and not refresh_token and org_id and "userId" not in jwt_claims(access_token):
+        access_token = _switch_to_org(base_url.rstrip("/"), access_token, str(org_id), timeout)
+        refresh_token = _switch_refresh_tokens.pop(access_token, "")
+    return access_token, refresh_token
+
+
+# Session token -> the refresh token issued with it by auth/token/switch.
+_switch_refresh_tokens: dict[str, str] = {}
 
 
 def _switch_to_org(base_url: str, email_verified_token: str, org_id: str, timeout: int) -> str:
@@ -219,9 +240,11 @@ def _switch_to_org(base_url: str, email_verified_token: str, org_id: str, timeou
     )
     if resp.status_code >= 400:
         raise RuntimeError(f"auth/token/switch failed: HTTP {resp.status_code} - {resp.text[:200]}")
-    access_token = resp.json().get("accessToken")
+    body = resp.json()
+    access_token = body.get("accessToken")
     if not access_token:
         raise RuntimeError("auth/token/switch did not return accessToken")
+    _switch_refresh_tokens[access_token] = body.get("refreshToken") or ""
     return access_token
 
 
