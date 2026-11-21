@@ -184,6 +184,7 @@ from app.services.graph_db.common.utils import (
     PermittedEntityRows,
     build_connector_stats_response,
     cleans_taxonomy_points,
+    collapse_repeated_records,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
@@ -9691,23 +9692,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record on its own, about 4 ms apiece (B2: 110 s for a 29k-file repo).
         """
         try:
-            groups: list[tuple[bool, list[Record]]] = []
-            repeated = len({r.id for r in records}) != len(records)
+            records = collapse_repeated_records(records)          # one row per id, by the rule every store applies
             by_type: dict[tuple[str | None, bool], list[Record]] = {}
-            run_key: tuple[str | None, bool] | None = None
             for record in records:
                 # rows that replace a stored placeholder go in their own statement, which tests the stored row
                 key = (RECORD_TYPE_COLLECTION_MAPPING.get(record.record_type), record._promotes_stub)
-                if repeated:
-                    # one record written more than once: the writes keep their order, so only neighbours share a statement
-                    if key == run_key:
-                        groups[-1][1].append(record)
-                    else:
-                        groups.append((key[1], [record]))
-                        run_key = key
-                else:
-                    by_type.setdefault(key, []).append(record)
-            groups.extend((promoting, group) for (_, promoting), group in by_type.items())
+                by_type.setdefault(key, []).append(record)
+            groups = [(promoting, group) for (_, promoting), group in by_type.items()]
             for promoting, group in groups:
                 statement, parameters = self._upsert_record_with_type_cypher(
                     group, release_trashed_external_ids=release_trashed_external_ids, promoting=promoting

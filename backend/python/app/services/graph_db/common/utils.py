@@ -499,6 +499,31 @@ def merge_same_id_record_docs(earlier: dict[str, Any], later: dict[str, Any]) ->
     return merged
 
 
+def collapse_repeated_records(records: list[Any]) -> list[Any]:  # noqa: ANN401
+    """The records of one ``batch_upsert_records`` call with each id once, by the rule every store applies to repeated ids: the last row
+    is the record written (its type, so its type document and edge are written once, and its fields), with ``createdAtTimestamp`` the
+    earliest positive value any row gave and a promotion mark if any row had one. Order follows each id's first appearance."""
+    last: dict[Any, Any] = {}
+    for record in records:
+        last[record.id] = record
+    if len(last) == len(records):
+        return records
+    out: list[Any] = []
+    seen: set[Any] = set()
+    for record in records:
+        if record.id in seen:
+            continue
+        seen.add(record.id)
+        rows = [r for r in records if r.id == record.id]
+        merged = rows[-1].model_copy()
+        dates = [r.created_at for r in rows if isinstance(r.created_at, int) and r.created_at > 0]
+        merged.created_at = min(dates) if dates else rows[-1].created_at
+        merged._promotes_stub = any(r._promotes_stub for r in rows)
+        merged._known_new = all(r._known_new for r in rows)
+        out.append(merged)
+    return out
+
+
 def record_insert_doc(doc: dict[str, Any]) -> dict[str, Any]:
     """The document written when the vertex does not exist: the caller's, with an incarnation id minted when the flag is on.
 

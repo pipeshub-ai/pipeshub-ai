@@ -57,10 +57,10 @@ from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
 from app.core.org_context import MissingOrgContext
 from app.exceptions.graph_db_exceptions import (
-    RecordSchemaNarrowError,
     GraphLockUnavailableError,
     GraphQueryError,
     PermissionVerificationUnavailableError,
+    RecordSchemaNarrowError,
 )
 from app.models.entities import (
     AppRole,
@@ -91,7 +91,12 @@ from app.models.entities import (
     WebpageRecord,
     substitute_user_email,
 )
-from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, best_record_access, read_role
+from app.models.permission import (
+    ORG_SHARE_PERMISSION_TYPES,
+    RETIRED_ROLES,
+    best_record_access,
+    read_role,
+)
 from app.models.source_dates import (
     DATED_ONLY_TIME_RANGE_KEY,
     SOURCE_TIMESTAMP_ORIGIN_FIELD,
@@ -184,8 +189,8 @@ from app.services.graph_db.arango.arango_http_client import (
     ArangoQueryError,
 )
 from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
-from app.services.graph_db.arango.record_schema_guard import RecordSchemaGuard
 from app.services.graph_db.arango.permission_stamps import ArangoStampGraph
+from app.services.graph_db.arango.record_schema_guard import RecordSchemaGuard
 from app.services.graph_db.common.cascade_retry import (
     CASCADE_ATTEMPTS,
     CONNECTOR_DELETE_BASE_SECONDS,
@@ -219,26 +224,27 @@ from app.services.graph_db.common.utils import (
     KB_LIST_FOLDERS_CAP,
     KB_MAX_FOLDER_DEPTH,
     PERSON_ENTITY_TYPE,
+    RECORD_UPDATE_DROPPED_FIELDS,
     SOFT_DELETE_CHUNK,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
-    RECORD_UPDATE_DROPPED_FIELDS,
-    record_created_at_insert_only,
-    record_insert_doc,
-    record_update_doc,
     TRASHED_EXTERNAL_ID_PREFIX,
     AncestorChainLimitError,
     EntityCandidateRows,
     PermittedEntityRows,
     ancestor_chain_rows,
     build_connector_stats_response,
+    collapse_repeated_records,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     is_full_address,
     jira_issue_browse_url_regex,
     person_query_ref,
+    record_created_at_insert_only,
+    record_insert_doc,
     record_status_field,
+    record_update_doc,
     restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
@@ -9801,6 +9807,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         2. Upserts specific type to type-specific collection (files, mails, etc.)
         3. Creates IS_OF_TYPE edge
         """
+        records = collapse_repeated_records(records)          # one row per id, by the rule every store applies
         record_ids = [r.id for r in records]
         seen = set()
         duplicates = {x for x in record_ids if x in seen or seen.add(x)}

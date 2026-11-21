@@ -23,6 +23,7 @@ from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import (
     RECORD_UPDATE_DROPPED_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
+    collapse_repeated_records,
     merge_same_id_record_docs,
     record_created_at_insert_only,
     record_insert_doc,
@@ -315,6 +316,7 @@ class RecordsMixin(PgBase):
         org = current_org_id()
         if not records:
             return
+        records = collapse_repeated_records(records)          # one row per id, by the rule every store applies
         by_type: dict[str | None, list] = {}
         for rec in records:
             by_type.setdefault(RECORD_TYPE_COLLECTION_MAPPING.get(rec.record_type), []).append(rec)

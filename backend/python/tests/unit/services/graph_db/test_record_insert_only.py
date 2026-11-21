@@ -107,6 +107,20 @@ def test_two_rows_for_one_id_merge_by_one_rule() -> None:
     assert merge_same_id_record_docs({"x": 1}, {"createdAtTimestamp": 7}) == {"x": 1, "createdAtTimestamp": 7}
 
 
+def test_repeated_records_collapse_to_the_last_row_with_the_earliest_date() -> None:
+    from app.services.graph_db.common.utils import collapse_repeated_records
+
+    a, other, b = _file("k", created_at=200), _file("o", created_at=7), _file("k", created_at=100)
+    a.record_name, b.record_name = "first", "second"
+    b._promotes_stub = False
+    a._promotes_stub = True
+    out = collapse_repeated_records([a, other, b])
+    assert [r.id for r in out] == ["k", "o"]
+    assert out[0].record_name == "second" and out[0].created_at == 100 and out[0]._promotes_stub is True
+    unique = [other]
+    assert collapse_repeated_records(unique) is unique
+
+
 # ---- restore -------------------------------------------------------------------------------------------------------
 
 def test_every_restore_item_gets_its_own_new_id_with_the_flag(incarnation_on: None) -> None:

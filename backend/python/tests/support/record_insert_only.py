@@ -11,7 +11,7 @@ import uuid
 from typing import Any, Protocol
 
 from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import FileRecord, RecordType, WebpageRecord
 
 RECORDS = CollectionNames.RECORDS.value
 
@@ -339,6 +339,36 @@ async def one_id_twice_in_a_batch_is_merged_by_one_rule(store: StoreAdapter, fla
         assert doc["recordName"] == "second" and doc["sizeInBytes"] == 5, f"{store.name}: {doc}"
 
 
+async def batch_upsert_records_with_one_id_twice_is_one_record(store: StoreAdapter, flag: bool) -> None:
+    """Two records for one new id in one ``batch_upsert_records`` call, in both date orders: ``createdAtTimestamp`` is the earliest positive
+    value, the later record's fields win, and the type document and edge are written once. The same on every store."""
+    for first_date, second_date in ((100, 200), (200, 100)):
+        key = new_key()
+        await store.upsert([
+            make_record(key, created_at=first_date, name="first", known_new=True),
+            make_record(key, created_at=second_date, name="second", known_new=True),
+        ])
+        doc = await store.doc(key)
+        assert doc["createdAtTimestamp"] == 100, f"{store.name}: {doc['createdAtTimestamp']} for dates {first_date}, {second_date}"
+        assert doc["recordName"] == "second", store.name
+        assert (await store.type_doc(key, CollectionNames.FILES.value)) is not None
+
+
+async def batch_upsert_records_with_one_id_twice_keeps_the_last_type(store: StoreAdapter, flag: bool) -> None:
+    """The same id as a file and then as a web page: the last row's type wins, so only its type document is written."""
+    key = new_key()
+    page = WebpageRecord(
+        id=key, org_id="g55-org", record_name="page", record_type=RecordType.WEBPAGE, external_record_id=f"ext-{key}", version=0,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.KNOWLEDGE_BASE, connector_id="g55-conn", created_at=50, updated_at=50,
+    )
+    page._known_new = True
+    await store.upsert([make_record(key, created_at=100, known_new=True), page])
+    doc = await store.doc(key)
+    assert doc["recordType"] == "WEBPAGE" and doc["createdAtTimestamp"] == 50, f"{store.name}: {doc}"
+    assert await store.type_doc(key, CollectionNames.WEBPAGES.value) is not None
+    assert await store.type_doc(key, CollectionNames.FILES.value) is None, f"{store.name} wrote the first row's type document"
+
+
 async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None:
     """S6: only the ``records`` document is insert-only; the type document (``files``) is written as before."""
     key = new_key()
@@ -350,6 +380,7 @@ async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None
 
 
 ALL_CASES = (
+    batch_upsert_records_with_one_id_twice_is_one_record, batch_upsert_records_with_one_id_twice_keeps_the_last_type,
     one_id_twice_in_a_batch_is_merged_by_one_rule,
     a_carried_id_never_starts_a_new_vertex,
     complementary_documents_for_one_new_id_jointly_make_the_insert,
