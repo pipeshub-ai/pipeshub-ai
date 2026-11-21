@@ -4,6 +4,7 @@ import { desktopAuthorizeParams } from '@/lib/electron';
 import type {
   McpAuthenticatePayload,
   McpCatalogResponse,
+  McpCategory,
   McpInstancesResponse,
   McpLogoResponse,
   McpLogosResponse,
@@ -27,7 +28,7 @@ const BASE_URL = '/api/v1/mcp-servers';
 export const McpServersApi = {
   // ── Catalog (read-only, in-memory templates) ──
 
-  async getCatalog(params?: { page?: number; limit?: number; search?: string }): Promise<McpCatalogResponse> {
+  async getCatalog(params?: { page?: number; limit?: number; search?: string; category?: McpCategory }): Promise<McpCatalogResponse> {
     const { data } = await apiClient.get(`${BASE_URL}/catalog`, { params });
     return data;
   },

@@ -1,16 +1,17 @@
 'use client';
 
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Grid, Heading, Text, TextField } from '@radix-ui/themes';
+import { Box, Flex, Heading, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { asArray, lower } from '@/lib/utils/safe';
+import { lower } from '@/lib/utils/safe';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
-import { McpServerCard } from '../team/components/mcp-server-card';
 import type { McpMyServerEntry, McpServerTemplate } from '../types';
+import { McpCatalogDetails } from './mcp-catalog-details';
+import { McpDiscover } from './mcp-discover';
 import { McpServerList } from './mcp-server-list';
 
 interface McpServersLayoutProps {
@@ -39,7 +40,7 @@ interface McpServersLayoutProps {
   footer?: ReactNode;
 }
 
-/** The servers this person has, with their status, then the catalog entries they can add. */
+/** The servers this person has, with their status, then the catalog to discover more in. */
 export function McpServersLayout({
   title,
   subtitle,
@@ -65,29 +66,12 @@ export function McpServersLayout({
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const q = searchQuery.trim().toLowerCase();
+  const [details, setDetails] = useState<McpServerTemplate | null>(null);
 
   const shownServers = useMemo(
     () => (q ? instances.filter((i) => lower(i.name).includes(q) || lower(i.description).includes(q)) : instances),
     [instances, q]
   );
-  const shownCatalog = useMemo(() => {
-    const addedCount = (tpl: McpServerTemplate) => instances.filter((i) => i.typeId === tpl.typeId).length;
-    return catalog
-      .filter(
-        (tpl) =>
-          !q ||
-          lower(tpl.displayName).includes(q) ||
-          lower(tpl.description).includes(q) ||
-          asArray(tpl.tags).some((tag) => lower(tag).includes(q))
-      )
-      .map((tpl) => ({ tpl, added: addedCount(tpl) }))
-      // Entries not added yet first, then by name.
-      .sort(
-        (a, b) =>
-          Number(a.added > 0) - Number(b.added > 0) ||
-          a.tpl.displayName.localeCompare(b.tpl.displayName, undefined, { sensitivity: 'base' })
-      );
-  }, [catalog, instances, q]);
 
   return (
     <Flex
@@ -114,19 +98,22 @@ export function McpServersLayout({
             </Text>
           </Flex>
           <Flex align="center" gap="2" wrap="wrap" style={{ width: isMobile ? '100%' : undefined }}>
-            <Box width={{ initial: '100%', sm: '224px' }} flexShrink="0">
-              <TextField.Root
-                size="2"
-                placeholder={t('workspace.mcpServers.searchPlaceholder')}
-                value={searchQuery}
-                onChange={(e) => onSearchChange(e.target.value)}
-                style={{ width: '100%' }}
-              >
-                <TextField.Slot>
-                  <MaterialIcon name="search" size={16} color="var(--gray-9)" />
-                </TextField.Slot>
-              </TextField.Root>
-            </Box>
+            {instances.length > 0 && (
+              <Box width={{ initial: '100%', sm: '224px' }} flexShrink="0">
+                <TextField.Root
+                  size="2"
+                  placeholder={t('workspace.mcpServers.searchYourServers')}
+                  aria-label={t('workspace.mcpServers.searchYourServers')}
+                  value={searchQuery}
+                  onChange={(e) => onSearchChange(e.target.value)}
+                  style={{ width: '100%' }}
+                >
+                  <TextField.Slot>
+                    <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+                  </TextField.Slot>
+                </TextField.Root>
+              </Box>
+            )}
             {actions}
           </Flex>
         </Flex>
@@ -170,41 +157,36 @@ export function McpServersLayout({
               onReconnect={onReconnect}
               onEdit={onEdit}
             />
-          ) : shownCatalog.length === 0 ? (
+          ) : (
             <Text size="2" align="center" style={{ color: 'var(--gray-10)', padding: 'var(--space-6)' }}>
               {t('workspace.mcpServers.noResults')}
             </Text>
-          ) : null}
+          )}
 
-          {shownCatalog.length > 0 && (
-            <Flex direction="column" gap="3" style={{ width: '100%' }}>
-              <Flex direction="column" gap="1">
-                <Heading as="h2" size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                  {t('workspace.mcpServers.catalog.title')}
-                </Heading>
-                <Text size="2" style={{ color: 'var(--gray-11)' }}>
-                  {catalogDescription}
-                </Text>
-              </Flex>
-              <Grid gap="3" style={{ width: '100%', gridTemplateColumns: 'repeat(auto-fill, minmax(min(240px, 100%), 1fr))' }}>
-                {shownCatalog.map(({ tpl, added }) => (
-                  <McpServerCard
-                    key={tpl.typeId}
-                    title={tpl.displayName}
-                    description={tpl.description}
-                    iconUrl={tpl.icon}
-                    typeId={tpl.typeId}
-                    addedCount={added}
-                    onSetup={() => onAdd(tpl)}
-                  />
-                ))}
-              </Grid>
-            </Flex>
+          {catalog.length > 0 && (
+            <McpDiscover
+              catalog={catalog}
+              instances={instances}
+              description={catalogDescription}
+              onOpen={setDetails}
+              onAdd={onAdd}
+            />
           )}
         </>
       )}
 
       {!isLoading && footer}
+
+      <McpCatalogDetails
+        template={details}
+        addedCount={details ? instances.filter((i) => i.typeId === details.typeId).length : 0}
+        isAdmin={isAdmin}
+        onClose={() => setDetails(null)}
+        onAdd={(tpl) => {
+          setDetails(null);
+          onAdd(tpl);
+        }}
+      />
     </Flex>
   );
 }
