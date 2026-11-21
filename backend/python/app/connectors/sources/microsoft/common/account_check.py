@@ -260,6 +260,8 @@ class GroupMemberGrace:
     def read(self, group_id: str) -> None:
         if self.streaks is not None:
             self.streaks.pop(group_id, None)
+            # Its members are written back, so an owed notice of its close would no longer be true.
+            self.pending.discard(group_id)
 
     def closed_ids(self) -> list[str]:
         """The groups already past the grace that this sync has not read yet."""

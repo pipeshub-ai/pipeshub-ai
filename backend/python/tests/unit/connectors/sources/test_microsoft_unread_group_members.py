@@ -466,3 +466,18 @@ async def test_an_owners_claim_and_a_group_nested_in_a_directory_role_are_bounde
     w.answer = [{"id": "u-ann", "email": "ann@x.com", "name": "Ann"}]
     assert [p.email for p in await _run_sync(w, owners)] == ["ann@x.com"]
     assert [u["email"] for u in await _run_sync(w, role)] == ["ann@x.com"]
+
+
+@pytest.mark.asyncio
+async def test_a_group_read_again_before_its_notice_is_delivered_is_dropped_from_the_notice(world: Outlook | SharePoint) -> None:
+    ok = world.answer
+    world.c.notify_and_wait.return_value = NotificationOutcome.FAILED
+    world.answer = _odata(403)
+    for _ in range(N):
+        await world.sync()
+    assert _written(world.proc, "g1")[-1] == [] and len(_notices(world)) == 1
+    world.answer = ok
+    await world.sync()
+    assert _written(world.proc, "g1")[-1] == ["ann@x.com"], "members written back"
+    assert len(_notices(world)) == 1, "no close notice for a group that has its members again"
+    assert world.c.user_sync_point.data[GROUP_CHECK_KEY]["pending_notice"] == "[]"
