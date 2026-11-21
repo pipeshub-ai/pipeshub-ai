@@ -2713,7 +2713,8 @@ class RecordEventHandler(BaseEventService):
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
-                mime_type = record.get("mimeType") or "unknown"
+                # The dispatch reads the payload's mime: it must be the one judged here.
+                mime_type = payload["mimeType"] = record.get("mimeType") or "unknown"
 
             # CODE_FILE records always carry text/plain as their mime type, so the
             # mime-based extension fallback below would resolve to "txt" for every

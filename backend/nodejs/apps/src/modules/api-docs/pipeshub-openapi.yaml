@@ -976,6 +976,10 @@ components:
         - name
         - title
         - writes
+        - description
+        - arguments
+        - hints
+        - scopes
       properties:
         name:
           type: string
@@ -986,6 +990,59 @@ components:
         writes:
           type: boolean
           description: True for a tool that is left out while `allowWriteTools` is false.
+        description:
+          type: string
+          description: What the AI model reads before it picks the tool, as the MCP server publishes it. Written for the model, so it names arguments and other tools.
+        arguments:
+          type: array
+          description: The tool's arguments, flattened from the input schema it publishes. Empty for a tool that takes none.
+          items:
+            $ref: '#/components/schemas/McpAccessToolArgument'
+        hints:
+          type: object
+          additionalProperties: false
+          description: What the tool declares it does (MCP tool annotations). A hint the tool does not declare is false.
+          required: [readOnly, destructive, idempotent, openWorld]
+          properties:
+            readOnly:
+              type: boolean
+              description: It changes nothing.
+            destructive:
+              type: boolean
+              description: It can change or remove data, for example by running a connected action.
+            idempotent:
+              type: boolean
+              description: Calling it again with the same arguments has no further effect.
+            openWorld:
+              type: boolean
+              description: It reaches outside PipesHub, for example the web.
+        scopes:
+          type: array
+          description: The OAuth scopes an app or access token needs to call it. Empty for a tool that calls nothing in PipesHub.
+          items:
+            type: string
+          example: [kb:upload]
+    McpAccessToolArgument:
+      type: object
+      additionalProperties: false
+      required: [name, type, required]
+      properties:
+        name:
+          type: string
+          example: collectionId
+        type:
+          type: string
+          description: "`string`, `number`, `integer`, `boolean`, `object`, `enum`, `<type>[]` for a list, or `a|b` for a choice of types."
+          example: string
+        required:
+          type: boolean
+        description:
+          type: string
+        values:
+          type: array
+          description: The allowed values, for an enum or a list of one.
+          items:
+            type: string
     AIGatewayIdentityPolicy:
       type: object
       additionalProperties: false
@@ -18344,7 +18401,10 @@ components:
           enum:
             - sync
             - agent
-          description: '''sync'' flips data synchronization; ''agent'' flips use by agents'
+          description: '''sync'' is data synchronization; ''agent'' is use by agents'
+        enabled:
+          type: boolean
+          description: The state wanted. Omitted, the current state is flipped.
         fullSync:
           type: boolean
           description: When turning sync on, start from scratch
@@ -60916,9 +60976,12 @@ paths:
         - Connector Control
       summary: Toggle connector sync or agent
       description: |
-        Flip a connector's sync or agent use: each call turns it on when it is off and
-        off when it is on. Read <code>isActive</code> / <code>isAgentActive</code> first. Turning sync on
-        starts the first sync.<br><br>
+        Turn a connector's sync or agent use on or off. Send <code>enabled</code> with the state you
+        want: a call for the state the connector is already in changes nothing and answers
+        <code>changed: false</code>, so a request can be sent again safely after a dropped connection
+        or a timeout. Without <code>enabled</code> the call flips the current state (on when off, off
+        when on); sent twice, that turns the connector back, so read <code>isActive</code> /
+        <code>isAgentActive</code> first. Turning sync on starts the first sync.<br><br>
         <b>Toggle Types:</b><br>
         <ul>
         <li><code>sync</code> - data synchronization</li>
@@ -60961,7 +61024,7 @@ paths:
               $ref: '#/components/schemas/ConnectorToggleRequest'
       responses:
         '200':
-          description: Flipped
+          description: The connector is in the requested state
           content:
             application/json:
               schema:
@@ -60969,6 +61032,12 @@ paths:
                 properties:
                   success:
                     type: boolean
+                  enabled:
+                    type: boolean
+                    description: The state sync or agent use is in now
+                  changed:
+                    type: boolean
+                    description: False when the connector was already in the requested state
                   message:
                     type: string
                 required:
@@ -61008,6 +61077,13 @@ paths:
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '504':
+          description: The connector service did not answer in time. The change may still have
+            been made; read the connector before sending a flip again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -73252,7 +73328,7 @@ paths:
         deleted model, and the empty store is rebuilt for the replacement model.
 
         The agent usage check is fail-closed: when it cannot be made, the model is not
-        deleted (500). Role assignments that point at the deleted model are removed. The
+        deleted (503). Role assignments that point at the deleted model are removed. The
         request body and the query string are not read.
       operationId: deleteAIModelProvider
       security:
@@ -73377,10 +73453,18 @@ paths:
                 error:
                   code: HTTP_CONFLICT
                   message: "Cannot delete model 'gpt-4o-mini': currently in use by agent 'Research Assistant'. Remove it from the agent first."
+        '503':
+          description: |
+            The agent usage check could not be made or did not succeed (unreachable, timed out, a non-200
+            answer, or an answer that is not a list of agents), so the model is kept: `HTTP_SERVICE_UNAVAILABLE`,
+            "We couldn't check which agents use this model, so it wasn't deleted. Please try again in a few seconds."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The agent usage check could not be made or did not succeed, so the model is kept
-            (`Cannot delete this model: unable to verify if it is in use by agents...`).
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -74170,6 +74254,15 @@ paths:
                         creatorName:
                           type: string
                           nullable: true
+        '503':
+          description: |
+            The agent usage check could not be made or did not succeed (unreachable, timed out, a non-200
+            answer, or an answer that is not a list of agents), so the provider is kept: `HTTP_SERVICE_UNAVAILABLE`,
+            "We couldn't check which agents use this web search provider, so it wasn't deleted. Please try again in a few seconds."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error.
@@ -74706,7 +74799,7 @@ paths:
       tags:
         - MCP
       summary: List the tools /mcp can serve
-      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, for choosing which ones to turn off. Admins only.
+      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, with what each one tells the AI model, its arguments, the hints it declares and the OAuth scopes it needs, for choosing which ones to turn off. Admins only.
       operationId: listMcpAccessTools
       security:
         - bearerAuth: []
@@ -79890,8 +79983,9 @@ paths:
 
         The provider is trimmed and lower-cased before matching. A provider
         that is not one of the supported ones (`duckduckgo`, `serper`,
-        `tavily`, `exa`) is not an error: the list is simply empty. The list
-        is also empty when the AI backend answers with a non-200 status.
+        `tavily`, `exa`) is not an error: the list is simply empty. A check
+        that fails is an error, never an empty list: the AI backend's `4xx` is
+        passed on with its words, a `5xx` is a `500`, and a `503` stays a `503`.
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
@@ -79945,9 +80039,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The AI backend could not be reached.
+            The AI backend could not read which agents use it.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The AI backend could not be reached or is temporarily unavailable. Try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The AI backend did not answer in time. Try again.
           content:
             application/json:
               schema:
@@ -79964,8 +80070,9 @@ paths:
 
         An agent matches when one of its model entries equals `model_key` or
         starts with `model_key` followed by `_`. An unknown key is not an
-        error: the list is simply empty. The list is also empty when the AI
-        backend answers with a non-200 status.
+        error: the list is simply empty. A check that fails is an error, never
+        an empty list: the AI backend's `4xx` is passed on with its words, a
+        `5xx` is a `500`, and a `503` stays a `503`.
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
@@ -80018,9 +80125,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The AI backend could not be reached.
+            The AI backend could not read which agents use it.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The AI backend could not be reached or is temporarily unavailable. Try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The AI backend did not answer in time. Try again.
           content:
             application/json:
               schema:

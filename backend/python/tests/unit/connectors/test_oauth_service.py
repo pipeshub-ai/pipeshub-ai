@@ -12,12 +12,14 @@ from app.connectors.core.base.token_service import oauth_service
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
+    OAuthStateError,
     OAuthToken,
     OAuthTokenRequestError,
     RefreshTokenInvalidError,
 )
 from app.utils.logger import JsonFormatter, TextFormatter, log_record_fields
 from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
+from app.utils.oauth_errors import MAX_TOKEN_LIFETIME_S
 from tests.support.refusing_token_endpoint import (
     ENTRA_INTERACTION_REQUIRED,
     ENTRA_INVALID_CLIENT,
@@ -241,7 +243,7 @@ class TestFromDictFieldTypes:
     @pytest.mark.parametrize(("value", "expected"), [
         ("3600", 3600), (" 3600 ", 3600), (3600, 3600), (3599.5, 3599.5),
         (None, None), ("", None), ("  ", None),
-        (oauth_service._MAX_LIFETIME_S, oauth_service._MAX_LIFETIME_S),
+        (MAX_TOKEN_LIFETIME_S, MAX_TOKEN_LIFETIME_S),
     ], ids=["numeric_text", "padded_text", "int", "float", "null", "empty", "blank", "the_bound"])
     def test_a_lifetime_that_is_a_number_of_seconds_is_kept(self, name: str, value: object, expected: object) -> None:
         token = OAuthToken.from_dict({"access_token": "tok", name: value})
@@ -251,7 +253,7 @@ class TestFromDictFieldTypes:
 
     @pytest.mark.parametrize("value", [
         f"soon-{MARKER}", True, [3600], "3600.5", float("nan"), float("inf"), float("-inf"), 10**20,
-        oauth_service._MAX_LIFETIME_S + 1,
+        MAX_TOKEN_LIFETIME_S + 1,
     ], ids=["text", "bool", "list", "decimal_text", "nan", "inf", "-inf", "huge", "past_the_bound"])
     def test_an_expires_in_that_is_no_number_of_seconds_is_malformed(self, value: object) -> None:
         error = _malformed({"expires_in": value})
@@ -1664,8 +1666,13 @@ class TestHandleCallback:
             }
         })
 
-        with pytest.raises(ValueError, match="Invalid or expired state"):
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="wrong-state")
+        mock_config_service.set_config.assert_not_called()  # a refused callback saves nothing
+
+    def test_state_error_is_still_a_value_error(self) -> None:
+        # Callers that catch ValueError, and the user message read from the text, keep working.
+        assert issubclass(OAuthStateError, ValueError)
 
     @pytest.mark.asyncio
     async def test_callback_no_stored_state_raises(self, oauth_provider, mock_config_service):
@@ -1674,7 +1681,7 @@ class TestHandleCallback:
             "oauth": {"used_codes": []},
         })
 
-        with pytest.raises(ValueError, match="Invalid or expired state"):
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="any-state")
 
     @pytest.mark.asyncio
@@ -1710,8 +1717,10 @@ class TestHandleCallback:
 
         # We need to make from_dict raise. Patch it.
         with patch.object(OAuthToken, "from_dict", side_effect=TypeError("bad data")):
-            with pytest.raises(ValueError, match="Invalid or expired state"):
+            with pytest.raises(ValueError, match="Invalid or expired state") as raised:
                 await oauth_provider.handle_callback(code="auth-code", state="different-state")
+            # The earlier sign-in succeeded and its credentials no longer load: the callback signs the connector out.
+            assert not isinstance(raised.value, OAuthStateError)
 
     @pytest.mark.asyncio
     async def test_callback_code_already_used_with_valid_creds(self, oauth_provider, mock_config_service):
@@ -1741,7 +1750,7 @@ class TestHandleCallback:
             "credentials": None,
         })
 
-        with pytest.raises(ValueError, match="Authorization code has already been used"):
+        with pytest.raises(OAuthStateError, match="Authorization code has already been used"):
             await oauth_provider.handle_callback(code="auth-code", state="valid-state")
 
     @pytest.mark.asyncio
@@ -1758,8 +1767,10 @@ class TestHandleCallback:
         })
 
         with patch.object(OAuthToken, "from_dict", side_effect=TypeError("bad")):
-            with pytest.raises(ValueError, match="Authorization code has already been used"):
+            with pytest.raises(ValueError, match="Authorization code has already been used") as raised:
                 await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+        # Saved credentials that no longer load sign the connector out; only a replay with nothing saved is a refusal.
+        assert not isinstance(raised.value, OAuthStateError)
 
     @pytest.mark.asyncio
     async def test_callback_exchange_failure_marks_code_used(self, oauth_provider, mock_config_service):
@@ -1788,7 +1799,7 @@ class TestHandleCallback:
         """handle_callback with non-dict config from get_config raises due to no state."""
         mock_config_service.get_config = AsyncMock(return_value="not a dict")
 
-        with pytest.raises(ValueError, match="Invalid or expired state"):
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
 
     @pytest.mark.asyncio
@@ -1798,7 +1809,7 @@ class TestHandleCallback:
             "oauth": None,
         })
 
-        with pytest.raises(ValueError, match="Invalid or expired state"):
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
 
 

@@ -2726,12 +2726,12 @@ class TestUserAndOrganizationLookups:
         assert kwargs["parameters"] == {"org_id": "org-9", "provider": "tavily"}
 
     @pytest.mark.asyncio
-    async def test_web_search_agents_return_empty_on_query_error(self, neo4j_provider: Neo4jProvider):
+    async def test_web_search_agents_raise_on_query_error(self, neo4j_provider: Neo4jProvider):
+        # a delete is refused on this answer: a failed read must never read as no agents
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("query failed"))
 
-        result = await neo4j_provider.get_agents_by_web_search_provider("org-1", "serper")
-
-        assert result == []
+        with pytest.raises(RuntimeError, match="query failed"):
+            await neo4j_provider.get_agents_by_web_search_provider("org-1", "serper")
 
     @pytest.mark.asyncio
     async def test_dedupes_rows_by_agent_key(self, neo4j_provider: Neo4jProvider):
@@ -2794,12 +2794,12 @@ class TestUserAndOrganizationLookups:
         assert kwargs["parameters"] == {"org_id": "org-9", "model_key": "model-x"}
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_query_error(self, neo4j_provider: Neo4jProvider):
+    async def test_raises_on_query_error(self, neo4j_provider: Neo4jProvider):
+        # a delete is refused on this answer: a failed read must never read as no agents
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("query failed"))
 
-        result = await neo4j_provider.get_agents_by_model_key("org-1", "model-key-1")
-
-        assert result == []
+        with pytest.raises(RuntimeError, match="query failed"):
+            await neo4j_provider.get_agents_by_model_key("org-1", "model-key-1")
 
 
 class TestDuplicateAndSyncOperations:

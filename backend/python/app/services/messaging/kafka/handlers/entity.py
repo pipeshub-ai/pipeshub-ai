@@ -118,6 +118,20 @@ def _superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
     return int(sent) < int(current) and bool(app_doc.get(ConnectorStateKeys.IS_ACTIVE))
 
 
+def _enable_superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
+    """Whether a toggle numbered after this appEnabled has been written since.
+
+    A newer enable sends its own event, which starts the sync; a newer disable left the
+    connector off, so this one must not start a sync on it. Either way this event has no
+    work left. Two enables that overlap both write and send, and without this check both
+    events start a sync."""
+    sent = payload.get(ConnectorStateKeys.TOGGLE_SEQ)
+    current = app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)
+    if sent is None or current is None:
+        return False
+    return int(sent) < int(current)
+
+
 class EntityEventService(BaseEventService):
     def __init__(
         self,
@@ -815,6 +829,18 @@ class EntityEventService(BaseEventService):
             if not org:
                 self.logger.error(f"Organization not found: {org_id}")
                 return False
+
+            if connector_id and payload.get(ConnectorStateKeys.TOGGLE_SEQ) is not None:
+                app_doc = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value
+                )
+                if app_doc and _enable_superseded_by_a_newer_toggle(payload, app_doc):
+                    self.logger.info(
+                        f"Skipping app enabled event for connector {connector_id}: a newer toggle "
+                        f"(#{app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)}) was written after this one "
+                        f"(#{payload.get(ConnectorStateKeys.TOGGLE_SEQ)})"
+                    )
+                    return True
 
             for app_name in apps:
                 if sync_action == "immediate":

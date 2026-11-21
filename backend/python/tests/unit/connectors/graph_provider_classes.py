@@ -63,7 +63,7 @@ READS = frozenset("""
     get_user_granted_records get_user_permission_app_ids get_user_sync_state get_user_teams get_users get_users_with_permission_to_node
     get_virtual_record_holders get_virtual_record_ids_for_record_ids get_virtual_record_ids_in_use has_nodes_by_filters
     has_records_indexed_since is_named_entity_write_retryable is_record_descendant_of is_record_folder is_transient_error
-    is_trash_walk_index_ready is_write_conflict list_accessible_artifacts list_kb_permissions list_kb_records
+    is_trash_walk_index_ready is_write_conflict list_accessible_artifacts list_kb_permissions
     list_unsupported_page
     get_record_group_organization get_record_organizations get_record_people
     list_trashed_records list_user_knowledge_bases opens_explicit_transaction page_record_ids_by_type query_named_entities

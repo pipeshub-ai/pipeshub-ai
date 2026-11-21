@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.config import file_types
-from app.utils.user_errors import file_too_large_to_read
+from app.utils import indexing_timing
+from app.utils.user_errors import file_too_large_to_read, unsupported_file_type
 from tests.unit.config.file_types import gen_pinned_decisions as gen
 
 if TYPE_CHECKING:
@@ -121,6 +122,48 @@ async def test_the_gate_reads_the_path_the_dispatch_reads(off: set[str], refused
         handler, record, "unknown", "application/octet-stream", recordName="Report.docx", filePath="x/app.log",
     )
     assert decision.startswith("FILE_TYPE_NOT_SUPPORTED|") is refused, decision
+
+
+_PDF = "application/pdf"
+
+
+# (record fields, event extension, event mime, event fields, type turned off, extension the reason names)
+_OFF_SWITCH_SOURCES = {
+    "the event's mime": ({}, "docx", _PDF, {}, "pdf", "pdf"),
+    "the stored mime": ({"mimeType": _PDF}, "docx", None, {}, "pdf", "pdf"),
+    "a mime whose type has two extensions": ({}, "bin", "image/jpeg", {}, "jpeg", "jpg"),
+    "the path": ({"recordName": "Report.docx"}, "unknown", "application/octet-stream",
+                 {"recordName": "Report.docx", "filePath": "x/app.log"}, "log", "log"),
+    "a mime no extension names": ({}, "docx", "application/vnd.google-apps.document", {}, "google_docs", None),
+    "the extension": ({}, "docm", "text/plain", {}, "docm", "docm"),
+    "the extension, spelt as the record spells it": ({}, "yml", "application/x-yaml", {}, "yaml", "yml"),
+    "the extension the mime implies": ({}, "unknown", _PDF, {}, "pdf", "pdf"),
+    "a code file's name": ({"recordType": "CODE_FILE"}, "py", "application/pdf", {}, "py", "py"),
+}
+
+
+@pytest.mark.parametrize("source", list(_OFF_SWITCH_SOURCES))
+async def test_a_type_turned_off_is_reported_as_that_type(source: str) -> None:
+    """The reason names the type the off switch refused, whichever label decided it: the record's own
+    extension when that type owns it, else the type's."""
+    stored, ext, mime, fields, off, named = _OFF_SWITCH_SOURCES[source]
+    record = _record(ext, **stored)
+    handler = _handler_with_config({"disabled": [off]}, record)
+    assert await _gate_with(handler, record, ext, mime, **fields) == (
+        f"FILE_TYPE_NOT_SUPPORTED|{unsupported_file_type(named)}"
+    )
+
+
+async def test_the_index_end_line_names_the_type_turned_off() -> None:
+    record = _record("docx", mimeType=_PDF)
+    handler = _handler_with_config({"disabled": ["pdf"]}, record)
+    timeline, token = indexing_timing.begin_record("r1")
+    try:
+        await _gate_with(handler, record, "docx", None)
+        facts = dict(timeline.facts)
+    finally:
+        indexing_timing.end_record(timeline, token, outcome="ok")
+    assert (facts["reason"], facts["extension"], facts["mime_type"]) == ("unsupported_type", "pdf", _PDF)
 
 
 async def test_turning_off_a_type_the_extension_decides_wins_over_a_text_plain_mime() -> None:

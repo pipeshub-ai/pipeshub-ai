@@ -5,6 +5,7 @@ ambient org before anything else (and before any ``try``); every statement is a 
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,7 @@ from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.postgres.trash import _sweep_edges
 from app.services.graph_db.taxonomy import TAXONOMY_EDGE_COLLECTIONS
 from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
+from app.utils import error_class
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -491,7 +493,8 @@ class DeleteMixin(PgBase):
             try:
                 file_record = await self.get_document(record_id, CollectionNames.FILES.value, transaction)
             except Exception as e:
-                self.logger.debug(f"File record not found for record {record_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.DEBUG,
+                                        op="delete_record", step="file_record_read", record_id=record_id)
 
             # A mail's attachments go with it, as on ArangoDB: left behind, they stay
             # searchable with nothing left to clean up their vectors.
@@ -523,7 +526,8 @@ class DeleteMixin(PgBase):
                         "payloads": [payload, *attachment_payloads],
                     }
             except Exception as e:
-                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="delete_record", step="deletion_event_payload")
                 event_data = None
 
             # The record and its blocks (joined by field, not by an edge, so the sweep misses them) go together or not at all.
@@ -542,7 +546,9 @@ class DeleteMixin(PgBase):
                 try:
                     await self.kh_scope_mark_changed(record["connectorId"])
                 except Exception as e:
-                    self.logger.warning(f"kh scope: could not mark {record['connectorId']} changed after a delete: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_record", step="kh_scope_mark_changed",
+                                            connector_id=record["connectorId"])
 
             return {
                 "success": True,
@@ -690,7 +696,8 @@ class DeleteMixin(PgBase):
             try:
                 await self.kh_scope_forget(connector_id)
             except Exception as e:
-                self.logger.warning("kh scope: could not drop the scopes of deleted connector %s: %s", connector_id, e)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="delete_connector_instance", step="kh_scope_drop", connector_id=connector_id)
         return result
 
     async def sweep_deleted_connector_writes(self, connector_id: str, record_group_ids: Sequence[str] = ()) -> tuple[int, int]:

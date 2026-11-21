@@ -8521,7 +8521,7 @@ describe('Enterprise Search Controller', () => {
       expect(next.called).to.be.false
     })
 
-    it('should return empty agents when backend responds non-200', async () => {
+    it('should pass a non-200 backend answer on as an error, never as empty agents', async () => {
       const handler = getModelUsage(createMockAppConfig())
       const req = createMockRequest({
         params: { model_key: 'model-1' },
@@ -8537,9 +8537,9 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      expect(res.status.calledOnceWith(200)).to.be.true
-      expect(res.json.calledOnceWith({ success: true, agents: [] })).to.be.true
-      expect(next.called).to.be.false
+      expect(res.json.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(503)
     })
 
     it('should call next when AI backend throws', async () => {

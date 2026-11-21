@@ -33,6 +33,7 @@ from app.services.graph_db.postgres.base import (
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -435,7 +436,8 @@ class HierarchyMixin(PgBase):
                         p["taxonomyRefs"] = r
                     payloads.append(p)
         except Exception as e:
-            self.logger.error(f"❌ Failed to prepare deletion event payloads: {e}")
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="_delete_events", step="deletion_event_payload")
         return {"eventType": "deleteRecord", "topic": "record-events", "payloads": payloads} if payloads else None
 
     async def delete_records_recursive(self, record_ids: list[str], connector_id: str, transaction: str | None = None, cascade_children: bool = True,  # noqa: FBT001, FBT002

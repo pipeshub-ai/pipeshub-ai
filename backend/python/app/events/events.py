@@ -612,10 +612,11 @@ class EventProcessor:
                 # second parse would index the record twice.
                 if yielded:
                     raise
-                # Swallowed (the PdfPlumber path runs next), so logged here once, without text.
+                # Swallowed (the PdfPlumber path runs next), so logged here once, without text. A record that waits for
+                # Docling logs at its hand-back's INFO: the client already reported the outage itself at WARNING.
                 log_failure(
-                    self.logger, "index.parse_fallback", exc, parser="docling", reason=exc.reason,
-                    status=exc.status_code, include_error_text=False,
+                    self.logger, "index.parse_fallback", exc, level=getattr(exc, "log_level", None), parser="docling",
+                    reason=exc.reason, status=exc.status_code, include_error_text=False,
                 )
                 if isinstance(exc, DoclingUnavailableError):
                     docling_unavailable = exc
@@ -1897,6 +1898,7 @@ class EventProcessor:
             record_version = event_data.get("version", 0)
             connector = event_data.get("connectorName", "")
             extension = event_data.get("extension", "unknown")
+            # Resolved by the record handler: the stored mime when the event names none.
             mime_type = event_data.get("mimeType", "unknown")
             origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")

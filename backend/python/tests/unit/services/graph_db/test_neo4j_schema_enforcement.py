@@ -991,9 +991,16 @@ COVERED = (
         "set_record_properties", "compare_and_set_indexing_status", "transition_unsupported", "compare_and_set_record_fields",
         "update_indexing_status_for_record_ids", "reset_indexing_status_for_connector",
         "batch_update_connector_status", "update_drive_sync_state", "update_user_sync_state", "update_edge",
-        "create_organization_if_absent",
+        "create_organization_if_absent", "clone_agent_template",
     }
 )
+
+
+async def test_a_template_copy_the_schema_refuses_reaches_the_caller() -> None:
+    """It answers every other error with None ("no such template"); the agent route answers a rejected copy as our drift."""
+    p = _provider()
+    p.get_document = AsyncMock(return_value=_template(name=5))
+    await _rejected(p, p.clone_agent_template("t1"))
 
 
 async def test_an_extracted_organisation_is_validated_before_it_is_written() -> None:
@@ -1018,7 +1025,7 @@ COVERAGE_GAPS: dict[str, str] = {
         (("update_node_if_unchanged",), "delegates to update_node_fields_if_match on Neo4j, which is driven above"),
         (("upsert_sync_point", "update_sync_point_if", "store_page_token"), "schema-less collections today"),
         (("stamp_external_org_parents",), "stamps parentOrgId from its org_id argument, which is a plain string no caller can make invalid; it validates {parentOrgId: org_id}"),
-        (("update_agent", "update_agent_template", "update_knowledge_base", "clone_agent_template"),
+        (("update_agent", "update_agent_template", "update_knowledge_base"),
          "multi-statement, permission-checked; delegates to update_node / ensure_nodes"),
         (("stage_state_create", "stage_state_compare_and_set"), "stage-state fixture; own schema"),
         (("create_taxonomy_node_if_absent", "create_named_entities_if_absent", "add_taxonomy_aliases",

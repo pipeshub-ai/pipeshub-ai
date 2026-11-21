@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_or_system, current_org_id
 from app.services.graph_db.conditions import check_conditions
+from app.utils import error_class
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection, Sequence
@@ -459,8 +461,9 @@ class CoreMixin(PgBase):
         for e in edges:
             try:
                 fc, fi, tc, ti, _ = _edge(e)
-            except ValueError:
-                self.logger.warning("Skipping invalid edge (missing required fields): %s", e)
+            except ValueError as err:  # the caller's edge, not our bug
+                error_class.log_failure(self.logger, "graph.provider.step_failed", err, include_error_text=False, level=logging.WARNING,
+                                        op="batch_delete_edges", step="parse_edge", collection=collection)
                 continue
             pairs.append({"fc": fc, "fi": fi, "tc": tc, "ti": ti})
         if not pairs:
