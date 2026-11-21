@@ -22,7 +22,11 @@ from app.connectors.sources.microsoft.common.account_check import (
     UNCONFIRMED_SYNCS_BEFORE_CLOSE,
     lookups_per_sync,
 )
-from app.connectors.sources.microsoft.common.msgraph_client import UserListing
+from app.connectors.sources.microsoft.common.msgraph_client import (
+    EmptyGraphAnswer,
+    UserListing,
+    read_user_status,
+)
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -103,6 +107,8 @@ class World:
         a = self._answer(sid)
         if isinstance(a, Exception):
             raise a
+        if a == "no body":
+            raise EmptyGraphAnswer(sid)
         return a
 
     def _outlook_read(self, sid: str) -> MagicMock:
@@ -112,7 +118,9 @@ class World:
                 raise a
             if a == "gone":
                 raise _odata(404)
-            return MagicMock(account_enabled=a == "present")
+            if a == "no body":
+                return None
+            return MagicMock(account_enabled=a == "present", deleted_date_time=None)
         return MagicMock(get=get)
 
     def list(self, enabled: list[str], *, complete: bool, disabled: tuple[str, ...] = ()) -> None:
@@ -358,6 +366,26 @@ async def test_without_the_saved_count_no_account_is_closed(world: Callable[[lis
     for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE + 1):
         await w.sync()
     assert set(w.stored) == {"a", "x"}
+
+
+@pytest.mark.asyncio
+async def test_an_answer_with_no_body_is_counted_like_a_refusal(world: Callable[[list[str]], World]) -> None:
+    w = world(["a", "x"])
+    w.status["x"] = "no body"
+    w.list(["a"], complete=True)
+    for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE - 1):
+        await w.sync()
+    assert set(w.stored) == {"a", "x"}
+    await w.sync()
+    assert set(w.stored) == {"a"} and len(_closing_notices(w)) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_user_with_no_body_is_not_read_as_present() -> None:
+    graph = MagicMock()
+    graph.users.by_user_id.return_value.get = AsyncMock(return_value=None)
+    with pytest.raises(EmptyGraphAnswer):
+        await read_user_status(graph, "u1")
 
 
 @pytest.mark.asyncio
