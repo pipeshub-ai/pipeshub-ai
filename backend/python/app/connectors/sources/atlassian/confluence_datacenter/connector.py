@@ -3388,7 +3388,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             return None
 
     @staticmethod
-    def _space_subject_key(subject: Any) -> Optional[tuple[str, str]]:
+    def _space_subject_key(subject: object) -> Optional[tuple[str, str]]:
         """Who a Data Center space permission names: (type, user key or group name)."""
         if not isinstance(subject, dict):
             return None
