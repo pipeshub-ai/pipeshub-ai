@@ -3296,8 +3296,12 @@ class SharePointConnector(BaseConnector):
         except Exception as groups_error:
             self.logger.error(f"❌ Error syncing Azure AD Groups with delta: {groups_error}")
             self._health.skipped("Entra groups", groups_error)
-        await self._group_grace.finish()
+        try:
+            await self._sync_site_groups(sites)
+        finally:
+            await self._group_grace.finish()
 
+    async def _sync_site_groups(self, sites: list[Site] | None) -> None:
         self.logger.info("Starting SharePoint Site Groups fetch...")
         self._org_wide_site_groups = {}
         self._unreadable_site_groups = {}
@@ -3364,6 +3368,20 @@ class SharePointConnector(BaseConnector):
         self._site_groups_read.add(site_id)
         return out
 
+    async def _claim_group_members(self, group_id: str, *, is_owner: bool = False) -> list[dict]:
+        """An Entra group's people inside a SharePoint group. Raises when they can't be read, so the SharePoint
+        group keeps its stored members, until Microsoft has refused them past the grace: then they count as none."""
+        key = f"{group_id}/owners" if is_owner else group_id
+        try:
+            users = await self._fetch_graph_group_members(group_id, is_owner=is_owner)
+        except Exception as e:
+            if self._group_grace.refused(key, e):
+                self._health.skipped(f"members of Entra group {key}", e)
+                return []
+            raise
+        self._group_grace.read(key)
+        return users
+
     async def _site_group_member_users(self, site_id: str, group_id: str, principals: list[dict]) -> list[AppUser]:
         """The enabled people a SharePoint group's members stand for. Raises when a member group can't be read.
         A tenant-wide claim is noted for the group (see _site_group_permissions), not expanded."""
@@ -3378,9 +3396,7 @@ class SharePointConnector(BaseConnector):
                 if match:
                     # The claim says which half of an M365 group it is; the SharePoint group's
                     # title is free text, and in another language never says "Owner".
-                    users.extend(await self._fetch_graph_group_members(
-                        match.group(1), is_owner=is_m365_owners_claim(login_name)
-                    ))
+                    users.extend(await self._claim_group_members(match.group(1), is_owner=is_m365_owners_claim(login_name)))
             elif principal.get('PrincipalType') == SP_PRINCIPAL_SECURITY_GROUP:
                 match = TENANT_CLAIM_PATTERN.search(login_name)
                 if match:
@@ -3388,7 +3404,7 @@ class SharePointConnector(BaseConnector):
                     if await self._get_directory_object_type(claim_id) == DIRECTORY_ROLE_ODATA_TYPE:
                         users.extend(await self._get_directory_role_member_users(claim_id))
                     else:
-                        users.extend(await self._fetch_graph_group_members(claim_id))
+                        users.extend(await self._claim_group_members(claim_id))
             else:
                 email = principal.get('Email') or principal.get('UserPrincipalName')
                 if email and email.lower() not in self._inactive_emails:

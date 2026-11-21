@@ -246,6 +246,34 @@ async def test_sharepoint_counts_a_group_read_twice_in_one_sync_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sharepoint_site_group_drops_an_entra_group_refused_past_the_grace_and_keeps_its_other_members() -> None:
+    """A SharePoint group holding an Entra group (its claim) flattens the Entra group's people into its own members,
+    so the same bound applies there; the SharePoint group's own users stay."""
+    w = SharePoint()
+    gid = "abcdefab-1234-5678-9012-abcdefabcdef"
+    principals = [{"LoginName": f"c:0o.c|federateddirectoryclaimprovider|{gid}", "PrincipalType": 4},
+                  {"LoginName": "i:0#.f|membership|bob@x.com", "Email": "bob@x.com", "Id": 7, "Title": "Bob", "PrincipalType": 1}]
+    g = w.c._group_grace
+
+    async def members() -> list[str]:
+        await g.load()
+        try:
+            return sorted(u.email for u in await w.c._site_group_member_users("s1", "5", principals))
+        finally:
+            await g.finish()
+
+    assert await members() == ["ann@x.com", "bob@x.com"]
+    w.answer = _odata(403)
+    for _ in range(N - 1):
+        with pytest.raises(ODataError):
+            await members()  # the SharePoint group keeps its stored members within the grace
+    assert await members() == ["bob@x.com"]
+    w.c.notify.assert_awaited_once()
+    w.answer = [{"id": "u-ann", "email": "ann@x.com", "name": "Ann"}]
+    assert await members() == ["ann@x.com", "bob@x.com"]
+
+
+@pytest.mark.asyncio
 async def test_outlook_keeps_within_the_grace_through_note_kept() -> None:
     w = Outlook()
     w.answer = _odata(404)
