@@ -90,4 +90,57 @@ describe('slack-bot/utils/agui-stream', () => {
       expect(activity.format()).to.contain('Searching.');
     });
   });
+
+  describe('a tool call waiting for approval', () => {
+    const frame = (type: string, fields: Record<string, unknown> = {}) => ({ event: type, data: { type, ...fields } });
+
+    it('hands the approval card details to the caller', () => {
+      const onApprovalRequested = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onApprovalRequested });
+      const approval = { approvalId: 'ap-1', argsHash: 'h1' };
+
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c1', toolCallName: 'jira_create_issue' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c1', status: 'awaiting_approval', approval }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c2', toolCallName: 'jira_search' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c2', status: 'completed', approval }));
+
+      expect(onApprovalRequested.calledOnceWithExactly(approval)).to.equal(true);
+    });
+
+    it('ignores an approval that is not an object', () => {
+      const onApprovalRequested = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onApprovalRequested });
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c1', status: 'awaiting_approval', approval: 'ap-1' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c2', status: 'awaiting_approval', approval: null }));
+      expect(onApprovalRequested.called).to.equal(false);
+    });
+
+    it('reports how the answered approval settled, and whether it was an earlier answer', () => {
+      const onApprovalSettled = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onApprovalSettled });
+
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c0', toolCallName: 'jira_search' }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c1', toolCallName: 'jira_create_issue', approvalAnswer: 'allowed' }));
+      handle(frame('TOOL_CALL_START', {
+        toolCallId: 'c2', toolCallName: 'jira_create_issue', approvalAnswer: 'declined', approvalReplayed: true,
+      }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c3', toolCallName: 'jira_create_issue', approvalAnswer: 'maybe' }));
+
+      expect(onApprovalSettled.args).to.deep.equal([['allowed', false], ['declined', true]]);
+    });
+
+    it("reports how the answered call's row ended, and only that call's", () => {
+      const onApprovalCallEnded = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onApprovalCallEnded });
+
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c0', toolCallName: 'jira_search' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c0', status: 'blocked' }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c1', toolCallName: 'jira_create_issue', approvalAnswer: 'allowed' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c1', status: 'blocked' }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c2', toolCallName: 'jira_search' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c2', status: 'completed' }));
+
+      expect(onApprovalCallEnded.args).to.deep.equal([['blocked']]);
+    });
+  });
 });

@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 
@@ -35,6 +35,7 @@ const config = (agentId: string | null) => ({
   botToken: 'xoxb-token',
   signingSecret: 'secret',
   agentId: agentId as string | undefined,
+  approveActionsFromSlack: false,
 });
 
 function openEditing(agentId: string | null, agents: { id: string; name: string }[], complete = true) {
@@ -99,5 +100,37 @@ describe('BotConfigPanel — the agent a saved bot is linked to', () => {
     openEditing(null, [{ id: 'agent-1', name: 'Other agent' }]);
 
     expect(screen.getByRole('combobox').textContent).toContain('Default assistant');
+  });
+});
+
+describe('BotConfigPanel: approving actions from Slack', () => {
+  beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    useBotsStore.getState().reset();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    cleanup();
+    useBotsStore.getState().reset();
+  });
+
+  it('shows the switch off and saves it once turned on', async () => {
+    const { BotsApi } = await import('../api');
+    vi.mocked(BotsApi.updateSlackBotConfig).mockResolvedValue(undefined as never);
+    openEditing(null, []);
+
+    const toggle = screen.getByRole('switch', { name: /Approve actions from Slack/ });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByText('Needs interactivity turned on in your Slack app')).toBeTruthy();
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: /save|update/i }));
+
+    await waitFor(() =>
+      expect(BotsApi.updateSlackBotConfig).toHaveBeenCalledWith(
+        'bot-1',
+        expect.objectContaining({ approveActionsFromSlack: true }),
+      ),
+    );
   });
 });

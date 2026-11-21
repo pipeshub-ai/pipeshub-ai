@@ -76,6 +76,7 @@ describe('Slack event guards', () => {
     signingSecret: SIGNING_SECRET,
     botId: 'B1',
     agentId: null,
+    approveActionsFromSlack: false,
   }
   let server: http.Server
   let handled: number

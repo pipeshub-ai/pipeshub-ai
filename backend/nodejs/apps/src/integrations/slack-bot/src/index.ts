@@ -40,6 +40,18 @@ import {
 } from "./utils/tool-display";
 import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
 import {
+  buildApprovalCard,
+  withoutWaitingLine,
+  type ToolApprovalDetails,
+} from './utils/approval-card';
+import {
+  approvalTurnResult,
+  registerApprovalActions,
+  type ApprovalDeps,
+  type ApprovalSettled,
+  type ResumeApprovalRequest,
+} from './approvalActions';
+import {
   rewriteCitationsForSlack,
   stripFragmentDirective,
   stripTinyRefCitationLinks,
@@ -59,6 +71,7 @@ import {
   type AttachmentRef,
   type SlackAttachmentUploadResult,
   type SlackFile,
+  type SlackBlock,
   FAILED_RESPONSE_GENERATION_MESSAGE,
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
@@ -70,6 +83,7 @@ import {
   BACKEND_STREAM_TIMEOUT_MS,
   TABLE_STREAMING_PAUSED_HINT,
   truncateForSlack,
+  slackBlocksFallbackText,
   truncateForSlackStreamMarkdown,
   splitByLengthPreferringNewlines,
   hasMarkdownTableStartOutsideCodeFences,
@@ -385,6 +399,14 @@ async function processSlackMessage(
   query: string,
   resolvedSlackBot: SlackBotConfig | null,
   threadFiles: SlackFile[] = [],
+  approvalTurn?: {
+    answer: Omit<
+      ResumeApprovalRequest,
+      'channel' | 'threadTs' | 'clickerSlackId'
+    >;
+    /** Set from the stream: how the backend settled the answered call. */
+    settled?: ApprovalSettled;
+  },
 ): Promise<void> {
 
   if (!typedMessage.user || !typedMessage.channel) {
@@ -513,7 +535,7 @@ async function processSlackMessage(
       await typedClient.chat.postMessage({
         channel: typedMessage.channel!,
         thread_ts: threadId,
-        text: "",
+        text: slackBlocksFallbackText(chunk),
         blocks: chunk,
         ...NO_UNFURL_OPTIONS,
       });
@@ -656,6 +678,7 @@ async function processSlackMessage(
         ...(callerDisplayName ? { callerDisplayName } : {}),
         callerEmail: email,
         ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
+        ...(approvalTurn ? { toolApproval: approvalTurn.answer } : {}),
       },
       {
         headers: {
@@ -977,6 +1000,29 @@ async function processSlackMessage(
         });
     };
 
+    const handleApprovalRequested = (approval: ToolApprovalDetails): void => {
+      const { user: requesterSlackId, channel } = typedMessage;
+      if (requesterSlackId === undefined || channel === undefined) return;
+      const card = buildApprovalCard(
+        approval,
+        requesterSlackId,
+        typedContext.teamId ?? '',
+      );
+      queuedStreamAppend = queuedStreamAppend
+        .then(async () => {
+          await typedClient.chat.postMessage({
+            channel,
+            thread_ts: threadId,
+            text: card.text,
+            blocks: card.blocks as unknown as SlackBlock[],
+            ...NO_UNFURL_OPTIONS,
+          });
+        })
+        .catch((error: unknown) => {
+          console.error('Error posting Slack approval card:', error);
+        });
+    };
+
     const resetAnswerStream = (): void => {
       clearAnswerFlushTimer();
       pendingAppendText = '';
@@ -1050,9 +1096,20 @@ async function processSlackMessage(
         }
         scheduleActivityUpdate();
       },
-      onAnswerAccumulated: handleAnswerAccumulated,
+      onAnswerAccumulated: (accumulated) =>
+        handleAnswerAccumulated(withoutWaitingLine(accumulated)),
       onClearAnswerPreamble: resetAnswerStream,
       onAskUserQuestion: handleAskUserQuestion,
+      onApprovalRequested: handleApprovalRequested,
+      onApprovalSettled: (answer, replayed) => {
+        // The answered call settles first; later rows are other calls.
+        if (approvalTurn && !approvalTurn.settled) {
+          approvalTurn.settled = { answer, replayed };
+        }
+      },
+      onApprovalCallEnded: (status) => {
+        if (approvalTurn?.settled) approvalTurn.settled.ended = status;
+      },
       onArtifact: handleArtifact,
       onConversationCreated: (conversationId) => {
         conversationPersistPromise = persistConversationId(conversationId);
@@ -1369,6 +1426,10 @@ async function processSlackMessage(
       return;
     }
 
+    if (botResponse.content) {
+      botResponse.content = withoutWaitingLine(botResponse.content).trimEnd();
+    }
+
     // Keep tools/thinking timeline above the answer; remove a bare Thinking placeholder.
     if (activityBuilder.hasTimeline()) {
       activityBuilder.setStatus("");
@@ -1436,7 +1497,7 @@ async function processSlackMessage(
           await typedClient.chat.update({
             channel: typedMessage.channel!,
             ts: streamTs,
-            text: "",
+            text: slackBlocksFallbackText(firstFinalChunk),
             blocks: firstFinalChunk,
             ...NO_UNFURL_OPTIONS,
           });
@@ -1462,7 +1523,7 @@ async function processSlackMessage(
             await typedClient.chat.postMessage({
               channel: typedMessage.channel!,
               thread_ts: threadId,
-              text: "",
+              text: slackBlocksFallbackText(firstFinalChunk),
               blocks: firstFinalChunk,
               ...NO_UNFURL_OPTIONS,
             });
@@ -1485,7 +1546,7 @@ async function processSlackMessage(
         await typedClient.chat.postMessage({
           channel: typedMessage.channel!,
           thread_ts: threadId,
-          text: "",
+          text: slackBlocksFallbackText(firstFinalChunk),
           blocks: firstFinalChunk,
           ...NO_UNFURL_OPTIONS,
         });
@@ -1538,6 +1599,35 @@ async function processSlackMessage(
     }
   }
 }
+
+// An approval answer is a stream turn for the clicker in the card's thread.
+const resumeApproval: ApprovalDeps['resumeApproval'] = async (
+  { channel, threadTs, clickerSlackId, ...toolApproval },
+  { client, context },
+) => {
+  const resolvedSlackBot = await resolveSlackBotForEvent(
+    getCurrentMatchedSlackBot,
+  );
+  const approvalTurn: {
+    answer: typeof toolApproval;
+    settled?: ApprovalSettled;
+  } = {
+    answer: toolApproval,
+  };
+  // Its errors are posted in the thread; the result only says whether the answer landed.
+  await processSlackMessage(
+    { user: clickerSlackId, channel, ts: threadTs, thread_ts: threadTs },
+    client as unknown as TypedSlackClient,
+    context,
+    `Tool approval: ${toolApproval.decision}`,
+    resolvedSlackBot,
+    [],
+    approvalTurn,
+  );
+  return approvalTurnResult(toolApproval.decision, approvalTurn.settled);
+};
+
+registerApprovalActions(app, { resumeApproval });
 
 // Handle DMs via message.im events.
 app.message(async ({ message, client, context }) => {

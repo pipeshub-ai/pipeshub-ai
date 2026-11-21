@@ -409,9 +409,11 @@ async def _ask(store: _Store) -> str:
 
 async def _answer(
     store: _Store, approval_id: str, decision: str, *, remember: bool = False,
-    instance: tuple[str, str] = _INSTANCE,
+    instance: tuple[str, str] = _INSTANCE, for_conversation: bool = False,
 ) -> _Request:
-    answer = ToolApprovalAnswer(approval_id=approval_id, decision=decision, remember=remember)  # type: ignore[arg-type]
+    answer = ToolApprovalAnswer(
+        approval_id=approval_id, decision=decision, remember=remember, remember_for_conversation=for_conversation,  # type: ignore[arg-type]
+    )
     context = _context(store, tool_approval=answer)
     return await run_request(
         context, list(_tools(context, instance).values()), _DONE, history=_stopped_turn(),
@@ -448,6 +450,20 @@ class TestAnsweringTheCard:
 
         assert _no_rules_saved(store)
         context = _context(store, conversation_id="conv-9")
+        again = await run_request(context, list(_tools(context).values()), _FILE_IT, _DONE)
+        (blocked,) = again.events.of(EventType.TOOL_BLOCKED)
+        assert blocked["status"] == ToolCallStatus.AWAITING_APPROVAL
+
+    async def test_allow_for_this_conversation_saves_nothing(self) -> None:
+        """The card doesn't offer it on an admin's rule; a request that sends it runs the call once and saves nothing."""
+        store = _Store()
+        approval_id = await _ask(store)
+
+        await _answer(store, approval_id, "allow", for_conversation=True)
+
+        assert _Jira.deleted == ["ENG-1"]
+        assert not [key for key in store.values if "conversation-allows" in key]
+        context = _context(store)
         again = await run_request(context, list(_tools(context).values()), _FILE_IT, _DONE)
         (blocked,) = again.events.of(EventType.TOOL_BLOCKED)
         assert blocked["status"] == ToolCallStatus.AWAITING_APPROVAL
