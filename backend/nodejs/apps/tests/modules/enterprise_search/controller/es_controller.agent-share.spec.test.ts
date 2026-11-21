@@ -222,6 +222,26 @@ describe('agent-chat sharing answers what the spec says', () => {
     expect(onTheWire(out.body.conversation).sharedBy).to.have.property('userId')
   })
 
+  it('the closed message schemas take another person’s answer that came without its steps, which says so', () => {
+    // Another person's answer as a reader view that keeps a run's reasoning, steps and results to its asker sends it:
+    // the steps cut, and `activityWithheld` saying so.
+    const answer = {
+      _id: String(oid()),
+      messageType: 'bot_response',
+      content: 'Three apps.',
+      contentFormat: 'MARKDOWN',
+      citations: [],
+      tools: [],
+      reasoning: [],
+      parts: [{ type: 'text', content: 'Three apps.', isFinal: true }],
+      activityWithheld: true,
+      createdAt: new Date().toISOString(),
+    }
+    for (const name of ['AgentConversationDetailMessage', 'Message']) {
+      expect(problems(name, answer), name).to.deep.equal([])
+    }
+  })
+
   it('every row of the agent list fits AgentConversationListItem, for the owner and for a recipient', async () => {
     setup()
 

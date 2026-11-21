@@ -14697,6 +14697,12 @@ components:
             $ref: '#/components/schemas/MessagePart'
         answerHidden:
           $ref: '#/components/schemas/HiddenAnswer'
+        activityWithheld:
+          type: boolean
+          description: |
+            On another person's answer: true when its reasoning, tool steps or
+            tool results were left out of this view. Only its asker sees them.
+            Absent when there were none, and on the asker's own answers.
         unavailableTools:
           type: array
           description: |
@@ -20528,6 +20534,12 @@ components:
             kept, but it names none of the original's runs.
         answerHidden:
           $ref: '#/components/schemas/HiddenAnswer'
+        activityWithheld:
+          type: boolean
+          description: |
+            On another person's answer: true when its reasoning, tool steps or
+            tool results were left out of this view. Only its asker sees them.
+            Absent when there were none, and on the asker's own answers.
         unavailableTools:
           type: array
           description: |
