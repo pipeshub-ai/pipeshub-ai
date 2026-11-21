@@ -182,6 +182,7 @@ describe('user and group audit lines (HTTP)', function () {
       getAny: async (o: string, id: string) => users.find((u) => u._id === id && u.orgId === o) ?? null,
       getRoleSnapshot: async (o: string, id: string) => { const u = live(o, id); return u ? { role: u.role, kind: u.kind } : null; },
       existsLiveEmail: async (e: string) => users.some((u) => u.email === e && !u.isDeleted),
+      getLiveByEmail: async (o: string, e: string) => users.find((u) => u.orgId === o && u.email === e && !u.isDeleted) ?? null,
       listRemovedIdsByEmail: async () => [],
       create: async (o: string, f: Row) => { const u = { _id: oid(), orgId: o, isDeleted: false, kind: 'user', ...f }; users.push(u); return { ...u }; },
       createMany: async (o: string, rows: Row[]) => rows.map((f) => { const u = { _id: oid(), orgId: o, kind: 'user', ...f }; users.push(u); return { ...u }; }),

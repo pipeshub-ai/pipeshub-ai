@@ -199,6 +199,15 @@ export interface SlackTokenClaims {
    * bot process does not get to choose which tenant it is talking to.
    */
   configId?: string;
+  /**
+   * Set only when `users.info` showed a full member of the bot's own
+   * workspace (see the bot's `isSlackFullMemberOfTeam`). The gateway may then
+   * create a Slack-only account, if the bot's admin allowed it.
+   */
+  slackFullMember?: true;
+  slackUserId?: string;
+  slackTeamId?: string;
+  slackFullName?: string;
 }
 
 export const slackJwtGenerator = (
@@ -213,6 +222,12 @@ export const slackJwtGenerator = (
   };
   if (claims?.configId) {
     payload.configId = claims.configId;
+  }
+  if (claims?.slackFullMember === true) {
+    payload.slackFullMember = true;
+    payload.slackUserId = claims.slackUserId;
+    payload.slackTeamId = claims.slackTeamId;
+    payload.slackFullName = claims.slackFullName;
   }
   return jwt.sign(payload, scopedJwtSecret, { expiresIn: '1h' });
 };

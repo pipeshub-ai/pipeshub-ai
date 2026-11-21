@@ -11,6 +11,8 @@ export const userActivitiesType = {
     ACCOUNT_BLOCKED: "ACCOUNT BLOCKED",
     ACCOUNT_DELETED: "ACCOUNT DELETED",
     ACCOUNT_RESTORED: "ACCOUNT RESTORED",
+  // Not session-invalidating: a Slack-only account has no session to end.
+  ACCOUNT_CREATED_FROM_SLACK: 'ACCOUNT CREATED FROM SLACK',
   };
 
 export const SESSION_INVALIDATING_ACTIVITIES = [

@@ -15,6 +15,7 @@ const {
   ACCOUNT_BLOCKED,
   ACCOUNT_DELETED,
   ACCOUNT_RESTORED,
+  ACCOUNT_CREATED_FROM_SLACK,
 } = userActivitiesType;
 
 // 🔹 Define TypeScript Interfaces
@@ -46,6 +47,8 @@ export interface IUserActivity extends Document {
     | 'OAUTH'
     | 'GITHUB OAUTH';
   ipAddress: string;
+  /** Free text about the activity, such as which Slack bot created the account. */
+  details?: string;
   isDeleted?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
@@ -81,6 +84,7 @@ const UserActivitySchema = new Schema<IUserActivity>(
         ACCOUNT_BLOCKED,
         ACCOUNT_DELETED,
         ACCOUNT_RESTORED,
+        ACCOUNT_CREATED_FROM_SLACK,
       ],
       required: true,
     },
@@ -102,6 +106,7 @@ const UserActivitySchema = new Schema<IUserActivity>(
       type: String,
       required: true,
     },
+    details: { type: String },
     isDeleted: {
       type: Boolean,
       default: false,

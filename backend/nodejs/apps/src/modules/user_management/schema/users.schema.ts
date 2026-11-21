@@ -12,6 +12,8 @@ import {
 
 export {
   applyServiceAccountRules,
+  isSlackOnlyAccount,
+  NON_SIGN_IN_KINDS,
   serviceAccountFields,
   userKinds,
 } from './service-account.rules';
@@ -37,6 +39,9 @@ export interface User extends Document, Address {
   kind?: UserKind;
   /** Free text explaining what a service account is for. Unused for humans. */
   description?: string;
+  /** Set on a Slack-only account (`kind: 'slack'`). */
+  slackUserId?: string;
+  slackTeamId?: string;
   /**
    * Suspends the account without deleting it: tokens stop working and no
    * session can be issued, but the record, its group memberships and its
