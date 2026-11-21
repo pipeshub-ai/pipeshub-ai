@@ -253,6 +253,25 @@ class TestToolCallTranslation:
         assert result_frame["data"]["resultSummary"] == "Found 3 issues"
         assert "resultView" not in result_frame["data"]
 
+    async def test_tool_call_end_forwards_the_saved_file_only_when_there_is_one(self) -> None:
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(
+            _event(EventType.TOOL_CALL_END, {
+                "tool": "jira_search", "content": "{", "is_error": False, "tool_call_id": "call-6",
+                "artifact_id": "art-1",
+            })
+        )
+        await emitter.emit(
+            _event(EventType.TOOL_CALL_END, {
+                "tool": "jira_search", "content": "3 issues", "is_error": False, "tool_call_id": "call-7",
+            })
+        )
+
+        results = [call.args[0]["data"] for call in sink.write.await_args_list if call.args[0]["event"] == "TOOL_CALL_RESULT"]
+        assert results[0]["artifactId"] == "art-1"
+        assert "artifactId" not in results[1]
+
     async def test_tool_call_end_forwards_the_result_view_within_the_replys_budget(self) -> None:
         emitter, sink = _make_emitter()
         view = {"kind": "records", "columns": ["Key"], "rows": [{"cells": ["PA-1"]}], "total": 1}

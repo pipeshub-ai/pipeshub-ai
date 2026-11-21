@@ -1,0 +1,13 @@
+▾ Thinking
+  ● Let me pull your unresolved Jira tickets.
+  ● Searched Jira  ⌄
+      Jira
+      ✓ "assignee = currentUser() AND resolution = Unresolved" → 10 results
+
+Here are your 10 most recently updated unresolved Jira tickets, ordered newest first:
+
+
+
+[table: Ticket | Summary | Status | Priority | Last updated; 10 rows; first: DEMO-101 | Update the setup guide | In review | Medium | Tue, Nov 3, 11:35 AM]
+
+The most immediate follow-ups by status are DEMO-101 (In review) and DEMO-102, DEMO-103, DEMO-104 (Testing).
