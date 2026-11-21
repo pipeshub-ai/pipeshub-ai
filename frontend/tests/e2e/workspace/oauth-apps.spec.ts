@@ -130,13 +130,12 @@ test.describe('Developer OAuth apps', () => {
     await uris.first().fill('http://e2e.example.com/oauth/callback');
     await expect(next, 'Next should stay off while no redirect URI is valid').toBeDisabled();
 
-    // With one good URI beside it, Next checks every URI and names the problem.
+    // Leaving the field, here to add another URI, names the problem, and Next stays off while any URI is bad, even
+    // with a good one beside it.
     await panel.getByRole('button', { name: 'Add redirect URI' }).click();
     await uris.nth(1).fill(REDIRECT_URI);
-    await expect(next).toBeEnabled();
-    await next.click();
     await expect(panel.getByText('Each redirect URI must be a valid http(s) URL.')).toBeVisible();
-    await expect(panel.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true');
+    await expect(next).toBeDisabled();
 
     await panel.getByRole('button', { name: 'Remove redirect URI' }).first().click();
     await expect(uris).toHaveCount(1);
