@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/descriptors/tool.schema.json",
+  "title": "CatalogToolDescriptor",
+  "description": "One tool of a catalog item (02-lld §5.4). `digest` is the canonical digest of {name, description, inputSchema, effect, sink} and, when declared, the behaviour hints in `annotations` (not `provider`); a missing effect is an unclassified tool (a write that may leave the deployment).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "description",
+    "inputSchema",
+    "effect",
+    "sink",
+    "digest"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 20000
+    },
+    "inputSchema": {
+      "description": "The JSON Schema the model is given for the tool's arguments.",
+      "type": "object"
+    },
+    "effect": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Effect"
+        }
+      ]
+    },
+    "sink": {
+      "description": "Where a write's arguments go (the `sink` tool tag); null is external.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "none",
+            "self",
+            "internal_audience",
+            "external"
+          ]
+        }
+      ]
+    },
+    "annotations": {
+      "description": "The behaviour hints an MCP tool declares (MCP tool annotations). They decide its effect and sink, so `digest` covers the ones declared, as the admin's approval of the tool does; absent on a tool that declares none.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "readOnlyHint": {
+          "type": "boolean"
+        },
+        "destructiveHint": {
+          "type": "boolean"
+        },
+        "idempotentHint": {
+          "type": "boolean"
+        },
+        "openWorldHint": {
+          "type": "boolean"
+        }
+      }
+    },
+    "provider": {
+      "description": "Who provides the tool, as its toolset's registration declares it: `platform` (the deployment's own, allowed by a run's other fields) or `connector` (a configured integration's, granted by its pinned instance). Not covered by `digest`; absent on a tool no toolset registers (an MCP server's).",
+      "enum": [
+        "platform",
+        "connector"
+      ]
+    },
+    "digest": {
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Digest"
+    }
+  },
+  "examples": [
+    {
+      "name": "create_ticket",
+      "description": "Create a ticket.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "effect": "write",
+      "sink": "self",
+      "provider": "connector",
+      "digest": "sha256:ec96e6559b475d3494bb603cf1d85201f848f45874314e1fa4cc745b1b2c1a8b"
+    }
+  ]
+}

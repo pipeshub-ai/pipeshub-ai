@@ -122,6 +122,10 @@ class _InstanceRecord:
     created_at: float
     last_used_at: float
     governor_lease: Any | None = None  # GovernorLease
+    # Calls running in it now (`acquire`/`release`): one in use is never evicted to make room. Only a sandbox
+    # created through `acquire` may be evicted: a `get_or_create` caller says nothing about when it is done.
+    busy: int = 0
+    evictable: bool = False
 
 
 class SandboxManager:
@@ -190,12 +194,38 @@ class SandboxManager:
     def is_registered(self, type: SandboxType) -> bool:
         return type in self._factories
 
+    def reaches_network(self, type: SandboxType) -> bool:
+        """Whether code in ``type``'s registered backend can reach the network whatever it was asked for (its
+        ``capabilities().supports_network``: a host subprocess always can). False when nothing is registered yet or a
+        zero-arg factory is: neither declares capabilities, and with nothing registered no code runs."""
+        entry = self._factories.get(type)
+        if entry is None or entry.backend_factory is None:
+            return False
+        return bool(entry.backend_factory.capabilities().supports_network)
+
+    async def acquire(
+        self,
+        type: SandboxType,
+        sandbox_id: str | None = None,
+        *,
+        ctx: "SandboxContext | None" = None,
+    ) -> tuple[str, Any]:
+        """`get_or_create`, held for the caller until `release`: a held sandbox is never evicted to make room."""
+        return await self.get_or_create(type, sandbox_id, ctx=ctx, hold=True)
+
+    def release(self, type: SandboxType, sandbox_id: str) -> None:
+        record = self._instances.get((type, sandbox_id))
+        if record is not None:
+            record.busy = max(0, record.busy - 1)
+            record.last_used_at = time.monotonic()
+
     async def get_or_create(
         self,
         type: SandboxType,
         sandbox_id: str | None = None,
         *,
         ctx: "SandboxContext | None" = None,
+        hold: bool = False,
     ) -> tuple[str, Any]:
         """Resolve an existing sandbox by id, or create a new one when
         `sandbox_id` is `None`. Raises `UnknownSandboxError` for an
@@ -214,6 +244,8 @@ class SandboxManager:
             if record is None:
                 raise UnknownSandboxError(f"no {type.value!r} sandbox with id {sandbox_id!r}")
             record.last_used_at = time.monotonic()
+            if hold:
+                record.busy += 1
             return sandbox_id, record.backend
 
         entry = self._factories.get(type)
@@ -224,6 +256,7 @@ class SandboxManager:
         lease = None
         async with self._lock:
             await self._sweep_stale(type, entry.limits)
+            await self._evict_idle(type, entry.limits)
             self._check_concurrency(type, entry.limits)
 
             if self._governor is not None:
@@ -250,7 +283,7 @@ class SandboxManager:
         now = time.monotonic()
         record = _InstanceRecord(
             backend=backend, created_at=now, last_used_at=now,
-            governor_lease=lease,
+            governor_lease=lease, busy=1 if hold else 0, evictable=hold,
         )
         for t in entry.capabilities:
             self._instances[(t, new_id)] = record
@@ -374,14 +407,36 @@ class SandboxManager:
                 result.append(ref)
         return result
 
+    async def _evict_idle(self, type: SandboxType, limits: SandboxLimits) -> None:
+        """At the limit, the least recently used sandbox no call is running in makes room (LONGTASK-F5).
+
+        A manager belongs to one request, so every sandbox it tracks is that request's own: without this, a
+        request that called `run_code` without a `sandbox_id` more than `max_concurrent` times starved itself,
+        its idle sandboxes holding every slot until the request ended."""
+        if limits.max_concurrent is None:
+            return
+        while self.active_count(type) + self._in_flight.get(type, 0) >= limits.max_concurrent:
+            idle = {
+                id(v): (k, v) for k, v in self._instances.items() if k[0] == type and v.evictable and v.busy == 0
+            }
+            if not idle:
+                return
+            key, record = min(idle.values(), key=lambda kv: kv[1].last_used_at)
+            logger.info("sandbox evicted: type=%s id=%s reason=idle_at_limit", type.value, key[1])
+            await self._safe_destroy(record.backend)
+            await self._release_lease(record.governor_lease)
+            for other_key in [k for k, v in self._instances.items() if v is record]:
+                del self._instances[other_key]
+
     def _check_concurrency(self, type: SandboxType, limits: SandboxLimits) -> None:
         if limits.max_concurrent is None:
             return
         in_use = self.active_count(type) + self._in_flight.get(type, 0)
         if in_use >= limits.max_concurrent:
             raise SandboxLimitExceeded(
-                f"max_concurrent={limits.max_concurrent} reached for sandbox "
-                f"type {type.value!r}; retry once a sandbox is released"
+                f"all {limits.max_concurrent} {type.value} sandboxes this request may use are running code "
+                f"right now; wait for one of those calls to finish, or pass the sandbox_id of one of them to "
+                f"run in it next"
             )
 
     async def _sweep_stale(self, type: SandboxType, limits: SandboxLimits) -> None:

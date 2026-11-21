@@ -1,0 +1,212 @@
+{
+  "$comment": "Images still referenced by tag only (scripts/supply_chain.py check, rule IMAGE-PIN; SEC-SC-11). C6.44, by category: a build base (FROM) and every image a test, CI or contributor stack runs is pinned as tag@sha256:<index digest>, the tag kept for people and for Dependabot's docker and docker-compose updates, which move the digest; a store in the files install.sh runs (`userRunFiles`) stays at its exact version tag (category user-run-service), because the air-gapped install loads or tags images by name and a digest reference matches only an image pulled from a registry; an image PipesHub builds itself (first-party) stays by tag until the release pipeline signs it and the signed digest is pinned (the owner part of C6.44). A new tag-only reference fails the check; so does an entry that is pinned or gone, a third-party entry of any other category, or a user-run-service entry used outside `userRunFiles`. localDigest is the index digest of the tag on the build host when it was present (docker image inspect), not a pull; regenerate with `python3 scripts/supply_chain.py images`.",
+  "userRunFiles": [
+    "deployment/docker-compose/docker-compose.prod-legacy.yml",
+    "deployment/docker-compose/docker-compose.yml"
+  ],
+  "tagOnly": [
+    {
+      "ref": "arangodb:3.12.4",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.prod-legacy.yml",
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "confluentinc/cp-kafka:7.9.0",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.prod-legacy.yml",
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "confluentinc/cp-zookeeper:7.9.0",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.prod-legacy.yml",
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "mongo:8.0.17",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "neo4j:5.26.0",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "nginx:1.27.5-alpine",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "pipeshub-ai:latest",
+      "category": "first-party",
+      "files": [
+        "deployment/docker-compose/beta/docker-compose.build.neo4j.slim.yml",
+        "deployment/docker-compose/beta/docker-compose.build.opensearch.neo4j.yml",
+        "deployment/docker-compose/docker-compose.build.neo4j.yml",
+        "deployment/docker-compose/docker-compose.integration.arango.yml",
+        "deployment/docker-compose/docker-compose.integration.neo4j.yml",
+        "deployment/docker-compose/hot-reload/docker-compose.dev.arango.yml",
+        "deployment/docker-compose/hot-reload/docker-compose.dev.neo4j.yml"
+      ],
+      "localDigest": null,
+      "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
+    },
+    {
+      "ref": "pipeshub/connectors-simulator:it",
+      "category": "first-party",
+      "files": [
+        "deployment/docker-compose/docker-compose.integration.arango.yml",
+        "deployment/docker-compose/docker-compose.integration.bookstack-sim.yml",
+        "deployment/docker-compose/docker-compose.integration.neo4j.yml",
+        "deployment/docker-compose/docker-compose.integration.salesforce-sim.yml",
+        "deployment/docker-compose/docker-compose.integration.servicenow-sim.yml",
+        "deployment/docker-compose/docker-compose.integration.sharepoint-sim.yml",
+        "deployment/docker-compose/docker-compose.integration.zammad-sim.yml"
+      ],
+      "localDigest": null,
+      "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
+    },
+    {
+      "ref": "pipeshub/sandbox:latest",
+      "category": "first-party",
+      "files": [
+        "deployment/docker-compose/beta/docker-compose.build.neo4j.slim.yml",
+        "deployment/docker-compose/beta/docker-compose.build.opensearch.neo4j.yml",
+        "deployment/docker-compose/docker-compose.build.neo4j.yml"
+      ],
+      "localDigest": null,
+      "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
+    },
+    {
+      "ref": "pipeshubai/pipeshub-ai-base:python-deps",
+      "category": "first-party",
+      "files": [
+        "Dockerfile"
+      ],
+      "localDigest": "sha256:455164dbc6d97b69dfd8734db767854426b3e21542593fc879cd1fefe558ebb2",
+      "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
+    },
+    {
+      "ref": "pipeshubai/pipeshub-ai-base:runtime",
+      "category": "first-party",
+      "files": [
+        "Dockerfile"
+      ],
+      "localDigest": "sha256:dd5d6e193c7009c334b8ec07e6b2736547a145b56a6cbad68885e825ab62099d",
+      "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
+    },
+    {
+      "ref": "pipeshubai/pipeshub-ai:latest",
+      "category": "first-party",
+      "files": [
+        "deployment/docker-compose/docker-compose.prod-legacy.yml",
+        "deployment/docker-compose/docker-compose.yml",
+        "deployment/docker-compose/tests/docker-compose.airgap-install.yml"
+      ],
+      "localDigest": null,
+      "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
+    },
+    {
+      "ref": "pipeshubai/pipeshub-migrate:latest",
+      "category": "first-party",
+      "files": [
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
+    },
+    {
+      "ref": "pipeshubai/pipeshub-sandbox:latest",
+      "category": "first-party",
+      "files": [
+        "deployment/docker-compose/docker-compose.prod-legacy.yml",
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
+    },
+    {
+      "ref": "pipeshubai/postgres:18-1",
+      "category": "first-party",
+      "files": [
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
+    },
+    {
+      "ref": "qdrant/qdrant:v1.15.5",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.prod-legacy.yml",
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "quay.io/coreos/etcd:v3.5.17",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.prod-legacy.yml",
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "redis:7.4.12-bookworm",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.prod-legacy.yml",
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "searxng/searxng:2026.9.30-a9d990033",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    },
+    {
+      "ref": "unclecode/crawl4ai:0.9.4",
+      "category": "user-run-service",
+      "files": [
+        "deployment/docker-compose/docker-compose.yml"
+      ],
+      "localDigest": null,
+      "note": "A store install.sh runs: kept at its exact version tag so an air-gapped host can `docker load` or `docker tag` it (a digest reference matches only a pulled image), and so the installed tag takes the publisher's rebuilds for OS fixes."
+    }
+  ]
+}

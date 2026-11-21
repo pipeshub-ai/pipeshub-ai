@@ -31,6 +31,8 @@ for `sandbox/confinement.py`).
 
 __all__ = ["ExecutionLimits", "CodeExecutor"]
 
+_BUDGET_IN_OWN_NAMESPACE = sys.platform.startswith("linux")
+
 # `.npm` (HOME points into the sandbox dir, so npm's cache/config lands
 # here), `node-compile-cache` (Node's V8 compile cache, rewritten on nearly
 # every `tsx`/`node` invocation with different code), and `tsx-<uid>`
@@ -61,16 +63,14 @@ class ExecutionLimits:
     """Config-driven `setrlimit` values applied to every executed process
     (and its children, via inheritance across exec).
 
-    `max_processes` (RLIMIT_NPROC) caveat: on macOS/BSD this limits the
-    total number of processes owned by the REAL UID **system-wide**, not
-    just this subprocess tree — it is not a precise per-sandbox budget.
-    Sizing it too close to what a normal desktop session already uses
-    (easily several hundred processes) makes ordinary tool invocations
-    fail with a confusing `EAGAIN` on `spawn()`/`fork()` that has nothing
-    to do with the sandboxed code itself. The default here is deliberately
-    generous — high enough to never collide with normal usage, still low
-    enough to bound a genuine fork bomb well below the OS default (macOS
-    ships `ulimit -u` around 4000).
+    `max_processes` is how many processes and threads one run may have.
+    RLIMIT_NPROC counts every task of the real UID (Linux counts threads
+    too; macOS/BSD processes), so on Linux each run gets a user namespace of
+    its own, where only the run's tasks count (`process_budget`): nothing the
+    account runs elsewhere spends the budget (H5, H10). Where no namespace
+    can be made, the limit is the account's tasks at spawn plus the budget,
+    which later work of the account still spends; elsewhere it is the budget
+    itself. Either way a fork bomb stops within the budget.
     """
 
     max_memory_bytes: int = 1536 * 1024 * 1024
@@ -103,6 +103,9 @@ def _rlimit_preexec_fn(limits: ExecutionLimits):
     this module still imports cleanly on Windows."""
     import resource
 
+    # On Linux the process budget is set by `process_budget`, inside the run's own user namespace.
+    process_limits = [] if _BUDGET_IN_OWN_NAMESPACE else [(resource.RLIMIT_NPROC, limits.max_processes)]
+
     def _preexec() -> None:
         for res, value in (
             # RLIMIT_DATA, deliberately not RLIMIT_AS. A JIT reserves far
@@ -124,7 +127,7 @@ def _rlimit_preexec_fn(limits: ExecutionLimits):
             (resource.RLIMIT_DATA, limits.max_memory_bytes),
             (resource.RLIMIT_CPU, limits.max_cpu_seconds),
             (resource.RLIMIT_FSIZE, limits.max_file_size_bytes),
-            (resource.RLIMIT_NPROC, limits.max_processes),
+            *process_limits,
         ):
             try:
                 resource.setrlimit(res, (value, value))
@@ -233,6 +236,10 @@ class CodeExecutor:
         return await self._run([self._env.python_bin, entry], request.timeout, allow_network=request.allow_network)
 
     async def _run(self, cmd: list[str], timeout: float, *, allow_network: bool) -> tuple[str, str, int]:
+        if _BUDGET_IN_OWN_NAMESPACE:
+            from app.agent_loop_lib.sandbox.coding.process_budget import budget_command
+
+            cmd = budget_command(cmd, self._limits.max_processes)
         confined_cmd = confine_command(cmd, self._working_dir, allow_network=allow_network)
         is_posix = sys.platform != "win32"
         proc = await asyncio.create_subprocess_exec(

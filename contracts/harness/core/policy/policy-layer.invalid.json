@@ -1,0 +1,377 @@
+[
+  {
+    "description": "a layer names its scope",
+    "instance": {
+      "schemaVersion": 1
+    }
+  },
+  {
+    "description": "no unknown section",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "network": "open"
+    }
+  },
+  {
+    "description": "no unknown layer",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "galaxy"
+      }
+    }
+  },
+  {
+    "description": "a model route is named",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "agent",
+        "id": "agent-a"
+      },
+      "models": {
+        "primary": ""
+      }
+    }
+  },
+  {
+    "description": "a rollout value is a switch",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "rollout": {
+        "ENABLE_AGENT_HARNESS": "yes"
+      }
+    }
+  },
+  {
+    "description": "no unknown rollout feature",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "rollout": {
+        "ENABLE_EVERYTHING": true
+      }
+    }
+  },
+  {
+    "description": "a durable chat mode is a lower-case name",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "rollout": {
+        "durable": {
+          "modes": [
+            "Deep Research"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "no unknown durable routing list",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "rollout": {
+        "durable": {
+          "surfaces": [
+            "web"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "the capabilities marker is a switch",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "rollout": {
+        "CONTROL_PLANE_CAPABILITIES": "migrated"
+      }
+    }
+  },
+  {
+    "description": "the engine-profile section is a narrowing",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "request"
+      },
+      "engineProfile": {
+        "limits": {
+          "maxSteps": 0
+        }
+      }
+    }
+  },
+  {
+    "description": "a model route is at most 256 characters",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "models": {
+        "routes": [
+          "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+        ]
+      }
+    }
+  },
+  {
+    "description": "a retention period past ten years",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "o"
+      },
+      "retention": {
+        "days": 3651
+      }
+    }
+  },
+  {
+    "description": "a memory mode that does not exist",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "o"
+      },
+      "memory": {
+        "mode": "team",
+        "review": "auto"
+      }
+    }
+  },
+  {
+    "description": "a section locked by a layer that does not exist",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "agent",
+        "id": "a"
+      },
+      "lockedBy": {
+        "approvals": "admin"
+      }
+    }
+  },
+  {
+    "description": "an update record for an unknown section",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "o"
+      },
+      "updated": {
+        "operator": {
+          "at": 1,
+          "by": "p_x"
+        }
+      }
+    }
+  },
+  {
+    "description": "an approver level is one of the ranks",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "catalog": {
+        "approval": {
+          "install:mcp": "anyone"
+        }
+      }
+    }
+  },
+  {
+    "description": "only delegable actions are delegated",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "catalog": {
+        "delegation": [
+          "policy.write:org"
+        ]
+      }
+    }
+  },
+  {
+    "description": "an allowed website is a host name, not a URL",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "websites": {
+        "sites": [
+          {
+            "host": "https://github.com",
+            "access": "read"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "a bare wildcard is never an allowed website",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "websites": {
+        "sites": [
+          {
+            "host": "*",
+            "access": "read"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "an allowed website is never an IP address",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "websites": {
+        "sites": [
+          {
+            "host": "10.0.0.1",
+            "access": "read"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "access is read or read-write",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "websites": {
+        "sites": [
+          {
+            "host": "github.com",
+            "access": "write"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "a path limit starts with a slash",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "websites": {
+        "sites": [
+          {
+            "host": "github.com",
+            "access": "read",
+            "paths": [
+              "onyx-dot-app"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "a repository host is never a wildcard",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "repositories": {
+        "hosts": [
+          {
+            "host": "*.github.com"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "a repository prefix is owner or owner/repo, never a path",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "repositories": {
+        "hosts": [
+          {
+            "host": "github.com",
+            "prefixes": [
+              "/onyx/../x"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "an allowed git host has no access mode",
+    "instance": {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "repositories": {
+        "hosts": [
+          {
+            "host": "github.com",
+            "access": "read-write"
+          }
+        ]
+      }
+    }
+  }
+]

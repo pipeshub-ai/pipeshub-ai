@@ -36,13 +36,20 @@ from typing import Any
 __all__ = [
     "BLOCKED_CIDRS",
     "CONTAINER_HARDENING",
+    "WRITABLE_DIRS",
+    "DEFAULT_OPEN_EGRESS_POOL",
+    "ENV_OPEN_EGRESS_SUBNETS",
     "FIREWALL_UNAVAILABLE_EXIT_CODE",
+    "build_firewall_rules_script",
     "build_firewall_script",
     "create_sandbox_container",
     "ensure_egress_network_sync",
     "firewall_unavailable",
     "firewalled_container_kwargs",
+    "limited",
     "new_firewall_token",
+    "open_egress_pool",
+    "open_egress_subnets",
     "parse_cidrs",
 ]
 
@@ -168,12 +175,38 @@ CONTAINER_HARDENING: dict[str, Any] = {
     "security_opt": ["no-new-privileges:true"],
     "pids_limit": 256,
     "user": "sandbox",
+    # SEC-A-04: the broker's floor (``app.sandbox.sandbox_floor``), which the socket proxy now requires: a read-only
+    # root, its writable directories anonymous volumes that go with the container.
+    "read_only": True,
 }
+# The directories a legacy sandbox writes: the image makes them the sandbox user's, and an anonymous volume there
+# starts as the image's directory. /home holds the user's own home (npm and pip caches).
+WRITABLE_DIRS: tuple[str, ...] = ("/src", "/output", "/install", "/deps", "/node_modules", "/home")
+
+
+def limited(mem_bytes: int) -> dict[str, Any]:
+    """The memory and disk part of the floor for a container of ``mem_bytes``: no swap beyond it, and the writable
+    directories as anonymous volumes."""
+    from docker.types import Mount
+
+    return {
+        "mem_limit": mem_bytes,
+        "memswap_limit": mem_bytes,
+        "mounts": [Mount(target, None, type="volume") for target in WRITABLE_DIRS],
+    }
 
 # NET_ADMIN installs the rules; SETUID/SETGID/SETPCAP let setpriv switch user
 # and empty the bounding set. All are gone before the command runs.
 _FIREWALL_SETUP_CAPS = ["NET_ADMIN", "SETUID", "SETGID", "SETPCAP"]
 _ICC_OPTION = "com.docker.network.bridge.enable_icc"
+
+# The shared open-egress bridge takes its subnet from this pool, never from the daemon's default address pools: a
+# daemon has about 30 of those, and on a host that runs other stacks they are all taken, so a bridge created without
+# an address would fail every open-egress sandbox. Next to the broker's per-sandbox pool (10.213/16).
+ENV_OPEN_EGRESS_SUBNETS = "SANDBOX_OPEN_EGRESS_SUBNETS"
+DEFAULT_OPEN_EGRESS_POOL = "10.212.0.0/16"
+# Every open-egress sandbox of the install joins the one bridge, so it holds 1021 of them.
+_OPEN_EGRESS_PREFIX = 22
 
 
 _TOKEN_RE = re.compile(r"[0-9a-f]{16,64}")
@@ -209,26 +242,9 @@ def build_firewall_script(
     ranges. Loopback stays open because Docker's embedded DNS (127.0.0.11)
     is reached through it.
     """
-    if not _TOKEN_RE.fullmatch(token):
-        raise ValueError("firewall token must be 16-64 lowercase hex characters")
-    blocked = list(dict.fromkeys([*BLOCKED_CIDRS, *_ipv4_cidrs(network_cidrs)]))
-    allowed = _ipv4_cidrs(allowed_cidrs)
     user = shlex.quote(run_as)
-    lines = [
-        "set -u",
-        f"fail() {{ echo '{_UNAVAILABLE_MARKER} ({token}):' \"$1\" >&2; exit {FIREWALL_UNAVAILABLE_EXIT_CODE}; }}",
-        "command -v setpriv >/dev/null 2>&1 || fail 'setpriv not found'",
-        'IPT=""',
-        "for b in iptables iptables-legacy; do",
-        '  if command -v "$b" >/dev/null 2>&1 && "$b" -w -n -L OUTPUT >/dev/null 2>&1; then IPT="$b"; break; fi',
-        "done",
-        "[ -n \"$IPT\" ] || fail 'no working iptables in the sandbox image'",
-        "r() { \"$IPT\" -w \"$@\" || fail \"iptables $*\"; }",
-        "r -A OUTPUT -o lo -j ACCEPT",
-    ]
-    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in _NEVER_ALLOWED_CIDRS]
-    lines += [f"r -A OUTPUT -d {cidr} -j ACCEPT" for cidr in allowed]
-    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in blocked]
+    lines = _rule_lines(network_cidrs, allowed_cidrs, token)
+    lines.insert(2, "command -v setpriv >/dev/null 2>&1 || fail 'setpriv not found'")
     # The container starts as root, so HOME is /root; npm/npx would then
     # fail to write their cache once running as `run_as`.
     lines += [
@@ -241,6 +257,44 @@ def build_firewall_script(
         '--inh-caps=-all --bounding-set=-all --no-new-privs -- "$@"'
     )
     return "\n".join(lines) + "\n"
+
+
+def build_firewall_rules_script(
+    network_cidrs: Iterable[str],
+    allowed_cidrs: Iterable[str] = (),
+    *,
+    token: str,
+) -> str:
+    """``sh -c`` script that only installs the rules and exits.
+
+    For a one-shot helper that shares a sandbox's network namespace (the
+    sandbox broker's containers have no capabilities to do it themselves):
+    the rules live in the namespace, so they hold for the sandbox after the
+    helper is gone.
+    """
+    return "\n".join([*_rule_lines(network_cidrs, allowed_cidrs, token), "exit 0"]) + "\n"
+
+
+def _rule_lines(network_cidrs: Iterable[str], allowed_cidrs: Iterable[str], token: str) -> list[str]:
+    if not _TOKEN_RE.fullmatch(token):
+        raise ValueError("firewall token must be 16-64 lowercase hex characters")
+    blocked = list(dict.fromkeys([*BLOCKED_CIDRS, *_ipv4_cidrs(network_cidrs)]))
+    allowed = _ipv4_cidrs(allowed_cidrs)
+    lines = [
+        "set -u",
+        f"fail() {{ echo '{_UNAVAILABLE_MARKER} ({token}):' \"$1\" >&2; exit {FIREWALL_UNAVAILABLE_EXIT_CODE}; }}",
+        'IPT=""',
+        "for b in iptables iptables-legacy; do",
+        '  if command -v "$b" >/dev/null 2>&1 && "$b" -w -n -L OUTPUT >/dev/null 2>&1; then IPT="$b"; break; fi',
+        "done",
+        "[ -n \"$IPT\" ] || fail 'no working iptables in the sandbox image'",
+        "r() { \"$IPT\" -w \"$@\" || fail \"iptables $*\"; }",
+        "r -A OUTPUT -o lo -j ACCEPT",
+    ]
+    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in _NEVER_ALLOWED_CIDRS]
+    lines += [f"r -A OUTPUT -d {cidr} -j ACCEPT" for cidr in allowed]
+    lines += [f"r -A OUTPUT -d {cidr} -j REJECT" for cidr in blocked]
+    return lines
 
 
 def firewalled_container_kwargs(
@@ -287,15 +341,71 @@ def _get_network(client: Any, network_name: str) -> Any | None:
     return None
 
 
-def ensure_egress_network_sync(client: Any, network_name: str, labels: dict[str, str]) -> list[str]:
+def open_egress_pool(raw: str | None = None) -> ipaddress.IPv4Network:
+    """The pool the open-egress bridge's subnet comes from: ``raw``, else ``SANDBOX_OPEN_EGRESS_SUBNETS``, else the
+    default. A pool that is not one IPv4 network is refused rather than replaced: a typo must not move the bridge
+    onto addresses this host routes to."""
+    value = (raw if raw is not None else os.environ.get(ENV_OPEN_EGRESS_SUBNETS) or "").strip()
+    network = ipaddress.ip_network(value or DEFAULT_OPEN_EGRESS_POOL, strict=True)
+    if not isinstance(network, ipaddress.IPv4Network) or network.prefixlen > 29:
+        raise ValueError(f"{ENV_OPEN_EGRESS_SUBNETS}={value!r} must be an IPv4 network of 8+ addresses")
+    return network
+
+
+def open_egress_subnets(pool: ipaddress.IPv4Network) -> list[str]:
+    """The subnets the bridge may take, lowest first: the pool's /22s, or the pool itself when it is smaller."""
+    prefix = max(_OPEN_EGRESS_PREFIX, pool.prefixlen)
+    return [str(net) for net in pool.subnets(new_prefix=prefix)]
+
+
+def _create_egress_network(
+    client: Any, network_name: str, labels: dict[str, str], candidates: Iterable[str],
+) -> None:
+    from docker.types import IPAMConfig, IPAMPool
+
+    from app.harness.sandbox.docker_egress import is_pool_overlap
+
+    tried = 0
+    for subnet in dict.fromkeys(candidates):
+        tried += 1
+        gateway = str(next(ipaddress.ip_network(subnet).hosts()))
+        try:
+            client.networks.create(
+                name=network_name,
+                driver="bridge",
+                internal=False,
+                enable_ipv6=False,
+                options={_ICC_OPTION: "false"},
+                ipam=IPAMConfig(pool_configs=[IPAMPool(subnet=subnet, gateway=gateway)]),
+                labels=labels,
+                check_duplicate=True,
+            )
+        except Exception as exc:
+            if is_pool_overlap(exc):
+                continue
+            raise
+        logger.info("created sandbox egress network %s on %s", network_name, subnet)
+        return
+    raise RuntimeError(
+        f"no free subnet for sandbox egress network {network_name} after {tried} tries; "
+        f"set {ENV_OPEN_EGRESS_SUBNETS} to a free IPv4 range"
+    )
+
+
+def ensure_egress_network_sync(
+    client: Any, network_name: str, labels: dict[str, str], *, pool: str | None = None,
+) -> list[str]:
     """Create the egress bridge with inter-container traffic off and return
     its IPv4 subnets (empty if they can't be read).
 
-    A network created before ICC was turned off is replaced while idle; one
-    with containers attached is kept (removing it would fail) — the
-    per-container firewall blocks the bridge subnet either way.
+    A network created before ICC was turned off is replaced while idle, on
+    its old subnet when that is still free; one with containers attached is
+    kept (removing it would fail) — the per-container firewall blocks the
+    bridge subnet either way. A new bridge takes a subnet from ``pool``
+    (``open_egress_pool``).
     """
     network = _get_network(client, network_name)
+    previous: list[str] = []
     if network is not None and (network.attrs.get("Options") or {}).get(_ICC_OPTION) != "false":
         if network.attrs.get("Containers"):
             logger.warning(
@@ -304,20 +414,14 @@ def ensure_egress_network_sync(client: Any, network_name: str, labels: dict[str,
             )
         else:
             logger.info("recreating sandbox egress network %s with inter-container traffic off", network_name)
+            previous = _subnets(network.attrs)
             network.remove()
             network = None
     if network is None:
         try:
-            client.networks.create(
-                name=network_name,
-                driver="bridge",
-                internal=False,
-                enable_ipv6=False,
-                options={_ICC_OPTION: "false"},
-                labels=labels,
-                check_duplicate=True,
+            _create_egress_network(
+                client, network_name, labels, [*previous, *open_egress_subnets(open_egress_pool(pool))],
             )
-            logger.info("created sandbox egress network %s", network_name)
         except Exception as exc:
             # Another process may have created it between our look and our create.
             logger.debug("egress network creation raised %s; re-checking", exc)

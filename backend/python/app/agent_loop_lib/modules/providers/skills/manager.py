@@ -3,18 +3,20 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import (
+    CandidateEdits,
     Skill,
     SkillCandidate,
     SkillFilter,
     SkillInUseError,
     SkillMatch,
     SkillMetadata,
+    SkillProvenance,
     SkillReferentialUsage,
     SkillSource,
     SkillStatus,
@@ -207,9 +209,15 @@ class SkillManager:
 
     async def create(
         self, name: str, content: str, category: str | None = None, subcategory: str | None = None,
-        resources: dict[str, str] | None = None,
+        resources: dict[str, str] | None = None, *, provenance: SkillProvenance | None = None,
+        change_note: str | None = None, approved_by: str | None = None,
     ) -> SkillMetadata:
-        metadata = await self._store.create_skill(name, content, category, subcategory, resources)
+        # Passed only when there is one: a store that records no provenance (or no history) keeps its own signature.
+        extra: dict[str, Any] = {"provenance": provenance} if provenance is not None else {}
+        extra.update(_noted(change_note))
+        if approved_by:
+            extra["approved_by"] = approved_by
+        metadata = await self._store.create_skill(name, content, category, subcategory, resources, **extra)
         self._catalog[name] = metadata
         await self._index.add_entry(metadata)
         return metadata
@@ -221,9 +229,10 @@ class SkillManager:
         resources: dict[str, str] | None = None,
         *,
         expected_updated_at: int | None = None,
+        change_note: str | None = None,
     ) -> SkillMetadata:
         metadata = await self._store.update_skill(
-            name, content, resources, expected_updated_at=expected_updated_at,
+            name, content, resources, expected_updated_at=expected_updated_at, **_noted(change_note),
         )
         self._catalog[name] = metadata
         await self._index.update_entry(metadata)
@@ -236,9 +245,10 @@ class SkillManager:
         new_string: str,
         *,
         expected_updated_at: int | None = None,
+        change_note: str | None = None,
     ) -> bool:
         ok = await self._store.patch_skill(
-            name, old_string, new_string, expected_updated_at=expected_updated_at,
+            name, old_string, new_string, expected_updated_at=expected_updated_at, **_noted(change_note),
         )
         if ok:
             await self._resync_entry(name)
@@ -370,6 +380,9 @@ class SkillManager:
         trajectory: dict | None = None,
         decision_trace: "list[DecisionTraceEntry] | None" = None,
         session_id: str | None = None,
+        *,
+        agent_key: str | None = None,
+        run_id: str | None = None,
     ) -> list[SkillCandidate]:
         """Extract, quality-gate, and route candidates from a finished run.
         Returns every candidate that passed evaluation — each already
@@ -391,6 +404,8 @@ class SkillManager:
         accepted: list[SkillCandidate] = []
         for candidate in raw_candidates[: self._config.max_candidates]:
             candidate.source_session_id = session_id
+            candidate.source_agent_key = agent_key
+            candidate.source_run_id = run_id
             if self._evaluator is not None:
                 passed, feedback = await self._evaluator.evaluate_candidate(candidate)
                 if not passed:
@@ -427,12 +442,33 @@ class SkillManager:
                 candidates.append(SkillCandidate(**json.load(f)))
         return candidates
 
-    async def approve_candidate(self, candidate_id: str) -> SkillMetadata:
+    async def find_candidate(self, candidate_id: str) -> SkillCandidate | None:
+        return await self._find_candidate(candidate_id)
+
+    async def approve_candidate(
+        self, candidate_id: str, edits: CandidateEdits | None = None, *, change_note: str | None = None,
+        approved_by: str | None = None,
+    ) -> SkillMetadata:
+        """The candidate as a skill, with the reviewer's ``edits`` laid over it: one create, so one version. It is
+        created by this manager's user, so the caller builds the manager as the candidate's owner-to-be;
+        ``approved_by`` names the reviewer."""
         candidate = await self._find_candidate(candidate_id)
         if candidate is None:
             raise RegistryError(f"Candidate {candidate_id!r} not found")
+        if edits is not None and not edits.empty:
+            candidate = edits.applied_to(candidate)
         content = _candidate_to_skill_md(candidate)
-        metadata = await self.create(candidate.name, content, candidate.category, candidate.subcategory)
+        # A person approved it, but its text is still the learning run's: it keeps that run's label and
+        # conversation (erased with it), as a reviewed memory does.
+        recorded = candidate.label is not None or candidate.source_session_id is not None
+        metadata = await self.create(
+            candidate.name, content, candidate.category, candidate.subcategory,
+            provenance=(
+                SkillProvenance(label=candidate.label, session_id=candidate.source_session_id) if recorded else None
+            ),
+            change_note=change_note,
+            approved_by=approved_by,
+        )
         await self._remove_candidate(candidate_id)
         await self._governor.on_skill_created(metadata)
         return metadata
@@ -472,6 +508,12 @@ class SkillManager:
         return await self._evaluator.evaluate_existing(experience)
 
 
+def _noted(change_note: str | None) -> dict[str, str]:
+    """The change note as a store keyword, only when there is one (a store without history takes none)."""
+    note = (change_note or "").strip()
+    return {"change_note": note} if note else {}
+
+
 def _candidate_to_skill_md(candidate: SkillCandidate) -> str:
     """Render an approved/human-approved `SkillCandidate` into a full
     SKILL.md string, tagging its provenance as agent-created."""
@@ -483,6 +525,7 @@ def _candidate_to_skill_md(candidate: SkillCandidate) -> str:
         tags=list(candidate.tags),
         source=SkillSource.AGENT_CREATED,
         created_at=candidate.created_at,
+        label=candidate.label,
     )
     import yaml
     frontmatter_yaml = yaml.safe_dump(metadata.to_frontmatter_dict(), sort_keys=False)

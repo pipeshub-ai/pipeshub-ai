@@ -1,0 +1,123 @@
+[
+  {
+    "description": "written by Node",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 10,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "node",
+      "type": "x.pipeshub.provenance.recorded",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "pipeshub@git/repository_fetch",
+        "rule": "repository",
+        "provenance": {
+          "readers": "public",
+          "integrity": "external",
+          "sources": [
+            {
+              "kind": "repository",
+              "url": "https://github.com/onyx-dot-app/onyx",
+              "commit": "4f83564c1f0e8596be3f71d78f847a96447a3bdd"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "readers outside the three",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 10,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.provenance.recorded",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "pipeshub@git/repository_fetch",
+        "rule": "repository",
+        "provenance": {
+          "readers": "org",
+          "integrity": "external",
+          "sources": []
+        }
+      }
+    }
+  },
+  {
+    "description": "a repository source without its commit",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 10,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.provenance.recorded",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "pipeshub@git/repository_fetch",
+        "rule": "repository",
+        "provenance": {
+          "readers": "public",
+          "integrity": "external",
+          "sources": [
+            {
+              "kind": "repository",
+              "url": "https://github.com/onyx-dot-app/onyx"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "description": "no rule",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 10,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.provenance.recorded",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "pipeshub@git/repository_fetch",
+        "rule": "Not A Rule",
+        "provenance": {
+          "readers": "public",
+          "integrity": "external",
+          "sources": [
+            {
+              "kind": "repository",
+              "url": "https://github.com/onyx-dot-app/onyx",
+              "commit": "4f83564c1f0e8596be3f71d78f847a96447a3bdd"
+            }
+          ]
+        }
+      }
+    }
+  }
+]

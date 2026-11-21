@@ -301,6 +301,8 @@ class CodingSandboxConfig(BaseModel):
             "local": local,
             "e2b": self.e2b.model_dump(),
             "docker": self.docker.model_dump(),
+            # The broker runs the same containers, so the Docker knobs configure it too.
+            "broker": self.docker.model_dump(),
         }
         for name, overrides in self.backend_options.items():
             merged.setdefault(name, {}).update(overrides)

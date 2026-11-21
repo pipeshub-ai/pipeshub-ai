@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/could-not-do.schema.json",
+  "title": "PipeshubCouldNotDo",
+  "description": "One thing a run tried during its work and could not do (ADR-RUN-03 D5, R32REPO-FU-1), read from its journal or its own resolution, never from a model's words: a repository clone the person declined, a rule refused, whose host the organization does not allow, or that failed; a repository the task named that the run never cloned (R41-CLONE, written only when the claim's journal accepts repository_not_cloned); or a file attached to the turn that never reached the model, refused by the access check or with no content that could be read (R33JGAPS-FU-6, written only when the claim's journal accepts attachment_limits); or a file handed to a job over the per-input cap (attachment.too_large, R46FIX-2, written only when the claim's journal accepts attachment_too_large). Built by app/harness/engines/capability_limits.py (met_items, attachment_item). The web chat words it in the reader's language.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind"
+  ],
+  "properties": {
+    "kind": {
+      "description": "What stopped it; the web chat words each kind under chat.couldNotDo (could-not-do.ts).",
+      "enum": [
+        "repository.declined",
+        "repository.refused",
+        "repository.not_allowed",
+        "repository.failed",
+        "repository.not_cloned",
+        "attachment.not_accessible",
+        "attachment.unreadable",
+        "attachment.too_large"
+      ]
+    },
+    "repository": {
+      "description": "The repository it could not read, as its host and path (github.com/onyx-dot-app/onyx), when the journal names it.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "count": {
+      "description": "How many things this item stands for when it names none of them: repositories the journal does not name, or, for the attachment kinds, files handed to a job that it may not name (R46FIX-FU-2, written only when the claim's journal accepts attachment_count); absent: one. Never beside repository or file, which name exactly one.",
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 100
+    },
+    "file": {
+      "description": "The attached file it could not read, by its name, for the attachment kinds.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    }
+  }
+}

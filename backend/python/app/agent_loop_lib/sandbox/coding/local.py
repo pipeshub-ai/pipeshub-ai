@@ -9,6 +9,7 @@ import uuid
 
 from app.agent_loop_lib.sandbox.base import SandboxInfo
 from app.agent_loop_lib.sandbox.coding.base import (
+    WORKSPACE_DIR_NAME,
     CodeRequest,
     CodeResult,
     CodingLanguage,
@@ -132,12 +133,15 @@ class LocalCodingSandbox(CodingSandboxBackend):
         return self._working_dir
 
     async def provision(self) -> SandboxInfo:
-        os.makedirs(self._working_dir, exist_ok=True)
+        # 0700 and this user's own: the folder sits under the shared temp folder (R13-ROOT).
+        self._environment.prepare_working_dir()
         # `output/` backs $OUTPUT_DIR (see `sanitized_subprocess_env`) —
         # created up front so it exists before the pre-execution mtime
         # snapshot; `_snapshot_mtimes` records files, not directories, so
         # an empty `output/` never itself looks like an artifact.
         os.makedirs(os.path.join(self._working_dir, "output"), exist_ok=True)
+        # `$WORKSPACE_DIR` exists before the first write, as it does on the container backends.
+        os.makedirs(os.path.join(self._working_dir, WORKSPACE_DIR_NAME), exist_ok=True)
         register_sandbox_dir(self._working_dir)
         self._provisioned = True
         self._created_at = time.time()
@@ -187,12 +191,11 @@ class LocalCodingSandbox(CodingSandboxBackend):
                 )
 
         result = await self._executor.execute(request)
+        # Sizes only: a run's output and its file names are the user's content (CLEANUP).
         logger.info(
-            "LocalCodingSandbox.execute: exit_code=%d artifacts=%s "
-            "duration_ms=%.1f stderr_len=%d stderr_preview=%.500s",
-            result.exit_code, result.artifacts,
+            "LocalCodingSandbox.execute: exit_code=%d artifacts=%d duration_ms=%.1f stderr_len=%d",
+            result.exit_code, len(result.artifacts),
             result.duration_ms, len(result.stderr) if result.stderr else 0,
-            result.stderr[:500] if result.stderr else "",
         )
         if not result.success:
             result = result.model_copy(update={"error_analysis": self._reflection.analyze(result)})

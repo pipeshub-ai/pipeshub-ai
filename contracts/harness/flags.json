@@ -1,0 +1,2818 @@
+{
+  "description": "The agent-harness feature-flag matrix (F3). One source of truth: docs/agent-harness-v2/FLAGS.md renders it, C-16 (Python tests/cohesion/test_c16_flag_matrix.py, Node tests/cohesion/c16-flag-matrix.test.ts) keeps it equal to the code and the deployment files, and the behaviour tests read their expected defaults and reasons from it. 'default' is what the code does when the flag is absent; 'shipped' is what each operator-facing file sets (null: not set, the code default applies). Reader paths are relative to the repository root.",
+  "flags": [
+    {
+      "name": "REPLICA_SET_AVAILABLE",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (follows the MongoDB topology: Compose base file, Helm mongodb.architecture)",
+      "gates": "MongoDB transactions; one of the durable harness's infrastructure conditions (isAgentHarnessInfrastructureReady)",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/config.ts",
+          "backend/nodejs/apps/src/libs/repositories/agent-harness/run-admission-store/mongo.ts"
+        ]
+      },
+      "shipped": {
+        "compose": "true",
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": {
+          "values": "mongodb.architecture",
+          "value": "replicaset",
+          "renders": "true"
+        },
+        "installSh": null
+      },
+      "notes": "Also read outside the harness by the conversation, project and token modules (product transactions); every Node read goes through envFlag, so harness and product agree on a value.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "AGENT_HARNESS_RELAY_ENABLED",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (Compose .env; Helm agentHarness.enabled, the harness switch, sets it with AGENT_HARNESS_WORKER_ENABLED). Alone it starts nothing: durable runs need AGENT_HARNESS_WORKER_ENABLED too (ADR-OPS-06)",
+      "gates": "durable runs: the outbox relay half of isAgentHarnessInfrastructureReady and the dispatch capability probe",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/config.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/dispatch-capability-probe.ts"
+        ]
+      },
+      "shipped": {
+        "compose": "true",
+        "composeHarness": "true",
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": "true",
+        "helm": {
+          "values": "agentHarness.enabled",
+          "value": true,
+          "renders": "true"
+        },
+        "installSh": null
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "AGENT_HARNESS_WORKER_ENABLED",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator: the agent harness's switch (ADR-OPS-06, amended 2026-11-20), on by default and idle until an org admin turns on Labs ENABLE_AGENT_HARNESS (off by default); false is the opt-out that runs none of it. Compose .env (install.sh writes true on a fresh install or an upgrade whose .env does not name it, and keeps a value an .env already names), Helm agentHarness.enabled",
+      "gates": "the whole agent harness (ADR-OPS-06): the worker half of isAgentHarnessInfrastructureReady; the image starts python -m app.harness_main; the model gateway follows it unless MODEL_GATEWAY_ENABLED says otherwise; the MCP hub follows it for harness runs unless MCP_HUB says otherwise; off, Node serves none of the harness's Labs flags, public routes or browser surfaces and starts none of its background work; on, each org's behaviour follows the org predicate (ADR-OPS-08: this switch and the org's Labs ENABLE_AGENT_HARNESS), and only process and infrastructure start-up follows the switch alone",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/dispatch-capability-probe.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/binders/control-plane-capabilities.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/binders/control-plane-pin.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/composition.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/config.ts",
+          "backend/nodejs/apps/src/modules/control-plane/application/control-plane-pin.ts"
+        ],
+        "shell": [
+          "deployment/process_monitor.sh"
+        ],
+        "python": [
+          "backend/python/app/harness/mcp_hub/settings.py",
+          "backend/python/app/services/featureflag/platform_settings.py"
+        ]
+      },
+      "shipped": {
+        "compose": "true",
+        "composeHarness": "true",
+        "deploymentEnvTemplate": "true",
+        "backendEnvTemplate": "true",
+        "helm": {
+          "values": "agentHarness.enabled",
+          "value": true,
+          "renders": "true"
+        },
+        "installSh": "true on a fresh install or an upgrade whose .env does not name it; an .env that names it keeps its value (PIPESHUB_AGENT_HARNESS=on|off overrides)"
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "MODEL_GATEWAY_ENABLED",
+      "kind": "env",
+      "scope": "deployment",
+      "default": null,
+      "defaultFollows": "AGENT_HARNESS_WORKER_ENABLED",
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag). Unset or blank follows AGENT_HARNESS_WORKER_ENABLED",
+      "changedBy": "operator (Compose .env)",
+      "gates": "the model gateway process (python -m app.model_gateway_main) in the app container",
+      "readers": {
+        "shell": [
+          "deployment/process_monitor.sh"
+        ]
+      },
+      "shipped": {
+        "compose": "",
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "SANDBOX_MODE",
+      "kind": "env",
+      "scope": "deployment",
+      "default": null,
+      "values": [
+        "broker",
+        "docker",
+        "e2b",
+        "local"
+      ],
+      "parse": "trimmed, case-insensitive; unset or blank: no backend (fail closed, SandboxUnavailableError); an unknown value is refused, never guessed",
+      "changedBy": "operator (install.sh wizard, Compose .env, Helm config.sandboxMode)",
+      "gates": "run_code's backend; broker mode also provisions the worker credential and gateway keys with the harness off (prepareAgentHarnessAuthority)",
+      "dimension": "operator.SANDBOX_MODE",
+      "readers": {
+        "python": [
+          "backend/python/app/agent_loop_lib/sandbox/coding/settings.py"
+        ],
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/composition.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/transport/internal-listener.ts"
+        ]
+      },
+      "shipped": {
+        "compose": "docker",
+        "composeHarness": null,
+        "deploymentEnvTemplate": "broker",
+        "backendEnvTemplate": null,
+        "helm": {
+          "values": "config.sandboxMode",
+          "value": "",
+          "renders": "docker",
+          "presets": {
+            "values-local.yaml": "local"
+          }
+        },
+        "composeVariants": {
+          "beta/docker-compose.build.neo4j.slim.yml": "docker",
+          "beta/docker-compose.build.opensearch.neo4j.yml": "docker",
+          "docker-compose.build.neo4j.yml": "docker",
+          "docker-compose.prod-legacy.yml": "docker"
+        },
+        "installSh": "broker (slim and full; an existing broker|docker|e2b|local is kept); blank for eval"
+      },
+      "notes": "The legacy executor toolsets (app/sandbox/manager.py, through the same resolver) accept only local and docker: under broker they are hidden. query_main's health report echoes the raw value.",
+      "parser": "resolve_sandbox_mode"
+    },
+    {
+      "name": "SANDBOX_ALLOW_NETWORK",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (Helm config.sandboxAllowNetwork; Compose .env)",
+      "gates": "network for run_code's sandbox (package installs); public addresses only: private, link-local/metadata and egress-bridge addresses are firewalled (main #3780; under broker mode the broker installs the rules, and refuses open egress it cannot filter: egress_firewall_unavailable)",
+      "readers": {
+        "python": [
+          "backend/python/app/agent_loop_lib/sandbox/coding/settings.py",
+          "backend/python/app/agents/agent_loop/sandbox_bridge.py"
+        ]
+      },
+      "shipped": {
+        "compose": "false",
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": {
+          "values": "config.sandboxAllowNetwork",
+          "value": false,
+          "renders": "false"
+        },
+        "installSh": null
+      },
+      "notes": "F3 PQ-2 closed by main #3780: Helm, Compose and the code all default to false. With docker or broker mode, true reaches public addresses only (egress firewall; SANDBOX_EGRESS_ALLOW_CIDRS opens private ranges).",
+      "parser": "env_flag"
+    },
+    {
+      "name": "PIPESHUB_SANDBOX_ROOT",
+      "kind": "env",
+      "scope": "deployment",
+      "default": null,
+      "parse": "trimmed; unset or blank: each executor's root is <tempdir>/<name>-<uid> (pipeshub_sandbox, pipeshub_sandbox_docker, pipeshub_sandbox_broker); set: <value>/<name>. Every folder is made 0700 and used only when it is a real directory the running user owns that no other user can write; otherwise run_code refuses with SandboxRootUnsafe, naming the folder",
+      "changedBy": "operator (the query service's and the worker's environment)",
+      "gates": "where run_code's local, Docker and broker executors keep each run's files, and the only folders an artifact is read back from (R13-ROOT: a shared, guessable name under /tmp could be owned, linked or written by another user)",
+      "readers": {
+        "python": [
+          "backend/python/app/sandbox/roots.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Round 13: before it the roots were the fixed shared names pipeshub_sandbox, pipeshub_sandbox_docker and pipeshub_sandbox_broker under the temp folder, created with exist_ok and trusted as found."
+    },
+    {
+      "name": "AGENT_HARNESS_BUDGET_LEDGER",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (escape hatch)",
+      "gates": "the durable worker charging every model call to the run's budget-ledger account (P6.5); off: model calls are not metered by the worker and deep runs size no child shares from the ledger",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/assembly/model.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_ENGINE_RUNS",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the worker's environment)",
+      "gates": "whether a durable worker registers the engine kernel and serves its tool gateway (E1); off: it advertises no executor_engine, so Node never hands it an engine run",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/engines/worker.py"
+        ]
+      },
+      "shipped": {
+        "compose": "false",
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_ENGINE_SNAPSHOTS",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the worker's environment)",
+      "gates": "encrypted sandbox snapshots of engine runs (P5.9b): the sandbox's HOME caches, sealed with the session key, taken at autosave points and at turn end and restored before the engine opens on resume and in the session's next run; off: none taken or restored",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/engines/worker.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Off by default: the measured gain on the release images is small (P5.9b), so D1 ships it off.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "AGENT_HARNESS_OFFERING",
+      "kind": "env",
+      "scope": "deployment",
+      "default": "managed",
+      "values": [
+        "managed",
+        "oss"
+      ],
+      "parse": "trimmed, case-insensitive; unset or blank: managed (the offering the vendor rules restrict most); an unknown value is refused (InvalidOffering / the admission and the model gateway refuse to start)",
+      "changedBy": "operator (the install's offering; PipesHub has no licence key or edition marker to read it from)",
+      "gates": "which vendor-rule rows apply to model access (A1): a row limited to other offerings is refused offering_not_permitted at admission and at the model gateway",
+      "dimension": "operator.AGENT_HARNESS_OFFERING",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/access/offering.py"
+        ],
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/application/model-access-service.ts"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Replace with the licence or edition once one exists (A1 open item).",
+      "parser": "parse_offering"
+    },
+    {
+      "name": "CONTROL_PLANE_PIN",
+      "kind": "env",
+      "scope": "deployment",
+      "default": "on",
+      "values": [
+        "off",
+        "shadow",
+        "on"
+      ],
+      "parse": "trimmed, case-insensitive; unset or blank: on while the agent harness is switched on (AGENT_HARNESS_WORKER_ENABLED), off while it is off (ADR-OPS-06); any other value refuses to start (InvalidControlPlanePinError)",
+      "changedBy": "operator (rollout of the control plane, 05-migration-plan §1 rule 6: on by default since C4.04, after the shadow release recorded every gate; shadow, then off, to roll back)",
+      "gates": "shadow: the control plane routes each chat turn and pins each admission beside today's decision, resolves its effective set beside the agent's definition, and counts every difference in pipeshub_cp_shadow_mismatch_total{dimension} (routing among them, CPD-10), acting on none, with a startup warning (cp.pin_shadow); the Labs switches are read once per org head; on: the resolved run configuration routes the turn (a route it cannot resolve is 503 RUN_CONFIG_UNAVAILABLE, never today's loop) and the pin decides (CPD-5), and items not visible to the acting user are dropped at admission (CPD-7); off: neither",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/binders/control-plane-capabilities.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/binders/control-plane-pin.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/composition.ts",
+          "backend/nodejs/apps/src/modules/control-plane/application/control-plane-pin.ts"
+        ],
+        "python": [
+          "backend/python/app/model_gateway_main.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "One switch for CPD-5's pinner and CPD-7's effective-set shadow and visibility rule.",
+      "parser": "parse_control_plane_pin"
+    },
+    {
+      "name": "CONTROL_PLANE_POLICY_STORE",
+      "kind": "env",
+      "scope": "deployment",
+      "default": "dual",
+      "values": [
+        "dual",
+        "off",
+        "on"
+      ],
+      "parse": "trimmed, case-insensitive; unset or blank: dual; an unknown value is refused (Node refuses to start, naming the flag; a Python reader raises InvalidPolicyStoreMode); on is refused by Node unless CONTROL_PLANE_PIN is on, naming both flags: on stops writing the KV documents, which a run admitted without a pin and today's loop read while the pin is off or shadow",
+      "changedBy": "operator (rollback: off returns to the release before CPD-4; on, the flip, only together with CONTROL_PLANE_PIN=on and after the gates of impl/CPD-10-hot-path.md)",
+      "gates": "where the five admin policy documents live (CPD-4): dual, the control plane's policy store (Mongo cpPolicyLayers, read through the KV documents for an org not copied yet) with every save also written to the KV documents, and the routes answer ETag and honour If-Match; off, the KV documents only; on, the store only (the flip, CPD-10): Node stops writing the KV documents, requires resolved_config of every run whatever workers advertise (none is admitted without its pin, and the sweeper no longer relaxes that requirement), and no Python reader reads a KV policy document: a run without a pin and the agent-save check of an engine profile read the org's live layer, the model gateway reads it too, and today's loop takes its flow rules from X-PipesHub-Resolved or refuses the request",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/policy_documents.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Read once per process in both languages. Python decides in one function, policy_documents() (app/harness/policy_documents.py; cohesion C-31 holds every KV policy read behind it). Deleted with the flip release's deletions (impl/CPD-4-policy-store.md §4).",
+      "parser": "policyStoreModeFromEnv"
+    },
+    {
+      "name": "SANDBOX_WARM_POOL_MAX",
+      "kind": "env",
+      "scope": "deployment",
+      "default": 0,
+      "parse": "trimmed integer; unset or blank: 0 (off); a negative or non-integer value refuses to start (InvalidWarmPoolMax)",
+      "changedBy": "operator (the sandbox broker's environment)",
+      "gates": "the sandbox broker's warm pool of engine sandboxes (P5.9a): the most it keeps ready, below what probed host memory allows (min(ceiling, ceil(slots x 0.25), slots - held)); 0 keeps none. On, the broker reports warmPool=true and engine runs use the tar workspace strategy (a warm sandbox holds scratch mounts only)",
+      "readers": {
+        "python": [
+          "backend/python/app/sandbox_broker_main.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Tuning with an off value, listed as a flag because 0 turns the pool off. D1 decides what installs ship.",
+      "parser": "warm_pool_max"
+    },
+    {
+      "name": "MCP_STDIO_RUNNERS",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the query service's and the durable worker's environment)",
+      "gates": "where STDIO MCP servers run (P5.10, D23): on, every STDIO server for agents (discovery and sessions, legacy and durable) and the admin discover-tools routes runs in a per-owner MCP runner sandbox through the sandbox broker, and an instance no runner can serve is a load failure with the runner's reason code, never a host process; off, a child process of the query service or worker (today); SSE and streamable HTTP servers are unchanged either way",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/mcp_runner/settings.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_CONTEXT_COMPILER",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the durable worker's environment)",
+      "gates": "the context compiler on durable loop runs (P4.1/P4.2): each request compiled from the journal in fixed cache bands (sorted, append-only tools; volatile content in the tail; other principals' and external content quoted), and the reduction ladder on the provider's usage (context.cleared above 50% of the window, context.compacted through a metered summarising call above 80%); off: requests are assembled by the turn shaper as before (byte-equal)",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/assembly/context_compiler.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Off by default until P4.5 retires the legacy shapers it bypasses and recorded model runs show no regression (P4.6).",
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_AUTO_COMPACT",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the durable worker's environment; the off switch)",
+      "gates": "the reduction ladder's compact rung on durable loop runs whose requests are shaped (HARNESS_CONTEXT_COMPILER off, LC2FIX-2): when the provider counts a request above 80% of the model's window, everything before the last three replies is summarised through a metered call and journaled as context.compacted before the next request, which the shaped history then applies; no clearing rung, and below 80% requests are unchanged. With HARNESS_CONTEXT_COMPILER on, its own ladder applies; off: a shaped request is never reduced on its own (the person's /compact still is)",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/assembly/context_compiler.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "On by default (LC2FIX-2): a long durable chat never runs past its window. Kept apart from HARNESS_CONTEXT_COMPILER, whose cache-band layout stays off by P4.18's pre-registered cost rule.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_DEEP_ROUTING",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the durable worker's environment; the off switch)",
+      "gates": "DEEPROUTE: a durable loop run that may hand off to a coding engine (x.pipeshub.codeTask pinned, the org's \"Hand long work to the coding engine\" on) hands work bigger than a chat reply to the engine on its own: up front when the goal step judges the request research, analysis across many items, planning or a long report, and mid-run when the run crosses HARNESS_DEEP_ROUTING_THRESHOLDS while still gathering. Off: code_task is still offered for the model to choose, nothing hands off on its own",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/assembly/deep_route.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "On by default: deep work goes to the coding agent. Nothing routes where no engine is admitted (none enabled, gVisor floor not met, the person chose none): admission does not pin x.pipeshub.codeTask.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "ENABLE_AGENT_HARNESS",
+      "kind": "labs",
+      "scope": "org",
+      "default": false,
+      "parse": "featureFlags[key] === true (absent: the registry's defaultEnabled)",
+      "changedBy": "org admin (Labs: POST /api/v1/configurationManager/platform/settings, config:write + admin)",
+      "gates": "with AGENT_HARNESS_WORKER_ENABLED, the org predicate (ADR-OPS-08: Node orgHarnessOn, Python is_agent_harness_on, the browser selectAgentHarnessOn) that every harness surface and behaviour follows (the / commands, agent versions, export and import, erasure on delete, the internal upload cap, upload tracking, the classic loop's flow guard, the classic turn's pin, Continue privately, the harness's route families); durable runs for the org (HarnessRollout), and with them the default chat's Agent mode on the harness, collaborators' turns, the activity drawer and suggested next questions (CTL-5); off by default since BETA (2026-11-20; on by default from DUR3 until then): an admin turns it on, and an org that never saved a choice follows the new default; the effective-flags route reports the rollout decision under this key. The instance-wide stop is the env setting AGENT_HARNESS_KILL_SWITCH",
+      "dimension": "rollout.ENABLE_AGENT_HARNESS",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/platform-rollout-settings.ts"
+        ],
+        "python": [
+          "backend/python/app/services/featureflag/platform_settings.py"
+        ]
+      },
+      "shipped": null
+    },
+    {
+      "name": "AGENT_HARNESS_KILL_SWITCH",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the Node API's and the egress proxy's environment: Compose `AGENT_HARNESS_KILL_SWITCH`, Helm `agentHarness.killSwitch`); never a Labs setting",
+      "gates": "the instance-wide incident stop over ENABLE_AGENT_HARNESS: on, every new admission of every org goes to legacy (kill_switch); Node's operator stops hold it as the instance stop set by the deployment, and the sweeper cancels harness runs in flight (ADR-OPS-01 D4); an egress proxy started with it on binds no sandbox serving a harness run and drops the ones it restored (C6.14); queued next runs are refused",
+      "dimension": "rollout.AGENT_HARNESS_KILL_SWITCH",
+      "killSwitchFor": "ENABLE_AGENT_HARNESS",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/platform-rollout-settings.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/binders/operator-controls.ts"
+        ],
+        "python": [
+          "backend/python/app/harness/sandbox/egress_config.py"
+        ]
+      },
+      "shipped": {
+        "compose": "false",
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": {
+          "values": "agentHarness.killSwitch",
+          "value": false,
+          "renders": "false"
+        },
+        "installSh": null
+      },
+      "notes": "Until CTL-5 it was a Labs flag. A stored Labs value that was on reads as ENABLE_AGENT_HARNESS off for that org (flag-overrides.ts), and the next Labs save drops the key.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "ENABLE_SCHEDULED_RUNS",
+      "kind": "labs",
+      "scope": "org",
+      "default": false,
+      "parse": "featureFlags[key] === true; absent, unreadable or failing: false",
+      "changedBy": "org admin (Labs)",
+      "gates": "scheduled and triggered agent runs (P8a): off, every schedule route answers 404 scheduled_runs_disabled except delete, webhooks answer 404, and a due slot is refused scheduled_runs_disabled (recorded, the schedule stays active)",
+      "dimension": "rollout.ENABLE_SCHEDULED_RUNS",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/platform-rollout-settings.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/domain/labs-stages.ts"
+        ]
+      },
+      "shipped": null,
+      "notes": "Read at every request and every firing; turning it off stops the next firing without a restart."
+    },
+    {
+      "name": "ENABLE_KNOWLEDGE_PUBLICATIONS",
+      "kind": "labs",
+      "scope": "org",
+      "default": false,
+      "parse": "featureFlags[key] === true; absent, unreadable or failing: false",
+      "changedBy": "org admin (Labs)",
+      "gates": "knowledge publications (P2.13, D21): on, container owners and org admins publish a knowledge base or record group to an audience (answer_only or full, optional expiry) and retrieval admits (actor ∩ grant) ∪ the publications for the audience on every knowledge surface; off, the publication routes answer 404 publications_disabled and retrieval, raw reads and record access checks are today's",
+      "dimension": "rollout.ENABLE_KNOWLEDGE_PUBLICATIONS",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/platform-rollout-settings.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/domain/labs-stages.ts"
+        ],
+        "python": [
+          "backend/python/app/services/featureflag/platform_settings.py"
+        ]
+      },
+      "shipped": null,
+      "notes": "Read at every retrieval and every route call; turning it off stops publications at the next search without a restart. Service-account agents with it on: creator ∩ grant ∩ (caller ∪ published(caller))."
+    },
+    {
+      "name": "ENABLE_SKILLS",
+      "kind": "labs",
+      "scope": "org",
+      "default": true,
+      "parse": "featureFlags[key] is true; absent: true",
+      "changedBy": "org admin (Labs)",
+      "gates": "skill tools; the durable run's skill tool source honours it exactly as the legacy loop does (with the legacy env switch PIPESHUB_ENABLE_SKILLS, read in shared legacy code)",
+      "dimension": "rollout.ENABLE_SKILLS",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/domain/labs-stages.ts"
+        ],
+        "python": [
+          "backend/python/app/services/featureflag/platform_settings.py"
+        ]
+      },
+      "shipped": null,
+      "notes": "A product flag, not a harness flag: listed because harness code reads it (app/harness/assembly/tool_sources.py)."
+    },
+    {
+      "name": "ENABLE_USER_CONTEXT",
+      "kind": "labs",
+      "scope": "org",
+      "default": true,
+      "parse": "featureFlags[key] is true; absent: true",
+      "changedBy": "org admin (Labs)",
+      "gates": "the user's and org's names in the assistant's prompt; the durable chat assembly honours it as legacy does",
+      "dimension": "rollout.ENABLE_USER_CONTEXT",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/domain/labs-stages.ts"
+        ],
+        "python": [
+          "backend/python/app/services/featureflag/platform_settings.py"
+        ]
+      },
+      "shipped": null,
+      "notes": "A product flag, not a harness flag: listed because harness code reads it (app/harness/assembly/chat.py)."
+    },
+    {
+      "name": "ENABLE_ACTIONS",
+      "kind": "labs",
+      "scope": "org",
+      "default": true,
+      "parse": "featureFlags[key] is true; absent: true",
+      "changedBy": "org admin (Labs)",
+      "gates": "toolset actions (connector tools) on both loops and their management in the UI; a pin holds it as rollout.ENABLE_ACTIONS and a legacy turn's resolved header answers it (CPD-10)",
+      "dimension": "rollout.ENABLE_ACTIONS",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/domain/labs-stages.ts"
+        ],
+        "python": [
+          "backend/python/app/services/featureflag/platform_settings.py"
+        ]
+      },
+      "shipped": null,
+      "notes": "A product flag, not a harness flag: listed because the pin carries it (is_actions_enabled)."
+    },
+    {
+      "name": "ENABLE_MCP",
+      "kind": "labs",
+      "scope": "org",
+      "default": true,
+      "parse": "featureFlags[key] is true; absent: true (main #4430); a saved value that cannot be read: false",
+      "changedBy": "org admin (Labs)",
+      "gates": "MCP servers on both loops and their management in the UI; a pin holds it as rollout.ENABLE_MCP and a legacy turn's resolved header answers it (CPD-10)",
+      "dimension": "rollout.ENABLE_MCP",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/domain/labs-stages.ts"
+        ],
+        "python": [
+          "backend/python/app/services/featureflag/platform_settings.py"
+        ]
+      },
+      "shipped": null,
+      "notes": "A product flag, not a harness flag: listed because the pin carries it (is_mcp_enabled)."
+    },
+    {
+      "name": "ENABLE_NAMED_ENTITY_EXTRACTION",
+      "kind": "labs",
+      "scope": "org",
+      "default": false,
+      "parse": "featureFlags[key] is true; absent: false; not read (on) when the deployment sets HIGH_ACCURACY_MODE=true",
+      "changedBy": "org admin (Labs)",
+      "gates": "typed named-entity extraction while indexing, and the entity search tool agents are offered (search_by_entities) on both loops; a pin holds it as rollout.ENABLE_NAMED_ENTITY_EXTRACTION, so a durable run offers the tools its admission saw (WP-117)",
+      "dimension": "rollout.ENABLE_NAMED_ENTITY_EXTRACTION",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/domain/labs-stages.ts"
+        ],
+        "python": [
+          "backend/python/app/services/featureflag/platform_settings.py"
+        ]
+      },
+      "shipped": null,
+      "notes": "A product flag, not a harness flag: listed because the durable path reads it (app/harness/assembly/tool_sources.py, is_named_entity_extraction_enabled)."
+    },
+    {
+      "name": "agentHarness.modelFamilies",
+      "kind": "config",
+      "scope": "org",
+      "path": "/services/platform/settings",
+      "default": null,
+      "parse": "a string array narrows durable runs to those model families; null, absent or malformed allows every family; [] allows none",
+      "changedBy": "org admin (POST /api/v1/configurationManager/platform/settings)",
+      "gates": "which models' runs the harness admits (HarnessRollout)",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/configuration_manager/utils/util.ts"
+        ]
+      },
+      "shipped": null
+    },
+    {
+      "name": "/services/agentHarness/approvals",
+      "kind": "config",
+      "scope": "deployment",
+      "scopes": [
+        "deployment",
+        "agent"
+      ],
+      "path": "/services/agentHarness/approvals",
+      "default": null,
+      "parse": "layers default -> agents[agentKey], each may only narrow (contracts/harness/ext/pipeshub/approvals-document.schema.json, read alike in Node and Python: vectors/approvals.json); absent: allow every class; a malformed layer: ask for writes in that layer; an unknown top-level key, a non-object section or an unreadable document: ask for writes",
+      "changedBy": "operator (the configuration store): the deployment-wide default and agents[agentKey] (one agent's rule in every org)",
+      "editors": {
+        "orgAdmin": [],
+        "operator": [
+          "default",
+          "agents[agentKey]"
+        ]
+      },
+      "gates": "whether a durable run's write and execute tools wait for an approval",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/unpinned.py"
+        ],
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/encrypted-config-document-store.ts",
+          "backend/nodejs/apps/src/modules/agent-harness/domain/approvals.ts"
+        ]
+      },
+      "shipped": null
+    },
+    {
+      "name": "/services/agentHarness/memory",
+      "kind": "config",
+      "scope": "org",
+      "path": "/services/agentHarness/memory",
+      "default": null,
+      "parse": "orgs[orgId] = {mode: off|user|agent, review: auto|always}; absent, unreadable or malformed: off for that org (fail closed); one org's bad entry never hides another's",
+      "changedBy": "a memory policy source an edition binds (AGENT_HARNESS_MEMORY_SETTINGS); unbound, every org runs under PERSONAL_MEMORY (user, auto) and nothing writes the document",
+      "gates": "governed memory: whether durable runs are given the user's (and, under agent, the agent's) memories and may propose new ones, and whether kept memories wait for review",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/encrypted-config-document-store.ts"
+        ]
+      },
+      "shipped": null,
+      "notes": "Decided by Node alone, at admission and when a run's proposals settle; the worker reads only what its spec pins (x.pipeshub.memory). The user routes still list and delete existing memories when it is off."
+    },
+    {
+      "name": "/services/agentHarness/engineProfiles",
+      "kind": "config",
+      "scope": "org",
+      "path": "/services/agentHarness/engineProfiles",
+      "default": null,
+      "parse": "orgs[orgId].ceiling narrows the release profiles; absent: release defaults; unreadable: refused (unavailable / ProfileCeilingUnavailable)",
+      "changedBy": "an extension's org admin settings (none in this build: every org runs the release profiles); a widening is refused",
+      "gates": "per-org engine kill switch and limits (allowed engines, limits) for engine runs",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/unpinned.py"
+        ],
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/encrypted-config-document-store.ts"
+        ]
+      },
+      "shipped": null
+    },
+    {
+      "name": "/services/agentHarness/modelAccess",
+      "kind": "config",
+      "scope": "org",
+      "path": "/services/agentHarness/modelAccess",
+      "default": null,
+      "parse": "orgs[orgId] = {disabledRules, consumerPlans}: rows switched off, consumer plans opted into; absent: nothing switched off, consumer plans off; unreadable or malformed: refused (access_policy_unavailable)",
+      "changedBy": "an extension's org admin settings (none in this build: nothing is switched off, consumer plans off); only switches signed vendor rows off or opts into consumer-plan rows, never widens a vendor rule",
+      "gates": "per-org narrowing of the signed vendor rules for engine runs' model access (A1), read at admission and at every gateway call",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/unpinned.py"
+        ],
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/encrypted-config-document-store.ts"
+        ]
+      },
+      "shipped": null
+    },
+    {
+      "name": "/services/agentHarness/sessionRetention",
+      "kind": "config",
+      "scope": "org",
+      "path": "/services/agentHarness/sessionRetention",
+      "default": null,
+      "parse": "orgs[orgId].days; absent: no automatic expiry; unreadable: that sweep pass deletes nothing",
+      "changedBy": "a retention source an edition binds (AGENT_HARNESS_SESSION_RETENTION); unbound, no org sets a period (NO_RETENTION) and nothing writes the document",
+      "gates": "automatic erasure of conversations idle longer than the period",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/encrypted-config-document-store.ts"
+        ]
+      },
+      "shipped": null,
+      "notes": "The no-expiry default is ENGINES-PLAN decision 8's open product question (E7)."
+    },
+    {
+      "name": "/services/agentHarness/repositoryCache",
+      "kind": "config",
+      "scope": "deployment",
+      "path": "/services/agentHarness/repositoryCache",
+      "default": null,
+      "parse": "{totalMb, perRepoMb, concurrency, usedMb, diskLow, updatedAt}: the worker's repository cache as it last reported it (sizes from HARNESS_REPO_*, its use, and diskLow: its volume has less than 10% free); absent: no worker has reported. Only the worker writes it",
+      "changedBy": "the harness worker (app.harness.repositories.CacheStatusPublisher, on change or at most once a minute)",
+      "gates": "nothing is decided from it: the worker's own disk guard refuses new fetches below 10% free",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/repositories.py"
+        ]
+      },
+      "shipped": null,
+      "notes": "A status, not a setting: an admin changes the cache with the HARNESS_REPO_* environment of the worker."
+    },
+    {
+      "name": "engineProfile",
+      "kind": "config",
+      "scope": "agent",
+      "path": "agent document: engineProfile (AgentRunDefinition.engineProfile)",
+      "default": null,
+      "parse": "present: the agent runs on an engine with this narrowing under the org ceiling; absent: the loop. Stored as JSON text on both graph backends; the agent's pinned org cloud account (modelAccountId, cloud/<id>) beside it",
+      "changedBy": "agent author (POST /api/v1/agents/create, PUT /api/v1/agents/{agentKey}; parsed and checked under the org ceiling on write, a widening refused ENGINE_PROFILE_WIDENING)",
+      "gates": "whether an agent's durable runs use an engine",
+      "readers": {
+        "python": [
+          "backend/python/app/agents/engine_settings.py",
+          "backend/python/app/agents/run_definition.py"
+        ],
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/application/run-admission-service.ts"
+        ]
+      },
+      "shipped": null
+    },
+    {
+      "name": "chatMode",
+      "kind": "request",
+      "scope": "request",
+      "default": "auto",
+      "parse": "an agent's mode is durable only when it is in DURABLE_CHAT_MODES (auto, deep, quick, react); the assistant's when in DURABLE_ASSISTANT_CHAT_MODES (internal_search, web_search); anything else stays legacy",
+      "changedBy": "the user, per request",
+      "gates": "which requests of a durable org run durably; deep runs its sub-agents as durable child runs",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/domain/rollout.ts"
+        ]
+      },
+      "shipped": null
+    },
+    {
+      "name": "HARNESS_OTEL",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (Node's, the durable worker's and the model gateway's environment)",
+      "gates": "OpenTelemetry traces of durable runs (P9): on, Node records each run's admission span and the worker and model gateway their invoke_agent, sandbox acquire, execute_tool and chat spans (GenAI semantic conventions), exported over OTLP/HTTP to OTEL_EXPORTER_OTLP_ENDPOINT; off, no-op tracers and no OpenTelemetry import. Spans carry ids, enums, token counts and timings, never content (see OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT)",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/telemetry.py"
+        ],
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/telemetry/otlp-http-tracer.ts"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Off by default. A worker or gateway with it on but without the OTLP exporter installed keeps running untraced and logs telemetry.unavailable once.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the durable worker's and the model gateway's environment)",
+      "gates": "content on harness spans (P9, the GenAI conventions' own opt-in): on, the chat span carries gen_ai.input.messages and gen_ai.output.messages and the execute_tool span gen_ai.tool.call.arguments and gen_ai.tool.call.result; off, no prompt, answer or tool argument is recorded. Read only when HARNESS_OTEL is on",
+      "dimension": "operator.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/telemetry.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "The OpenTelemetry instrumentation libraries' variable name, so a collector's operators recognise it; privacy: keep it off unless traces are stored where conversation content may be.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "MCP_HUB",
+      "kind": "env",
+      "scope": "deployment",
+      "default": null,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag). Unset or blank follows AGENT_HARNESS_WORKER_ENABLED for the agent harness's own runs only (admission pins, assembly, and the MCP calls of a run the harness assembled, the engines' through the Tool Gateway included); main's classic agent chat, builder and agent save keep x4's behaviour unless MCP_HUB is set (D-MCP-1)",
+      "changedBy": "operator (the query service's, the durable worker's and the connectors service's environment)",
+      "gates": "the MCP hub (P2.8), for agents' MCP servers (legacy and durable) and the connectors service's discovery routes: on, SSE and streamable-HTTP URLs are resolved once, refused when they reach a loopback, link-local or metadata address, or a private one the deployment blocks (main's URL guard, reason blocked), and pinned; discovered tool lists are cached per (org, instance, credential owner, instance configuration) and dropped on tools/list_changed; MCP sessions (HTTP, and STDIO servers in P5.10 runners) are pooled per (org, instance, credential owner) across requests; tool names are checked against the MCP rule and exported as valid function names; only tools whose name, description and schema an admin approved (on by the default, an install's instances that predate it are baselined once: their current tools approved, except those the description scanner flags) (GET/PUT /api/v1/mcp-servers/instances/{instanceId}/manifest) are registered, a changed one is disabled and the drift recorded; off, today: per-request sessions, no cache, no approval gate, names as they are, URLs connected as configured, and the manifest routes answer 404",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/mcp_hub/settings.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "parser": "env_flag",
+      "defaultFollows": "AGENT_HARNESS_WORKER_ENABLED"
+    },
+    {
+      "name": "CONTROL_PLANE_CREDENTIALS",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the connectors service's, the query service's and the durable worker's environment), after the credential migration (python -m app.harness.credentials.migrate --apply) and again after the flip",
+      "gates": "where toolset and MCP credentials live (CPD-8): on, they are read from control-plane bindings first (a revoked binding is final, a copy older than its old record is not served), the legacy credential routes write through Node's audited binder (the old paths become read-only, narrowings excepted), and one TokenRefresher renews bindings in place of the toolset and MCP refresh services; off, today: the old paths and the two refresh services",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/credentials/read_through.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "EGRESS_CONNECT_TUNNELS",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the egress proxy's and the harness worker's environment; deployment/docker-compose/docker-compose.egress-tunnels.yml sets it on both and gives the proxy, and only the proxy, a network off the host; the worker advertises `vendor_signin`, a person's own vendor sign-in, only with it on: SIGNGAP)",
+      "gates": "opaque CONNECT tunnels in the egress proxy (P5.4b): on, a sandbox may open a TLS tunnel to a host:port on its own egress allowlist that has no token route and is not a gateway; the name is resolved once through P2.8's SSRF policy, every address checked (private, loopback, link-local and metadata, CGNAT, blocked CIDRs refused: destination_private_address), the tunnel dials only the checked addresses, an IP literal is refused (tunnel_ip_literal), and each tunnel is audited (egress.tunnel_opened / egress.tunnel_closed); the proxy cannot see inside the tunnel, so the credential-shape scan no longer covers that traffic; off, as P5.4: CONNECT is refused tunnel_refused and HTTPS from a sandbox has no way out",
+      "dimension": "operator.EGRESS_CONNECT_TUNNELS",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/sandbox/egress_config.py"
+        ],
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/domain/website-settings.ts"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "EGRESS_STATE_REQUIRED",
+      "kind": "env",
+      "scope": "deployment",
+      "default": null,
+      "defaultFollows": "AGENT_HARNESS_STATE_URL",
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag). Unset or blank follows whether AGENT_HARNESS_STATE_URL is set: true where it is (Compose, Helm), false where it is not (a from-source run)",
+      "changedBy": "operator (the egress proxy's environment)",
+      "gates": "whether the egress proxy may start without its durable state (P5.4b, H1): on, a proxy that cannot reach Redis or has no SECRET_KEY at start refuses to start (egress_state_unavailable, logged once at error; Compose restarts it until Redis answers), so it never serves on in-memory bindings a restart would lose; off, as P5.4b: it starts with in-memory bindings and logs egress.state_unavailable",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/sandbox/egress_state.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Compose sets AGENT_HARNESS_STATE_URL for the proxy, so the proxy there requires its store unless EGRESS_STATE_REQUIRED=false; the generic python -m harness_core.sandbox.egress entry reads no flag and keeps memory state.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "INSTANCE_TOOL_IDS",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the query service's, the durable worker's and the connectors service's environment)",
+      "gates": "instance-scoped tool identity (P2.2): on, an agent may bind two instances of one toolset type (and two MCP instances of one type), each instance loads with its own credentials, and when a type has several instances each instance's tools reach the model and the engines under names carrying the instance's tag (at most 51 characters); one instance per type keeps today's names; off, today: toolsets are keyed by type on save and load (a second instance merges into the first), two MCP instances of one type are refused, names as they are. Either way a run pinned to a type-keyed toolset resolves it against the agent's one binding of that type, and the migration (python -m app.harness.tool_identity.migrate) is available",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/tool_identity/settings.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_RECONCILE",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the durable worker's and the Node API's environment)",
+      "gates": "reconcile hooks for unknown effects (P2.9): on, a non-idempotent write whose outcome is unknown (a crash after its intent, a lost acknowledgement) is decided by a read of the provider for the tools with a hook (Jira create_issue by its effect label, Slack send_message by its message metadata), after the R-31 window (intent time + tool timeout + lease), never by a write: applied journals the outcome from the evidence, not applied re-calls once, still unknown parks it for a person; hooked writes carry the effect tag; off: every unknown effect is parked for a person and requests carry no tag. The chat's unknown-effect card, where the person the run acts for says whether it happened, is served whatever this flag says (UX3)",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/reconcile/hooks.py"
+        ],
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/config.ts"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "The worker reconciles and stamps; Node reports it in the effective flags (`harnessReconcile`). The console is served either way (UX3). A worker without it still honours a console or chat resolution (answered = applied, approved = re-call, cancelled = abandon).",
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_RUN_HISTORY_BY_REFERENCE",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the Node API's environment; off only to roll back to a release before PERF-B)",
+      "gates": "writing a run's conversation history beside its document (PERF-B, QA22-F2): on, admission seals the history it read into the payload store and the stored run input names it (`input.historyRef`); off, admission writes the history into the run document as releases before PERF-B did, sealed with the org's data key since GAPS2 (`input.historySealed`). Reading is not gated: this release claims runs of either form. A release before PERF-B cannot read the reference and its worker refuses such a claim, so before rolling back turn this off, let the queued follow-up turns be claimed, then roll back",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/config.ts"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Expand/contract: the reader ships on, the writer behind this switch. With it off a long tool-heavy session grows its run documents again (QA22-F2) and stops at MongoDB's 16 MB document limit.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_FLOW_GUARD",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the durable worker's environment)",
+      "gates": "the flow rule (SEC1): on, once a run's context holds private data (a record any run of its session read, or content of unknown provenance such as an MCP or connector result), a call that sends data outside the organization (a write or execute tool with an external sink: every MCP tool, a Slack post, a Jira create; and, since FG2, a read whose request carries what the model chose to an outside host: fetch_url, web search) is held for a person's approval (HARNESS_FLOW_GUARD_LEVEL=ask, the default) or refused with tool.denied{rule: flow_external_write} (deny); it narrows the run's approval policy and never widens it; off: approvals decide by effect class alone (the operator's off switch; an org's own flow rule still applies, SEC2 O-1). On by default since UX1. Today's loop (planExecute, Universal Agent Mode, project chats, regenerate through the API, the kill switch) applies the same rules since UX3, and an org's or agent's own rule with this switch off since FG2: it cannot ask, so such a call after the request saw any tool result that may carry private content (a send's included; web pages and the loop's own machinery do not), or in a conversation with history, is refused with approval_unavailable",
+      "readers": {
+        "node": [
+          "backend/nodejs/apps/src/modules/agent-harness/config.ts"
+        ],
+        "python": [
+          "backend/python/app/control_plane/runtime/deployment.py"
+        ]
+      },
+      "shipped": {
+        "compose": "true",
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": "true",
+        "helm": {
+          "values": "agentHarness.flowGuard",
+          "value": true,
+          "renders": "true"
+        },
+        "installSh": null
+      },
+      "notes": "The worker reads it when it assembles each attempt, for loop and engine runs alike. Engine runs already ask for every write (ENGINE_APPROVALS), so on them only the deny level changes what happens.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_PROVIDER_STATE",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the durable worker's environment)",
+      "gates": "provider state on durable loop runs (P4.3): the direct transports capture what a provider needs back on the next request (Anthropic thinking blocks with their signatures, Responses reasoning items with encrypted content) on the assistant message, journaled with the response (rawRef), and send it back on their own wire only; off: nothing is captured and every request and journaled blob is byte-equal to before",
+      "dimension": "operator.HARNESS_PROVIDER_STATE",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/assembly/model.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "parser": "env_flag"
+    },
+    {
+      "name": "HARNESS_MODEL_FALLBACK",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the durable worker's and the Model Gateway's environment: both run in the `pipeshub-ai` container)",
+      "gates": "G-48 (WP-100): a run whose model provider is down (a 5xx, a timeout, no connection) moves to the next alternate model its pin names for that failure (`ModelRoute.on`; Node pins at most two of the agent's other models, never on a content filter), journaled as model.fallback before that model is called, and the chat says which model answered: a loop run in the durable kernel, an engine's calls in the Model Gateway (the same `ModelPolicy`); the worker advertises `model_fallback` only while it is on, so Node pins alternates only then; off: one route, a provider outage fails or yields the run as before. It replaced `HARNESS_MODEL_POLICY` (P4.7), which gated nothing else once same-route retries ran without it (P4.9 D-1)",
+      "readers": {
+        "python": [
+          "backend/python/app/harness/assembly/model_policy.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "On by default (WP-100): the alternates are models the agent's owner granted, every call is still checked against the run's budget and the org's access rules, and the move is shown; an agent with one model has no alternate.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "MCP_ALLOW_CUSTOM_STDIO",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the query service's, the durable worker's and the connectors service's environment; Compose .env, Helm config.mcpAllowCustomStdio)",
+      "gates": "custom (non-catalog) STDIO MCP servers (#3887): on, an admin-entered command runs inside the app container with its privileges; off, creating, updating or launching one is refused custom_stdio_disabled; catalog and remote (HTTP) servers are unaffected",
+      "dimension": "operator.MCP_ALLOW_CUSTOM_STDIO",
+      "readers": {
+        "python": [
+          "backend/python/app/agents/mcp/stdio_policy.py"
+        ]
+      },
+      "shipped": {
+        "compose": "false",
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": {
+          "values": "config.mcpAllowCustomStdio",
+          "value": false,
+          "renders": "false"
+        },
+        "installSh": null
+      },
+      "notes": "Main's switch for the agent loop, read on both loops; registered by CPS (R2 F13) so C-16 covers it. Before CPS it was parsed on its own: only the exact value true was on.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "PIPESHUB_ENABLE_SKILLS",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the query service's and the durable worker's environment)",
+      "gates": "the skills subsystem on both loops (the skill tools, preloading, learning, builtin seeding), under the org's Labs ENABLE_SKILLS; off, no run gets skills whatever the org set",
+      "readers": {
+        "python": [
+          "backend/python/app/agents/agent_loop/skills_wiring.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Main's switch for the agent loop, read on both loops; registered by CPS (R2 F13) so C-16 covers it. Before CPS it was parsed on its own: anything but true was off.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "PIPESHUB_ENABLE_CODE_EXECUTION",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the query service's and the durable worker's environment)",
+      "gates": "the code-execution tools (run_code and the legacy coding and database sandboxes) on both loops; a request's enable_code_execution overrides it; an override that cannot be read turns code execution off (fail closed)",
+      "readers": {
+        "python": [
+          "backend/python/app/modules/agents/qna/tool_system.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Main's switch for the agent loop, read on both loops; registered by CPS (R2 F13) so C-16 covers it. Before CPS it was parsed on its own: an unrecognised value was on.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "PIPESHUB_SKILLS_AUTO_APPROVE",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the query service's and the durable worker's environment)",
+      "gates": "learning-loop skill candidates approved without review when PIPESHUB_SKILLS_WRITE_APPROVAL is off; with write approval on (the default) every candidate waits for an org admin",
+      "readers": {
+        "python": [
+          "backend/python/app/agents/agent_loop/skills/manager_factory.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Main's switch for the agent loop, read on both loops; registered by CPS (R2 F13) so C-16 covers it. Before CPS it was parsed on its own: anything but true was off.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "PIPESHUB_SKILLS_WRITE_APPROVAL",
+      "kind": "env",
+      "scope": "deployment",
+      "default": true,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the query service's and the durable worker's environment)",
+      "gates": "learning-loop skill candidates wait for review (approve or reject: org admins only since CPS); off, PIPESHUB_SKILLS_AUTO_APPROVE decides",
+      "readers": {
+        "python": [
+          "backend/python/app/agents/agent_loop/skills/manager_factory.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Main's switch for the agent loop, read on both loops; registered by CPS (R2 F13) so C-16 covers it. Before CPS it was parsed on its own: anything but true was off.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "PIPESHUB_SKILLS_LEARNING_ENABLED",
+      "kind": "env",
+      "scope": "deployment",
+      "default": false,
+      "parse": "env_flag: 1/true/yes/on or 0/false/no/off, any case; unset or blank: the default; any other value refuses to start (InvalidEnvFlag / InvalidEnvFlagError / the entrypoint exits, naming the flag)",
+      "changedBy": "operator (the query service's and the durable worker's environment)",
+      "gates": "the skill-learning loop: after a run, a skill writer proposes candidates from it (both loops); off, no candidate is learned",
+      "readers": {
+        "python": [
+          "backend/python/app/agents/agent_loop/skills/manager_factory.py"
+        ]
+      },
+      "shipped": {
+        "compose": null,
+        "composeHarness": null,
+        "deploymentEnvTemplate": null,
+        "backendEnvTemplate": null,
+        "helm": null,
+        "installSh": null
+      },
+      "notes": "Main's switch for the agent loop, read on both loops; registered by CPS (R2 F13) so C-16 covers it. Before CPS it was parsed on its own: anything but true was off.",
+      "parser": "env_flag"
+    },
+    {
+      "name": "PIPESHUB_AGENT_TRANSPORT",
+      "kind": "env",
+      "scope": "deployment",
+      "default": "langchain",
+      "values": [
+        "direct",
+        "langchain"
+      ],
+      "parse": "trimmed, case-insensitive; unset or blank: langchain; direct or azure_direct: direct; any other value is logged and runs langchain",
+      "changedBy": "operator (the query service's and the durable worker's environment; Compose .env, Helm config.agentTransport, install.sh)",
+      "gates": "the model transport of the agent loop: langchain, or direct (the provider SDK transports; azure_direct is a deprecated alias); store false on the shared Responses transport (A-28) applies under direct",
+      "readers": {
+        "python": [
+          "backend/python/app/agents/agent_loop/factory.py"
+        ]
+      },
+      "shipped": {
+        "compose": "langchain",
+        "composeHarness": null,
+        "deploymentEnvTemplate": "langchain",
+        "backendEnvTemplate": null,
+        "helm": {
+          "values": "config.agentTransport",
+          "value": "langchain",
+          "renders": "langchain"
+        },
+        "installSh": "langchain"
+      },
+      "notes": "Main's switch; registered by CPS (R2 F13). An unknown value costs the optimisation, not the service, so it is not refused.",
+      "parser": "agent_transport"
+    }
+  ],
+  "features": [
+    {
+      "name": "durable_chat",
+      "summary": "Chat and agent runs on the durable harness (resumable, crash-safe)",
+      "requires": [
+        {
+          "flag": "REPLICA_SET_AVAILABLE",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "infrastructure_unavailable"
+        },
+        {
+          "flag": "AGENT_HARNESS_RELAY_ENABLED",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "infrastructure_unavailable"
+        },
+        {
+          "flag": "AGENT_HARNESS_WORKER_ENABLED",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "infrastructure_unavailable"
+        },
+        {
+          "condition": "journal_durable",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "infrastructure_unavailable",
+          "note": "the startup probe (probeJournalDurability): a standalone or PSA journal keeps the harness off. `shipped` is what it answers on the MongoDB each Compose file and Helm preset deploys (C-16 FM-10 runs the probe on it); a Helm key `a + b` is b layered on a, every preset on values.yaml",
+          "shipped": {
+            "compose": "majority",
+            "helm": {
+              "values.yaml": "arbiter",
+              "values-local.yaml": "majority",
+              "values-cloud.yaml": "majority",
+              "values-eks.yaml": "majority",
+              "values-eks.yaml + values-eks-single-az.yaml": "majority"
+            }
+          }
+        },
+        {
+          "flag": "AGENT_HARNESS_KILL_SWITCH",
+          "on": false,
+          "whenNot": "legacy",
+          "reason": "kill_switch"
+        },
+        {
+          "flag": "ENABLE_AGENT_HARNESS",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "org_disabled"
+        },
+        {
+          "flag": "agentHarness.modelFamilies",
+          "on": "the model's family is allowed",
+          "whenNot": "legacy",
+          "reason": "model_family_not_allowed"
+        },
+        {
+          "flag": "chatMode",
+          "on": "a durable chat mode",
+          "whenNot": "legacy",
+          "reason": "chat_mode_not_supported"
+        }
+      ],
+      "whenOff": "legacy",
+      "order": "infrastructure, kill switch, org flag, model families, chat mode: the first unmet condition's reason is reported"
+    },
+    {
+      "name": "deep_durable",
+      "summary": "Deep mode's sub-agents as durable child runs (K-L)",
+      "requires": [
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "the durable_chat reason"
+        },
+        {
+          "flag": "chatMode",
+          "on": "deep",
+          "whenNot": "legacy",
+          "reason": "chat_mode_not_supported (planExecute)"
+        },
+        {
+          "condition": "worker_feature_deep_mode",
+          "on": true,
+          "whenNot": "waits",
+          "reason": "the run is routed only to workers advertising deep_mode"
+        }
+      ],
+      "whenOff": "legacy"
+    },
+    {
+      "name": "approvals",
+      "summary": "Write and execute tools of durable runs ask before running",
+      "requires": [
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "the durable_chat reason"
+        },
+        {
+          "flag": "/services/agentHarness/approvals",
+          "on": "writes: ask in the deployment default, the org's rule or the rule of the run's agent",
+          "whenNot": "allow",
+          "reason": "absent: allow (today's behaviour); unreadable or malformed: ask (fail closed)"
+        }
+      ],
+      "whenOff": "allow"
+    },
+    {
+      "name": "governed_memory",
+      "summary": "Durable runs are given the facts and preferences their actor (or agent) kept, labelled and checked against the actor's access, and may propose new ones for review (P7.3)",
+      "requires": [
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "absent",
+          "reason": "the legacy route has no memory"
+        },
+        {
+          "flag": "/services/agentHarness/memory",
+          "on": "mode user or agent for the org",
+          "whenNot": "absent",
+          "reason": "absent: off (today's behaviour); unreadable or malformed: off (fail closed)"
+        },
+        {
+          "condition": "worker_feature_governed_memory",
+          "on": true,
+          "whenNot": "waits",
+          "reason": "a run whose spec pins memory is routed only to workers advertising governed_memory"
+        }
+      ],
+      "whenOff": "absent"
+    },
+    {
+      "name": "collaborator_turns",
+      "summary": "Collaborators send turns in a shared conversation, each run acting as its sender; a message to someone else's running task waits as the next run (SS2)",
+      "requires": [
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "collaborator_turns_disabled (the legacy route refuses collaborators: it cannot filter history per sender)"
+        },
+        {
+          "condition": "worker_feature_session_roles",
+          "on": true,
+          "whenNot": "waits",
+          "reason": "a run in a shared context is routed only to workers advertising session_roles"
+        }
+      ],
+      "whenOff": "refused"
+    },
+    {
+      "name": "scheduled_runs",
+      "summary": "An agent runs on a cron schedule or on a webhook or connector event, as the user who created the schedule, re-authorized at every firing; each slot fires once (P8a)",
+      "requires": [
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "rollout_legacy (a firing whose org rollout says legacy is refused, not run on the legacy route)"
+        },
+        {
+          "flag": "ENABLE_SCHEDULED_RUNS",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "scheduled_runs_disabled"
+        },
+        {
+          "condition": "actor_active",
+          "on": "the schedule's user is not deleted or disabled, is a person, in an active org",
+          "whenNot": "refused",
+          "reason": "actor_deleted (schedule disabled), actor_disabled / actor_not_person / org_inactive (schedule paused)"
+        },
+        {
+          "condition": "agent_access",
+          "on": "the user may still run the agent",
+          "whenNot": "refused",
+          "reason": "agent_forbidden (schedule paused)"
+        }
+      ],
+      "whenOff": "refused"
+    },
+    {
+      "name": "knowledge_publications",
+      "summary": "Container owners publish a knowledge base or record group to an audience, answer_only or full; retrieval admits what is published to the reader, raw reads of answer_only content are refused, and labels name the publication so it is never re-shared outside the audience (P2.13, D21)",
+      "requires": [
+        {
+          "flag": "ENABLE_KNOWLEDGE_PUBLICATIONS",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "publications_disabled (routes 404; retrieval as today)"
+        }
+      ],
+      "whenOff": "legacy"
+    },
+    {
+      "name": "continue_privately",
+      "summary": "A participant copies a shared conversation into a private one: their own turns, copies of the citations, artifacts and (for the owner) workspace files they may see, and a placeholder for everyone else's turns (SS3)",
+      "requires": [
+        {
+          "flag": "REPLICA_SET_AVAILABLE",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "503: the fork writes the journal and needs the session data keys"
+        },
+        {
+          "flag": "AGENT_HARNESS_RELAY_ENABLED",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "503: the fork writes the journal and needs the session data keys"
+        },
+        {
+          "flag": "AGENT_HARNESS_WORKER_ENABLED",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "503: the fork writes the journal and needs the session data keys"
+        },
+        {
+          "condition": "journal_durable",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "503: the fork writes the journal and needs the session data keys"
+        },
+        {
+          "condition": "participant",
+          "on": "the caller takes part in the conversation",
+          "whenNot": "refused",
+          "reason": "404, as for a conversation they cannot read"
+        },
+        {
+          "condition": "no_active_run",
+          "on": "no task is running in the conversation",
+          "whenNot": "refused",
+          "reason": "run_active (409)"
+        }
+      ],
+      "whenOff": "refused"
+    },
+    {
+      "name": "engine_run",
+      "summary": "An agent whose definition carries an engineProfile runs on an engine (E4a admission, E1 durable execution)",
+      "placeholder": true,
+      "openItem": "OI-4",
+      "requires": [
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "the durable_chat reason"
+        },
+        {
+          "flag": "engineProfile",
+          "on": "present on the agent",
+          "whenNot": "loop",
+          "reason": "absent: the agent runs on the loop"
+        },
+        {
+          "flag": "/services/agentHarness/engineProfiles",
+          "on": "the org ceiling's engines admit a released engine (release profiles in order: opencode, then Codex; the first admitted one runs)",
+          "whenNot": "refused",
+          "reason": "admission refused profile_widening",
+          "note": "AGENT_HARNESS_ENGINE_PROFILE_WIDENING; an unreadable ceiling refuses unavailable"
+        },
+        {
+          "flag": "HARNESS_ENGINE_RUNS",
+          "on": true,
+          "whenNot": "queued",
+          "reason": "no worker advertises executor_engine: the run waits for one (admission requirement)"
+        },
+        {
+          "feature": "sandbox_plane",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "no broker: the worker plans no engines (engine.worker.unavailable broker_unavailable)"
+        },
+        {
+          "condition": "model_api",
+          "on": "the model gateway serves a wire the chosen engine speaks (chat completions for opencode, Responses for Codex; EngineControllerConfig.model_apis, both by default)",
+          "whenNot": "refused",
+          "reason": "model_api_unavailable",
+          "note": "E3 chat completions and E3b /v1/responses; checked before a sandbox is acquired (E8 FB-9)"
+        },
+        {
+          "feature": "model_gateway",
+          "on": true,
+          "whenNot": "failed",
+          "reason": "the engine's model calls are refused; the run fails with the engine's error code"
+        }
+      ],
+      "whenOff": "loop"
+    },
+    {
+      "name": "model_access_routes",
+      "summary": "An engine run reaches its model through a pinned access route: the org's key, the user's own key or an org cloud account, under the signed vendor rules (A1)",
+      "requires": [
+        {
+          "feature": "engine_run",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "account_requires_engine",
+          "note": "a loop run naming a model account is refused; without one it runs on the configured models as before"
+        },
+        {
+          "condition": "vendor_rules",
+          "on": "the signed release rules verify against the release key in the code",
+          "whenNot": "failClosed",
+          "reason": "vendor_rules_invalid"
+        },
+        {
+          "flag": "AGENT_HARNESS_OFFERING",
+          "on": "an offering the deciding vendor row lists",
+          "whenNot": "refused",
+          "reason": "offering_not_permitted"
+        },
+        {
+          "flag": "/services/agentHarness/modelAccess",
+          "on": "the deciding row not switched off (consumer-plan rows: opted into)",
+          "whenNot": "refused",
+          "reason": "org_policy_refused",
+          "note": "an unreadable document refuses access_policy_unavailable"
+        }
+      ],
+      "whenOff": "refused"
+    },
+    {
+      "name": "sandbox_plane",
+      "summary": "Sandbox broker and egress proxy containers (Compose profile sandbox-broker, Helm sandboxBroker)",
+      "requires": [
+        {
+          "flag": "SANDBOX_MODE",
+          "on": "broker",
+          "whenNot": "absent",
+          "reason": "the broker and proxy are not deployed (Compose profile sandbox-broker follows SANDBOX_MODE broker)"
+        }
+      ],
+      "whenOff": "absent"
+    },
+    {
+      "name": "run_code",
+      "summary": "Today's run_code / coding sandbox tools",
+      "requires": [
+        {
+          "flag": "SANDBOX_MODE",
+          "on": "broker|docker|e2b|local",
+          "whenNot": "hidden",
+          "reason": "SandboxUnavailableError: the sandbox tools are dropped, the chat still answers"
+        }
+      ],
+      "whenOff": "hidden"
+    },
+    {
+      "name": "mcp_stdio_runners",
+      "summary": "STDIO MCP servers run in MCP-runner sandboxes (P5.10, D23), not as child processes of PipesHub's services",
+      "requires": [
+        {
+          "flag": "MCP_STDIO_RUNNERS",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "off: STDIO servers start as child processes of the query service or worker, as today"
+        },
+        {
+          "feature": "sandbox_plane",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "runner_unavailable (cause broker_unreachable): the instance is a load failure and never starts on the host"
+        },
+        {
+          "condition": "runner_isolation",
+          "on": "the broker offers a mode at or above MCP_RUNNER_ISOLATION (default docker)",
+          "whenNot": "refused",
+          "reason": "runner_isolation_unavailable"
+        },
+        {
+          "condition": "egress_proxy",
+          "on": "present, for an instance that lists egressHosts (none: the runner has no network)",
+          "whenNot": "refused",
+          "reason": "runner_unavailable (cause egress_proxy_missing)"
+        }
+      ],
+      "whenOff": "legacy"
+    },
+    {
+      "name": "context_compiler",
+      "summary": "Durable loop requests compiled in cache bands with a journaled reduction ladder (P4.1, P4.2)",
+      "requires": [
+        {
+          "flag": "HARNESS_CONTEXT_COMPILER",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "off: the turn shaper assembles every request as before"
+        },
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "the compiler runs only in the durable worker's kernel"
+        }
+      ],
+      "whenOff": "legacy"
+    },
+    {
+      "name": "model_gateway",
+      "summary": "The model gateway process engines reach through the egress proxy",
+      "requires": [
+        {
+          "flag": "MODEL_GATEWAY_ENABLED",
+          "on": true,
+          "whenNot": "absent",
+          "reason": "the process is not started (unset follows AGENT_HARNESS_WORKER_ENABLED)"
+        }
+      ],
+      "whenOff": "absent"
+    },
+    {
+      "name": "budget_ledger",
+      "summary": "Durable runs charge model calls to budget-ledger accounts (P6.5)",
+      "requires": [
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "the durable_chat reason"
+        },
+        {
+          "flag": "AGENT_HARNESS_BUDGET_LEDGER",
+          "on": true,
+          "whenNot": "unmetered",
+          "reason": "the worker leaves model calls unmetered (operator escape hatch)"
+        }
+      ],
+      "whenOff": "unmetered"
+    },
+    {
+      "name": "session_retention",
+      "summary": "Org retention: idle conversations are erased after the period",
+      "requires": [
+        {
+          "flag": "/services/agentHarness/sessionRetention",
+          "on": "days set for the org",
+          "whenNot": "no expiry",
+          "reason": "absent: never expires automatically"
+        }
+      ],
+      "whenOff": "no expiry"
+    },
+    {
+      "name": "session_erasure",
+      "summary": "Deleting a conversation erases its messages, citations, artifacts, workspaces and journal (E7)",
+      "requires": [],
+      "alwaysOn": true,
+      "whenOff": "never off"
+    },
+    {
+      "name": "mcp_hub",
+      "summary": "The MCP hub (P2.8): schema cache, pooled sessions, the description scanner's hold on flagged tools, tool-name rules and the SSRF guard on org-configured MCP URLs",
+      "requires": [
+        {
+          "flag": "MCP_HUB",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "off: each request discovers and connects on its own, every listed tool is registered, URLs are connected as configured, as today"
+        },
+        {
+          "condition": "manifest_approved",
+          "on": "an admin approved the instance's tools (PUT /api/v1/mcp-servers/instances/{instanceId}/manifest)",
+          "whenNot": "refused",
+          "reason": "mcp_tool_unapproved (a tool changed since: mcp_tool_changed); the tool, or the instance when none is left, is not registered"
+        },
+        {
+          "condition": "public_url",
+          "on": "the instance's URL resolves only to public (or CGNAT) addresses",
+          "whenNot": "refused",
+          "reason": "blocked"
+        }
+      ],
+      "whenOff": "legacy"
+    },
+    {
+      "name": "egress_connect_tunnels",
+      "summary": "HTTPS from a sandbox (in practice a P5.10 MCP runner) to a host on its own egress allowlist, through an opaque CONNECT tunnel in the egress proxy (P5.4b)",
+      "requires": [
+        {
+          "flag": "EGRESS_CONNECT_TUNNELS",
+          "on": true,
+          "whenNot": "refused",
+          "reason": "tunnel_refused (as P5.4: listed hosts are reached over plain HTTP only)"
+        },
+        {
+          "feature": "sandbox_plane",
+          "on": true,
+          "whenNot": "absent",
+          "reason": "no egress proxy is deployed"
+        },
+        {
+          "condition": "allowlisted_host",
+          "on": "host:port is on the sandbox's egress allowlist (an MCP instance's egressHosts, host:443 for HTTPS), has no token route and is not a gateway",
+          "whenNot": "refused",
+          "reason": "destination_not_allowed; tunnel_refused for a credentialed or gateway destination; tunnel_ip_literal for an address"
+        },
+        {
+          "condition": "public_address",
+          "on": "every address the name resolves to passes P2.8's SSRF policy and the proxy's blocked CIDRs",
+          "whenNot": "refused",
+          "reason": "destination_private_address (destination_unresolvable when there is none)"
+        },
+        {
+          "condition": "proxy_route_off_host",
+          "on": "the proxy has a network with a route off the host (the egress-tunnels Compose overlay)",
+          "whenNot": "failed",
+          "reason": "upstream_unavailable (502): the proxy's own networks are internal"
+        }
+      ],
+      "whenOff": "refused"
+    },
+    {
+      "name": "instance_tool_ids",
+      "summary": "Instance-scoped tool identity (P2.2): two instances of one toolset or MCP type on one agent, each with its own tools, credentials and names",
+      "requires": [
+        {
+          "flag": "INSTANCE_TOOL_IDS",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "off: toolsets are keyed by type; a second instance of a type merges into the first, as today"
+        }
+      ],
+      "whenOff": "legacy"
+    },
+    {
+      "name": "reconcile_hooks",
+      "summary": "Unknown effects decided by a read of the provider (R-31); those it cannot decide wait for the person the run acts for (P2.9)",
+      "requires": [
+        {
+          "flag": "HARNESS_RECONCILE",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "off: every unknown effect is parked for a person, as before, and decided from the chat or the console"
+        },
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "unknown effects are journaled only by the durable worker's kernel"
+        }
+      ],
+      "whenOff": "legacy"
+    },
+    {
+      "name": "flow_guard",
+      "summary": "An external write after a run has read private data waits for a person or is refused (SEC1)",
+      "requires": [
+        {
+          "flag": "HARNESS_FLOW_GUARD",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "off: approvals decide by effect class alone (on by default since UX1)"
+        },
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "the rule reads the session's journal, which only the durable worker keeps"
+        }
+      ],
+      "whenOff": "legacy"
+    },
+    {
+      "name": "provider_state",
+      "summary": "Durable loop transports keep and replay provider state (thinking signatures, reasoning items) (P4.3)",
+      "requires": [
+        {
+          "flag": "HARNESS_PROVIDER_STATE",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "off: nothing captured; requests and journaled blobs as before"
+        },
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "the durable worker's kernel and transports only"
+        }
+      ],
+      "whenOff": "legacy"
+    },
+    {
+      "name": "model_policy",
+      "summary": "Durable loop model calls retried and moved to a pinned fallback route, journaled (P4.7)",
+      "requires": [
+        {
+          "flag": "HARNESS_MODEL_FALLBACK",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "off: a model failure fails or yields the run as before"
+        },
+        {
+          "feature": "durable_chat",
+          "on": true,
+          "whenNot": "legacy",
+          "reason": "the durable worker's kernel and transports only"
+        }
+      ],
+      "whenOff": "legacy"
+    }
+  ],
+  "settings": [
+    {
+      "name": "AGENT_HARNESS_STATE_URL",
+      "kind": "env",
+      "reason": "address: Node's internal API for the worker, gateways and proxy (its own listener, AGENT_HARNESS_INTERNAL_PORT; default http://localhost:3002)"
+    },
+    {
+      "name": "AGENT_HARNESS_WORKER_ID",
+      "kind": "env",
+      "reason": "identity: the worker's id (default host-pid)"
+    },
+    {
+      "name": "ROTATE_SIGNING_SECRETS",
+      "kind": "env",
+      "reason": "one-shot operator action (install.sh --rotate-signing-secrets), not a switch"
+    },
+    {
+      "name": "MODEL_GATEWAY_PORT",
+      "kind": "env",
+      "reason": "address: the model gateway's listen port"
+    },
+    {
+      "name": "MODEL_GATEWAY_OUTPUT_ALLOWANCE_TOKENS",
+      "kind": "env",
+      "reason": "tuning: caps the output-token reservation"
+    },
+    {
+      "name": "MODEL_GATEWAY_DEFAULT_OUTPUT_TOKENS",
+      "kind": "env",
+      "reason": "tuning: output allowance for unlisted models"
+    },
+    {
+      "name": "TIKTOKEN_CACHE_DIR",
+      "kind": "env",
+      "reason": "address: tiktoken's own BPE cache folder; the budget's token counter (WP-66) reads a verified o200k or cl100k file from it (else the copy the pinned litellm ships, else its dense fallback) and never fetches one"
+    },
+    {
+      "name": "MODEL_GATEWAY_CUT_HOLD_TTL_S",
+      "kind": "env",
+      "reason": "tuning: how long a model call the gateway cut short (Stop, the engine gone, a failed stream) keeps the rest of its upper bound held on the run's budget and the shared budgets beside the estimate it is charged, when the provider cannot say what it billed (WP-66, default 600; whole seconds 1 to 3600, else the default)"
+    },
+    {
+      "name": "MODEL_GATEWAY_CUT_OUTPUT_TPS",
+      "kind": "env",
+      "reason": "tuning: the output tokens a second a model is assumed to make after its last streamed token, until a call of it has finished in this process (WP-66, default 60; a positive number, else the default); the estimate never passes the call's bound"
+    },
+    {
+      "name": "MODEL_GATEWAY_PROVIDER_CONCURRENCY",
+      "kind": "env",
+      "reason": "tuning: calls one upstream (a provider account or key at one endpoint or region; a configuration naming neither: the provider) takes at once from the whole deployment, engine calls at the model gateway and loop runs' own calls in the workers alike, shared over Redis (each process alone without it) (G-45, WP-61, default 64; 0 no limit), served highest priority class first with a floor share for lower classes; set it alike on every harness process (unset or not a whole number: the default)"
+    },
+    {
+      "name": "AGENT_HARNESS_CLAIM_FLOOR_EVERY",
+      "kind": "env",
+      "reason": "tuning: every n-th claim-next of a Node process takes the oldest due run of any priority class (G-45, default 5; 0 strict priority; not a whole number: the default), so background work is never starved"
+    },
+    {
+      "name": "AGENT_HARNESS_PREEMPT_OVERCOMMIT",
+      "kind": "env",
+      "reason": "tuning: slots past a worker's own a higher priority class may take at once while the background run it preempts reaches its step boundary (G-45, default 2; 0 turns preemption off; not a whole number up to 64: the default)"
+    },
+    {
+      "name": "AGENT_HARNESS_PREEMPT_MIN_SLICE_S",
+      "kind": "env",
+      "reason": "tuning: seconds a background or batch run holds its slot before it may be preempted (G-45, default 5; not a whole number from 0 to 3600: the default)"
+    },
+    {
+      "name": "PIPESHUB_PROMPT_CACHE",
+      "kind": "env",
+      "reason": "tuning: main's provider prompt caching (#4038), on unless set to anything but true; changes cost and latency, never what a run may do"
+    },
+    {
+      "name": "PIPESHUB_LLM_STALL_TIMEOUT_SECONDS",
+      "kind": "env",
+      "reason": "tuning: main's per-phase read, write and pool limit for the OpenAI and Azure transports (#4290), unset or 0 keeps the one request timeout; a stalled stream fails sooner and the SDK retries it"
+    },
+    {
+      "name": "PIPESHUB_PROMPT_CACHE_TTL",
+      "kind": "env",
+      "reason": "tuning: the Anthropic cache breakpoint lifetime (5m or 1h; anything else is 5m)"
+    },
+    {
+      "name": "PIPESHUB_PROMPT_CACHE_RETENTION",
+      "kind": "env",
+      "reason": "tuning: the OpenAI prompt-cache retention (default 24h; off or none sends none)"
+    },
+    {
+      "name": "PIPESHUB_PROMPT_CACHE_SHARDS",
+      "kind": "env",
+      "reason": "tuning: how many prompt-cache routing keys a session spreads over (1-1024, default 8)"
+    },
+    {
+      "name": "MCP_STDIO_ALLOWED_COMMANDS",
+      "kind": "env",
+      "reason": "policy list, not a switch: main's commands a catalog STDIO MCP server may launch (#4003), comma-separated; unset is npx and uvx, a shell is never allowed whatever it lists"
+    },
+    {
+      "name": "SANDBOX_EGRESS_PROXY_CONTAINER",
+      "kind": "env",
+      "reason": "address: the proxy container the broker attaches sandboxes to"
+    },
+    {
+      "name": "SANDBOX_EGRESS_SUBNETS",
+      "kind": "env",
+      "reason": "address: subnet pool for per-sandbox networks"
+    },
+    {
+      "name": "SANDBOX_OPEN_EGRESS_SUBNETS",
+      "kind": "env",
+      "reason": "address: subnet pool the shared open-egress bridge takes a /22 from (default `10.212.0.0/16`), never Docker's default pools"
+    },
+    {
+      "name": "EGRESS_BLOCKED_CIDRS",
+      "kind": "env",
+      "reason": "address: extra destination networks the proxy refuses, also over every EGRESS_PRIVATE_ALLOW entry (the host's LAN address, a cluster's pod and service ranges)"
+    },
+    {
+      "name": "EGRESS_UPSTREAM_PROXY",
+      "kind": "env",
+      "reason": "address: the upstream forward proxy (http://host:port, no credentials) every public destination goes through (G-21); it is given the checked address, never the name; gateways and private entries go direct; unset, the proxy dials public addresses itself"
+    },
+    {
+      "name": "EGRESS_UPSTREAM_PROXY_AUTH",
+      "kind": "env",
+      "reason": "secret: user:password the egress proxy sends the upstream forward proxy as Proxy-Authorization (G-21); never sent toward a sandbox or logged"
+    },
+    {
+      "name": "EGRESS_UPSTREAM_NO_PROXY",
+      "kind": "env",
+      "reason": "address: public hosts (name, .domain, network) the egress proxy dials direct instead of through EGRESS_UPSTREAM_PROXY (G-21); * is refused"
+    },
+    {
+      "name": "REDIS_HOST",
+      "kind": "env",
+      "reason": "address: main's Redis host; the egress proxy also refuses its addresses as a destination (G-21, G-38)"
+    },
+    {
+      "name": "ETCD_URL",
+      "kind": "env",
+      "reason": "address: main's etcd endpoint; the egress proxy also refuses its addresses as a destination (G-21, G-38)"
+    },
+    {
+      "name": "DOC_STORE",
+      "kind": "env",
+      "reason": "deployment setting from main, not a harness switch: where the documents live (mongo, postgres, shadow); postgres stands in for REPLICA_SET_AVAILABLE as the durable harness's transactions condition (WP-114), shadow reads as mongo"
+    },
+    {
+      "name": "EGRESS_PRIVATE_ALLOW",
+      "kind": "env",
+      "reason": "policy list, not a switch: private host:port, address:port or network:port entries the egress proxy may dial for a sandbox whose own allowlist names the host (G-21: an internal Git server); loopback, link-local, metadata and PipesHub's own addresses stay refused whatever it lists"
+    },
+    {
+      "name": "EGRESS_VOLUME_ALERT_UP_MB",
+      "kind": "env",
+      "reason": "tuning (C6.12): the egress proxy journals egress.volume_alert (run_threshold, up) when a run's sandboxes have sent more than this many MiB to outside destinations only (tunnels, intercepted TLS, databases, any other host); PipesHub's Model and Tool Gateways are counted for the metrics only (WP-61) (default 256; 0 off; malformed: the egress proxy does not start)"
+    },
+    {
+      "name": "EGRESS_VOLUME_ALERT_DOWN_MB",
+      "kind": "env",
+      "reason": "tuning (C6.12): the same alert when a run's sandboxes have received more than this many MiB from outside destinations (the gateways not counted) (default 2048; 0 off; malformed: the egress proxy does not start)"
+    },
+    {
+      "name": "EGRESS_VOLUME_BASELINE_FACTOR",
+      "kind": "env",
+      "reason": "tuning (C6.12): the egress proxy journals egress.volume_alert (org_baseline) when a run sends more than this many times its org's usual run to outside destinations (the gateways not counted, in the run or the baseline), the mean of the org's ended runs, then from its 50th a moving average that gives each new run a weight of 1/50 (default 10; 0 off; otherwise at least 1; malformed: the egress proxy does not start)"
+    },
+    {
+      "name": "EGRESS_VOLUME_BASELINE_MIN_RUNS",
+      "kind": "env",
+      "reason": "tuning (C6.12): how many ended runs an org needs before its baseline alert is armed (default 20; 0 arms it from the first ended run, as 1 does; malformed: the egress proxy does not start)"
+    },
+    {
+      "name": "EGRESS_VOLUME_BASELINE_FLOOR_MB",
+      "kind": "env",
+      "reason": "tuning (C6.12): the org-baseline alert never fires below this many MiB sent (default 32; malformed: the egress proxy does not start)"
+    },
+    {
+      "name": "EGRESS_RUN_MAX_MB",
+      "kind": "env",
+      "reason": "limit (C6.12): the hard cap on what one run's sandboxes move (a sandbox kept for a conversation counts toward the run it serves now) through the egress proxy to outside destinations only (tunnels, intercepted TLS, databases, any other host); PipesHub's Model and Tool Gateways are counted for the metrics only (WP-61), up and down together, in MiB (default 0: no cap); past it the run's outside streams and tunnels are cut, every new outside request is refused volume_cap_exceeded and egress.volume_alert (run_cap) is journaled, a model stream in flight finishes, and the run's next Model Gateway call is refused egress_volume_exceeded so the engine ends the run with that code, which the chat words; a malformed value stops the egress proxy at start"
+    },
+    {
+      "name": "EGRESS_CONTROL_HOST",
+      "kind": "env",
+      "reason": "address: where the proxy's control plane listens (required; never a wildcard or the sandbox pool)"
+    },
+    {
+      "name": "EGRESS_TOKEN_SECRET",
+      "kind": "env",
+      "reason": "secret: the standalone proxy's token key"
+    },
+    {
+      "name": "EGRESS_SEALING_SECRET",
+      "kind": "env",
+      "reason": "secret: the standalone proxy's key for sealed credentials (WP-06); set, it opens sealed routes, ends TLS to their hosts and serves database routes; PipesHub's role uses SECRET_KEY"
+    },
+    {
+      "name": "EGRESS_DATABASE_PORT",
+      "kind": "env",
+      "reason": "address: the standalone proxy's PostgreSQL port for database routes (default 5432; only with EGRESS_SEALING_SECRET)"
+    },
+    {
+      "name": "EGRESS_CONTROL_TOKEN",
+      "kind": "env",
+      "reason": "secret: the standalone proxy's control bearer"
+    },
+    {
+      "name": "EGRESS_TOKEN_TTL_S",
+      "kind": "env",
+      "reason": "tuning: standalone proxy token TTL"
+    },
+    {
+      "name": "EGRESS_UPSTREAMS",
+      "kind": "env",
+      "reason": "address: the standalone proxy's gateway upstreams"
+    },
+    {
+      "name": "EGRESS_BIND_HOST",
+      "kind": "env",
+      "reason": "address"
+    },
+    {
+      "name": "EGRESS_DATA_PORT",
+      "kind": "env",
+      "reason": "address"
+    },
+    {
+      "name": "EGRESS_CONTROL_PORT",
+      "kind": "env",
+      "reason": "address"
+    },
+    {
+      "name": "DOCKER_HOST",
+      "kind": "env",
+      "reason": "address: the broker's Docker daemon"
+    },
+    {
+      "name": "DOCKER_TLS_VERIFY",
+      "kind": "env",
+      "reason": "Docker client convention: when set, a plain tcp daemon address is refused"
+    },
+    {
+      "name": "OPIK_API_KEY",
+      "kind": "env",
+      "reason": "secret: tracing"
+    },
+    {
+      "name": "OPIK_URL_OVERRIDE",
+      "kind": "env",
+      "reason": "address: tracing"
+    },
+    {
+      "name": "OPIK_PROJECT_NAME",
+      "kind": "env",
+      "reason": "tuning: tracing project"
+    },
+    {
+      "name": "MCP_RUNNER_IMAGE",
+      "kind": "env",
+      "reason": "image: the MCP runners' default image (blank reads as unset: the sandbox image); the broker allows it"
+    },
+    {
+      "name": "PIPESHUB_ENGINES_WITHOUT_GVISOR",
+      "kind": "env",
+      "reason": "dev/test only, off by default: exactly true runs coding engines on hardened runc below the release's gVisor floor, with a persistent admin warning; unset, an install without runsc refuses engine runs (policy/release.json engineIsolation)"
+    },
+    {
+      "name": "PIPESHUB_ACP_PROFILES_UNSIGNED",
+      "kind": "env",
+      "reason": "dev only, off by default: exactly true reads the packaged ACP agent profiles while they carry no signature (the tree never holds one; a release build signs them). Its own switch since R32-TRUST, independent of PIPESHUB_ENGINES_WITHOUT_GVISOR (ADR-SEC-01 D7); unset, an unsigned profile installs no ACP engine and admins read that its profile isn't signed for this deployment"
+    },
+    {
+      "name": "PIPESHUB_TEST_TRUST_ROOT",
+      "kind": "env",
+      "reason": "operator, test stacks only, unset by default: a read-only folder with a test stack's own public key (trust-root.json, key id test-...) and its signature of the packaged ACP profiles, written at stack build by scripts/engines/sign_vendor_rules.py --test-root; the key vouches for the ACP profiles only, never the vendor rules or images, and a release build refuses to start with it (ADR-SEC-01 D7)"
+    },
+    {
+      "name": "PIPESHUB_ALLOW_TEST_TRUST_ROOT",
+      "kind": "env",
+      "reason": "dev only, off by default: exactly true lets a release build (its packaged ACP profiles carry the release signature) start with PIPESHUB_TEST_TRUST_ROOT; without it such a build refuses to start (ADR-SEC-01 D7)"
+    },
+    {
+      "name": "PH_TIMEOUT_S",
+      "kind": "env",
+      "reason": "tuning, inside an engine sandbox: seconds the ph CLI waits for one tool gateway answer (default 900)"
+    },
+    {
+      "name": "PH_POLICY_TIMEOUT_S",
+      "kind": "env",
+      "reason": "tuning, inside an engine sandbox: seconds `ph policy check` waits for the tool gateway's policy answer (default 10, inside the managed hook's 30 s timeout); no answer refuses the call"
+    },
+    {
+      "name": "PIPESHUB_FOLDER",
+      "kind": "env",
+      "reason": "tuning, inside an engine sandbox: where the ph CLI finds its folder (default /pipeshub); tests point it elsewhere"
+    },
+    {
+      "name": "MCP_RUNNER_ISOLATION",
+      "kind": "env",
+      "reason": "tuning: the runners' isolation floor (a runtime mode, default docker); never weakened: a floor the broker lacks is refused"
+    },
+    {
+      "name": "MCP_RUNNER_IDLE_TTL_S",
+      "kind": "env",
+      "reason": "tuning: seconds an MCP runner with no session lives (default 900)"
+    },
+    {
+      "name": "MCP_RUNNER_MAX_AGE_S",
+      "kind": "env",
+      "reason": "tuning: seconds after which a free MCP runner is recycled (default 21600); older runner sandboxes are reaped as orphans"
+    },
+    {
+      "name": "MCP_RUNNER_MAX_PER_ORG",
+      "kind": "env",
+      "reason": "tuning: MCP runners one org keeps in a process's pool (default 10); past it the org's least recently used idle runner makes way (R36COVER-FU-4)"
+    },
+    {
+      "name": "SANDBOX_DOCKER_IMAGE",
+      "kind": "env",
+      "reason": "image: run_code's sandbox image (blank reads as unset)"
+    },
+    {
+      "name": "SANDBOX_DATA_VOLUME",
+      "kind": "env",
+      "reason": "address: the sandbox broker's data volume holding workspaces and other persistent sandbox folders (default pipeshub_sandbox_data; WP-100)"
+    },
+    {
+      "name": "SANDBOX_EGRESS_NETWORK",
+      "kind": "env",
+      "reason": "address: run_code's egress network (blank reads as unset)"
+    },
+    {
+      "name": "SANDBOX_PIP_INDEX_URL",
+      "kind": "env",
+      "reason": "address: package index"
+    },
+    {
+      "name": "SANDBOX_NPM_REGISTRY",
+      "kind": "env",
+      "reason": "address: package registry"
+    },
+    {
+      "name": "SANDBOX_MAX_CONCURRENT_PER_REQUEST",
+      "kind": "env",
+      "reason": "tuning"
+    },
+    {
+      "name": "SANDBOX_MAX_LIFETIME_S",
+      "kind": "env",
+      "reason": "tuning"
+    },
+    {
+      "name": "SANDBOX_WORKSPACE_QUOTA_MB",
+      "kind": "env",
+      "reason": "tuning: how much a session's persistent workspace may hold on the Docker host's disk (default 4096); the sandbox broker measures it every 10 s and ends a sandbox over it (SEC-ISO-06); not a positive integer refuses to start"
+    },
+    {
+      "name": "SANDBOX_DATA_DEVICE",
+      "kind": "env",
+      "reason": "deployment: the block device under the daemon's volumes (a whole disk or a device-mapper device; install.sh finds it); the sandbox broker caps each sandbox's writes on it (SEC-A-03, ADR-SEC-03 D4); unset: no cap, logged as writeMbps=0"
+    },
+    {
+      "name": "SANDBOX_WRITE_MBPS",
+      "kind": "env",
+      "reason": "tuning: each sandbox's write cap on SANDBOX_DATA_DEVICE, MiB/s (default 32): a workspace can run past its quota by at most this times the guard's 10 s; not a positive integer refuses to start"
+    },
+    {
+      "name": "HARNESS_WAIT_FOR_PERSON_DAYS",
+      "kind": "env",
+      "reason": "tuning: days a chat run waiting for a person's decision stays answerable (default 7; fractions allowed; the wait does not count against the run's deadline, FIX-P1-F3)"
+    },
+    {
+      "name": "SANDBOX_PROVISION_TIMEOUT_S",
+      "kind": "env",
+      "reason": "tuning"
+    },
+    {
+      "name": "SANDBOX_MAX_TOTAL",
+      "kind": "env",
+      "reason": "tuning: governor cap"
+    },
+    {
+      "name": "SANDBOX_WITHHOLD_RUNTIMES",
+      "kind": "env",
+      "reason": "operator: a Docker runtime the sandbox broker must not offer (runsc)"
+    },
+    {
+      "name": "SANDBOX_MAX_PER_ORG",
+      "kind": "env",
+      "reason": "tuning: governor cap"
+    },
+    {
+      "name": "SANDBOX_ALLOW_LOCAL",
+      "kind": "env",
+      "reason": "security opt-in from main (#3803), not a harness flag: SANDBOX_MODE=local is refused unless it is true; read by the sandbox resolver's own fail-closed parse (a typo stays refused)"
+    },
+    {
+      "name": "SANDBOX_EGRESS_ALLOW_CIDRS",
+      "kind": "env",
+      "reason": "address: private ranges a sandbox with open egress may still reach (main #3780; docker mode and the sandbox broker)"
+    },
+    {
+      "name": "SANDBOX_DISK_QUOTA",
+      "kind": "env",
+      "reason": "tuning from main (#3810): the per-run writable-layer cap for docker-mode sandboxes (default 10g; 0 disables; enforced only where the storage driver supports it)"
+    },
+    {
+      "name": "SANDBOX_EXTRA_ALLOWED_PY_PACKAGES",
+      "kind": "env",
+      "reason": "tuning from main: Python packages a sandbox may install beyond the built-in allowlist"
+    },
+    {
+      "name": "SANDBOX_EXTRA_ALLOWED_NPM_PACKAGES",
+      "kind": "env",
+      "reason": "tuning from main: npm packages a sandbox may install beyond the built-in allowlist"
+    },
+    {
+      "name": "SANDBOX_PG_URL",
+      "kind": "env",
+      "reason": "address from main: the PostgreSQL server the legacy database_sandbox toolset uses (unset: the toolset says how to enable it)"
+    },
+    {
+      "name": "E2B_API_KEY",
+      "kind": "env",
+      "reason": "secret: the E2B account key for SANDBOX_MODE=e2b"
+    },
+    {
+      "name": "ARTIFACT_CLEANUP_INTERVAL_MINUTES",
+      "kind": "env",
+      "reason": "tuning from main: how often temporary sandbox artifacts are swept"
+    },
+    {
+      "name": "ARTIFACT_TEMP_TTL_HOURS",
+      "kind": "env",
+      "reason": "tuning from main: how long a temporary sandbox artifact is kept"
+    },
+    {
+      "name": "DOCKER_PROXY_HOST",
+      "kind": "env",
+      "reason": "address from main (#3782): the Docker policy proxy's listen host (docker mode only)"
+    },
+    {
+      "name": "DOCKER_PROXY_PORT",
+      "kind": "env",
+      "reason": "address from main (#3782): the Docker policy proxy's listen port (docker mode only)"
+    },
+    {
+      "name": "DOCKER_PROXY_UPSTREAM",
+      "kind": "env",
+      "reason": "address from main (#3782): the Docker daemon the policy proxy forwards to (docker mode only)"
+    },
+    {
+      "name": "DOCKER_PROXY_LOG_LEVEL",
+      "kind": "env",
+      "reason": "tuning from main (#3782): the Docker policy proxy's log level"
+    },
+    {
+      "name": "DOCKER_PROXY_TOKEN",
+      "kind": "env",
+      "reason": "credential (SEC-A-04): the app's legacy executor's credential at the Docker policy proxy; unset on the compatibility profile (R51-COMPAT, ADR-OPS-07), the executor calls without one, as main did"
+    },
+    {
+      "name": "AGENT_HARNESS_INTERNAL_PORT",
+      "kind": "env",
+      "reason": "address (H6): the port on which Node alone serves /api/v1/agent-harness/internal/* (default 3002); never published; AGENT_HARNESS_STATE_URL points at it"
+    },
+    {
+      "name": "AGENT_HARNESS_INTERNAL_HOST",
+      "kind": "env",
+      "reason": "address (H6): the host Node's internal listener binds (default 0.0.0.0, for Compose's sandbox plane; Helm binds 127.0.0.1)"
+    },
+    {
+      "name": "/services/agentHarness/workerCredential",
+      "kind": "config",
+      "reason": "key material: the worker credential Node provisions"
+    },
+    {
+      "name": "/services/agentHarness/attemptSigningKeys",
+      "kind": "config",
+      "reason": "key material"
+    },
+    {
+      "name": "/services/agentHarness/attemptPublicKeys",
+      "kind": "config",
+      "reason": "key material"
+    },
+    {
+      "name": "/services/agentHarness/gatewaySigningKeys",
+      "kind": "config",
+      "reason": "key material"
+    },
+    {
+      "name": "/services/agentHarness/gatewayPublicKeys",
+      "kind": "config",
+      "reason": "key material"
+    },
+    {
+      "name": "/services/agentHarness/credentials",
+      "kind": "config",
+      "reason": "key material: vault secrets under /services/agentHarness/credentials/{orgId}/{name}"
+    },
+    {
+      "name": "/services/agentHarness/credentialKeys",
+      "kind": "config",
+      "reason": "key material: the vault keyring"
+    },
+    {
+      "name": "HARNESS_SIGNIN_IDLE_MINUTES",
+      "kind": "env",
+      "reason": "limit: how long a person's signed-in Claude Code sandbox is kept between a conversation's turns (5-120, default 30; SIGNIN-5)"
+    },
+    {
+      "name": "HARNESS_SIGNIN_MAX_HOURS",
+      "kind": "env",
+      "reason": "limit: the longest a person's Claude sign-in is kept after it was made (1-24, default 12; SIGNIN-5)"
+    },
+    {
+      "name": "HARNESS_TOOL_GATEWAY_PORT",
+      "kind": "env",
+      "reason": "address: the worker's tool gateway listen port (default 8098)"
+    },
+    {
+      "name": "HARNESS_TOOL_GATEWAY_URL",
+      "kind": "env",
+      "reason": "address: where the egress proxy reaches the worker's tool gateway; its origin is where Node's GET /api/v1/agent-harness/internal/metrics scrapes the gateway's /metrics (C9.04)"
+    },
+    {
+      "name": "EGRESS_PROXY_CONTROL_BACKEND",
+      "kind": "env",
+      "reason": "address: the egress proxy's control plane, which Node writes into /services/endpoints and whose /metrics its internal metrics route scrapes with the worker credential (C9.04)"
+    },
+    {
+      "name": "MODEL_GATEWAY_BACKEND",
+      "kind": "env",
+      "reason": "address: the Model Gateway, which Node writes into /services/endpoints and whose /metrics its internal metrics route scrapes with the worker credential (C9.04)"
+    },
+    {
+      "name": "TOOL_GATEWAY_BACKEND",
+      "kind": "env",
+      "reason": "address: the Tool Gateway entry Node writes into /services/endpoints; the metrics route falls back to its origin only when HARNESS_TOOL_GATEWAY_URL is unset (C9.04)"
+    },
+    {
+      "name": "SANDBOX_INSTALL_ID",
+      "kind": "env",
+      "reason": "identity: the install's folder on the broker's shared data volume (E1)"
+    },
+    {
+      "name": "SANDBOX_PROVIDER",
+      "kind": "env",
+      "reason": "deployment: which sandbox provider the install runs (C2.14): unset or `docker` is the sandbox broker's Docker provider; `k8s`, `managed` and `microvm` are refused by name at the worker and the broker's start, and any other value is refused, never read as Docker"
+    },
+    {
+      "name": "COMPOSE_PROJECT_NAME",
+      "kind": "env",
+      "reason": "identity: the broker's install id when SANDBOX_INSTALL_ID is unset"
+    },
+    {
+      "name": "SANDBOX_BROKER_BACKEND",
+      "kind": "env",
+      "reason": "address: the sandbox broker for Node's run sweeper when /services/endpoints names none; its origin is where Node's GET /api/v1/agent-harness/internal/metrics scrapes the broker's /metrics (C9.04)"
+    },
+    {
+      "name": "HARNESS_METRICS_CREDENTIAL_FILE",
+      "kind": "env",
+      "reason": "address: where Node writes the worker credential (mode 0600) for the deployment's own Prometheus to read the internal metrics route; unset (the default) writes nothing; set by docker-compose.monitoring.yml (C9.04)"
+    },
+    {
+      "name": "HARNESS_METRICS_CREDENTIAL_OWNER",
+      "kind": "env",
+      "reason": "identity: the uid that file is given when Node runs as root (default 65534, the Prometheus image's user) (C9.04)"
+    },
+    {
+      "name": "OTEL_SERVICE_NAME",
+      "kind": "env",
+      "reason": "address: the OpenTelemetry service name on harness spans (default pipeshub-<role>); the OTLP exporter reads OTEL_EXPORTER_OTLP_ENDPOINT and its other standard variables itself"
+    },
+    {
+      "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "kind": "env",
+      "reason": "address: the OTLP/HTTP collector harness spans go to (standard OpenTelemetry name; Node's exporter reads it, Python's OTLP exporter reads it itself; default http://localhost:4318)"
+    },
+    {
+      "name": "AGENT_HARNESS_AUDIT_CREDENTIAL",
+      "kind": "env",
+      "reason": "secret: the worker credential the grant auditor presents to Node's audit route when run with --credential-from-env (P9); unset, it reads the deployment's configuration as the worker does"
+    },
+    {
+      "name": "MCP_HUB_SESSION_IDLE_TTL_S",
+      "kind": "env",
+      "reason": "tuning: seconds a pooled MCP session with no lease stays open (default 300)"
+    },
+    {
+      "name": "MCP_HUB_SESSION_MAX_AGE_S",
+      "kind": "env",
+      "reason": "tuning: seconds after which a pooled MCP session is replaced on its next lease (default 3600)"
+    },
+    {
+      "name": "MCP_HUB_SCHEMA_TTL_S",
+      "kind": "env",
+      "reason": "tuning: seconds a discovered tool list is fresh (default 600; a 2026-07-28 server's ttlMs may shorten it)"
+    },
+    {
+      "name": "MCP_HUB_BREAKER_FAILURES",
+      "kind": "env",
+      "reason": "tuning: timeouts or unreachable answers in a row that open an MCP server's circuit for one credential owner (default 5; 0: no breaker; MX-08)"
+    },
+    {
+      "name": "MCP_HUB_BREAKER_COOLDOWN_S",
+      "kind": "env",
+      "reason": "tuning: seconds an open MCP server circuit fails calls at once before one probe goes through (default 30; MX-08)"
+    },
+    {
+      "name": "MCP_PRIVATE_NETWORKS",
+      "kind": "env",
+      "reason": "address: the private networks (CIDRs, comma-separated) an MCP server may be on when PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on; unset: none; a malformed value refuses (MCPFIX F2)"
+    },
+    {
+      "name": "PIPESHUB_BLOCK_PRIVATE_ADDRESSES",
+      "kind": "env",
+      "reason": "switch, shared with the Python fetchers (`app.utils.url_fetcher.private_addresses_blocked`): when on, the harness's MCP hub (strict SSRF check) and every shared outbound fetch refuse private addresses too; loopback, link-local and metadata addresses are refused whatever it says"
+    },
+    {
+      "name": "PIPESHUB_ENGINE_LAZY_TOOLS_THRESHOLD",
+      "kind": "env",
+      "reason": "tuning: above this many granted tools an engine's tool list shows the grant's connector and MCP tools only through search_tools and call_tool (default 50; LZ1); PIPESHUB_ENABLE_LAZY_TOOLS=false lists every tool"
+    },
+    {
+      "name": "SECRET_KEY",
+      "kind": "env",
+      "reason": "secret: the deployment key; the egress proxy derives the key that seals its durable state from it (P5.4b)"
+    },
+    {
+      "name": "HARNESS_FLOW_GUARD_LEVEL",
+      "kind": "env",
+      "reason": "policy: what the flow rule does to a call that sends data out once the run read private data: ask (default) or deny; any other value asks, logged once"
+    },
+    {
+      "name": "HARNESS_FLOW_GUARD_ABOVE",
+      "kind": "env",
+      "reason": "policy: the flow rule's threshold: public (default: any record read) or private (only content of unknown provenance); any other value is public, logged once"
+    },
+    {
+      "name": "HARNESS_ALLOWED_WEBSITES_CAP",
+      "kind": "env",
+      "reason": "policy: the deployment's cap on allowed websites (WP-63): comma-separated host (read only), host=read-write or host=host-level entries, *.domain for subdomains, none for no site; unset: no cap; an entry Node cannot read stops it at start"
+    },
+    {
+      "name": "HARNESS_ALLOWED_REPOSITORIES_CAP",
+      "kind": "env",
+      "reason": "policy: the deployment's cap on allowed git hosts for repository_fetch (WP-63 part A): comma-separated host (every public repository on it), host/owner/ or host/owner/repo entries, none for no host; unset: no cap; an entry Node cannot read stops it at start; an org's list outside it is CP_WIDENING"
+    },
+    {
+      "name": "HARNESS_REPO_CACHE_DIR",
+      "kind": "env",
+      "reason": "storage: where the worker keeps fetched repositories for repository_fetch (WP-63 part A; default /data/pipeshub/harness/repository-cache, inside Compose's pipeshub_data volume; on Helm mount a volume there or point this at one), shared by every run of the worker"
+    },
+    {
+      "name": "HARNESS_REPO_CACHE_MAX_MB",
+      "kind": "env",
+      "reason": "tuning: the most the repository cache holds, in MB (default 2048); past it the least recently used fetches are removed"
+    },
+    {
+      "name": "HARNESS_REPO_CACHE_MIN_FREE_MB",
+      "kind": "env",
+      "reason": "tuning: the free disk, in MB, a repository_fetch must leave on the cache's volume; unset: 5% of the volume, at least 2048 and at most 20480; a clone that would leave less is refused, and the Git hosts screen warns below twice it"
+    },
+    {
+      "name": "HARNESS_REPO_MAX_MB",
+      "kind": "env",
+      "reason": "tuning: the most one repository_fetch may bring, in MB (default 500); a clone past it is killed and nothing is kept"
+    },
+    {
+      "name": "HARNESS_INPUT_MAX_MB",
+      "kind": "env",
+      "reason": "limit (J-26): the largest file a run is given as an input, in MiB (default 100), and so the largest artifact the registry keeps and the largest object Node's internal storage upload takes; an org's sandbox.inputMaxMb lowers it, never raises it; inputs over 8 MiB reach the sandbox only on their first read; not a positive whole number refuses to start"
+    },
+    {
+      "name": "HARNESS_REPO_FETCH_CONCURRENCY",
+      "kind": "env",
+      "reason": "tuning: how many repository fetches one worker runs at once (default 2); the rest wait"
+    },
+    {
+      "name": "HARNESS_REPO_FETCH_TIMEOUT_S",
+      "kind": "env",
+      "reason": "tuning: how long one repository fetch may take, in seconds (default 300); past it the clone is killed"
+    },
+    {
+      "name": "HARNESS_REPO_CACHE_MAX_AGE_S",
+      "kind": "env",
+      "reason": "tuning: how long a fetched repository is reused for the same org, URL, ref and depth before it is fetched again, in seconds (default 600; 0: always fetch)"
+    },
+    {
+      "name": "HARNESS_REPO_GIT_BIN",
+      "kind": "env",
+      "reason": "security: the pinned git binary repository_fetch runs (default /usr/bin/git; git 2.37 or newer, for http.curloptResolve)"
+    },
+    {
+      "name": "HARNESS_REPO_CA_FILE",
+      "kind": "env",
+      "reason": "security: an authority bundle git checks the git host's certificate with instead of the system's (an internal mirror with its own authority); unset: the system's"
+    },
+    {
+      "name": "PIPESHUB_SKILLS_CATALOG_RENDER_LIMIT",
+      "kind": "env",
+      "reason": "tuning: how many skills the prompt's skill catalog lists (default 40)"
+    },
+    {
+      "name": "PIPESHUB_SKILLS_PRELOAD_BODY_THRESHOLD",
+      "kind": "env",
+      "reason": "tuning: the similarity at which a skill's body is preloaded into a run (default 0.75)"
+    },
+    {
+      "name": "PIPESHUB_SKILLS_PRELOAD_MENTION_THRESHOLD",
+      "kind": "env",
+      "reason": "tuning: the similarity at which a skill is mentioned to a run (default 0.4)"
+    },
+    {
+      "name": "PIPESHUB_SKILLS_MAX_RESOURCE_FILE_BYTES",
+      "kind": "env",
+      "reason": "limit: the largest resource file a skill may bundle (default 1 MiB)"
+    },
+    {
+      "name": "PIPESHUB_SKILLS_MAX_RESOURCE_BYTES",
+      "kind": "env",
+      "reason": "limit: all of a skill's bundled resources together (default 5 MiB)"
+    },
+    {
+      "name": "PIPESHUB_SKILL_VECTOR_CACHE_SIZE",
+      "kind": "env",
+      "reason": "tuning: how many skill embeddings the process caches (default 4096)"
+    },
+    {
+      "name": "HARNESS_MODEL_OUTPUT_LIMIT",
+      "kind": "env",
+      "reason": "tuning: tokens one model call may produce (P4.17): agent turns and engine calls through the model gateway (default 32768; structured calls and summaries 8192 under it), also the switch for the repetition cut; 0: no limit sent and no cut (the provider's own maximum, as before); 1-4095 reads as 4096"
+    },
+    {
+      "name": "HARNESS_DEEP_ROUTING_THRESHOLDS",
+      "kind": "env",
+      "reason": "tuning: when a durable loop run that may hand off has outgrown a chat reply (DEEPROUTE), as toolCalls=12,turns=6,contextShare=0.5,spendShare=0.3 (the defaults; a key left out keeps its default, 0 turns that one off; one the worker cannot read is logged and the defaults apply)"
+    },
+    {
+      "name": "HARNESS_HTTP_HEADER_TIMEOUT_S",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-DOS-04): seconds a client of a Python harness listener (tool gateway, model gateway, egress proxy, sandbox broker) has to send a request head, from its first byte or from connecting (default 15)"
+    },
+    {
+      "name": "HARNESS_HTTP_REQUEST_TIMEOUT_S",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-DOS-04): seconds a client of a Python harness listener has to send a whole request, plus the time its bytes take at HARNESS_HTTP_MIN_BODY_BYTES_PER_S; a response is never timed (default 60)"
+    },
+    {
+      "name": "HARNESS_HTTP_MIN_BODY_BYTES_PER_S",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-DOS-04): the rate at which a request body earns time past HARNESS_HTTP_REQUEST_TIMEOUT_S, so a large upload at speed is never cut and a drip is (default 65536)"
+    },
+    {
+      "name": "HARNESS_HTTP_MAX_CONNECTIONS",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-DOS-04): connections one Python harness listener holds at once; past it a new one is closed on arrival (default 4096)"
+    },
+    {
+      "name": "HARNESS_ARCHIVE_MAX_RATIO",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-FS-03): how many times its own size an archive the harness unpacks may expand to, past HARNESS_ARCHIVE_RATIO_FLOOR_BYTES (snapshots, sandbox folders, collected outputs, pushed packs; default 100)"
+    },
+    {
+      "name": "HARNESS_ARCHIVE_RATIO_FLOOR_BYTES",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-FS-03): the bytes an archive may expand to before HARNESS_ARCHIVE_MAX_RATIO applies (default 67108864, the snapshot capture cap)"
+    },
+    {
+      "name": "HARNESS_ARCHIVE_MAX_MEMBERS",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-FS-03): members an archive the harness reads whole may hold (snapshots, sandbox folders, a pushed pack's objects; default 50000; the workspace sync keeps its own 50000)"
+    },
+    {
+      "name": "AGENT_HARNESS_INTERNAL_HEADERS_TIMEOUT_MS",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-DOS-04): milliseconds a client of Node's internal listener has to send a request head (default 15000)"
+    },
+    {
+      "name": "AGENT_HARNESS_INTERNAL_REQUEST_TIMEOUT_MS",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-DOS-04): milliseconds a client of Node's internal listener has to send a whole request; a response is never timed (default 60000)"
+    },
+    {
+      "name": "AGENT_HARNESS_INTERNAL_MAX_CONNECTIONS",
+      "kind": "env",
+      "reason": "tuning (C6.40, SEC-DOS-04): connections Node's internal listener holds at once (default 1024)"
+    },
+    {
+      "name": "/services/agentHarness/roleCredentials/scrape",
+      "kind": "config",
+      "reason": "key material: the scraper's credential (SEC-C-10, ADR-CRED-01)"
+    },
+    {
+      "name": "/services/agentHarness/roleCredentials/egressProxy",
+      "kind": "config",
+      "reason": "key material: the egress proxy's credential (SEC-C-10, ADR-CRED-01)"
+    },
+    {
+      "name": "/services/agentHarness/roleCredentials/sandboxBroker",
+      "kind": "config",
+      "reason": "key material: the sandbox broker's credential (SEC-C-10, ADR-CRED-01)"
+    },
+    {
+      "name": "/services/agentHarness/components/egressProxy",
+      "kind": "config",
+      "reason": "key material: what Node seals for the egress proxy under its own key (ADR-KEY-02)"
+    },
+    {
+      "name": "/services/agentHarness/components/sandboxBroker",
+      "kind": "config",
+      "reason": "key material: what Node seals for the sandbox broker under its own key (ADR-KEY-02)"
+    },
+    {
+      "name": "EGRESS_PROXY_COMPONENT_KEY",
+      "kind": "env",
+      "reason": "key material: the egress proxy's own key, held by Node and the proxy (ADR-KEY-02); install.sh generates it"
+    },
+    {
+      "name": "SANDBOX_BROKER_COMPONENT_KEY",
+      "kind": "env",
+      "reason": "key material: the sandbox broker's own key, held by Node and the broker (ADR-KEY-02); install.sh generates it"
+    }
+  ],
+  "envFlagParse": {
+    "accepted": {
+      "true": [
+        "1",
+        "true",
+        "yes",
+        "on"
+      ],
+      "false": [
+        "0",
+        "false",
+        "no",
+        "off"
+      ]
+    },
+    "caseInsensitive": true,
+    "unsetOrBlank": "default",
+    "otherwise": "refuse to start",
+    "helpers": {
+      "python": "backend/python/app/utils/env_flags.py",
+      "node": "backend/nodejs/apps/src/libs/utils/env-flags.ts",
+      "shell": "Dockerfile (env_flag in the process monitor)"
+    }
+  }
+}

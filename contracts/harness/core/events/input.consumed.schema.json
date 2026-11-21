@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/input.consumed.schema.json",
+  "title": "InputConsumedEvent",
+  "description": "The kernel consumed queued input.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "input.consumed"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/InputConsumedData"
+    }
+  },
+  "$defs": {
+    "InputConsumedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messageSeq"
+      ],
+      "properties": {
+        "messageSeq": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "contentRef": {
+          "$ref": "../common.schema.json#/$defs/ContentRef",
+          "description": "What the model was given for a message that carried attachments or records: the user message's parts (text and images), rendered once at consumption as a new turn with them would be. Absent for text alone."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "input.consumed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "messageSeq": 12
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

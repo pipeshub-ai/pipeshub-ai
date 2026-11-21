@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.sandbox.coding.base import SandboxContext
 from app.agent_loop_lib.sandbox.coding.egress_firewall import parse_cidrs
+from app.utils.env_flags import SANDBOX_ALLOW_NETWORK, env_flag
 
 __all__ = [
     "SandboxSettings",
@@ -36,8 +37,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_FALSY_ENV_VALUES = {"0", "false", "no", "off"}
-
 # `load()` runs on every agent build, so this warns once per process — a
 # per-request line would bury the logs and get filtered out, which is the
 # same as not warning at all.
@@ -49,7 +48,7 @@ _TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 # `SANDBOX_MODE` value -> backend name. The only accepted spellings; anything
 # else is a misconfiguration rather than a hint to guess from.
-_SANDBOX_MODES = {"LOCAL": "local", "DOCKER": "docker", "E2B": "e2b"}
+_SANDBOX_MODES = {"LOCAL": "local", "DOCKER": "docker", "E2B": "e2b", "BROKER": "broker"}
 _SUPPORTED_MODES_TEXT = ", ".join(sorted(_SANDBOX_MODES.values()))
 
 
@@ -64,7 +63,7 @@ class SandboxUnavailableError(ValueError):
 
 
 def resolve_sandbox_mode() -> str:
-    """`SANDBOX_MODE` -> backend name (`local`, `docker`, `e2b`), failing closed.
+    """`SANDBOX_MODE` -> backend name (`local`, `docker`, `e2b`, `broker`), failing closed.
 
     Unset or blank means no backend: the previous fallback to `local` ran
     model-generated code as a subprocess of this service whenever an
@@ -86,8 +85,8 @@ def resolve_sandbox_mode() -> str:
     if not mode_raw:
         raise SandboxUnavailableError(
             f"{_ENV_SANDBOX_MODE} is not set, so code execution is disabled. "
-            f"Set it to one of: {_SUPPORTED_MODES_TEXT}. 'docker' and 'e2b' "
-            f"isolate generated code; 'local' runs it as a subprocess of this "
+            f"Set it to one of: {_SUPPORTED_MODES_TEXT}. 'broker', 'docker' and "
+            f"'e2b' isolate generated code; 'local' runs it as a subprocess of this "
             f"service and must be chosen explicitly."
         )
 
@@ -110,7 +109,7 @@ def resolve_sandbox_mode() -> str:
                 f"{_ENV_SANDBOX_MODE}=local runs generated code as a subprocess "
                 f"of this service with no container isolation, so it is refused "
                 f"unless {_ENV_ALLOW_LOCAL}=true is also set. Set that only on a "
-                f"single-user development machine; otherwise use docker or e2b."
+                f"single-user development machine; otherwise use broker, docker or e2b."
             )
         _warn_about_host_isolation()
     return backend
@@ -132,18 +131,11 @@ def _warn_about_host_isolation() -> None:
     logger.warning(
         "%s=local with %s=true: model-generated code runs as a subprocess of "
         "this service (isolation=host, kernel confinement %s). Development "
-        "only; use %s=docker or e2b for container isolation.",
+        "only; use %s=broker, docker or e2b for container isolation.",
         _ENV_SANDBOX_MODE, _ENV_ALLOW_LOCAL,
         "available" if confinement_available() else "UNAVAILABLE (no bwrap/sandbox-exec)",
         _ENV_SANDBOX_MODE,
     )
-
-
-def _env_bool(key: str, default: bool = True) -> bool:
-    raw = os.environ.get(key)
-    if raw is None:
-        return default
-    return raw.strip().lower() not in _FALSY_ENV_VALUES
 
 
 def _env_int(key: str, default: int) -> int:
@@ -242,7 +234,6 @@ class EnvSandboxSettingsLoader:
     _ENV_EGRESS_NETWORK = "SANDBOX_EGRESS_NETWORK"
     _ENV_PIP_INDEX_URL = "SANDBOX_PIP_INDEX_URL"
     _ENV_NPM_REGISTRY = "SANDBOX_NPM_REGISTRY"
-    _ENV_ALLOW_NETWORK = "SANDBOX_ALLOW_NETWORK"
     _ENV_EGRESS_ALLOW_CIDRS = "SANDBOX_EGRESS_ALLOW_CIDRS"
     _ENV_E2B_API_KEY = "E2B_API_KEY"
     _ENV_MAX_TOTAL = "SANDBOX_MAX_TOTAL"
@@ -261,12 +252,12 @@ class EnvSandboxSettingsLoader:
 
         backend_options: dict[str, dict[str, Any]] = {}
 
-        if backend == "docker":
-            backend_options["docker"] = {
-                "image": os.environ.get(self._ENV_DOCKER_IMAGE, self._DEFAULT_DOCKER_IMAGE),
-                "egress_network": os.environ.get(self._ENV_EGRESS_NETWORK, self._DEFAULT_EGRESS_NETWORK),
-                "pip_index_url": os.environ.get(self._ENV_PIP_INDEX_URL, self._DEFAULT_PIP_INDEX_URL),
-                "npm_registry": os.environ.get(self._ENV_NPM_REGISTRY, self._DEFAULT_NPM_REGISTRY),
+        if backend in ("docker", "broker"):
+            backend_options[backend] = {
+                "image": os.environ.get(self._ENV_DOCKER_IMAGE) or self._DEFAULT_DOCKER_IMAGE,
+                "egress_network": os.environ.get(self._ENV_EGRESS_NETWORK) or self._DEFAULT_EGRESS_NETWORK,
+                "pip_index_url": os.environ.get(self._ENV_PIP_INDEX_URL) or self._DEFAULT_PIP_INDEX_URL,
+                "npm_registry": os.environ.get(self._ENV_NPM_REGISTRY) or self._DEFAULT_NPM_REGISTRY,
                 "egress_allow_cidrs": list(parse_cidrs(os.environ.get(self._ENV_EGRESS_ALLOW_CIDRS))),
             }
         # No E2B branch: the API key deliberately never enters
@@ -277,7 +268,7 @@ class EnvSandboxSettingsLoader:
         return SandboxSettings(
             backend=backend,
             backend_options=backend_options,
-            allow_network=_env_bool(self._ENV_ALLOW_NETWORK, default=False),
+            allow_network=env_flag(SANDBOX_ALLOW_NETWORK),
             max_concurrent_per_request=_env_int(self._ENV_MAX_CONCURRENT, 5),
             max_lifetime_s=_env_float(self._ENV_MAX_LIFETIME_S, 1800.0),
             provision_timeout_s=_env_float(self._ENV_PROVISION_TIMEOUT_S, 60.0),

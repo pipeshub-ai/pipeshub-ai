@@ -6,6 +6,7 @@ import sys
 
 from app.agent_loop_lib.sandbox.base import ExecResult
 from app.agent_loop_lib.sandbox.coding.base import (
+    WORKSPACE_DIR_NAME,
     CodingLanguage,
     EnvironmentSetupError,
     InstallResult,
@@ -17,6 +18,7 @@ from app.agent_loop_lib.sandbox.coding.validation import (
     validate_package_spec,
 )
 from app.agent_loop_lib.sandbox.confinement import confine_command
+from app.utils.private_dirs import ensure_private_dir
 
 """`EnvironmentManager`: owns npm/venv setup and package installation for a
 single coding sandbox's working directory.
@@ -60,6 +62,7 @@ def sanitized_subprocess_env(working_dir: str) -> dict[str, str]:
         "TMPDIR": working_dir,
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
         "OUTPUT_DIR": os.path.join(working_dir, "output"),
+        "WORKSPACE_DIR": os.path.join(working_dir, WORKSPACE_DIR_NAME),
     }
     if sys.platform == "win32":
         # Node/npm on Windows resolve several things (APPDATA, SystemRoot,
@@ -126,12 +129,17 @@ class EnvironmentManager:
     def tsc_binary(self) -> str:
         return os.path.join(self.node_bin_dir, "tsc.cmd" if sys.platform == "win32" else "tsc")
 
+    def prepare_working_dir(self) -> None:
+        """Makes the sandbox's working folder 0700, or refuses one this user does not own or others can write
+        (``PrivateDirUnsafe``): it sits under the shared temp folder and holds the run's files (R13-ROOT)."""
+        _ = ensure_private_dir(self._working_dir, "coding sandbox folder")
+
     async def ensure_typescript_runtime(self) -> None:
         """Idempotently `npm init -y` then install `tsx` + `typescript` as
         the runtime this sandbox will execute TypeScript with."""
         if self._node_initialized:
             return
-        os.makedirs(self._working_dir, exist_ok=True)
+        self.prepare_working_dir()
         init = await self._run_confined(["npm", "init", "-y"], allow_network=False)
         if init.exit_code != 0:
             raise EnvironmentSetupError(f"npm init failed: {init.stderr}")
@@ -146,7 +154,7 @@ class EnvironmentManager:
         """Idempotently create the sandbox's isolated virtualenv."""
         if self._venv_initialized:
             return
-        os.makedirs(self._working_dir, exist_ok=True)
+        self.prepare_working_dir()
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "venv", self.python_venv_path,
             cwd=self._working_dir,

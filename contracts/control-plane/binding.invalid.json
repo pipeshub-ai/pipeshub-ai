@@ -1,0 +1,14 @@
+[
+  {
+    "description": "a token in the binding",
+    "instance": {"schemaVersion": 1, "id": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "owner": "user:u3", "mode": "api_key", "status": "active", "secret": null, "scopes": [], "expiresAt": null, "refreshedAt": null, "lastError": null, "revision": 1, "accessToken": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  },
+  {
+    "description": "a provider message as the last error",
+    "instance": {"schemaVersion": 1, "id": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "owner": "user:u3", "mode": "oauth", "status": "error", "secret": null, "scopes": [], "expiresAt": null, "refreshedAt": null, "lastError": {"code": "invalid_grant", "at": 0, "message": "token abc rejected"}, "revision": 1}
+  },
+  {
+    "description": "a team cannot own a credential",
+    "instance": {"schemaVersion": 1, "id": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "owner": "team:t9", "mode": "oauth", "status": "pending", "secret": null, "scopes": [], "expiresAt": null, "refreshedAt": null, "lastError": null, "revision": 1}
+  }
+]

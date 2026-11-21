@@ -39,8 +39,13 @@ __all__ = [
     "CodingSandboxBackend",
     "CodingLanguage",
     "CodingSandboxError",
+    "CodeOutOfMemory",
     "EnvironmentSetupError",
+    "OUT_OF_MEMORY_EXIT",
+    "memory_limit_end",
+    "ran_out_of_memory",
     "OUTPUT_DIR_NAME",
+    "WORKSPACE_DIR_NAME",
     "normalize_sandbox_path",
     "IsolationLevel",
     "SandboxCapabilities",
@@ -59,6 +64,12 @@ OUTPUT_DIR_NAME = "output"
 # container env), which resolves to `/output` in the container.
 _OUTPUT_DIR_ALIASES = ("${OUTPUT_DIR}", "$OUTPUT_DIR", "/output")
 
+# The chat's workspace folder, relative to the sandbox working dir: `$WORKSPACE_DIR` in a run. A durable run stages
+# the session workspace here and saves what a call leaves here (`app/harness/assembly/run_code_workspace.py`), the
+# same files an engine sees at `/workspace` and a person's `/run` line runs in.
+WORKSPACE_DIR_NAME = "workspace"
+_WORKSPACE_DIR_ALIASES = ("${WORKSPACE_DIR}", "$WORKSPACE_DIR")
+
 
 def normalize_sandbox_path(path: str) -> str:
     """Rewrite the ways a model spells the deliverable directory into the
@@ -76,11 +87,12 @@ def normalize_sandbox_path(path: str) -> str:
     silently reinterpreting it as sandbox-relative.
     """
     cleaned = path.strip()
-    for alias in _OUTPUT_DIR_ALIASES:
-        if cleaned == alias:
-            return OUTPUT_DIR_NAME
-        if cleaned.startswith(alias + "/"):
-            return f"{OUTPUT_DIR_NAME}/{cleaned[len(alias) + 1:].lstrip('/')}"
+    for aliases, name in ((_OUTPUT_DIR_ALIASES, OUTPUT_DIR_NAME), (_WORKSPACE_DIR_ALIASES, WORKSPACE_DIR_NAME)):
+        for alias in aliases:
+            if cleaned == alias:
+                return name
+            if cleaned.startswith(alias + "/"):
+                return f"{name}/{cleaned[len(alias) + 1:].lstrip('/')}"
     return cleaned
 
 
@@ -105,6 +117,7 @@ class ErrorCategory(str, Enum):
     RUNTIME = "runtime"
     IMPORT = "import"
     TIMEOUT = "timeout"
+    MEMORY = "memory"
     PERMISSION = "permission"
     UNKNOWN = "unknown"
 
@@ -173,10 +186,66 @@ class CodeResult(BaseModel):
     duration_ms: float
     error_analysis: ErrorAnalysis | None = None
     artifacts: list[str] = Field(default_factory=list)
+    # The sandbox's memory limit in MB, when that limit ended the run (R32SECCOMP-FU-1).
+    out_of_memory_mb: int | None = None
 
     @property
     def success(self) -> bool:
         return self.exit_code == 0
+
+
+class CodeOutOfMemory(Exception):
+    """The sandbox's memory limit ended the code (R32SECCOMP-FU-1): under runc the kernel killed its process, under
+    gVisor the whole sandbox went. A code-level failure, so ``execute`` turns it into a ``CodeResult`` that names the
+    limit; never a ``CodingSandboxError``, which reads as the tool failing."""
+
+    def __init__(self, memory_mb: int, *, stdout: str = "", stderr: str = "") -> None:
+        super().__init__(ran_out_of_memory(memory_mb))
+        self.memory_mb = memory_mb
+        self.stdout = stdout
+        self.stderr = stderr
+
+    def result(self, language: str, duration_ms: float) -> CodeResult:
+        """The run as ``run_code`` reports it: a failed run whose words and analysis name the limit."""
+        said = str(self)
+        return CodeResult(
+            stdout=self.stdout,
+            stderr=f"{said}\n{self.stderr}".strip(),
+            exit_code=OUT_OF_MEMORY_EXIT,
+            language=language,
+            duration_ms=duration_ms,
+            error_analysis=ErrorAnalysis(
+                category=ErrorCategory.MEMORY,
+                message=said,
+                suggestion=(
+                    "Use less memory: read and process the data in smaller pieces, or stream it, instead of "
+                    "loading it all at once."
+                ),
+            ),
+            out_of_memory_mb=self.memory_mb,
+        )
+
+
+# What a process the kernel's OOM killer ended exits with (128 + SIGKILL), and so what ``run_code`` reports.
+OUT_OF_MEMORY_EXIT = 137
+
+
+def ran_out_of_memory(memory_mb: int, what: str = "code") -> str:
+    """How a person is told the sandbox's memory limit stopped their code (or their ``/run`` command)."""
+    from harness_core.sandbox.errors import memory_limit_text
+
+    return f"The {what} ran out of memory (limit {memory_limit_text(memory_mb)}) and was stopped."
+
+
+def memory_limit_end(
+    exit_code: int, *, oom_killed: bool, memory_mb: int, stdout: str = "", stderr: str = ""
+) -> CodeOutOfMemory | None:
+    """The one reading every container backend makes of a run's end (R33JGAPS-FU-2): its process was killed (exit
+    137) and the sandbox says its memory limit did it. A kill for any other reason, or a sandbox that cannot tell,
+    is the code's own failure, read as before."""
+    if exit_code != OUT_OF_MEMORY_EXIT or not oom_killed:
+        return None
+    return CodeOutOfMemory(memory_mb, stdout=stdout, stderr=stderr)
 
 
 class InstallResult(BaseModel):
@@ -216,6 +285,9 @@ class SandboxContext(BaseModel):
     user_id: str | None = None
     conversation_id: str | None = None
     request_id: str | None = None
+    # A durable run's ids: its sandboxes are reaped with the run (or the attempt that left them).
+    run_id: str | None = None
+    attempt_id: str | None = None
 
 
 class SandboxRef(BaseModel):
