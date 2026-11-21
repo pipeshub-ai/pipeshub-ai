@@ -130,8 +130,13 @@ export function parseLicenseInput(input: unknown): SignedLicense {
   if (!payload.success) {
     throw new LicenseError('MALFORMED', `license.${firstIssue(payload.error)}`);
   }
+  let canonical: string;
   try {
-    canonicalJson(payload.data);
+    canonical = canonicalJson(payload.data);
+    // Parsing drops a key it cannot hold as a plain field (an own `__proto__`),
+    // so the parsed copy alone would let content the signature never covered ride along.
+    if (canonicalJson((input as { license?: unknown }).license) !== canonical)
+      throw new TypeError('holds a field that cannot be read');
   } catch (error) {
     throw new LicenseError(
       'MALFORMED',
@@ -141,7 +146,8 @@ export function parseLicenseInput(input: unknown): SignedLicense {
   return {
     format: LICENSE_FORMAT,
     keyId: outer.data.keyId,
-    license: payload.data,
+    // Rebuilt from the canonical text: exactly the value the signature is checked over.
+    license: JSON.parse(canonical) as LicensePayload,
     signature: outer.data.signature,
   };
 }

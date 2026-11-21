@@ -189,6 +189,29 @@ describe('license core', () => {
     ).to.equal('BAD_SIGNATURE');
   });
 
+  it('refuses a file carrying a `__proto__` field the signature does not cover', () => {
+    const text = JSON.stringify(signed(payload())).replace(
+      '"license":{',
+      '"license":{"__proto__":{"x":1},',
+    );
+    expect(text).to.include('__proto__');
+    expect(reasonOf(() => checkLicense(JSON.parse(text), NOW))).to.equal(
+      'MALFORMED',
+    );
+  });
+
+  it('hands back exactly the value the signature was checked over', () => {
+    const file = signed(payload({ addedLater: { nested: [1, 'two'] } }));
+    const verified = checkLicense(JSON.parse(JSON.stringify(file)), NOW);
+    expect(verified.payload).to.deep.equal(file.license);
+    expect(Object.getPrototypeOf(verified.payload)).to.equal(Object.prototype);
+    expect(
+      sign(null, licenseSigningInput(verified.payload), privateKey).toString(
+        'base64url',
+      ),
+    ).to.equal(file.signature);
+  });
+
   it('trusts only the built-in keys when the build has any, whatever env says', () => {
     const pem = (): string =>
       generateKeyPairSync('ed25519').publicKey.export({

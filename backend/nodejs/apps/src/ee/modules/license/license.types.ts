@@ -56,8 +56,8 @@ export function webOrigin(value: string | undefined): string | null {
 export const LONE_SURROGATE =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
-// No transforms anywhere: the parsed object is what gets canonicalized and
-// verified, so it must be exactly what was signed.
+// No transforms anywhere: the parsed object must canonicalize to exactly what
+// was signed, and a file whose parsed copy differs from its content is refused.
 export const licensePayloadSchema = z
   .object({
     version: z.literal(LICENSE_VERSION),
