@@ -1,9 +1,9 @@
 apiVersion: v2
 name: pipeshub-ai
-description: AI-powered workflow automation and integration platform
+description: Open-source enterprise AI search and context layer for AI agents, with permission-aware search, cited answers and an MCP server
 type: application
-version: 0.2.1
-appVersion: "0.10.0"
+version: 0.2.2
+appVersion: "1.0.0"
 home: https://pipeshub.com
 icon: https://pipeshub.com/logo.svg
 sources:
@@ -14,9 +14,11 @@ maintainers:
     url: https://pipeshub.com
 keywords:
   - ai
-  - workflow
-  - automation
-  - integration
+  - enterprise-search
+  - rag
+  - mcp
+  - context-layer
+  - knowledge-graph
   - mongodb
   - redis
   - neo4j
