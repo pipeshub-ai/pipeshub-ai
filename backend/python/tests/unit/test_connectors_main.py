@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import sys
@@ -2580,20 +2581,53 @@ class TestRefreshConnectorMetrics:
         gp.get_all_documents.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_logs_warning_when_gauge_refresh_fails(self):
+    async def test_counts_under_a_system_context_from_a_detached_task(self) -> None:
+        """The loop runs with no org bound; the count spans every org, so it is asked for under ``system``, and nothing stays bound after."""
         from app.connectors_main import refresh_connector_metrics
+        from app.core.org_context import peek
+
+        seen = []
+
+        async def count() -> dict:
+            seen.append(peek())
+            return {"KB": 2}
 
         gp = AsyncMock()
-        gp.count_active_apps_by_type = AsyncMock(side_effect=RuntimeError("graph down"))
-        logger = MagicMock()
+        gp.count_active_apps_by_type = count
+        after = []
+
+        async def stop(_s: float) -> None:
+            after.append(peek())
+            raise asyncio.CancelledError
 
         with patch("app.connectors_main.set_connector_active") as mock_set, \
-             patch("app.connectors_main.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError):
+             patch("app.connectors_main.asyncio.sleep", side_effect=stop):
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.create_task(refresh_connector_metrics(gp, MagicMock(), interval_s=60), context=contextvars.Context())
+
+        assert [(c.kind, c.source) for c in seen] == [("system", "system:connector_metrics")]
+        assert after == [None]
+        mock_set.assert_called_once_with({"KB": 2})
+
+    @pytest.mark.asyncio
+    async def test_a_failed_refresh_is_one_text_free_warning_and_the_loop_goes_on(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.connectors_main import refresh_connector_metrics
+        from tests.support.log_capture import failure_line
+
+        gp = AsyncMock()
+        gp.count_active_apps_by_type = AsyncMock(side_effect=[RuntimeError("SENTINEL-graph-text"), {"KB": 1}])
+        logger = logging.getLogger("test.connector_metrics")
+        sleeps = AsyncMock(side_effect=[None, asyncio.CancelledError])
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name), \
+             patch("app.connectors_main.set_connector_active") as mock_set, \
+             patch("app.connectors_main.asyncio.sleep", sleeps):
             with pytest.raises(asyncio.CancelledError):
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
-        logger.warning.assert_called()
-        mock_set.assert_not_called()
+        fields = failure_line(caplog.records, "connector_metrics.refresh_failed", "internal", logging.WARNING, "SENTINEL-graph-text")
+        assert fields["error_type"] == "RuntimeError"
+        mock_set.assert_called_once_with({"KB": 1})      # the next round still publishes
 
 
 class TestCorsPolicy:

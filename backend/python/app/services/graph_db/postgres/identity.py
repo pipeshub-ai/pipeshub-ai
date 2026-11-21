@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
@@ -1036,6 +1037,19 @@ class IdentityMixin(PgBase):
             await self._join_all_team(team_id, [k for u in users if (k := u.get("id"))], owner_if_empty=True, tid=tid)
 
     # ---- what an agent still uses, and counts of connector instances ----------------------------------------------------------------
+    async def count_active_apps_by_type(self) -> dict[str, int]:
+        """Active connector instances per type (``unknown`` without one): the ambient org's, or every org's under a system context, one count per org."""
+        counts: Counter[str] = Counter()
+        errors: list[tuple[str, Exception]] = []
+        for org_id in await self._sweep_orgs():
+            with self._sweep(org_id, errors):
+                rows = await self._q(lambda tx, org=current_org_id(): tx.fetch("""/* pipeshub:graph.count_active_apps_by_type */
+                    SELECT coalesce(nullif(doc->>'type', ''), 'unknown') AS type, count(*) AS n FROM graph.nodes
+                    WHERE org_id = $1 AND coll = 'apps' AND coalesce((doc->>'isActive')::boolean, false) GROUP BY 1""", org), None)
+                counts.update({r["type"]: r["n"] for r in rows})
+        self._raise_failed(errors)
+        return dict(counts)
+
     async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
         """Names of the live agents with an operation of this API toolset attached (an entry of ``apiToolsetTools`` starting ``<instance>:``)."""
         rows = await self._id_rows("""/* pipeshub:graph.check_api_toolset_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes a
