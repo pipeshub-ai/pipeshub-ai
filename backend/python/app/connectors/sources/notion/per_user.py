@@ -262,8 +262,8 @@ async def refresh_connection(
             oauth_config = await user_oauth_config(
                 connector_id, config_service=config_service, org_id=org_id, logger=logger
             )
-            # The provider stores the new pair under ``credentials`` of the connection before
-            # returning, so a rotated refresh token is never lost (UserConnection.from_dict reads it).
+            # The provider stores the new pair under ``credentials`` of the connection before returning
+            # (UserConnection.from_dict reads it); when it cannot read the connection, save_connection below stores it.
             provider = OAuthProvider(oauth_config, config_service, connection_path(connector_id, connection.user_id))
             try:
                 token = await provider.refresh_access_token(stored.refresh_token)
