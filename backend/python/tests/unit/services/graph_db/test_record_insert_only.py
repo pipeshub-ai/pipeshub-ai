@@ -269,6 +269,15 @@ def _row(key: str, *, new: bool) -> dict:
     return {"key": key, "insert": {"_key": key, "createdAtTimestamp": 5, "incarnationId": "i"}, "patch": {"recordName": key}, "new": new}
 
 
+async def test_the_patch_drops_nulls_like_the_older_write(client) -> None:
+    """QA-G55-8: ``keepNull=false``, so a None in an update removes the key as ``overwriteMode=update`` did."""
+    session = MagicMock()
+    session.request.side_effect = [_ok()]
+    with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=session):
+        await client.batch_upsert_documents("records", [_row("a", new=False)])
+    assert session.request.call_args.kwargs["params"]["keepNull"] == "false"
+
+
 async def test_a_known_new_record_is_one_insert_call(client) -> None:
     result, calls = await _run(client, [_row("a", new=True)], _ok())
     assert [m for m, _ in calls] == ["POST"] and result["created"] == 1

@@ -231,6 +231,27 @@ async def with_the_kill_switch_off_no_store_mints(store: StoreAdapter, flag: boo
     assert (await store.doc(key))["createdAtTimestamp"] == 999, "the older write overwrites the date"
 
 
+async def a_null_removes_the_stored_key(store: StoreAdapter, flag: bool) -> None:
+    """QA-G55-8: an update carrying None removes the key on every store, as the older write did (ArangoDB stored the null)."""
+    key = new_key()
+    first = make_record(key, created_at=100, known_new=True)
+    first.weburl = "https://example.com/a"
+    await store.upsert([first])
+    assert (await store.doc(key))["webUrl"] == "https://example.com/a"
+    second = make_record(key, created_at=200)
+    second.weburl = None
+    await store.upsert([second])
+    assert "webUrl" not in (await store.doc(key)), f"{store.name} kept the null"
+
+
+async def a_marked_stub_is_no_promotion(store: StoreAdapter, flag: bool) -> None:
+    """QA-G55-9: a row marked as a promotion that is itself a placeholder takes no date from the stored stub on any store."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=500, placeholder=True, known_new=True)])
+    await store.upsert([make_record(key, created_at=300, placeholder=True, promotes=True)])
+    assert (await store.doc(key))["createdAtTimestamp"] == 500, f"{store.name}: a stub took an earlier date"
+
+
 async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None:
     """S6: only the ``records`` document is insert-only; the type document (``files``) is written as before."""
     key = new_key()
@@ -242,6 +263,7 @@ async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None
 
 
 ALL_CASES = (
+    a_null_removes_the_stored_key, a_marked_stub_is_no_promotion,
     a_stale_promotion_hint_is_ignored, the_move_path_keeps_both_fields_and_releases,
     type_documents_keep_the_merge,
     resync_keeps_created_at, nodes_path_keeps_both_fields, a_new_key_through_nodes_gets_an_id, a_promotion_ignores_an_unreal_date,

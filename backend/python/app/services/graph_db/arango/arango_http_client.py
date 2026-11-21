@@ -1028,7 +1028,7 @@ class ArangoHTTPClient:
             return send
 
         send_insert = sender("POST", {"overwriteMode": "conflict"})
-        send_patch = sender("PATCH", {"keepNull": "true", "mergeObjects": "true", "ignoreRevs": "true"})
+        send_patch = sender("PATCH", {"keepNull": "false", "mergeObjects": "true", "ignoreRevs": "true"})
 
         async def run(docs: list[dict[str, Any]], send: Callable[[list[dict[str, Any]]], Awaitable[_Reply]]) -> list[Any]:
             answers = await _send_until_landed(docs, txn_id, send)

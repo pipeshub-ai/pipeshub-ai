@@ -4073,14 +4073,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 """
                 FOR d IN @docs
                     LET old = DOCUMENT(@@records, d.key)
-                    FILTER old != null AND old.isPlaceholder == true
+                    FILTER old != null AND old.isPlaceholder == true AND d.patch.isPlaceholder != true
                     LET incoming = d.created
                     LET stored = old.createdAtTimestamp
                     LET created = (IS_NUMBER(incoming) AND incoming > 0)
                         ? ((IS_NUMBER(stored) AND stored > 0) ? MIN([stored, incoming]) : incoming)
                         : null
                     UPDATE d.key WITH MERGE(d.patch, created == null ? {} : { createdAtTimestamp: created })
-                        IN @@records OPTIONS { keepNull: true, mergeObjects: true }
+                        IN @@records OPTIONS { keepNull: false, mergeObjects: true }
                     RETURN d.key
                 """,
                 bind_vars={
@@ -4132,7 +4132,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     (OLD.isPlaceholder == true AND IS_NUMBER(it.cand) AND it.cand > 0)
                         ? { createdAtTimestamp: (IS_NUMBER(OLD.createdAtTimestamp) AND OLD.createdAtTimestamp > 0) ? MIN([OLD.createdAtTimestamp, it.cand]) : it.cand }
                         : {})
-                IN @@records
+                IN @@records OPTIONS { keepNull: false }
                 RETURN NEW._key
             """,
             bind_vars={
