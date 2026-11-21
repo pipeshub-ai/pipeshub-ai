@@ -402,7 +402,10 @@ class TestRecordWhoseParseWorkerWasKilled:
         assert PARSE_WORKER_OUT_OF_MEMORY in reasons
 
     async def test_a_failed_status_write_does_not_hide_the_retry_from_the_consumer(self) -> None:
-        from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
 
         harness = Harness(_record(indexingStatus="IN_PROGRESS"))
         harness.fail_with = self._killed_first()

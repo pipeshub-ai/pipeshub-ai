@@ -3168,7 +3168,7 @@ class RecordEventHandler(BaseEventService):
                         if last_exception is not None:
                             # Not "from": that would replace the error's own cause, which the consumer reads
                             # to classify it (a killed parse worker's retry). The status failure stays its context.
-                            raise last_exception
+                            raise last_exception  # noqa: B904 - the status failure is its context on purpose
                         raise
                     if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
@@ -3229,7 +3229,7 @@ class RecordEventHandler(BaseEventService):
                         # re-raised original error would replace with the ordinary retry.
                         if not handed_back:
                             if last_exception is not None:
-                                raise last_exception  # see above: the status failure is its context, not its cause
+                                raise last_exception  # noqa: B904 - see above: the status failure is its context, not its cause
                             raise RuntimeError(
                                 f"Failed to clear transient IN_PROGRESS status for {record_id}"
                             ) from revert_exc
