@@ -28,6 +28,10 @@ from app.services.graph_db.arango.record_schema_guard import (
     RecordSchemaGuard,
     is_record_schema_error,
 )
+from app.services.graph_db.common.utils import (
+    new_incarnation_id,
+    record_incarnation_write,
+)
 from app.utils import error_class
 from app.utils.db_query_log import query_ended, query_logged
 
@@ -1056,6 +1060,14 @@ class ArangoHTTPClient:
                 return row["patch"]
             return {k: v for k, v in row["insert"].items() if k not in drop and k != "_key"}
 
+        def insert_of(row: dict[str, Any], *, after_miss: bool) -> dict[str, Any]:
+            # A document inserted because its patch found nothing was deleted since the record was read: it is a new life of the
+            # key, so it must not carry the id its earlier life held.
+            if after_miss and "incarnationId" in drop and record_incarnation_write():
+                return {**row["insert"], "incarnationId": new_incarnation_id()}
+            return row["insert"]
+
+        refound: set[str] = set()
         by_key = {r["key"]: r for r in rows}
         insert_keys = [r["key"] for r in rows if r.get("new")]
         patch_keys = [r["key"] for r in rows if not r.get("new")]
@@ -1064,7 +1076,7 @@ class ArangoHTTPClient:
             lost: list[str] = []          # inserts that found the key stored
             missed: list[str] = []        # patches that found nothing
             if insert_keys:
-                answers = await run([by_key[k]["insert"] for k in insert_keys], send_insert)
+                answers = await run([insert_of(by_key[k], after_miss=k in refound) for k in insert_keys], send_insert)
                 self._check_response_for_errors(unexpected(answers, ARANGO_UNIQUE_CONSTRAINT_VIOLATED), "Batch upsert")
                 for k, a in zip(insert_keys, answers):
                     if isinstance(a, dict) and a.get("error"):
@@ -1083,6 +1095,7 @@ class ArangoHTTPClient:
             if not missed:
                 return {"created": created, "updated": updated, "errors": 0}
             insert_keys, patch_keys = missed, []
+            refound.update(missed)
         raise Exception(f"Batch upsert did not settle after 3 rounds for keys {insert_keys[:5]}")
 
     @_logged("batch_delete_documents")

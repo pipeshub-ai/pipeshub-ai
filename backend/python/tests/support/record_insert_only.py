@@ -252,6 +252,39 @@ async def a_marked_stub_is_no_promotion(store: StoreAdapter, flag: bool) -> None
     assert (await store.doc(key))["createdAtTimestamp"] == 500, f"{store.name}: a stub took an earlier date"
 
 
+async def with_the_kill_switch_off_a_promotion_takes_the_incoming_date(store: StoreAdapter, flag: bool) -> None:
+    """With ``RECORD_CREATED_AT_INSERT_ONLY=false`` the older merge-everything write holds on every path, a stub promotion
+    (ordinary and trash-release) included: the incoming date replaces the stored one."""
+    for release in (False, True):
+        key = new_key()
+        await store.upsert([make_record(key, created_at=500, placeholder=True, known_new=True)])
+        await store.upsert([make_record(key, created_at=999, promotes=True)], release_trashed=release)
+        assert (await store.doc(key))["createdAtTimestamp"] == 999, f"{store.name} (release={release}) kept the stored date"
+
+
+async def a_partial_node_patch_is_no_promotion(store: StoreAdapter, flag: bool) -> None:
+    """A dict patch of a stored placeholder that names an earlier date but does not say ``isPlaceholder: false`` is no promotion."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=500, placeholder=True, known_new=True)])
+    await store.upsert_nodes([{"id": key, "orgId": "g55-org", "recordName": "patch", "externalRecordId": f"ext-{key}", "recordType": "FILE",
+                               "origin": "CONNECTOR", "connectorName": "KB", "connectorId": "g55-conn", "createdAtTimestamp": 300,
+                               "version": 0}])
+    doc = await store.doc(key)
+    assert doc["createdAtTimestamp"] == 500 and doc["isPlaceholder"] is True, f"{store.name}: {doc}"
+
+
+async def repeated_ids_keep_the_last_write(store: StoreAdapter, flag: bool) -> None:
+    """One batch writing a record three times (the middle row marked as a promotion) ends with the last row's fields."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100, known_new=True)])
+    await store.upsert([
+        make_record(key, created_at=100, name="first"),
+        make_record(key, created_at=100, name="second", promotes=True),
+        make_record(key, created_at=100, name="third"),
+    ])
+    assert (await store.doc(key))["recordName"] == "third", store.name
+
+
 async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None:
     """S6: only the ``records`` document is insert-only; the type document (``files``) is written as before."""
     key = new_key()
@@ -263,6 +296,7 @@ async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None
 
 
 ALL_CASES = (
+    a_partial_node_patch_is_no_promotion, repeated_ids_keep_the_last_write,
     a_null_removes_the_stored_key, a_marked_stub_is_no_promotion,
     a_stale_promotion_hint_is_ignored, the_move_path_keeps_both_fields_and_releases,
     type_documents_keep_the_merge,

@@ -209,9 +209,17 @@ async def postgres(a, rng):
     base_nf = via(lambda tx, o, docs: _upsert_docs(tx, o, RECORDS, [strip_id(d) for d in docs]))
     newer = via(_upsert_record_docs)
     v = {"baseline_with_field": base, "baseline_no_field": base_nf, "new": newer}
-    out = await run_store("postgres", v, v, "id", a.n, a.sizes, a.calls, a.rounds, rng)
-    await db.close()
-    return out
+    async def clean() -> None:
+        async def go(tx):
+            await tx.execute("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id LIKE 'bench-%'", org)
+        with bind(OrgContext(org, None, "job", "job:bench", "t")):
+            await p._q(go, None, write=True)
+
+    try:
+        return await run_store("postgres", v, v, "id", a.n, a.sizes, a.calls, a.rounds, rng, clean)
+    finally:
+        await clean()
+        await db.close()
 
 
 if __name__ == "__main__":

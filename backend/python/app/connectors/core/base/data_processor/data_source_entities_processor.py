@@ -105,7 +105,7 @@ from app.connectors.services.vector_cleanup_events import build_soft_delete_even
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.common.record_visibility import HAS_INDEXED_COPY, RecordVisibility, is_live_record
-from app.services.graph_db.common.utils import positive_min
+from app.services.graph_db.common.utils import positive_min, record_created_at_insert_only
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
@@ -2348,11 +2348,12 @@ class DataSourceEntitiesProcessor:
         return value) agree with it. A stored placeholder that the incoming record replaces is the first full write: the date
         is the earlier positive one, and the store is told so (``_promotes_stub``) because an ArangoDB bulk update cannot read the
         stored row. The id is never changed by a write."""
-        if existing_record.is_placeholder and not record.is_placeholder:
-            record.created_at = positive_min(existing_record.created_at, record.created_at) or record.created_at
-            record._promotes_stub = True
-        elif existing_record.created_at:
-            record.created_at = existing_record.created_at
+        if record_created_at_insert_only():
+            if existing_record.is_placeholder and not record.is_placeholder:
+                record.created_at = positive_min(existing_record.created_at, record.created_at) or record.created_at
+                record._promotes_stub = True
+            elif existing_record.created_at:
+                record.created_at = existing_record.created_at
         record.incarnation_id = getattr(existing_record, "incarnation_id", None)
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:

@@ -96,12 +96,12 @@ async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
         INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
         ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(
             graph.nodes.doc || (SELECT (x2.doc - $4::text[]) || CASE
-                WHEN coalesce((graph.nodes.doc->>'isPlaceholder')::boolean, false) AND NOT coalesce((x2.doc->>'isPlaceholder')::boolean, false)
+                WHEN $5::boolean AND coalesce((graph.nodes.doc->>'isPlaceholder')::boolean, false) AND x2.doc->>'isPlaceholder' = 'false'
                      AND jsonb_typeof(x2.doc->'createdAtTimestamp') = 'number' AND (x2.doc->>'createdAtTimestamp')::numeric > 0
                 THEN jsonb_build_object('createdAtTimestamp', CASE WHEN jsonb_typeof(graph.nodes.doc->'createdAtTimestamp') = 'number' AND (graph.nodes.doc->>'createdAtTimestamp')::numeric > 0
                     THEN LEAST((graph.nodes.doc->>'createdAtTimestamp')::numeric, (x2.doc->>'createdAtTimestamp')::numeric) ELSE (x2.doc->>'createdAtTimestamp')::numeric END)
                 ELSE '{}'::jsonb END FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
-                     org, _RECORDS, _j(rows), dropped)
+                     org, _RECORDS, _j(rows), dropped, bool(dropped))
 
 
 _RECORD_BY_EXTERNAL_PAGE = 100       # the function's LIMIT

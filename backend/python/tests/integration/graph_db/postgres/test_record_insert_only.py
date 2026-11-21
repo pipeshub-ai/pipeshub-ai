@@ -35,3 +35,9 @@ async def test_with_the_kill_switch_off_no_store_mints(store: cases.StoreAdapter
     monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", "false")
     monkeypatch.setenv("RECORD_INCARNATION_WRITE", "true")
     await cases.with_the_kill_switch_off_no_store_mints(store, True)
+
+
+async def test_with_the_kill_switch_off_a_promotion_takes_the_incoming_date(store: cases.StoreAdapter, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", "false")
+    monkeypatch.setenv("RECORD_INCARNATION_WRITE", "true")
+    await cases.with_the_kill_switch_off_a_promotion_takes_the_incoming_date(store, True)

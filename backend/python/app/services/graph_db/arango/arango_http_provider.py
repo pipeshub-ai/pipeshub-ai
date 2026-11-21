@@ -4158,7 +4158,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "k": doc["_key"],
                         "full": record_insert_doc(doc),
                         "upd": record_update_doc(doc),
-                        "cand": None if doc.get("isPlaceholder") else doc.get("createdAtTimestamp"),
+                        "cand": None if (doc.get("isPlaceholder") or not record_created_at_insert_only()) else doc.get("createdAtTimestamp"),
                     }
                     for doc in docs
                 ],

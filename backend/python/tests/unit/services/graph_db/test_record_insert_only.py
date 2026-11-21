@@ -174,6 +174,15 @@ async def test_a_re_sync_that_builds_created_at_as_now_keeps_the_stored_date_and
     assert tx.batch_upsert_records.await_args.args[0][0].created_at == 100
 
 
+async def test_with_the_kill_switch_off_the_processor_keeps_the_incoming_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", "false")
+    stored = _file("stored", created_at=100)
+    incoming = _file("fresh", created_at=900)
+    incoming.external_record_id = stored.external_record_id
+    processed, _ = await _resync(stored, incoming)
+    assert processed.created_at == 900 and processed._promotes_stub is False
+
+
 async def test_a_new_record_is_marked_known_new_for_the_insert_first_order() -> None:
     processed, tx = await _resync(None, _file("fresh"))
     assert processed._known_new is True
@@ -276,6 +285,29 @@ async def test_the_patch_drops_nulls_like_the_older_write(client) -> None:
     with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=session):
         await client.batch_upsert_documents("records", [_row("a", new=False)])
     assert session.request.call_args.kwargs["params"]["keepNull"] == "false"
+
+
+async def test_an_insert_after_a_patch_miss_gets_a_new_incarnation_id(client, incarnation_on) -> None:
+    """The key was deleted since the record was read, so the insert is a new life of it and must not carry the earlier id."""
+    row = {"key": "a", "insert": {"_key": "a", "createdAtTimestamp": 5, "incarnationId": "old"}, "new": False}
+    _, calls = await _run_drop(client, [row], _Resp(202, [_err(1202)]), _ok())
+    assert [m for m, _ in calls] == ["PATCH", "POST"]
+    assert calls[1][1][0]["incarnationId"] not in ("old", None)
+    assert calls[1][1][0]["createdAtTimestamp"] == 5
+
+
+async def test_an_insert_that_was_planned_keeps_the_id_it_was_given(client, incarnation_on) -> None:
+    row = {"key": "a", "insert": {"_key": "a", "incarnationId": "minted"}, "new": True}
+    _, calls = await _run_drop(client, [row], _ok())
+    assert calls[0][1][0]["incarnationId"] == "minted"
+
+
+async def _run_drop(client: ArangoHTTPClient, rows: list[dict], *answers: _Resp) -> tuple[dict, list]:
+    session = MagicMock()
+    session.request.side_effect = list(answers)
+    with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=session):
+        result = await client.batch_upsert_documents("records", rows, drop=RECORD_UPDATE_DROPPED_FIELDS)
+    return result, [(c.args[0], c.kwargs["json"]) for c in session.request.call_args_list]
 
 
 async def test_a_known_new_record_is_one_insert_call(client) -> None:
