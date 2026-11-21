@@ -734,11 +734,12 @@ export class ConfigService {
   }
 
   public async getMcpScopes(): Promise<string[]> {
-    const scopes = process.env.MCP_SCOPES;
-    if (!scopes) {
-      return DefaultMcpScopes;
-    }
-    return scopes.split(',').map((s) => s.trim()).filter(Boolean);
+    const scopes = (process.env.MCP_SCOPES ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    // Callers read an empty list as "no cap", so a blank value (" " or ",") means unset, never "every scope".
+    return scopes.length > 0 ? scopes : DefaultMcpScopes;
   }
 
   public async getDeploymentConfig(): Promise<Record<string, string>> {
