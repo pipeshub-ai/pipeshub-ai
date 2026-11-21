@@ -2628,7 +2628,8 @@
         "tenants": "Tenanti",
         "superOrgs": "Organizace",
         "oauthApps": "OAuth aplikace konektorů",
-        "serviceAccounts": "Servisní účty"
+        "serviceAccounts": "Servisní účty",
+        "agentActivity": "Aktivita agentů"
       }
     },
     "actions": {
@@ -3073,6 +3074,29 @@
           }
         }
       }
+    },
+    "agentActivity": {
+      "title": "Aktivita agentů",
+      "subtitle": "Volání v tomto pracovním prostoru provedená s osobními přístupovými tokeny, tokeny aplikací OAuth a servisními tokeny, od nejnovějších. Úspěšná čtení jsou seskupena po minutách. Volání z přihlášeného panelu se nezaznamenávají a záznamy se uchovávají 30 dní.",
+      "filterKind": "Typ tokenu",
+      "filterStatus": "Stav",
+      "allKinds": "Všechny typy tokenů",
+      "allStatuses": "Všechny stavy",
+      "kindPat": "Osobní přístupový token",
+      "kindOauth": "Aplikace OAuth",
+      "kindDelegated": "Servisní token",
+      "columnUser": "Uživatel",
+      "columnToken": "Token",
+      "columnRequest": "Požadavek",
+      "columnStatus": "Stav",
+      "columnTime": "Čas",
+      "scopeDenied": "Chybí oprávnění",
+      "rolledUp": "Volání: {{calls}}",
+      "loadMore": "Načíst další",
+      "retry": "Zkusit znovu",
+      "loadError": "Aktivitu agentů se nepodařilo načíst.",
+      "emptyTitle": "Zatím žádná volání",
+      "emptyDescription": "Zde se zobrazí volání provedená s přístupovými tokeny."
     },
     "labs": {
       "title": "Konfigurace platformy",

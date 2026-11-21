@@ -2512,7 +2512,8 @@
         "tenants": "租户",
         "superOrgs": "组织",
         "oauthApps": "连接器 OAuth 应用",
-        "serviceAccounts": "服务账号"
+        "serviceAccounts": "服务账号",
+        "agentActivity": "智能体活动"
       }
     },
     "actions": {
@@ -2957,6 +2958,29 @@
           }
         }
       }
+    },
+    "agentActivity": {
+      "title": "智能体活动",
+      "subtitle": "此工作区中使用个人访问 token、OAuth 应用 token 和服务 token 发起的调用，按时间从新到旧排列。成功的读取调用按分钟合并。已登录的控制台发起的调用不会被记录，条目保留 30 天。",
+      "filterKind": "token 类型",
+      "filterStatus": "状态",
+      "allKinds": "所有 token 类型",
+      "allStatuses": "所有状态",
+      "kindPat": "个人访问 token",
+      "kindOauth": "OAuth 应用",
+      "kindDelegated": "服务 token",
+      "columnUser": "用户",
+      "columnToken": "token",
+      "columnRequest": "请求",
+      "columnStatus": "状态",
+      "columnTime": "时间",
+      "scopeDenied": "缺少权限范围",
+      "rolledUp": "{{calls}} 次调用",
+      "loadMore": "加载更多",
+      "retry": "重试",
+      "loadError": "无法加载智能体活动。",
+      "emptyTitle": "暂无调用",
+      "emptyDescription": "使用访问 token 发起的调用会显示在这里。"
     },
     "labs": {
       "title": "平台配置",

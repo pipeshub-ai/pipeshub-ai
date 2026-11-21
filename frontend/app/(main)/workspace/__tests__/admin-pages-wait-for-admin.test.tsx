@@ -5,6 +5,9 @@ import { Theme } from '@radix-ui/themes';
 
 import '@/lib/__tests__/test-i18n';
 
+// jsdom has no ResizeObserver; Radix measures with it.
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as never;
+
 // Bots and Prompts read admin-only settings. Bots loaded them on mount, before
 // knowing who the user was, so a member who opened it by URL got a 403 from the
 // server. Prompts (fixed on main in #4808) is held to the same contract here.
@@ -36,11 +39,16 @@ const getSystemPrompts = vi.fn(async () => ({
 }));
 vi.mock('../prompts/api', () => ({ PromptsApi: { getSystemPrompts } }));
 
+const listAgentActivity = vi.fn(async () => ({ items: [] }));
+vi.mock('../agent-activity/api', () => ({ AgentActivityApi: { list: listAgentActivity } }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => <div>loading</div> }));
 
 const pages = [
   { name: 'Bots', load: () => import('../bots/page'), fetched: getSlackBotConfigs },
   { name: 'Prompts', load: () => import('../prompts/page'), fetched: getSystemPrompts },
+  { name: 'Agent activity', load: () => import('../agent-activity/page'), fetched: listAgentActivity },
 ];
 
 async function renderPage(load: () => Promise<{ default: React.ComponentType }>) {

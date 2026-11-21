@@ -2401,7 +2401,8 @@
         "tenants": "Inquilinos",
         "superOrgs": "Organizaciones",
         "oauthApps": "Apps OAuth de conectores",
-        "serviceAccounts": "Cuentas de servicio"
+        "serviceAccounts": "Cuentas de servicio",
+        "agentActivity": "Actividad de agentes"
       }
     },
     "actions": {
@@ -2846,6 +2847,29 @@
           }
         }
       }
+    },
+    "agentActivity": {
+      "title": "Actividad de agentes",
+      "subtitle": "Llamadas hechas en este espacio de trabajo con tokens de acceso personal, tokens de aplicaciones OAuth y tokens de servicio, las más recientes primero. Las lecturas correctas se agrupan por minuto. Las llamadas desde el panel con sesión iniciada no se registran, y las entradas se conservan 30 días.",
+      "filterKind": "Tipo de token",
+      "filterStatus": "Estado",
+      "allKinds": "Todos los tipos de token",
+      "allStatuses": "Todos los estados",
+      "kindPat": "Token de acceso personal",
+      "kindOauth": "Aplicación OAuth",
+      "kindDelegated": "Token de servicio",
+      "columnUser": "Usuario",
+      "columnToken": "Token",
+      "columnRequest": "Solicitud",
+      "columnStatus": "Estado",
+      "columnTime": "Hora",
+      "scopeDenied": "Falta un ámbito",
+      "rolledUp": "{{calls}} llamadas",
+      "loadMore": "Cargar más",
+      "retry": "Reintentar",
+      "loadError": "No se pudo cargar la actividad de agentes.",
+      "emptyTitle": "Aún no hay llamadas",
+      "emptyDescription": "Aquí aparecen las llamadas hechas con tokens de acceso."
     },
     "labs": {
       "title": "Platform configuration",

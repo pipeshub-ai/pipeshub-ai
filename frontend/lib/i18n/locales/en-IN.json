@@ -2364,7 +2364,8 @@
         "tenants": "Tenants",
         "superOrgs": "Organisations",
         "oauthApps": "Connector OAuth apps",
-        "serviceAccounts": "Service accounts"
+        "serviceAccounts": "Service accounts",
+        "agentActivity": "Agent activity"
       }
     },
     "actions": {
@@ -2805,6 +2806,29 @@
           }
         }
       }
+    },
+    "agentActivity": {
+      "title": "Agent activity",
+      "subtitle": "Calls made in this workspace with personal access tokens, OAuth app tokens and service tokens, newest first. Successful reads are grouped by minute. Calls from the signed-in dashboard are not recorded, and entries are kept for 30 days.",
+      "filterKind": "Token type",
+      "filterStatus": "Status",
+      "allKinds": "All token types",
+      "allStatuses": "All statuses",
+      "kindPat": "Personal access token",
+      "kindOauth": "OAuth app",
+      "kindDelegated": "Service token",
+      "columnUser": "User",
+      "columnToken": "Token",
+      "columnRequest": "Request",
+      "columnStatus": "Status",
+      "columnTime": "Time",
+      "scopeDenied": "Missing scope",
+      "rolledUp": "{{calls}} calls",
+      "loadMore": "Load more",
+      "retry": "Retry",
+      "loadError": "Agent activity could not be loaded.",
+      "emptyTitle": "No calls yet",
+      "emptyDescription": "Calls made with access tokens appear here."
     },
     "labs": {
       "title": "Platform configuration",

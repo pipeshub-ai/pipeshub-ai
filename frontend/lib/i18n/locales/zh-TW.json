@@ -2512,7 +2512,8 @@
         "tenants": "租戶",
         "superOrgs": "組織",
         "oauthApps": "連接器 OAuth 應用程式",
-        "serviceAccounts": "服務帳戶"
+        "serviceAccounts": "服務帳戶",
+        "agentActivity": "代理程式活動"
       }
     },
     "actions": {
@@ -2957,6 +2958,29 @@
           }
         }
       }
+    },
+    "agentActivity": {
+      "title": "代理程式活動",
+      "subtitle": "此工作區中使用個人存取權杖、OAuth 應用程式權杖和服務權杖發出的呼叫，依時間由新到舊排列。成功的讀取呼叫會按分鐘合併。已登入的控制台發出的呼叫不會被記錄，項目保留 30 天。",
+      "filterKind": "權杖類型",
+      "filterStatus": "狀態",
+      "allKinds": "所有權杖類型",
+      "allStatuses": "所有狀態",
+      "kindPat": "個人存取權杖",
+      "kindOauth": "OAuth 應用程式",
+      "kindDelegated": "服務權杖",
+      "columnUser": "使用者",
+      "columnToken": "權杖",
+      "columnRequest": "請求",
+      "columnStatus": "狀態",
+      "columnTime": "時間",
+      "scopeDenied": "缺少權限範圍",
+      "rolledUp": "{{calls}} 次呼叫",
+      "loadMore": "載入更多",
+      "retry": "重試",
+      "loadError": "無法載入代理程式活動。",
+      "emptyTitle": "尚無呼叫",
+      "emptyDescription": "使用存取權杖發出的呼叫會顯示在這裡。"
     },
     "labs": {
       "title": "平台設定",

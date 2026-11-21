@@ -2364,7 +2364,8 @@
         "tenants": "किरायेदार",
         "superOrgs": "संगठन",
         "oauthApps": "कनेक्टर OAuth ऐप्स",
-        "serviceAccounts": "सेवा खाते"
+        "serviceAccounts": "सेवा खाते",
+        "agentActivity": "एजेंट गतिविधि"
       }
     },
     "actions": {
@@ -2809,6 +2810,29 @@
           }
         }
       }
+    },
+    "agentActivity": {
+      "title": "एजेंट गतिविधि",
+      "subtitle": "इस वर्कस्पेस में व्यक्तिगत एक्सेस टोकन, OAuth ऐप टोकन और सर्विस टोकन से किए गए कॉल, सबसे नए पहले। सफल रीड को हर मिनट के हिसाब से समूहित किया जाता है। साइन-इन डैशबोर्ड से किए गए कॉल रिकॉर्ड नहीं होते, और प्रविष्टियाँ 30 दिनों तक रखी जाती हैं।",
+      "filterKind": "टोकन प्रकार",
+      "filterStatus": "स्थिति",
+      "allKinds": "सभी टोकन प्रकार",
+      "allStatuses": "सभी स्थितियाँ",
+      "kindPat": "व्यक्तिगत एक्सेस टोकन",
+      "kindOauth": "OAuth ऐप",
+      "kindDelegated": "सर्विस टोकन",
+      "columnUser": "उपयोगकर्ता",
+      "columnToken": "टोकन",
+      "columnRequest": "अनुरोध",
+      "columnStatus": "स्थिति",
+      "columnTime": "समय",
+      "scopeDenied": "स्कोप नहीं है",
+      "rolledUp": "{{calls}} कॉल",
+      "loadMore": "और लोड करें",
+      "retry": "फिर से कोशिश करें",
+      "loadError": "एजेंट गतिविधि लोड नहीं हो सकी।",
+      "emptyTitle": "अभी कोई कॉल नहीं",
+      "emptyDescription": "एक्सेस टोकन से किए गए कॉल यहाँ दिखते हैं।"
     },
     "labs": {
       "title": "Platform configuration",
