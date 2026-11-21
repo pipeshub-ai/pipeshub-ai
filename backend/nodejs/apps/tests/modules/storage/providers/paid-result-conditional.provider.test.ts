@@ -308,6 +308,25 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       })
     })
 
+    it('a lock whose token is not a uuid never makes a taker remove a file outside the key\'s own folder', async () => {
+      const a = adapter()
+      await a.writeObject(key(1), Buffer.from('old'))
+      const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+      const lock = path.join(dir, `.${createHash('sha1').update(path.basename(key(1))).digest('hex')}.lock`)
+      for (const [i, prefix] of ['..', '../..', 'x/y'].entries()) {
+        // the file a forged token would name through `.<token>.tmp`
+        const token = `${prefix}/${'a'.repeat(30)}`
+        const victim = path.join(dir, `.${token}.tmp`)
+        fs.mkdirSync(path.dirname(victim), { recursive: true })
+        fs.writeFileSync(victim, `victim ${i}`)
+        fs.writeFileSync(lock, JSON.stringify({ token, pid: 1, host: 'another-host' }))
+        const old = new Date(Date.now() - 6 * 60 * 1000)
+        fs.utimesSync(lock, old, old)
+        await adapter().writeObject(key(1), Buffer.from(`new ${i}`))
+        expect(fs.existsSync(victim), `a forged token reached ${victim}`).to.equal(true)
+      }
+    })
+
     it('a lock whose owner is in another PID namespace or boot is never judged by its pid: only the lease decides', async function () {
       if (identity().pidNs === undefined) this.skip()
       const a = adapter()
