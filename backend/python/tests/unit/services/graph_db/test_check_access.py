@@ -287,3 +287,65 @@ class TestAFailedCheckIsNotReportedAsAbsence:
     async def test_linked_records(self, backend) -> None:
         with pytest.raises(PermissionVerificationUnavailableError):
             await _failing(backend).get_linked_records("r1", "org-1", "u", ["BLOCKS"])
+
+
+class TestNeo4jDecidesSiblingsByParent:
+    """Neo4j first admits what the walks above each asked node's parent admit (one statement), and asks the full statement only about
+    the rest; the real-store proof that the two together equal the full statement alone is
+    `tests/integration/graph_db/test_kh_split_numbered_pages_real_neo4j.py`."""
+
+    ACCESS = {"grantee_ids": ["u"], "gated_app_ids": ["a"], "by_connector": {"a": ["g1"]}}
+
+    @staticmethod
+    def _provider(by_parent: set[str]) -> tuple[Neo4jProvider, list]:
+        provider = Neo4jProvider.__new__(Neo4jProvider)
+        provider.logger = MagicMock()
+        sent: list = []
+
+        async def kh_query(query, parameters=None, txn_id=None) -> list:
+            pre = "kh_kids" in query
+            sent.append(("by_parent" if pre else "full", list(parameters["kh_ids"]), list(parameters.get("kh_vrids") or [])))
+            ids = [i for i in parameters["kh_ids"] if (i in by_parent) == pre]
+            return [{"items": [{"id": i} for i in ids]}]
+
+        provider._kh_query = kh_query
+        return provider, sent
+
+    @pytest.mark.asyncio
+    async def test_only_the_nodes_no_parent_admits_are_asked_of_the_full_statement(self) -> None:
+        provider, sent = self._provider({"a1", "a2"})
+        rows = await provider._kh_v3_accessible_rows("u", "o", ["a1", "b1", "a2"], ["v1"], access=self.ACCESS, transaction=None)
+        assert sent == [("by_parent", ["a1", "b1", "a2"], []), ("full", ["b1"], ["v1"])]
+        assert sorted(r["id"] for r in rows) == ["a1", "a2", "b1"]
+
+    @pytest.mark.asyncio
+    async def test_the_full_statement_is_skipped_when_every_node_is_admitted_and_no_vrid_is_asked(self) -> None:
+        provider, sent = self._provider({"a1", "a2"})
+        rows = await provider._kh_v3_accessible_rows("u", "o", ["a1", "a2"], [], access=self.ACCESS, transaction=None)
+        assert [s[0] for s in sent] == ["by_parent"] and sorted(r["id"] for r in rows) == ["a1", "a2"]
+
+    @pytest.mark.asyncio
+    async def test_one_node_is_asked_of_the_full_statement_alone(self) -> None:
+        provider, sent = self._provider({"a1"})
+        await provider._kh_v3_accessible_rows("u", "o", ["a1"], [], access=self.ACCESS, transaction=None)
+        assert sent == [("full", ["a1"], [])]
+
+    @pytest.mark.asyncio
+    async def test_the_by_parent_statement_walks_at_most_49_hops_from_the_parent(self) -> None:
+        """Both walks start at the parent (0 hops: the parent itself) and go at most 49, so with the node's own hop a route stays within
+        the full statement's 50; in the probe form no grant is read from a list."""
+        provider, _ = self._provider(set())
+        texts: list[str] = []
+
+        async def kh_query(query, parameters=None, txn_id=None) -> list:
+            texts.append(query)
+            return [{"items": []}]
+
+        provider._kh_query = kh_query
+        for access in (self.ACCESS, {**self.ACCESS, "probe": {"connector_id": "a", "grantees": ["u"]}}):
+            texts.clear()
+            await provider._kh_v3_accessible_rows("u", "o", ["n1", "n2"], [], access=access, transaction=None)
+            by_parent, full = texts
+            assert "kh_kids" in by_parent and by_parent.count("{0,49}") == 2 and "{1,49}" not in by_parent
+            assert "{0,49}" not in full
+            assert ("$grantedIds" in by_parent) is not bool(access.get("probe"))

@@ -21787,6 +21787,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             parameters["grantedIds"] = [g for ids_ in access["by_connector"].values() for g in ids_]
         return parameters, bool(probe)
 
+    # A single asked node has no sibling to share a walk with: it is asked of the check alone.
+    _KH_CHECK_BY_PARENT_MIN_IDS = 2
+
     async def _kh_v3_accessible_rows(
         self,
         user_key: str,
@@ -21851,6 +21854,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND NOT {from_app('kh_s', 'x')}
                   AND NOT {in_declared_scope('kh_s', 'x')} }}"""
 
+        items = """RETURN collect({id: ok.id, vrid: ok.virtualRecordId,
+                        connectorId: ok.connectorId, indexingStatus: ok.indexingStatus,
+                        hasIndexedCopy: coalesce(ok.hasIndexedCopy, false),
+                        isInternal: coalesce(ok.isInternal, false),
+                        isPlaceholder: coalesce(ok.isPlaceholder, false),
+                        groupIds: [(ok)-[:BELONGS_TO]->(kh_og:RecordGroup) | kh_og.id]}) AS items"""
         query = f"""
         CALL () {{
             UNWIND $kh_ids AS kh_key
@@ -21893,21 +21902,71 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN t AS ok
         }}
         // One row: the driver builds a record object per row returned.
-        RETURN collect({{id: ok.id, vrid: ok.virtualRecordId,
-                        connectorId: ok.connectorId, indexingStatus: ok.indexingStatus,
-                        hasIndexedCopy: coalesce(ok.hasIndexedCopy, false),
-                        isInternal: coalesce(ok.isInternal, false),
-                        isPlaceholder: coalesce(ok.isPlaceholder, false),
-                        groupIds: [(ok)-[:BELONGS_TO]->(kh_og:RecordGroup) | kh_og.id]}}) AS items
+        {items}
         """
         # The grants of the other connectors (``kh_cross``) are tested on their nodes, when ``by_connector`` holds one connector's alone; a
         # browse inside one connector tests grants from the nodes (``probe``).
         grants, probe = self._kh_v3_check_parameters(access)
         if probe:
             query = self._kh_grants_by_probe(query)
+        admitted: list[dict[str, Any]] = []
+        if len(ids) >= self._KH_CHECK_BY_PARENT_MIN_IDS:
+            # Siblings share every ancestor, and the walks above read them again for each one (a 5,000-file folder: 5,000 times). The
+            # walk from the App and the walk below a seed are first decided once per parent, and each asked node by its own hop up to
+            # it. A path that leaves the node through the parent is that hop plus a path of at most 49 from the parent, so this admits
+            # exactly what those two arms admit through it. It only admits: the rest are asked below, by every arm, as before.
+            by_parent = f"""
+            UNWIND $kh_ids AS kh_key
+            MATCH (t:Record|RecordGroup {{id: kh_key}})
+            WHERE t.orgId = $org_id AND NOT coalesce(t.isDeleted, false) AND t.connectorId IN $gatedAppIds
+            MATCH (app:App {{id: t.connectorId}})
+            MATCH (kh_q)-[kh_e:NODE_RELATION]->(t)
+            WHERE kh_e.relationshipType {hierarchy}
+            WITH app, kh_q, collect([t, kh_e]) AS kh_kids
+            WITH app, kh_q, kh_kids, (coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB') AS appOpensEverything
+            // Both walks are matched up from the parent, and where they end is tested after them: a test on the end lets the planner
+            // start the walk there instead (from the App down, or from every seed of the App), which some statistics choose.
+            CALL (app, kh_q, appOpensEverything) {{
+                OPTIONAL MATCH (kh_q) ((kh_cq)<-[kh_hq:NODE_RELATION]-(kh_pq)
+                                       WHERE {self._kh_v3_check_hop('kh_cq', 'kh_pq', 'kh_hq', grant_once=probe)}){{0,49}} (kh_top)
+                WITH app, collect(kh_top) AS kh_tops
+                RETURN app IN kh_tops AS kh_reached
+            }}
+            CALL (app, kh_q, appOpensEverything) {{
+                OPTIONAL MATCH (kh_q) ((kh_cs)<-[kh_hs:NODE_RELATION]-(kh_ps) WHERE {open_hop}){{0,49}} (kh_top)
+                WITH app, appOpensEverything, collect(kh_top) AS kh_tops
+                RETURN any(kh_s IN kh_tops WHERE {seed('kh_s')}
+                  AND NOT {from_app('kh_s', 'x')}
+                  AND NOT {in_declared_scope('kh_s', 'x')}) AS kh_seeded
+            }}
+            WITH app, kh_q, kh_kids, appOpensEverything, kh_reached, kh_seeded
+            WHERE kh_reached OR kh_seeded
+            UNWIND kh_kids AS kh_kid
+            WITH app, appOpensEverything, kh_q, kh_reached, kh_seeded, kh_kid[0] AS t, kh_kid[1] AS kh_e
+            // Each child is tested by the hop of an arm its parent passed only: in one WHERE the planner evaluates every test for every row.
+            CALL (app, appOpensEverything, kh_q, kh_reached, kh_seeded, t, kh_e) {{
+                WITH * WHERE kh_reached
+                WITH * WHERE {self._kh_v3_check_hop('t', 'kh_q', 'kh_e', grant_once=probe)}
+                RETURN t AS kh_t
+                UNION
+                WITH * WHERE kh_seeded
+                WITH * WHERE {self._kh_v3_seed_hop('t', 'kh_q', state=False)}
+                RETURN t AS kh_t
+            }}
+            WITH DISTINCT kh_t AS ok
+            {items}
+            """
+            if probe:
+                by_parent = self._kh_grants_by_probe(by_parent)
+            rows = await self._kh_query(by_parent, parameters={"kh_ids": ids, "org_id": org_id, **grants}, txn_id=transaction)
+            admitted = (rows or [{}])[0].get("items") or []
+            done = {r["id"] for r in admitted}
+            ids = [i for i in ids if i not in done]
+            if not ids and not vrids:
+                return admitted
         parameters = {"kh_ids": ids, "kh_vrids": vrids, "org_id": org_id, "granteeIds": access["grantee_ids"], **grants}
         rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
-        return (rows or [{}])[0].get("items") or []
+        return admitted + ((rows or [{}])[0].get("items") or [])
 
     async def _kh_v3_app_declared_scope(
         self, app_id: str, granted_ids: list[str], *, state: bool, transaction: str | None,

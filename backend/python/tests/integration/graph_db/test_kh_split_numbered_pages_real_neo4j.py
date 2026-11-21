@@ -82,6 +82,20 @@ def _world() -> Any:  # noqa: ANN401
         start = f"C{depth}n{depth:02d}"
         nodes.append({"id": f"C{depth}x", "kind": "record", "connector": "B", "rule": "OPEN", "parents": [start], "inherits": [start],
                       "belongs": [start]})
+    # The same below a seed: S49 and S50 hang under a group G that u2 cannot read, from a top u2 is granted (a seed), so the walk below the
+    # seed (50 hops at most) admits only S49's record.
+    nodes.append({"id": "G", "kind": "group", "connector": "B", "rule": "OPEN", "parents": ["B"], "belongs": ["B"]})
+    for depth in CHAINS:
+        top = f"S{depth}n00"
+        nodes.append({"id": top, "kind": "group", "connector": "B", "rule": "OPEN", "parents": ["G"], "belongs": ["G"]})
+        grants.append(["u2", top])
+        for i in range(1, depth + 1):
+            above = f"S{depth}n{i - 1:02d}"
+            nodes.append({"id": f"S{depth}n{i:02d}", "kind": "group", "connector": "B", "rule": "OPEN", "parents": [above], "inherits": [above],
+                          "belongs": [above]})
+        start = f"S{depth}n{depth:02d}"
+        nodes.append({"id": f"S{depth}x", "kind": "record", "connector": "B", "rule": "OPEN", "parents": [start], "inherits": [start],
+                      "belongs": [start]})
     return world_from_data({
         "principals": [{"id": u} for u in USERS] + [{"id": "gAll", "kind": "group"}],
         "nodes": nodes, "grants": grants, "memberships": [[u, "gAll"] for u in USERS[:2]],
@@ -290,3 +304,99 @@ async def test_a_childs_hop_admits_it_only_where_its_route_from_the_app_stays_wi
         assert by_hop == ({child} if admitted else frozenset()), (depth, bool(access.get("probe")))
         assert await graph._kh_v3_admitted([child], org_id=hub.ns.org, access=access, transaction=None) == by_hop
     assert [i.id for i in got.items] == ([child] if admitted else [])
+
+
+async def _asked(hub: _Hub, ids: list[str], access: dict, *, by_parent: bool = True) -> tuple[frozenset[str], list[str], list[str]]:
+    """What the check admits of ``ids``, what its by-parent statement admits, and what its full statement is asked."""
+    graph, query = hub.graph, hub.graph._kh_query
+    sent: list[tuple[str, dict, list[dict]]] = []
+
+    async def keep(q: str, parameters: dict | None = None, txn_id: str | None = None) -> list[dict]:
+        rows = await query(q, parameters=parameters, txn_id=txn_id)
+        sent.append((q, parameters or {}, rows))
+        return rows
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(graph, "_kh_query", keep)
+        if not by_parent:
+            m.setattr(graph, "_KH_CHECK_BY_PARENT_MIN_IDS", 10**9)
+        got = await graph._kh_v3_admitted(ids, org_id=hub.ns.org, access=access, transaction=None)
+    pre = [r["id"] for q, _, rows in sent if "kh_kids" in q for r in (rows or [{}])[0].get("items") or []]
+    full = [i for q, p, _ in sent if "kh_kids" not in q for i in p["kh_ids"]]
+    return got, pre, full
+
+
+async def _accesses(hub: _Hub, user: str, start: str, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """The access a browse of ``start`` hands the check (grants read from the nodes), and the same with grants read from a list."""
+    seen: list[dict] = []
+    graph, listed = hub.graph, hub.graph._kh_split_listed
+
+    async def keep_access(*a: Any, **k: Any) -> Any:  # noqa: ANN401
+        seen.append(k["access"])
+        return await listed(*a, **k)
+
+    with monkeypatch.context() as m:
+        m.setattr(graph, "_kh_split_listed", keep_access)
+        got = await hub.service.get_nodes(user_id=hub.ns.id(user), org_id=hub.ns.org, parent_id=start, parent_type="recordGroup", limit=LIMIT,
+                                          sort_by="name", sort_order="asc")
+    assert got.success, (got.errorCode, got.error)
+    listing = await graph.get_knowledge_hub_access_v3(user_key=hub.ns.id(user), org_id=hub.ns.org)
+    return [seen[0], {**listing, "probe": None}]
+
+
+async def test_the_check_admits_by_parent_exactly_what_it_admits_by_every_arm(hub: _Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check decides the walk above a parent once for all the asked children and admits each by its own hop; the rest go to the full
+    statement. Held to the full statement alone, for a viewer the walk from the App reaches the folder for (u0, by the group grant on R) and
+    one it reaches only below a seed (u2, a grant on F alone), in both forms the check reads grants in."""
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    graph, folder = hub.graph, hub.ns.id("F")
+    kids = [k["id"] for k in (await graph._kh_split_children([folder], app_id=hub.ns.id("A"), org_id=hub.ns.org, transaction=None))[folder]]
+    for user, left in (("u0", FILES // 20), ("u2", FILES // 10)):
+        for access in await _accesses(hub, user, folder, monkeypatch):
+            every, _, full = await _asked(hub, kids, access, by_parent=False)
+            assert len(full) == len(kids)
+            got, pre, full = await _asked(hub, kids, access)
+            assert got == every, (user, bool(access.get("probe")))
+            assert set(pre) <= every and sorted(full) == sorted(set(kids) - set(pre))
+            # u0: every child that inherits from F and every file of its own sharing granted to u0 passes its hop, and only the files shared
+            # with the other pair are left. u2: below the seed F only the seed hop passes, so every file of its own sharing is left.
+            assert len(full) == left, (user, bool(access.get("probe")), len(full))
+
+
+async def test_a_browse_asks_the_full_check_only_about_the_children_no_parent_admits(hub: _Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    asked: list[int] = []
+    query = hub.graph._kh_query
+
+    async def count_asked(q: str, parameters: dict | None = None, txn_id: str | None = None) -> list[dict]:
+        if "kh_vrids" in (parameters or {}) and "kh_kids" not in q:
+            asked.append(len(parameters["kh_ids"]))
+        return await query(q, parameters=parameters, txn_id=txn_id)
+
+    monkeypatch.setattr(hub.graph, "_kh_query", count_asked)
+    for user, left in (("u0", FILES // 20), ("u2", FILES // 10)):
+        asked.clear()
+        await hub.browse(user)
+        # The folder holds 1,415 children; the full statement is asked only about the files of their own sharing no hop admits.
+        assert max(asked) == left, (user, asked)
+
+
+@pytest.mark.parametrize(("user", "chain"), [("u0", "C"), ("u2", "S")])
+async def test_the_check_admits_by_parent_only_where_the_route_stays_within_its_cap(
+    hub: _Hub, monkeypatch: pytest.MonkeyPatch, user: str, chain: str,
+) -> None:
+    """The check walks at most 50 hops, up to the App (u0, chains C) or to a seed (u2, chains S), so a parent's walk admits a child only
+    within 49 more. Below a start 50 hops down the child's only route is 51 hops: it is left to the full statement, which refuses it."""
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    starts = {depth: hub.ns.id(f"{chain}{depth}n{depth:02d}") for depth in CHAINS}
+    child = {depth: hub.ns.id(f"{chain}{depth}x") for depth in CHAINS}
+    for access in await _accesses(hub, user, starts[49], monkeypatch):
+        got, pre, full = await _asked(hub, [child[49], child[50]], access)
+        assert pre == [child[49]] and full == [child[50]], (pre, full, bool(access.get("probe")))
+        assert got == {child[49]}
+        assert got == (await _asked(hub, [child[49], child[50]], access, by_parent=False))[0]
+    for depth, admitted in ((49, True), (50, False)):
+        got = await hub.service.get_nodes(user_id=hub.ns.id(user), org_id=hub.ns.org, parent_id=starts[depth], parent_type="recordGroup",
+                                          limit=LIMIT, sort_by="name", sort_order="asc")
+        assert got.success, (got.errorCode, got.error)      # the walk reaches the start itself in both chains
+        assert [i.id for i in got.items] == ([child[depth]] if admitted else []), depth
