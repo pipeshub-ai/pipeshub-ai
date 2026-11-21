@@ -34,6 +34,7 @@ from app.agent_loop_lib.core.messages import (
     TextPart,
 )
 from app.agent_loop_lib.transport.base import LLMTransport
+from harness_core.models.output_bound import output_limit
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -192,6 +193,10 @@ class CappedImagesTransport(LLMTransport):
     def model_name(self) -> str:
         return self._inner.model_name
 
+    @property
+    def accepts_output_limit(self) -> bool:
+        return self._inner.accepts_output_limit
+
     def _capped(self, messages: list[Message]) -> list[Message]:
         return cap_images(messages, self._max_images)
 
@@ -207,12 +212,13 @@ class CappedImagesTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        max_output_tokens: int | None = None,
         *,
         tool_choice: "ToolChoice | None" = None,
     ) -> "ModelResponse":
         return await self._inner.complete(
             self._capped(messages), tools, system, model,
-            thinking_budget, effort, system_blocks,
+            thinking_budget, effort, system_blocks, **output_limit(max_output_tokens),
             **({"tool_choice": tool_choice} if tool_choice else {}),
         )
 
@@ -222,9 +228,10 @@ class CappedImagesTransport(LLMTransport):
         output_schema: dict[str, Any],
         system: str | None = None,
         model: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> "StructuredResponse":
         return await self._inner.complete_structured(
-            self._capped(messages), output_schema, system, model,
+            self._capped(messages), output_schema, system, model, **output_limit(max_output_tokens),
         )
 
     def stream(
@@ -236,6 +243,7 @@ class CappedImagesTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        max_output_tokens: int | None = None,
         *,
         tool_choice: "ToolChoice | None" = None,
     ) -> "AsyncIterator[StreamEvent]":
@@ -243,7 +251,7 @@ class CappedImagesTransport(LLMTransport):
         # one, so wrapping it in a coroutine would change the contract.
         return self._inner.stream(
             self._capped(messages), tools, system, model,
-            thinking_budget, effort, system_blocks,
+            thinking_budget, effort, system_blocks, **output_limit(max_output_tokens),
             **({"tool_choice": tool_choice} if tool_choice else {}),
         )
 

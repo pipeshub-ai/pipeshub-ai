@@ -152,6 +152,12 @@ class RedisConnectionConfig:
         if username is not None:
             base.username = username
         base.tls = base.tls or bool(tls)
+        # A sandbox-plane component logs in as its own ACL user, whatever login the stored config names (SEC-D-03).
+        from app.utils.encryption.component_key import component_redis_login
+
+        login = component_redis_login()
+        if login is not None:
+            base.username, base.password = login
         return base
 
     @staticmethod

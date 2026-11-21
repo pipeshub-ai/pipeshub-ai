@@ -40,6 +40,7 @@ from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease
 from app.core.org_context import for_org, spawn_detached
 from app.core.org_jobs import for_each_org
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.rate_budget import RatePriority, budget_scope
 from app.utils import error_class
 from app.utils.logging_fields import bind_log_fields, log_event, reset_log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -859,10 +860,12 @@ async def run_sync_task(
             error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="clear_pending_resync")
         incomplete: IncompleteSyncError | None = None
         try:
-            if lease is None:
-                await _run_sync_alone(connector, connector_id)
-            else:
-                await _run_until_aborted(connector, lease)
+            # Sync spends the vendor budget its org's agents share, behind their interactive calls (G-31).
+            with budget_scope(getattr(connector, "rate_budget", None), RatePriority.SYNC):
+                if lease is None:
+                    await _run_sync_alone(connector, connector_id)
+                else:
+                    await _run_until_aborted(connector, lease)
         except IncompleteSyncError as exc:
             # It ran to the end and kept what it could not read as stored, so the removal below is still safe;
             # the run fails after it.

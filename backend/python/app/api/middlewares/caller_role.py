@@ -83,7 +83,7 @@ def _str_field(value: object, key: str) -> object:
     return cast("dict[str, object]", value).get(key) if isinstance(value, dict) else None
 
 
-async def _nodejs_endpoint(config_service: ConfigurationService) -> str:
+async def nodejs_endpoint(config_service: ConfigurationService) -> str:
     try:
         endpoints = cast(
             "object",
@@ -149,7 +149,7 @@ async def fetch_caller_role(
         return _UNKNOWN
 
     headers.update(await _service_credentials(config_service))
-    url = f"{await _nodejs_endpoint(config_service)}{CALLER_ROLE_PATH}"
+    url = f"{await nodejs_endpoint(config_service)}{CALLER_ROLE_PATH}"
     try:
         # A bad SSL_CERT_FILE or SSL_CERT_DIR raises OSError here; it must answer
         # "unknown" (503), not escape as a refused token (401).

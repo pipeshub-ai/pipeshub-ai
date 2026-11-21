@@ -29,10 +29,11 @@ from __future__ import annotations
 import logging
 import os
 import stat
-import tempfile
 import threading
 import time
 from pathlib import Path
+
+from app.utils.private_dirs import per_user_temp_dir
 
 try:
     import fcntl
@@ -90,6 +91,7 @@ class SharedSlots:
         self._lock = threading.Lock()
         self._held_here: set[int] = set()
         self._closed = False
+        # A folder others can read or write, or a link, is refused: its name under /tmp is guessable.
         ensure_private_directory(directory)
         opened: list[int] = []
         try:
@@ -238,7 +240,7 @@ def shared_slots_directory(name: str) -> Path | None:
     """
     if fcntl is None:
         return None
-    return Path(tempfile.gettempdir()) / f"{name}-{os.getuid()}"
+    return Path(per_user_temp_dir(name))
 
 
 def open_shared_slots(directory: Path, capacity: int) -> SharedSlots | None:

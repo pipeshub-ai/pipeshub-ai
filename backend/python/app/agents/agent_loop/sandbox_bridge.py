@@ -47,7 +47,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import mimetypes
 import os
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -80,7 +79,7 @@ from app.agent_loop_lib.sandbox.manager import (
     SandboxType,
     UnknownSandboxError,
 )
-from app.agent_loop_lib.tools.base import ParameterType, ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
     CodingSandboxTool,
     InstallPackagesTool,
@@ -89,10 +88,20 @@ from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
 )
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     set_staged_input_files_for_task,
+    set_staged_workspace_files_for_task,
+)
+from app.agents.agent_loop.artifact_provenance import (
+    note_staged_inputs,
+    note_unlabelled_workspace,
+    run_code_provenance,
 )
 from app.agents.actions.util.attachments import resolve_attachments
 from app.agents.agent_loop.protocol.formatter import ArtifactSSEPayload
 from app.config.constants.arangodb import Connectors
+from app.harness.adapters.sandbox_workspace import (
+    SandboxWorkspaceExporter,
+    SandboxWorkspaceMaterializer,
+)
 from app.models.entities import ArtifactType, ArtifactVisibility
 from app.sandbox.artifact_upload import infer_artifact_type
 from app.sandbox.models import SandboxLanguage
@@ -104,6 +113,8 @@ from app.sandbox.package_policy import (
 from app.sandbox.redact import redact_sandbox_paths
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.utils.conversation_tasks import register_task
+from app.utils.env_flags import SANDBOX_ALLOW_NETWORK, env_flag
+from harness_core.mime import mime_for
 
 # run_code's ONE user-facing deliverable directory, backed by $OUTPUT_DIR
 # (see `sanitized_subprocess_env()` / DockerCodingSandbox's container env) on
@@ -113,15 +124,19 @@ from app.utils.conversation_tasks import register_task
 _OUTPUT_DIR_NAME = "output"
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agents.agent_loop.context import AgentContext
-    from app.services.artifact_registry import ArtifactMetadata
+    from app.services.artifact_registry import Actor, ArtifactMetadata
+    from app.services.artifact_registry.registry import ArtifactRegistryService
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "CODING_SANDBOX_PATH_PATTERN",
+    "IMAGE_NODE_PACKAGES",
+    "IMAGE_PYTHON_PACKAGES",
     "PipesHubCodingSandboxTool",
     "build_coding_sandbox_manager",
     "register_coding_sandbox_tools",
@@ -138,7 +153,6 @@ _ENV_DOCKER_IMAGE = "SANDBOX_DOCKER_IMAGE"
 _ENV_EGRESS_NETWORK = "SANDBOX_EGRESS_NETWORK"
 _ENV_PIP_INDEX_URL = "SANDBOX_PIP_INDEX_URL"
 _ENV_NPM_REGISTRY = "SANDBOX_NPM_REGISTRY"
-_ENV_ALLOW_NETWORK = "SANDBOX_ALLOW_NETWORK"
 
 _DEFAULT_DOCKER_IMAGE = "pipeshub/sandbox:latest"
 _DEFAULT_EGRESS_NETWORK = "pipeshub_sandbox_egress"
@@ -149,7 +163,16 @@ _DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org"
 # common packages need no per-sandbox npm install.
 _IMAGE_NODE_MODULES = "/home/sandbox/node_modules"
 
-_FALSY_ENV_VALUES = {"0", "false", "no", "off"}
+# What `deployment/sandbox/Dockerfile` installs (Python) and `deployment/sandbox/package.json`
+# lists (Node): the model is told, so it neither asks to install them nor avoids them.
+IMAGE_PYTHON_PACKAGES: tuple[str, ...] = (
+    "pandas", "matplotlib", "seaborn", "plotly", "kaleido", "openpyxl", "python-docx", "python-pptx",
+    "Pillow", "reportlab", "fpdf2", "cairosvg", "numpy", "scipy", "tabulate", "xlsxwriter", "jinja2",
+)
+IMAGE_NODE_PACKAGES: tuple[str, ...] = (
+    "csv-stringify", "docx", "exceljs", "fs-extra", "json2csv", "papaparse", "pdf-lib", "pdfkit",
+    "pptxgenjs", "sharp",
+)
 
 _CODE_MIME_BY_LANGUAGE = {"python": "text/x-python", "typescript": "application/typescript"}
 _CODE_EXT_BY_LANGUAGE = {"python": "py", "typescript": "ts"}
@@ -186,10 +209,7 @@ def sandbox_network_enabled() -> bool:
     deny message, the planner's upfront-plan steering, and the system
     prompt, so every surface the model sees agrees on whether network is
     on."""
-    raw = os.environ.get(_ENV_ALLOW_NETWORK)
-    if raw is None:
-        return False
-    return raw.strip().lower() not in _FALSY_ENV_VALUES
+    return env_flag(SANDBOX_ALLOW_NETWORK)
 
 _LANGUAGE_TO_SANDBOX_LANGUAGE: dict[str, SandboxLanguage] = {
     "python": SandboxLanguage.PYTHON,
@@ -211,6 +231,8 @@ async def build_coding_sandbox_manager(
     max_lifetime_s: float | None = None,
     allow_network: bool | None = None,
     ctx: "AgentContext | None" = None,
+    run_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> SandboxManager:
     """Create a fresh, per-request ``SandboxManager`` for the configured
     coding-sandbox backend.
@@ -230,11 +252,14 @@ async def build_coding_sandbox_manager(
     ``SandboxContext``: the governor needs ``org_id`` for the per-org cap, and
     remote backends tag the provider-side resource with it so an orphaned
     sandbox can be traced back to an org after this process is gone.
+    ``run_id``/``attempt_id`` (a durable run's) label it for the run sweeper's reap.
     """
     sandbox_ctx = SandboxContext(
         org_id=ctx.org_id if ctx else None,
         user_id=ctx.user_id if ctx else None,
         conversation_id=ctx.conversation_id if ctx else None,
+        run_id=run_id,
+        attempt_id=attempt_id,
     )
 
     settings = await EnvSandboxSettingsLoader().load(sandbox_ctx)
@@ -277,12 +302,12 @@ async def build_coding_sandbox_manager(
 
     # PipesHub's own Docker defaults, applied only where the settings loader
     # left a gap so an explicitly configured value always wins.
-    if settings.backend == "docker":
-        docker_opts = settings.backend_options.setdefault("docker", {})
-        docker_opts.setdefault("image", os.environ.get(_ENV_DOCKER_IMAGE, _DEFAULT_DOCKER_IMAGE))
-        docker_opts.setdefault("egress_network", os.environ.get(_ENV_EGRESS_NETWORK, _DEFAULT_EGRESS_NETWORK))
-        docker_opts.setdefault("pip_index_url", os.environ.get(_ENV_PIP_INDEX_URL, _DEFAULT_PIP_INDEX_URL))
-        docker_opts.setdefault("npm_registry", os.environ.get(_ENV_NPM_REGISTRY, _DEFAULT_NPM_REGISTRY))
+    if settings.backend in ("docker", "broker"):
+        docker_opts = settings.backend_options.setdefault(settings.backend, {})
+        docker_opts.setdefault("image", os.environ.get(_ENV_DOCKER_IMAGE) or _DEFAULT_DOCKER_IMAGE)
+        docker_opts.setdefault("egress_network", os.environ.get(_ENV_EGRESS_NETWORK) or _DEFAULT_EGRESS_NETWORK)
+        docker_opts.setdefault("pip_index_url", os.environ.get(_ENV_PIP_INDEX_URL) or _DEFAULT_PIP_INDEX_URL)
+        docker_opts.setdefault("npm_registry", os.environ.get(_ENV_NPM_REGISTRY) or _DEFAULT_NPM_REGISTRY)
         docker_opts.setdefault("image_node_modules", _IMAGE_NODE_MODULES)
         docker_opts.setdefault("allow_network", network_enabled)
 
@@ -366,8 +391,13 @@ class PipesHubCodingSandboxTool(CodingSandboxTool):
             "regenerate an artifact that already exists. Only files written to $OUTPUT_DIR "
             "are attached to the response automatically as downloadable artifacts — never "
             "re-run code just to attach, verify, or 'provide' a file already written there. "
-            "Anything else your code writes stays inside the sandbox and is never shown to "
-            "the user, even if the run succeeds."
+            "Other files are not attached: what $WORKSPACE_DIR keeps is said above, and "
+            "anything written elsewhere stays inside the sandbox, even if the run succeeds."
+            "\n\nAlready installed in the sandbox (do not list them in packages): Python "
+            + ", ".join(IMAGE_PYTHON_PACKAGES)
+            + "; Node "
+            + ", ".join(IMAGE_NODE_PACKAGES)
+            + "."
         )
 
 
@@ -427,12 +457,32 @@ def register_coding_sandbox_hooks(
         CODING_SANDBOX_PATH_PATTERN, coding_sandbox_package_policy(allow_network=network_enabled),
     )
     hooks.on(HookEvent.PRE_TOOL_USE).use(
+        CODING_SANDBOX_PATH_PATTERN, coding_sandbox_workspace_staging(context),
+    )
+    hooks.on(HookEvent.PRE_TOOL_USE).use(
         CODING_SANDBOX_PATH_PATTERN, coding_sandbox_artifact_staging(context, inmemory_store=artifact_store),
     )
     hooks.on(HookEvent.POST_TOOL_USE).use(
         CODING_SANDBOX_PATH_PATTERN, coding_sandbox_artifact_bridge(context, manager),
     )
     hooks.on(HookEvent.POST_AGENT).use(coding_sandbox_result_propagation(context, manager))
+
+
+def coding_sandbox_workspace_staging(context: "AgentContext") -> Middleware[ToolCallContext]:
+    """Project the run's VFS into the sandbox for exactly one tool call."""
+
+    async def _middleware(_ctx: ToolCallContext, next_fn: Next) -> None:
+        vfs = context.virtual_filesystem
+        if vfs is None:
+            await next_fn()
+            return
+        files = await SandboxWorkspaceMaterializer().materialize(vfs)
+        if files:
+            note_unlabelled_workspace(context)
+        set_staged_workspace_files_for_task(files)
+        await next_fn()
+
+    return _middleware
 
 
 def coding_sandbox_package_policy(*, allow_network: bool = False):
@@ -620,6 +670,7 @@ def coding_sandbox_artifact_staging(context: "AgentContext", *, inmemory_store: 
         )
         if resolved:
             ctx.metadata["staged_input_artifacts"] = resolved
+            note_staged_inputs(context, resolved)
         if missing:
             ctx.metadata["input_artifacts_not_found"] = missing
         set_staged_input_files_for_task(files)
@@ -755,7 +806,14 @@ async def _resolve_input_artifacts(
             metadata: ArtifactMetadata = await registry.resolve(
                 actor=actor, ref=ref, conversation_id=context.conversation_id,
             )
-            content = await registry.get_content(actor=actor, artifact_id=metadata.artifact_id)
+            # Resolve name/id and bytes as one immutable registry version. A
+            # concurrent version publish after resolve must not silently mount
+            # newer bytes than the metadata/checkpoint records.
+            content = await registry.get_content(
+                actor=actor,
+                artifact_id=metadata.artifact_id,
+                version=metadata.version,
+            )
         except (ArtifactNotFoundError, AccessDeniedError) as exc:
             logger.warning(
                 "_resolve_input_artifacts: ref %r not found or access denied: %s", ref, exc,
@@ -891,46 +949,67 @@ def coding_sandbox_artifact_bridge(context: "AgentContext", manager: SandboxMana
                     if error_analysis.get(key):
                         error_analysis[key] = redact_sandbox_paths(error_analysis[key])
 
-        if response.success and isinstance(response.data, dict):
-            data = response.data
-            artifacts = data.get("artifacts")
-            sandbox_id = data.get("sandbox_id")
-            if artifacts and sandbox_id:
-                _before = len(context.artifacts_registered_this_run)
-                await _register_run_code_artifacts(
-                    context, manager, sandbox_id, artifacts, data,
-                    source_tool=ctx.tool_path,
-                    code_artifact_id=ctx.metadata.get("code_artifact_id"),
-                    code_artifact_version=ctx.metadata.get("code_artifact_version"),
-                    scope=ctx.scope,
-                )
-                newly_registered = context.artifacts_registered_this_run[_before:]
-                if newly_registered:
-                    # Read by `hooks/completion_gate.py` — a file-generation
-                    # request is only "done" once this flips true. Set from
-                    # actually-REGISTERED $OUTPUT_DIR deliverables, not the
-                    # raw artifact-path list — a call that only wrote
-                    # scratch files must NOT satisfy the gate, or the model
-                    # could finish a file-generation turn having produced
-                    # nothing the user can see.
-                    context.artifacts_produced_this_run = True
-                    if ctx.scope is not None:
-                        ctx.scope.turn.run.get(_REGISTERED_ARTIFACTS_SLOT).extend(newly_registered)
-            elif "artifacts" in data:
-                # run_code always carries the key — an empty list means the
-                # program wrote no files, the #1 reason "no download card
-                # appeared" reports come in. Make it explicit in the logs.
-                logger.info(
-                    "coding sandbox run produced no artifacts (tool=%s sandbox=%s)",
-                    ctx.tool_path, sandbox_id,
-                )
+        try:
+            if response.success and isinstance(response.data, dict):
+                data = response.data
+                artifacts = data.get("artifacts")
+                sandbox_id = data.get("sandbox_id")
+                if sandbox_id and context.virtual_filesystem is not None:
+                    backend = manager.get(SandboxType.CODING, sandbox_id)
+                    context.workspace_manifest = await SandboxWorkspaceExporter().export(
+                        context.virtual_filesystem,
+                        backend,
+                    )
+                if artifacts and sandbox_id:
+                    _before = len(context.artifacts_registered_this_run)
+                    await _register_run_code_artifacts(
+                        context, manager, sandbox_id, artifacts, data,
+                        source_tool=ctx.tool_path,
+                        code_artifact_id=ctx.metadata.get("code_artifact_id"),
+                        code_artifact_version=ctx.metadata.get("code_artifact_version"),
+                        scope=ctx.scope,
+                    )
+                    newly_registered = context.artifacts_registered_this_run[_before:]
+                    if newly_registered:
+                        # Read by `hooks/completion_gate.py` — a file-generation
+                        # request is only "done" once this flips true. Set from
+                        # actually-REGISTERED $OUTPUT_DIR deliverables, not the
+                        # raw artifact-path list — a call that only wrote
+                        # scratch files must NOT satisfy the gate, or the model
+                        # could finish a file-generation turn having produced
+                        # nothing the user can see.
+                        context.artifacts_produced_this_run = True
+                        if ctx.scope is not None:
+                            ctx.scope.turn.run.get(_REGISTERED_ARTIFACTS_SLOT).extend(newly_registered)
+                elif "artifacts" in data:
+                    # run_code always carries the key — an empty list means the
+                    # program wrote no files, the #1 reason "no download card
+                    # appeared" reports come in. Make it explicit in the logs.
+                    logger.info(
+                        "coding sandbox run produced no artifacts (tool=%s sandbox=%s)",
+                        ctx.tool_path, sandbox_id,
+                    )
 
-            staged = ctx.metadata.get("staged_input_artifacts")
-            if staged:
-                data["input_artifacts"] = staged
-            missing = ctx.metadata.get("input_artifacts_not_found")
-            if missing:
-                data["input_artifacts_not_found"] = missing
+                staged = ctx.metadata.get("staged_input_artifacts")
+                if staged:
+                    data["input_artifacts"] = staged
+                missing = ctx.metadata.get("input_artifacts_not_found")
+                if missing:
+                    data["input_artifacts_not_found"] = missing
+        except Exception:
+            # POST middleware is observability-tolerant by default. VFS export
+            # and artifact registration are different: reporting success when
+            # those durable commits failed would lose user work. Convert this
+            # path to a deterministic failed result and stop later post hooks.
+            logger.error(
+                "Failed to commit sandbox workspace/artifacts (tool=%s)",
+                ctx.tool_path,
+                exc_info=True,
+            )
+            reason = "Sandbox output could not be committed"
+            ctx.tool_response = ToolOutput(success=False, error=reason)
+            ctx.block(reason)
+            return
 
         await next_fn()
 
@@ -949,7 +1028,7 @@ def _is_excluded_scratch_path(normalized_path: str) -> bool:
     POST_AGENT rescue's candidate set — a cache file must never become a
     download card even as a last resort."""
     parts = normalized_path.split("/")
-    if parts and parts[0] == "input":
+    if parts and parts[0] in {"input", "workspace", "skills", "artifacts", "system"}:
         return True
     return any(part.startswith(".") for part in parts if part)
 
@@ -1128,6 +1207,65 @@ async def _register_run_code_artifacts(
     )
 
 
+async def deliver_artifact(
+    context: "AgentContext", registry: "ArtifactRegistryService", actor: Actor, metadata: ArtifactMetadata,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Deliver one registered artifact version to this request's answer: the
+    model-visible block, plus (first delivery only) the live SSE card and the
+    entry its persisted `::artifact` marker is built from. Every producer
+    dedupes through the same `context.delivered_artifact_versions`."""
+    # A re-run producing byte-identical content re-registers the same
+    # (artifact_id, version) — content-hash dedup means no new version
+    # exists, so re-delivering it would just duplicate the download
+    # card in the UI (once per re-run). Deliver each version exactly
+    # once per request; the model still sees the artifact in its tool
+    # response either way, flagged so it knows not to regenerate.
+    delivery_key = f"{metadata.artifact_id}:{metadata.version}"
+    block = metadata.to_tool_response()
+    if delivery_key in context.delivered_artifact_versions:
+        block["already_delivered"] = True
+        block["note"] = (
+            "This exact version was already attached to the response earlier in "
+            "this run — it is downloadable; do NOT regenerate or re-attach it."
+        )
+        return block, None
+    context.delivered_artifact_versions.add(delivery_key)
+    context.artifacts_registered_this_run.append(metadata.model_dump())
+
+    download_url: str | None = None
+    try:
+        download_url = await registry.get_download_url(actor=actor, artifact_id=metadata.artifact_id)
+    except Exception:
+        logger.warning("Failed to obtain download URL for artifact %s", metadata.artifact_id, exc_info=True)
+    await _emit_artifact_event(context, metadata, download_url)
+    return block, {
+        "documentId": metadata.document_id,
+        "fileName": metadata.name,
+        "mimeType": metadata.mime_type,
+        "sizeBytes": metadata.size_bytes,
+        "recordId": metadata.artifact_id,
+        "downloadUrl": download_url or "",
+        "artifactType": metadata.artifact_type.value,
+        "version": metadata.version,
+    }
+
+
+def register_artifact_markers(context: "AgentContext", legacy_entries: list[dict[str, Any]]) -> None:
+    """Queue `deliver_artifact`'s entries for the saved answer's `::artifact` markers."""
+    if not legacy_entries or not context.conversation_id:
+        return
+    # `::artifact` marker delivery (`streaming.py::_append_task_markers`)
+    # still runs off `conversation_tasks.await_and_collect_results` — wrap
+    # the ALREADY-COMPUTED result in a trivially-resolved task so that
+    # pipeline keeps working unchanged even though registration itself is
+    # no longer a background operation.
+    async def _immediate() -> dict[str, Any]:
+        return {"type": "artifacts", "artifacts": legacy_entries}
+
+    task = asyncio.create_task(_immediate())
+    register_task(context.conversation_id, task)
+
+
 async def _register_and_deliver(
     context: "AgentContext",
     registry: Any,
@@ -1158,10 +1296,11 @@ async def _register_and_deliver(
     model_blocks: list[dict[str, Any]] = []
     legacy_entries: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    provenance = await run_code_provenance(context, registry, task_id=code_artifact_id or source_tool)
 
     for rel_path, content in fetched:
         file_name = names[rel_path]
-        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        mime_type = mime_for(file_name, content)
         try:
             metadata, _version = await registry.register_output(
                 actor=actor,
@@ -1178,61 +1317,30 @@ async def _register_and_deliver(
             failures.append({"file": file_name, "error": f"{type(exc).__name__}: {exc}"})
             continue
 
-        if code_artifact_id:
-            try:
-                await registry.record_derivation(
-                    output_artifact_id=metadata.artifact_id,
-                    code_artifact_id=code_artifact_id,
-                    code_version=code_artifact_version or 1,
-                    output_version=metadata.version,
-                )
+        try:
+            await registry.record_derivation(
+                output_artifact_id=metadata.artifact_id,
+                output_version=metadata.version,
+                code_artifact_id=code_artifact_id,
+                code_version=(code_artifact_version or 1) if code_artifact_id else None,
+                provenance=provenance,
+            )
+            if code_artifact_id:
                 metadata.derived_from_code_artifact_id = code_artifact_id
                 metadata.derived_from_code_version = code_artifact_version
-            except Exception:
-                logger.warning(
-                    "Failed to record lineage for output=%s code=%s",
-                    metadata.artifact_id, code_artifact_id, exc_info=True,
-                )
+        except Exception:
+            # Without recorded provenance the version reads as unknown: hidden from viewers, never shown.
+            logger.warning(
+                "Failed to record lineage for output=%s code=%s",
+                metadata.artifact_id, code_artifact_id, exc_info=True,
+            )
 
         registered.append(metadata)
 
-        # A re-run producing byte-identical content re-registers the same
-        # (artifact_id, version) — content-hash dedup means no new version
-        # exists, so re-delivering it would just duplicate the download
-        # card in the UI (once per re-run). Deliver each version exactly
-        # once per request; the model still sees the artifact in its tool
-        # response either way, flagged so it knows not to regenerate.
-        delivery_key = f"{metadata.artifact_id}:{metadata.version}"
-        already_delivered = delivery_key in context.delivered_artifact_versions
-        block = metadata.to_tool_response()
-        if already_delivered:
-            block["already_delivered"] = True
-            block["note"] = (
-                "This exact version was already attached to the response earlier in "
-                "this run — it is downloadable; do NOT regenerate or re-attach it."
-            )
+        block, entry = await deliver_artifact(context, registry, actor, metadata)
         model_blocks.append(block)
-        if already_delivered:
-            continue
-        context.delivered_artifact_versions.add(delivery_key)
-        context.artifacts_registered_this_run.append(metadata.model_dump())
-
-        download_url: str | None = None
-        try:
-            download_url = await registry.get_download_url(actor=actor, artifact_id=metadata.artifact_id)
-        except Exception:
-            logger.warning("Failed to obtain download URL for artifact %s", metadata.artifact_id, exc_info=True)
-        await _emit_artifact_event(context, metadata, download_url)
-        legacy_entries.append({
-            "documentId": metadata.document_id,
-            "fileName": metadata.name,
-            "mimeType": metadata.mime_type,
-            "sizeBytes": metadata.size_bytes,
-            "recordId": metadata.artifact_id,
-            "downloadUrl": download_url or "",
-            "artifactType": metadata.artifact_type.value,
-            "version": metadata.version,
-        })
+        if entry is not None:
+            legacy_entries.append(entry)
 
     if data is not None and failures:
         # Without this the model sees an empty `artifacts` list, cannot tell
@@ -1269,17 +1377,7 @@ async def _register_and_deliver(
             "reference them by name."
         )
 
-    if legacy_entries and context.conversation_id:
-        # `::artifact` marker delivery (`streaming.py::_append_task_markers`)
-        # still runs off `conversation_tasks.await_and_collect_results` — wrap
-        # the ALREADY-COMPUTED result in a trivially-resolved task so that
-        # pipeline keeps working unchanged even though registration itself is
-        # no longer a background operation.
-        async def _immediate() -> dict[str, Any]:
-            return {"type": "artifacts", "artifacts": legacy_entries}
-
-        task = asyncio.create_task(_immediate())
-        register_task(context.conversation_id, task)
+    register_artifact_markers(context, legacy_entries)
 
     return registered
 

@@ -33,6 +33,7 @@ from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import Record
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
+from app.utils.storage_download import is_signed_url_reply
 from app.connectors.core.base.error.stream_errors import to_internal_service_error
 
 KB_CONNECTOR_NAME = "Collections"
@@ -162,10 +163,8 @@ class KnowledgeBaseConnector(BaseConnector):
                     headers={"Authorization": f"Bearer {storage_token}"}
                 ) as response:
                     if response.status == HttpStatusCode.OK.value:
-                        content_type = response.headers.get("Content-Type", "")
-
-                        # Check if response is JSON (cloud storage) or file (local storage)
-                        if "application/json" in content_type:
+                        # Cloud storage answers with {signedUrl}; local storage with the file itself
+                        if is_signed_url_reply(response.headers):
                             # Cloud storage: response contains signed URL
                             data = await response.json()
                             signed_url = data.get("signedUrl")

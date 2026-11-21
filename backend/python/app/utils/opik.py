@@ -14,7 +14,19 @@ from app.agent_loop_lib.transport.opik_tracing import is_opik_configured
 
 logger = logging.getLogger(__name__)
 
+
+def warn_what_opik_receives() -> None:
+    """Tells the operator, once per process, what turning Opik on sends there (cleanup audit, Opik item)."""
+    if is_opik_configured():
+        logger.warning(
+            "opik.content_sent: Opik tracing is on: prompts, model answers, tool arguments and results, and "
+            "indexed document text are sent to Opik. A conversation's traces are deleted there when it is erased, "
+            "only for traces written by this version or later; nothing else sent to Opik is deleted by PipesHub."
+        )
+
+
 _opik_tracer: Any | None = None
+warn_what_opik_receives()
 if is_opik_configured():
     try:
         from opik.integrations.langchain import OpikTracer

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+import httpx
 import openai
 from langchain_core.embeddings import Embeddings
 from langchain_openai.embeddings import OpenAIEmbeddings
@@ -21,6 +22,7 @@ from app.services.messaging.backpressure import get_default_backpressure_coordin
 from app.utils.embedding_gate import BulkGate, get_bulk_gate
 from app.utils.embedding_retry import await_with_retry, call_with_retry
 from app.utils.logger import create_logger
+from harness_core.deadline import CONNECT_TIMEOUT_S, bounded_read
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -90,7 +92,8 @@ class EmbeddingServerEmbeddings(Embeddings):
             base_url=_embedding_server_base_url(),
             check_embedding_ctx_length=False,
             max_retries=0,
-            timeout=self.timeout,
+            # A short connect: an unroutable embedding server fails in seconds, not after the read bound (ERR-UX).
+            timeout=httpx.Timeout(self.timeout, connect=CONNECT_TIMEOUT_S),
             extra_body=extra_body,
         )
         # Search queries are marked so the server encodes them ahead of
@@ -102,7 +105,7 @@ class EmbeddingServerEmbeddings(Embeddings):
             base_url=_embedding_server_base_url(),
             check_embedding_ctx_length=False,
             max_retries=0,
-            timeout=self.timeout,
+            timeout=httpx.Timeout(self.timeout, connect=CONNECT_TIMEOUT_S),
             extra_body=extra_body,
             default_headers={EMBEDDING_PRIORITY_HEADER: EMBEDDING_PRIORITY_QUERY},
         )
@@ -168,24 +171,25 @@ class EmbeddingServerEmbeddings(Embeddings):
             backpressure_coordinator=self._backpressure_coordinator,
         )
 
+    # On a run's tool call the retries together are bounded by the call's remaining time (ERR-UX).
     async def aembed_documents(self, texts: list[str], *, single_attempt: bool = False) -> list[list[float]]:
         # single_attempt: the caller retries, so no backoff sleep here (it may hold a bulk permit).
-        return await await_with_retry(
+        return await bounded_read("embedding", await_with_retry(
             lambda: self._inner.aembed_documents(texts),
             max_retries=1 if single_attempt else self.max_retries,
             operation="aembed_documents",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,
             backpressure_coordinator=self._backpressure_coordinator,
-        )
+        ))
 
     async def aembed_query(self, text: str) -> list[float]:
-        return await await_with_retry(
+        return await bounded_read("embedding", await_with_retry(
             lambda: self._query_inner.aembed_query(text),
             max_retries=self.max_retries,
             operation="aembed_query",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,
             backpressure_coordinator=self._backpressure_coordinator,
-        )
+        ))
 
 
 def get_embedding_server_embeddings(

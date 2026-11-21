@@ -5,7 +5,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +27,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.harness.knowledge.service import KnowledgePublications, PublishedMap
 from app.models.blocks import GroupType
 from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
@@ -110,9 +111,6 @@ from app.services.vector_db.strategy import ContextAxis, QueryContext
 from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
     embedding_config_hash,
-    get_default_embedding_model,
-    get_embedding_model,
-    get_generator_model,
     is_local_cpu_embedding_provider,
 )
 from app.utils.chat_helpers import (
@@ -127,13 +125,35 @@ from app.utils.chat_helpers import (
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.llm import (
+    LLMUnavailableError,
+    ModelNotAllowedError,
+    build_embeddings,
+    get_llm,
+    require_embeddings_placement,
+)
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
+from harness_core.knowledge.publications import (
+    Publication,
+    ScopeInputs,
+    effective_scope,
+)
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
 USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
+
+
+@dataclass(frozen=True)
+class _PublicationScope:
+    """What a principal's publications add (P2.13); ``caller_own`` is set when the search runs as an agent's
+    creator on a caller's behalf, and then bounds the creator's scope."""
+
+    published: PublishedMap
+    caller_own: dict[str, str] | None
+
 
 # Applied when a caller passes no limit at all. Matches `search_with_filters`'s
 # own default so the None path and the omitted path retrieve the same amount.
@@ -502,6 +522,7 @@ class RetrievalService:
         self.blob_store = blob_store
         self.vector_db_service = vector_db_service
         self.collection_registry = collection_registry
+        self.publications = KnowledgePublications(graph_provider, config_service)
         # Compares the scope filter with the post-check on the side (ACL_FILTER_MODE=shadow); None in every other mode.
         self._shadow = self._build_shadow(graph_provider)
         # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE=scopes); None in every other mode.
@@ -600,6 +621,8 @@ class RetrievalService:
         return self._sparse_embedder
 
     async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
+        """The default LLM (else the first), built inside the org's region pin; ``None`` when none is set up or
+        it cannot be built."""
         try:
             self.logger.debug("Getting LLM")
             ai_models = await self.config_service.get_config(
@@ -611,29 +634,7 @@ class RetrievalService:
                 # The normal state until an admin configures a model, not an error.
                 self.logger.info("No LLM configured")
                 return self.llm
-
-            # For now, we'll use the first available provider that matches our supported types
-            # We will add logic to choose a specific provider based on our needs
-
-            for config in llm_configs:
-                if config.get("isDefault", False):
-                    provider = config["provider"]
-                    self.llm = await asyncio.to_thread(get_generator_model, provider, config)
-                if self.llm:
-                    break
-
-            if not self.llm:
-                self.logger.info("No default LLM found, using first available provider")
-
-            if not self.llm:
-                for config in llm_configs:
-                    provider = config["provider"]
-                    self.llm = await asyncio.to_thread(get_generator_model, provider, config)
-                    if self.llm:
-                        break
-                if not self.llm:
-                    raise ValueError("No supported LLM provider found in configuration")
-
+            self.llm, _ = await get_llm(self.config_service, llm_configs)
             self.logger.info("LLM created successfully")
             return self.llm
         except Exception as e:
@@ -655,10 +656,17 @@ class RetrievalService:
             embedding_configs = (ai_models or {}).get("embedding")
             config_hash = embedding_config_hash(embedding_configs)
 
+            selected_config = (
+                next((c for c in embedding_configs if c.get("isDefault", False)), embedding_configs[0])
+                if embedding_configs
+                else None
+            )
             if (
                 self._cached_dense_embeddings is not None
                 and self._cached_embedding_config_hash == config_hash
             ):
+                # A pin saved after the client was built binds it from the next query on (MG-15).
+                await require_embeddings_placement(self.config_service, selected_config)
                 return self._cached_dense_embeddings
 
             async with self._embedding_model_lock:
@@ -668,20 +676,14 @@ class RetrievalService:
                 ):
                     return self._cached_dense_embeddings
 
-                if not embedding_configs:
+                if selected_config is None:
                     self.logger.info("No embedding config found; using default embedding model")
-                    dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
+                    dense_embeddings = await build_embeddings(self.config_service, None)
                     is_local = True
                 else:
-                    selected_config = next(
-                        (c for c in embedding_configs if c.get("isDefault", False)),
-                        embedding_configs[0],
-                    )
                     provider = selected_config["provider"]
                     self.logger.info(f"Using embedding provider: {provider}")
-                    dense_embeddings = await asyncio.to_thread(
-                        get_embedding_model, provider, selected_config
-                    )
+                    dense_embeddings = await build_embeddings(self.config_service, selected_config)
                     is_local = is_local_cpu_embedding_provider(
                         provider, (selected_config.get("configuration") or {}).get("endpoint")
                     )
@@ -690,6 +692,9 @@ class RetrievalService:
                 self._cached_embedding_config_hash = config_hash
                 self._cached_embedding_is_local = is_local
                 return dense_embeddings
+        except (ModelNotAllowedError, LLMUnavailableError):
+            # Says why nothing was embedded; folded into ``None`` it would read as "no embedding model".
+            raise
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
@@ -777,8 +782,13 @@ class RetrievalService:
         virtual_record_ids_from_tool: list[str] | None = None,
         knowledge_search: bool = False,
         time_range: dict[str, int] | None = None,
+        caller_user_id: str | None = None,
     ) -> dict[str, Any]:
-        """Perform semantic search on records the given user may access (graph permission checks)."""
+        """Perform semantic search on records the given user may access (graph permission checks).
+
+        ``caller_user_id``: whom the search answers when ``user_id`` is not them (a service-account agent
+        retrieving as its creator). With knowledge publications on it bounds the creator's scope (D21).
+        """
 
         try:
             # Get accessible records
@@ -786,7 +796,7 @@ class RetrievalService:
                 raise ValueError("GraphProvider is required for permission checking")
 
             # `None` reaches here from the prefetch path, which forwards the
-            # request's optional `limit` verbatim (chat_modes/bridge.py ->
+            # request's optional `limit` verbatim (chat_modes/setup.py ->
             # prefetch.py). A default argument cannot cover that -- an explicit
             # None overrides it -- and HybridSearchRequest is a plain dataclass,
             # so the None survived all the way to `req.limit * 2` in
@@ -822,45 +832,60 @@ class RetrievalService:
                     filters = {k: v for k, v in filters.items() if k not in CONTAINER_SCOPE_FILTER_KEYS}
                     filters["apps"] = sorted(selection.connector_ids)
 
+            published_via: dict[str, Publication] = {}
             fallback_on = narrow_access_fallback_enabled()
             memo_key = narrow_access_memo.key(org_id, user_id, filters)
             remembered = fallback_on and narrow_access_memo.is_narrow(memo_key)
             try:
-                try:
-                    containers, accessible_virtual_id_to_record_id, user = (
-                        await self._resolve_search_scope(
-                            user_id, org_id, filters, time_range, prefer_record_ids=remembered,
+                publication_scope = await self._publication_scope(
+                    user_id, org_id, caller_user_id, filters, time_range
+                )
+                if publication_scope is not None:
+                    # The exact record-id path: the publication union (or the caller's bound) is built up
+                    # front, so the narrow-access memo, which only picks a route for own access, has no say.
+                    remembered = False
+                    containers = None
+                    accessible_virtual_id_to_record_id, user, published_via = (
+                        await self._resolve_published_scope(
+                            user_id, org_id, filters, time_range, publication_scope
                         )
                     )
-                except PermissionVerificationUnavailableError as exc:
-                    if not remembered:
-                        raise
-                    # The remembered record-id route could not read the record
-                    # list; the container route checks hits without it. Forget
-                    # the scope and try that once.
-                    narrow_access_memo.forget(memo_key)
-                    remembered = False
-                    self.logger.warning(
-                        "record list unreadable for remembered scope (user=%s org=%s); "
-                        "trying the container search: %s", user_id, org_id, exc,
-                    )
-                    containers, accessible_virtual_id_to_record_id, user = (
-                        await self._resolve_search_scope(user_id, org_id, filters, time_range)
-                    )
-                if remembered and containers is None and not accessible_virtual_id_to_record_id:
-                    # The remembered route found an empty record list. Access
-                    # changes, and the list can lag a grant: forget the scope and
-                    # let the containers decide, rather than answering "nothing"
-                    # from the memo for minutes. A demo-app exclusion still takes
-                    # the record-id path there, as it does without the memo.
-                    narrow_access_memo.forget(memo_key)
-                    self.logger.info(
-                        "empty record list for remembered scope (user=%s org=%s); "
-                        "trying the container search", user_id, org_id,
-                    )
-                    containers, accessible_virtual_id_to_record_id, user = (
-                        await self._resolve_search_scope(user_id, org_id, filters, time_range)
-                    )
+                else:
+                    try:
+                        containers, accessible_virtual_id_to_record_id, user = (
+                            await self._resolve_search_scope(
+                                user_id, org_id, filters, time_range, prefer_record_ids=remembered,
+                            )
+                        )
+                    except PermissionVerificationUnavailableError as exc:
+                        if not remembered:
+                            raise
+                        # The remembered record-id route could not read the record
+                        # list; the container route checks hits without it. Forget
+                        # the scope and try that once.
+                        narrow_access_memo.forget(memo_key)
+                        remembered = False
+                        self.logger.warning(
+                            "record list unreadable for remembered scope (user=%s org=%s); "
+                            "trying the container search: %s", user_id, org_id, exc,
+                        )
+                        containers, accessible_virtual_id_to_record_id, user = (
+                            await self._resolve_search_scope(user_id, org_id, filters, time_range)
+                        )
+                    if remembered and containers is None and not accessible_virtual_id_to_record_id:
+                        # The remembered route found an empty record list. Access
+                        # changes, and the list can lag a grant: forget the scope and
+                        # let the containers decide, rather than answering "nothing"
+                        # from the memo for minutes. A demo-app exclusion still takes
+                        # the record-id path there, as it does without the memo.
+                        narrow_access_memo.forget(memo_key)
+                        self.logger.info(
+                            "empty record list for remembered scope (user=%s org=%s); "
+                            "trying the container search", user_id, org_id,
+                        )
+                        containers, accessible_virtual_id_to_record_id, user = (
+                            await self._resolve_search_scope(user_id, org_id, filters, time_range)
+                        )
             except PermissionVerificationUnavailableError as exc:
                 self.logger.warning(
                     "Could not read what user %s may access in org %s: %s", user_id, org_id, exc
@@ -960,12 +985,14 @@ class RetrievalService:
             # The search API's first page, varied across sources: the plain
             # search runs as always, and a deeper read supplies candidates for
             # the places a capped source gives up (SEARCH_SOURCE_DIVERSITY).
+            # Not under a publication scope: the deeper read checks own access only, and would neither
+            # admit what a publication discloses nor hold a delegated search to its caller's access.
             diversity = (
                 active_source_diversity(
                     scope_ids=requested_scope_ids(filters),
                     scope_virtual_ids=scope_virtual_ids,
                 )
-                if knowledge_search
+                if knowledge_search and publication_scope is None
                 else None
             )
             enumerated_map: dict[str, str] | None = None
@@ -1064,10 +1091,24 @@ class RetrievalService:
                 )
                 try:
                     enumerated = enumerated_map = accessible_virtual_id_to_record_id
+                    # Own access is decided hit by hit by the one access check, within every scope; what a
+                    # publication discloses is not the reader's own and is admitted apart (SYNC4 S9).
                     accessible_virtual_id_to_record_id = await self._keep_permitted_hits(
-                        search_results, enumerated, user_key, org_id,
+                        search_results,
+                        {vrid: rid for vrid, rid in enumerated.items() if vrid not in published_via},
+                        user_key, org_id,
                         scope_connector_ids=requested_scope_ids(filters),
                         scopes=scopes,
+                    )
+                    if publication_scope is not None and publication_scope.caller_own is not None:
+                        accessible_virtual_id_to_record_id = await self._within_caller_access(
+                            accessible_virtual_id_to_record_id, caller_user_id, org_id,
+                        )
+                    published_via = await self._published_hits(
+                        search_results, enumerated, published_via, scopes, org_id,
+                    )
+                    accessible_virtual_id_to_record_id.update(
+                        {vrid: enumerated[vrid] for vrid in published_via}
                     )
                     denied = enumerated.keys() - accessible_virtual_id_to_record_id.keys()
                     # A denied hit is gone, so all of them denied reads as no match.
@@ -1203,6 +1244,13 @@ class RetrievalService:
                 search_results, virtual_to_record_map, record_rank = _vary_sources(
                     diversity, search_results, virtual_to_record_map, plain_points,
                 )
+            for vid, publication in published_via.items():
+                entry = virtual_to_record_map.get(vid)
+                if entry:
+                    # Copied, not mutated: the fetched record may be shared by other vids.
+                    virtual_to_record_map[vid] = {
+                        **entry, "publicationId": publication.id, "publicationMode": publication.mode,
+                    }
 
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
 
@@ -1227,6 +1275,11 @@ class RetrievalService:
                     record = record_id_to_record_map.get(record_id)
 
                     result["metadata"]["recordId"] = record_id
+                    publication = published_via.get(virtual_id)
+                    if publication is not None:
+                        # The label and every raw read key off these (P2.13).
+                        result["metadata"]["publicationId"] = publication.id
+                        result["metadata"]["publicationMode"] = publication.mode
                     if record:
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName", None)
@@ -1605,6 +1658,76 @@ class RetrievalService:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
+    async def _publication_scope(
+        self,
+        user_id: str,
+        org_id: str,
+        caller_user_id: str | None,
+        filters: dict[str, list[str]],
+        time_range: dict[str, int] | None,
+    ) -> _PublicationScope | None:
+        """``None``: today's search (publications off, or none disclose anything here to a principal reading
+        as itself). For a search on a caller's behalf the caller always bounds it, even with nothing published."""
+        if not await self.publications.enabled():
+            return None
+        delegated = bool(caller_user_id) and caller_user_id != user_id
+        audience_user = caller_user_id if delegated else user_id
+        try:
+            principal = await self.publications.principal(audience_user, org_id)
+            published = (
+                await self.publications.published_map(principal, filters, time_range)
+                if principal is not None
+                else {}
+            )
+        except Exception as exc:
+            if delegated:
+                raise PermissionVerificationUnavailableError(str(exc)) from exc
+            self.logger.warning(
+                "publications.read_failed orgId=%s errorType=%s choice=own_access_only",
+                org_id, type(exc).__name__,
+            )
+            return None
+        if not delegated:
+            return _PublicationScope(published, None) if published else None
+        if principal is None:
+            self.logger.warning(
+                "publications.caller_unresolved orgId=%s choice=empty_scope", org_id
+            )
+            return _PublicationScope({}, {})
+        caller_own = await self._get_accessible_virtual_ids_task(
+            audience_user, org_id, filters, self.graph_provider, time_range=time_range,
+            exclude_app_ids=await self._excluded_demo_apps(audience_user, org_id),
+        )
+        return _PublicationScope(published, caller_own)
+
+    async def _resolve_published_scope(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]],
+        time_range: dict[str, int] | None,
+        scope: _PublicationScope,
+    ) -> tuple[dict[str, str], dict[str, Any] | None, dict[str, Publication]]:
+        """The record-id path with the union (or the caller's bound) applied: exact, so the vector filter is
+        built from exactly what the principal may see."""
+        excluded = await self._excluded_demo_apps(user_id, org_id)
+        own, user = await asyncio.gather(
+            self._get_accessible_virtual_ids_task(
+                user_id, org_id, filters, self.graph_provider, time_range=time_range,
+                exclude_app_ids=excluded,
+            ),
+            self._get_user_cached(user_id),
+        )
+        admitted = effective_scope(
+            ScopeInputs(principal_own=own, published=scope.published, caller_own=scope.caller_own)
+        )
+        accessible = {vid: entry.value for vid, entry in admitted.items()}
+        via = {vid: entry.publication for vid, entry in admitted.items() if entry.publication is not None}
+        self.logger.info(
+            "publications.scope_applied orgId=%s delegated=%s own=%d published=%d admitted=%d viaPublication=%d",
+            org_id, scope.caller_own is not None, len(own), len(scope.published), len(accessible), len(via),
+        )
+        return accessible, user, via
     async def _diversity_candidates(
         self,
         queries: list[str],
@@ -2551,6 +2674,45 @@ class RetrievalService:
             vrid: record_id if record_id in citable else check.records_by_vrid[vrid]
             for vrid, record_id in hits.items()
             if record_id in citable or vrid in check.records_by_vrid
+        }
+
+    async def _published_hits(
+        self,
+        search_results: list[dict[str, Any]],
+        enumerated: Mapping[str, str],
+        published_via: Mapping[str, Publication],
+        scopes: Sequence[SelectionScope],
+        org_id: str,
+    ) -> dict[str, Publication]:
+        """The hits only a publication discloses, each inside every scope of the turn by where its record sits
+        (SYNC4 S9/S11, MAINSTUDY B4): a selection, an agent's or a project's sources bound the turn, and a
+        publication never widens them. A search with no scope admits every published hit."""
+        from app.harness.knowledge.scope_overlay import within_scopes_by_place
+
+        hit_vrids = {(r.get("metadata") or {}).get("virtualRecordId") for r in search_results if isinstance(r, dict)}
+        hits = {vrid: pub for vrid, pub in published_via.items() if vrid in hit_vrids and vrid in enumerated}
+        if not scopes or not hits:
+            return hits
+        inside = await within_scopes_by_place(self.graph_provider, org_id, scopes, [enumerated[v] for v in hits])
+        return {vrid: pub for vrid, pub in hits.items() if enumerated[vrid] in inside}
+
+    async def _within_caller_access(
+        self, permitted: dict[str, str], caller_user_id: str | None, org_id: str,
+    ) -> dict[str, str]:
+        """``permitted`` (the creator's own hits, for a service-account agent) narrowed to what the caller may
+        access too, by the same one access check: the creator's clearance never opens a record to its caller."""
+        if not permitted:
+            return permitted
+        caller = await self._get_user_cached(caller_user_id) if caller_user_id else None
+        caller_key = (caller.get("_key") or caller.get("id")) if caller else None
+        if not caller_key:
+            return {}
+        check = await self.graph_provider.check_access(
+            caller_key, org_id, node_ids=permitted.values(), virtual_record_ids=permitted.keys(), indexed_only=True,
+        )
+        return {
+            vrid: rid for vrid, rid in permitted.items()
+            if rid in check.node_ids or vrid in check.records_by_vrid
         }
 
     async def _get_accessible_virtual_ids_task(

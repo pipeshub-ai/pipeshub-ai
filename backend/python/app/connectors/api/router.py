@@ -119,6 +119,7 @@ from app.connectors.core.base.connector.connector_service import (
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
+from app.services.rate_budget import account_scope
 from app.connectors.core.base.error.stream_errors import not_downloadable, to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
@@ -165,8 +166,12 @@ from app.connectors.services.vector_store_rebuild import (
 from app.edition_containers import ConnectorAppContainer
 from app.core.org_context import current_org_id
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
+from app.harness.knowledge.service import KnowledgePublications
 from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
+from app.services.artifact_registry.models import Actor
+from app.utils.untrusted_content import untrusted_content_headers
+from app.services.artifact_registry.viewer_access import artifact_viewer_access, is_artifact_record
 from app.modules.pipeline.models import RETRYABLE_STAGES
 from app.modules.pipeline.state import stage_summaries
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
@@ -217,6 +222,8 @@ from app.utils.streaming import create_stream_record_response, start_streaming_r
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from harness_core.knowledge.errors import PublicationAnswerOnly
+from harness_core.knowledge.publications import require_raw
 
 logger = create_logger("connector_service")
 
@@ -251,9 +258,7 @@ async def _require_vector_store_rebuild_enabled(request: Request) -> None:
         )
     container = getattr(request.app, "container", None)
     config_service = container.config_service() if container else None
-    if config_service and not await read_platform_feature_flag(
-        CONFIG.ENABLE_VECTOR_STORE_REBUILD, config_service, default=False,
-    ):
+    if config_service and not await read_platform_feature_flag(CONFIG.ENABLE_VECTOR_STORE_REBUILD, config_service):
         raise HTTPException(
             status_code=HttpStatusCode.FORBIDDEN.value,
             detail="Vector store rebuild is disabled by the administrator.",
@@ -513,7 +518,7 @@ async def _stream_artifact_from_storage(
                     detail="Failed to convert artifact to PDF",
                 ) from e
 
-    return Response(content=buffer or b"", media_type=mime)
+    return Response(content=buffer or b"", media_type=mime, headers=untrusted_content_headers(mime))
 
 
 async def get_graph_provider(request: Request) -> IGraphDBProvider:
@@ -736,6 +741,56 @@ async def get_record_content_internal(
         ) from e
 
 
+async def _publication_raw_read(
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str,
+    record_id: str,
+    *,
+    allow_full: bool,
+    denied: HTTPException,
+) -> None:
+    """For a record the user cannot read themselves (P2.13, D21): returns when a live ``full`` publication discloses
+    it to them and ``allow_full``; an ``answer_only`` one is a typed 403; anything else raises ``denied`` (today's)."""
+    publications = KnowledgePublications(graph_provider, config_service)
+    if not await publications.enabled():
+        raise denied
+    decision = await publications.read_decision(user_id, org_id, record_id, own=False)
+    try:
+        granted = require_raw(decision)
+    except PublicationAnswerOnly as refused:
+        logger.warning("publications.raw_read_refused reason=%s surface=record_route", refused.reason_code)
+        raise HTTPException(
+            status_code=refused.http_status,
+            detail={"code": refused.reason_code, "message": "This record was published for answers only"},
+        ) from refused
+    if not (granted and allow_full):
+        raise denied
+
+
+def _published_record_details(record_id: str, doc: dict | None) -> dict:
+    """The details answer for a record a live ``full`` publication discloses to a reader without access of their
+    own (H2): the record, read-only through the publication; the KB, folder and metadata are its owners' view."""
+    if not doc:
+        raise HTTPException(status_code=404, detail="You do not have access to this record")
+    record = {key: value for key, value in api_record(doc).items() if key not in ("_key", "_id", "_rev")}
+    record["id"] = doc.get("_key") or doc.get("id") or record_id
+    return {
+        "record": {**record, "fileRecord": None, "mailRecord": None, "ticketRecord": None},
+        "knowledgeBase": None,
+        "folder": None,
+        "metadata": None,
+        "permissions": [{
+            "id": record["id"],
+            "name": record.get("recordName"),
+            "type": record.get("recordType"),
+            "relationship": "READER",
+            "accessType": "PUBLICATION",
+        }],
+    }
+
+
 async def _refuse_hidden_demo_record(
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
@@ -751,6 +806,25 @@ async def _refuse_hidden_demo_record(
         return
     if hidden:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+
+async def _refuse_artifact_hidden_from_viewer(
+    graph_provider: IGraphDBProvider, org_id: str, user_id: str, record: Record
+) -> None:
+    """A READER edge on an artifact comes from a conversation share, which is not
+    a check of what the artifact was derived from (SS0). Errors propagate: the
+    caller turns them into a failed stream, never into the bytes."""
+    if not is_artifact_record(record):
+        return
+    if await artifact_viewer_access(graph_provider).may_stream(
+        Actor(org_id=org_id, user_id=user_id), record.id
+    ):
+        return
+    logger.warning("artifacts.stream_refused recordId=%s reason=provenance_not_readable", record.id)
+    raise HTTPException(
+        status_code=HttpStatusCode.FORBIDDEN.value,
+        detail="You do not have permission to access this record",
+    )
 
 
 class ReindexFailedRequest(BaseModel):
@@ -1447,7 +1521,7 @@ async def stream_record_internal(
             logger=logger,
         )
 
-        with streaming_for_indexing():
+        with streaming_for_indexing(), account_scope(getattr(connector_obj, "rate_budget", None)):
             return await _invoke_connector_stream(
                 connector_obj, record, token_user_id
             )
@@ -1636,9 +1710,12 @@ async def stream_record(
         access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
         if not access_check:
             logger.warning(f"User {user_id} does not have access to record {record_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record"
+            await _publication_raw_read(
+                graph_provider, config_service, org_id, user_id, record_id, allow_full=True,
+                denied=HTTPException(
+                    status_code=HttpStatusCode.FORBIDDEN.value,
+                    detail="You do not have permission to access this record"
+                ),
             )
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
@@ -1649,6 +1726,7 @@ async def stream_record(
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail="Record not found",
                 )
+        await _refuse_artifact_hidden_from_viewer(graph_provider, org_id, user_id, record)
         is_admin = is_request_admin(request)
         return await _resolve_record_content_response(
             record=record,
@@ -1756,6 +1834,9 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                     fallback_filename="converted_file.pdf"
                 )
 
+            except HTTPException:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                raise
             except FileNotFoundError as e:
                 shutil.rmtree(tmpdir, ignore_errors=True)
                 logger.error(str(e))
@@ -1916,25 +1997,32 @@ async def get_record_by_id(
             record_id=record_id,
         )
         logger.debug(f"🚀 has_access: {has_access}")
-        if has_access:
-            doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-            await _refuse_hidden_demo_record(
-                graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
+        if not has_access:
+            await _publication_raw_read(
+                graph_provider, container.config_service(), org_id, user_id, record_id, allow_full=True,
+                denied=HTTPException(status_code=404, detail="You do not have access to this record"),
             )
-            await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
-            await hide_record_parents_outside_connection(
-                request, graph_provider, org_id, user_id, has_access, containers=("knowledgeBase", "folder"),
-            )
-            hide_source_paths(request, has_access, (doc or {}).get("connectorId"))
-            record: object = cast("dict[str, object]", has_access).get("record")
-            if isinstance(record, dict):
-                has_access["record"] = api_record(record)
-            has_access["stageStates"] = await _stage_states_of(graph_provider, record)
-            return has_access
-        else:
-            raise HTTPException(
-                status_code=404, detail="You do not have access to this record"
-            )
+        # Own access already answered the record; only a publication's reader needs it read here (H4).
+        answered = has_access.get("record") if isinstance(has_access, dict) else None
+        doc = answered if isinstance(answered, dict) else await graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value
+        )
+        await _refuse_hidden_demo_record(
+            graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
+        )
+        # A connected app's limit holds for a published record too: it names what the app may see.
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
+        if not has_access:
+            return _published_record_details(record_id, doc)
+        await hide_record_parents_outside_connection(
+            request, graph_provider, org_id, user_id, has_access, containers=("knowledgeBase", "folder"),
+        )
+        hide_source_paths(request, has_access, (doc or {}).get("connectorId"))
+        record: object = cast("dict[str, object]", has_access).get("record")
+        if isinstance(record, dict):
+            has_access["record"] = api_record(record)
+        has_access["stageStates"] = await _stage_states_of(graph_provider, record)
+        return has_access
     except HTTPException:
         raise
     except Exception as e:
@@ -1960,13 +2048,16 @@ async def get_record_content(
     org_id = request.state.user.get("orgId")
 
     try:
-        # The one access check, `check_access` as the agent's fetch_record runs it;
-        # the fetch below reuses its answer.
+        # The one own-access check, `check_access` as the agent's fetch_record runs it; the fetch below reuses its
+        # answer. Without own access, a live `full` publication may still disclose the record (P2.13).
         accessible = await accessible_node_ids(graph_provider, {record_id}, user_id, org_id)
         if record_id not in accessible:
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record",
+            await _publication_raw_read(
+                graph_provider, container.config_service(), org_id, user_id, record_id, allow_full=True,
+                denied=HTTPException(
+                    status_code=HttpStatusCode.FORBIDDEN.value,
+                    detail="You do not have permission to access this record",
+                ),
             )
         doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
         await _refuse_hidden_demo_record(
@@ -2003,7 +2094,7 @@ async def get_record_content(
         unindexed = (result.get("not_indexed_records") or {}).get(record_id)
         if unindexed:
             preparing = unindexed.get("preparing")
-            body = {"content": f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'], preparing)}"}
+            body = {"content": f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'], preparing=preparing)}"}
             return {**body, "preparing": True} if preparing == "waiting" else body
         return {"content": "No record found"}
 

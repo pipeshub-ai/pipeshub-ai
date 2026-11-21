@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 from pydantic.alias_generators import to_camel
 
+from app.agents.mcp.runner_fields import MAX_EGRESS_HOSTS
 from app.agents.mcp.tool_kind import KindSource, ToolKind, tool_kind
 
 
@@ -91,6 +92,9 @@ class MCPServerTemplate(MCPCamelModel):
     args: list[str] = Field(default_factory=list)
     required_env: list[str] = Field(default_factory=list)
     optional_env: list[str] = Field(default_factory=list)
+    # The hosts the program calls, which its MCP runner may reach (`host` or `host:port`). Not part of the dumped
+    # entry: the release catalog's digests name what a server runs and how it signs in.
+    egress_hosts: list[str] = Field(default_factory=list, exclude=True)
 
     # SSE / Streamable HTTP
     default_url: Optional[str] = None
@@ -169,6 +173,8 @@ class MCPServerInstanceConfig(MCPCamelModel):
     args: list[Annotated[str, Field(max_length=2048)]] = Field(default_factory=list, max_length=64)
     # Custom STDIO only — catalog templates supply required_env from the template.
     required_env: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=64)
+    # Custom STDIO only: the hosts its program calls, which its MCP runner may reach (`host` or `host:port`).
+    egress_hosts: list[Annotated[str, Field(max_length=261)]] = Field(default_factory=list, max_length=MAX_EGRESS_HOSTS)
 
     # SSE / Streamable HTTP
     url: Optional[str] = Field(default=None, max_length=2048)
@@ -227,6 +233,11 @@ class MCPServerConfig(MCPCamelModel):
     args: list[str] = Field(default_factory=list)
     required_env: list[str] = Field(default_factory=list)
     optional_env: list[str] = Field(default_factory=list)
+    # STDIO in MCP runners (P5.10, `app.agents.mcp.runner_fields`): the hosts the server may reach (`host` or
+    # `host:port`, plain HTTP through the egress proxy; none = no network) and its runner image (None: the
+    # deployment's).
+    egress_hosts: list[str] = Field(default_factory=list)
+    runner_image: str | None = None
 
     url: Optional[str] = None
     header_name: Optional[str] = None

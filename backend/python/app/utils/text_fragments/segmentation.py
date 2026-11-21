@@ -10,6 +10,7 @@ terms are never cut inside a unit.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -28,9 +29,20 @@ _UNSPACED_RANGES: tuple[tuple[int, int], ...] = (
 )
 
 
+# A citation link is built for every block of a fetched page, megabytes of it; a per-character range check in Python
+# made that the bulk of reading a large page.
+_UNSPACED_CHAR = re.compile(
+    "[" + "".join(f"{re.escape(chr(low))}-{re.escape(chr(high))}" for low, high in _UNSPACED_RANGES) + "]"
+)
+
+
 def is_unspaced_script(char: str) -> bool:
     code = ord(char)
     return any(low <= code <= high for low, high in _UNSPACED_RANGES)
+
+
+def has_unspaced_script(text: str) -> bool:
+    return _UNSPACED_CHAR.search(text) is not None
 
 
 def is_word_char(char: str) -> bool:
@@ -88,7 +100,7 @@ class WordSegmenter:
                 units.extend(self._units_of_token(token, token_start))
         if not units:
             return None
-        alnum = sum(1 for ch in block if ch.isalnum())
+        alnum = sum(map(str.isalnum, block))
         return SegmentedBlock(text=block, units=tuple(units), alnum_count=alnum)
 
     def is_eligible(self, block: SegmentedBlock) -> bool:
@@ -129,12 +141,12 @@ class WordSegmenter:
 
     @staticmethod
     def _units_of_token(token: str, offset: int) -> list[Unit]:
-        if any(is_unspaced_script(ch) for ch in token):
+        if has_unspaced_script(token):
             return _runs_of_word_chars(token, offset)
         first = next((i for i, ch in enumerate(token) if is_word_char(ch)), None)
         if first is None:
             return []
-        last = max(i for i, ch in enumerate(token) if is_word_char(ch))
+        last = next(i for i in range(len(token) - 1, first - 1, -1) if is_word_char(token[i]))
         return [Unit(offset + first, offset + last + 1, unspaced=False)]
 
 
@@ -151,7 +163,7 @@ def _runs_of_word_chars(token: str, offset: int) -> list[Unit]:
         if run_start is not None:
             run = token[run_start:index]
             units.append(
-                Unit(offset + run_start, offset + index, unspaced=any(is_unspaced_script(c) for c in run))
+                Unit(offset + run_start, offset + index, unspaced=has_unspaced_script(run))
             )
             run_start = None
     return units

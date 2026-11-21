@@ -3940,6 +3940,51 @@ class BlobStorage(Transformer):
         version_query = f"?version={version}" if version is not None else ""
         return f"{public_base_url}{Routes.KB_STREAM_RECORD.value.format(recordId=record_id)}{version_query}"
 
+    async def read_binary_from_storage(
+        self,
+        org_id: str,
+        document_id: str,
+        *,
+        version: int | None = None,
+    ) -> bytes:
+        """Read raw bytes through the tenant-scoped internal storage API.
+
+        This is the provider-neutral read counterpart to
+        :meth:`save_binary_to_storage`. The Node storage controller sends the
+        raw bytes (main #4398); a Node from before that sent a JSON-serialized
+        Buffer, still accepted while a rollout mixes versions. Callers must
+        still verify the returned bytes against their immutable content ref.
+        """
+        headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
+        version_query = f"?version={version}" if version is not None else ""
+        url = (
+            f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
+            f"{version_query}"
+        )
+        async with _borrowed_session() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    await response.read()
+                    # Typed by status: a 5xx is an outage the caller may wait out, a 404 is gone for good.
+                    raise _storage_status_error(
+                        response.status,
+                        f"Failed to read binary object {document_id} (status: {response.status})",
+                    )
+                raw = await response.read()
+                content_type = response.headers.get("Content-Type", "").lower()
+
+        if "application/json" not in content_type:
+            return raw
+        payload = json.loads(raw)
+        if isinstance(payload, dict) and payload.get("type") == "Buffer":
+            payload = payload.get("data")
+        if not isinstance(payload, list) or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > 255
+            for value in payload
+        ):
+            raise Exception(f"Storage returned an invalid binary object for {document_id}")
+        return bytes(payload)
+
     async def get_direct_upload_url(self, org_id: str, document_id: str) -> str:
         """Signed PUT URL for an EXISTING document — the first phase of the
         artifact registry's two-phase upload (`get_upload_grant` in

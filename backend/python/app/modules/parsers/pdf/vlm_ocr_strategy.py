@@ -30,11 +30,15 @@ from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.utils.aimodels import (
     LLMProvider,
     coerce_message_content_to_text,
-    get_generator_model,
     is_multimodal_llm,
 )
 from app.utils.env_config import env_int
-from app.utils.llm import LLMUnavailableError, get_llm_for_role, load_ai_models
+from app.utils.llm import (
+    LLMUnavailableError,
+    build_chat_model,
+    get_llm_for_role,
+    load_ai_models,
+)
 from app.utils.opik import get_llm_invoke_config
 
 if TYPE_CHECKING:
@@ -182,8 +186,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self._pdf_path = None
         self._page_images: Dict[int, str] = {}
 
-    def _create_llm_from_config(self, config: Dict[str, Any]) -> BaseChatModel:
-        """Helper to create an LLM instance from a configuration dictionary."""
+    async def _create_llm_from_config(self, config: Dict[str, Any]) -> BaseChatModel:
+        """Helper to create an LLM instance from a configuration dictionary, inside the org's region pin."""
         self.llm_config = config
         provider = config["provider"]
         model_string = config.get("configuration", {}).get("model")
@@ -192,7 +196,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             model_name = model_names[0] if model_names else None
         else:
             model_name = None
-        return get_generator_model(provider, config, model_name)
+        return await build_chat_model(self.config, provider, config, model_name)
 
     async def _get_multimodal_llm(self) -> BaseChatModel:
         """
@@ -220,7 +224,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                     self.logger.info(
                         f"✅ Using indexing-role LLM for VLM OCR: {role_config.get('provider')}"
                     )
-                    return self._create_llm_from_config(role_config)
+                    return await self._create_llm_from_config(role_config)
             except Exception:
                 pass
 
@@ -258,7 +262,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
                 if is_default and is_multimodal:
                     self.logger.info(f"✅ Using default multimodal LLM: {config.get('provider')}")
-                    return self._create_llm_from_config(config)
+                    return await self._create_llm_from_config(config)
 
                 if is_default:
                     default_config = config
@@ -276,7 +280,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 )
 
             if first_multimodal_config:
-                return self._create_llm_from_config(first_multimodal_config)
+                return await self._create_llm_from_config(first_multimodal_config)
 
             error_msg = (
                 "❌ No multimodal LLM found in configuration. "

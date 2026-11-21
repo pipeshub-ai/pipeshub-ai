@@ -10,6 +10,7 @@ from app.agent_loop_lib.tools.decorators import tool
 from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL, TAG_UI_ONLY
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -264,7 +265,7 @@ def question_payload(
     }
 
 
-@ToolsetBuilder("InternalTools")\
+@ToolsetBuilder("InternalTools", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description("Interim interactive question tool - always available, no authentication required")\
     .with_category(ToolsetCategory.UTILITY)\
@@ -408,7 +409,7 @@ class InternalTools:
             Tag(key="category", value="utility"),
             Tag(key="type", value="utility"),
             TAG_UI_ONLY,
-            TAG_LIFECYCLE_TERMINAL,
+            TAG_LIFECYCLE_TERMINAL, Tag(key="effect", value="read"),
         ],
     )
     async def ask_user_question(

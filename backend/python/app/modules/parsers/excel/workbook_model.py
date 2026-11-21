@@ -28,6 +28,7 @@ import io
 import pickle
 import signal
 import threading
+import time
 import zipfile
 import zlib
 from array import array
@@ -42,6 +43,7 @@ from openpyxl.utils.cell import coordinate_from_string
 from openpyxl.worksheet.cell_range import CellRange
 
 from app.modules.parsers.excel.limits import CELL_DICT_BYTES, OUTPUT_BUDGET_FACTOR
+from harness_core.archive_reader import zip_declared_entries
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -462,34 +464,109 @@ def _enforce_growth_limit(limit_bytes: int) -> tuple[Callable[[], None] | None, 
 
 
 class _GrowthWatcher:
-    """Records how far this process's data segment grows while a load runs.
+    """Records how far this process's data segment grows while a load runs, and stops a load that
+    sits at its allowance.
 
     The peak is what tells a load that died of the cap from one that failed for its own
     reasons, when openpyxl turned the MemoryError into another error. It is sampled here
     because the kernel's own peak marks (VmHWM) cover the whole life of a long-lived worker
     and cannot be reset by a non-dumpable process.
+
+    A load at its cap does not always fail (R47POLISH-FU-2): pymalloc cannot map a new 1 MiB
+    arena, so every small object falls back to malloc after a failed ``mmap``, and each malloc
+    that then fails makes glibc try to create a new arena (a 128 MiB reservation, two
+    ``munmap``s, a failing ``mprotect``) before Python sees it. Frees elsewhere let the next
+    allocations succeed, so openpyxl goes on at a crawl: 40,000 ``<mergeCell>`` at 38 MB spent
+    15 s and more in system time with memory flat at the cap. A load that stays within
+    ``_AT_CAP_MARGIN_KB`` of the cap for ``_AT_CAP_SECONDS`` is interrupted and refused.
+
+    The interrupt is a signal, handled only when the main thread runs Python. openpyxl's bare
+    ``except:`` clauses can swallow it, so it is sent again every ``_AT_CAP_SECONDS`` while the
+    load stays at the cap. At the cap the main thread can also stay inside one C call for
+    minutes, where no handler runs and this thread cannot allocate either; the parse pool stops
+    that worker from outside (``parse_pool._AT_DATA_LIMIT_SECONDS``).
     """
 
     _INTERVAL_SECONDS = 0.02
+    # Two pymalloc arenas: closer to the cap than this, a new arena cannot be mapped.
+    _AT_CAP_MARGIN_KB = 2048
+    _AT_CAP_SECONDS = 0.3
 
     def __init__(self) -> None:
-        self._start_kb = _status_kb("VmData")
-        self._start_vm_peak_kb = _status_kb("VmPeak")
+        self._start_kb = 0
+        self._start_vm_size_kb = 0
+        self._start_vm_peak_kb = 0
         self.peak_kb = 0
+        self.stalled = False
+        self._cap_kb: int | None = None
+        self._interrupt: Callable[[], None] | None = None
+        self._at_cap_since: float | None = None
+        self._arm_lock = threading.Lock()
+        self._ready = threading.Event()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="excel-growth-watch", daemon=True)
 
     def __enter__(self) -> _GrowthWatcher:
+        # Entered before the growth cap is set: started under it, the thread's stack (8 MB of
+        # VmData) was charged to the file's allowance, and a thread that could not get one left
+        # start() waiting forever. The baseline is taken after the stack exists, as the cap's is.
         self._thread.start()
+        self._start_kb = _status_kb("VmData")
+        self._start_vm_size_kb = _status_kb("VmSize")
+        self._start_vm_peak_kb = _status_kb("VmPeak")
+        self._ready.set()
         return self
 
     def __exit__(self, *_exc: object) -> None:
+        self.disarm()
         self._stop.set()
         self._thread.join(timeout=1)
 
+    def arm(self, cap_bytes: int, interrupt: Callable[[], None]) -> None:
+        """Interrupt the load (``interrupt``, run on this watcher's thread) once it has sat at
+        ``cap_bytes`` of data segment for ``_AT_CAP_SECONDS``, and again every ``_AT_CAP_SECONDS``
+        while it stays there."""
+        with self._arm_lock:
+            self._cap_kb = cap_bytes // 1024
+            self._interrupt = interrupt
+            self._at_cap_since = None
+
+    def disarm(self) -> None:
+        """No interrupt after this returns: the load's signal handler is about to be put back."""
+        with self._arm_lock:
+            self._interrupt = None
+
     def _run(self) -> None:
+        self._ready.wait()
         while not self._stop.wait(self._INTERVAL_SECONDS):
-            self.sample()
+            try:
+                vm_data_kb: int | None = self._vm_data_kb()
+                self.peak_kb = max(self.peak_kb, vm_data_kb - self._start_kb)
+            except MemoryError:  # reading /proc allocates: failing to is being at the cap
+                vm_data_kb = None
+            # A MemoryError escaping here would end this thread, and with it every stop.
+            with contextlib.suppress(MemoryError):
+                self._watch_cap(vm_data_kb, time.monotonic())
+
+    def _watch_cap(self, vm_data_kb: int | None, now: float) -> None:
+        with self._arm_lock:
+            if self._interrupt is None or self._cap_kb is None:
+                return
+            if vm_data_kb is not None and vm_data_kb < self._cap_kb - self._AT_CAP_MARGIN_KB:
+                self._at_cap_since = None
+                return
+            if self._at_cap_since is None:
+                self._at_cap_since = now
+            if now - self._at_cap_since < self._AT_CAP_SECONDS:
+                return
+            self.stalled = True
+            self._at_cap_since = now
+            # Sent under the lock: disarm() waits for it, so the handler is still the load's.
+            self._interrupt()
+
+    @staticmethod
+    def _vm_data_kb() -> int:
+        return _status_kb("VmData")
 
     def sample(self) -> int:
         self.peak_kb = max(self.peak_kb, _status_kb("VmData") - self._start_kb)
@@ -501,9 +578,13 @@ class _GrowthWatcher:
         A peak allocated and freed between two samples is still in VmPeak (the kernel's
         high-water mark of address space, readable by a non-dumpable process), but only when
         it went past every earlier peak of this worker: a spike under an earlier, larger job
-        is not seen, which can only misname the file's own error, never admit more.
+        is not seen, which can only misname the file's own error, never admit more. A new peak
+        is measured from the size at the start, not the old peak: starting this watcher's thread
+        alone raises VmPeak by its stack and a malloc arena (about 136 MB, briefly).
         """
-        return max(self.sample(), _status_kb("VmPeak") - self._start_vm_peak_kb)
+        vm_peak = _status_kb("VmPeak")
+        new_peak = vm_peak - self._start_vm_size_kb if vm_peak > self._start_vm_peak_kb else 0
+        return max(self.sample(), new_peak)
 
 
 def max_merged_positions(max_text_bytes: int) -> int:
@@ -578,6 +659,10 @@ def _declared_positions(archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget:
     return total
 
 
+# A workbook is a few parts per sheet; ten thousand entries is far past any real one.
+MAX_ZIP_ENTRIES = 10_000
+
+
 class _StopScan(Exception):
     pass
 
@@ -587,6 +672,11 @@ def _precheck(file_binary: bytes, max_xml_bytes: int, max_merged: int | None = N
     total of decompressed bytes over the cap, and declared merged ranges that add up to more than
     *max_merged* positions. Streams every entry in 1 MB chunks (constant memory), skips an entry it cannot read
     (the loader reads only what it needs), and never trusts the sizes the zip declares."""
+    # ZipFile parses the whole central directory, memory per entry, so its declared count is checked first
+    # (SEC-C-19): 300 000 empty entries in 25 MiB took seconds and 160 MiB before.
+    declared = zip_declared_entries(file_binary)
+    if declared is not None and declared > MAX_ZIP_ENTRIES:
+        raise WorkbookRefused("too_large", f"{declared} zip entries")
     try:
         archive = zipfile.ZipFile(io.BytesIO(file_binary))
         entries = [info for info in archive.infolist() if not info.is_dir()]
@@ -737,46 +827,76 @@ class _CpuLimit(BaseException):
 _CPU_SLACK_SECONDS = 2
 
 
+class _Stop:
+    """How a load is stopped from outside its own code: ``fired`` is set once the SIGXCPU handler
+    ran (openpyxl has bare ``except:`` clauses, ``descriptors.base._convert``, that turn even a
+    BaseException into a TypeError); ``interrupt`` raises it in the main thread, as RLIMIT_CPU
+    does, and does nothing where the handler could not be installed."""
+
+    def __init__(self) -> None:
+        self.fired = threading.Event()
+        self.armed = False
+
+    def interrupt(self) -> None:
+        if self.armed:
+            with contextlib.suppress(OSError, ValueError):
+                signal.pthread_kill(threading.main_thread().ident or 0, signal.SIGXCPU)
+
+
 @contextlib.contextmanager
-def _cpu_limited(max_seconds: float | None) -> Iterator[threading.Event]:
+def _cpu_limited(max_seconds: float | None) -> Iterator[_Stop]:
     """Refuse the load as too large once the worker has used *max_seconds* of CPU, however little
     memory it holds: SIGXCPU from ``RLIMIT_CPU`` (counted from this process's CPU time now, since a
     pool worker lives across jobs) raises ``_CpuLimit`` in the main thread. The soft limit is put
     back afterwards; the hard limit is never touched. Where it cannot be set, only the parent's
-    timeout bounds the load. Yields an event set when the limit fired: openpyxl has bare ``except:``
-    clauses (``descriptors.base._convert``) that turn even a BaseException into a TypeError."""
-    fired = threading.Event()
-    if max_seconds is None or resource is None or not hasattr(resource, "RLIMIT_CPU"):
-        yield fired
+    timeout bounds the load. The handler is installed without a CPU limit too, so the growth
+    watcher can stop a load stuck at its memory cap (``_Stop.interrupt``)."""
+    stop = _Stop()
+    if resource is None or threading.current_thread() is not threading.main_thread():
+        yield stop
         return
-    if threading.current_thread() is not threading.main_thread():
-        yield fired
-        return
-    soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
-    used = resource.getrusage(resource.RUSAGE_SELF)
-    target = int(used.ru_utime + used.ru_stime) + int(max_seconds) + _CPU_SLACK_SECONDS
-    if hard != resource.RLIM_INFINITY:
-        target = min(target, hard)
 
     def on_cpu_limit(_signum: int, _frame: object) -> None:
-        fired.set()
+        # A signal already in flight when the load ended must not raise into the cleanup below.
+        if not stop.armed:
+            return
+        stop.fired.set()
         raise _CpuLimit
 
     try:
         previous = signal.signal(signal.SIGXCPU, on_cpu_limit)
-        resource.setrlimit(resource.RLIMIT_CPU, (target, hard))
     except (ValueError, OSError):
-        yield fired
+        yield stop
         return
+    stop.armed = True
+    limited = None
+    if max_seconds is not None and hasattr(resource, "RLIMIT_CPU"):
+        soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
+        used = resource.getrusage(resource.RUSAGE_SELF)
+        target = int(used.ru_utime + used.ru_stime) + int(max_seconds) + _CPU_SLACK_SECONDS
+        if hard != resource.RLIM_INFINITY:
+            target = min(target, hard)
+        with contextlib.suppress(ValueError, OSError):
+            resource.setrlimit(resource.RLIMIT_CPU, (target, hard))
+            limited = (soft, hard)
     try:
-        yield fired
+        yield stop
     finally:
-        # Both must be undone for the worker's next job, even if one of them fails.
+        # Disarmed first, so an interrupt arriving now cannot skip the restores. Both must be
+        # undone for the worker's next job, even if one of them fails.
+        stop.armed = False
         try:
-            with contextlib.suppress(ValueError, OSError, MemoryError):
-                resource.setrlimit(resource.RLIMIT_CPU, (soft, hard))
+            if limited is not None:
+                with contextlib.suppress(ValueError, OSError, MemoryError):
+                    resource.setrlimit(resource.RLIMIT_CPU, limited)
         finally:
             signal.signal(signal.SIGXCPU, previous)
+
+
+def _stopped(growth: _GrowthWatcher, limit_bytes: int, max_seconds: float | None) -> WorkbookRefused:
+    if growth.stalled:
+        return WorkbookRefused("too_large", f"the load stayed at its {limit_bytes}-byte allowance")
+    return WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU")
 
 
 def load_workbook_model(
@@ -798,12 +918,14 @@ def load_workbook_model(
     entity declaration). Anything else is the loader's own error for a file it
     cannot read, as the caller would have seen it before.
     """
-    restore, cap = _enforce_growth_limit(limit_bytes)
     over = False
-    cpu_fired = threading.Event()
+    stop = _Stop()
     with _GrowthWatcher() as growth:
+        restore, cap = _enforce_growth_limit(limit_bytes)
         try:
-            with _cpu_limited(max_seconds) as cpu_fired:
+            with _cpu_limited(max_seconds) as stop:
+                if cap is not None:
+                    growth.arm(cap, stop.interrupt)
                 try:
                     _precheck(
                         file_binary,
@@ -812,25 +934,26 @@ def load_workbook_model(
                     )
                     model = _extract(file_binary)
                 finally:
+                    growth.disarm()
                     # The memory cap comes off first: undoing the CPU limit under it can itself
                     # fail with MemoryError and leave the next job on this worker CPU-limited.
                     if restore is not None:
                         restore()
                         restore = None
-            if cpu_fired.is_set():  # the interrupt was swallowed and the model may be half built
-                raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU")
+            if stop.fired.is_set():  # the interrupt was swallowed and the model may be half built
+                raise _stopped(growth, limit_bytes, max_seconds)
             if max_text_bytes is not None and model.text_bytes > max_text_bytes:
                 raise WorkbookRefused("too_large", f"{model.text_bytes} bytes of text in the blocks")
             return model
         except _CpuLimit:
-            raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU") from None
+            raise _stopped(growth, limit_bytes, max_seconds) from None
         except MemoryError:
             over = True
         except WorkbookRefused:
             raise
         except Exception as exc:
-            if cpu_fired.is_set():  # openpyxl swallowed the interrupt and raised its own error
-                raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU") from None
+            if stop.fired.is_set():  # openpyxl swallowed the interrupt and raised its own error
+                raise _stopped(growth, limit_bytes, max_seconds) from None
             # openpyxl catches MemoryError in places and re-raises it as another error (a
             # TypeError from a half-built range); a load that came near the allowance died of it.
             if cap is not None and growth.peak_growth_kb() * 1024 >= limit_bytes * _NEAR_LIMIT:

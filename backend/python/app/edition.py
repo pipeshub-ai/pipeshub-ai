@@ -8,6 +8,10 @@ that import telemetry, so importing it from there would cycle.
 # Used when TELEMETRY_COLLECTION_FLAG is unset.
 TELEMETRY_DEFAULT_ENABLED = True
 
+# The most characters of a tool call's arguments the chat transcript keeps; the live stream sends the
+# same preview as ``argsPreview``, which the chat shows as it is.
+TOOL_ARGS_PREVIEW_CHARS = 2000
+
 # Extra migration module directories, relative to ``backend/`` (e.g. ``"db/extra/usage"``), added to the
 # ones under ``backend/db/versions/``. Read by ``backend/db`` by file path: keep this module import-free.
 EXTRA_MIGRATION_LOCATIONS: list[str] = []

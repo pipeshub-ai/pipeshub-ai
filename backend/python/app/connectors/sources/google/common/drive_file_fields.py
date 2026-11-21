@@ -10,7 +10,9 @@ consistent with list.
 # files from files shared with them, and say whether they can edit.
 _DRIVE_FILE_ACCESS_FIELDS = (
     "shortcutDetails/targetId, shortcutDetails/targetMimeType, trashed, ownedByMe, "
-    "capabilities/canEdit, capabilities/canDownload"
+    "capabilities/canEdit, capabilities/canDownload, "
+    # Returned only for the ids a request names in includeLabels, which only a source metadata reader asks for.
+    "labelInfo"
 )
 
 # Personal (OAuth) Drive connector — same inner projection as files.list in

@@ -133,7 +133,7 @@ async def classify(
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=ClassifyResponse(
-                success=False, error=str(exc), error_code=LLMNotConfiguredError.code
+                success=False, error=str(exc), error_code=exc.code
             ).model_dump(),
         )
     except LLMUnavailableError as exc:

@@ -27,7 +27,11 @@ from app.modules.transformers.document_extraction import (
 )
 from app.services.base_client import BaseServiceClient, parse_retry_after
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
-from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
+from app.utils.llm import (
+    LLMNotConfiguredError,
+    LLMUnavailableError,
+    ModelNotAllowedError,
+)
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -119,6 +123,8 @@ class ExtractionClient(BaseServiceClient):
 
         if not body.get("success"):
             error_msg = body.get("error") or "Classification failed"
+            if body.get("error_code") == ModelNotAllowedError.code:
+                raise ModelNotAllowedError(error_msg)
             if body.get("error_code") == LLMNotConfiguredError.code:
                 raise LLMNotConfiguredError(error_msg)
             if body.get("error_code") == LLMUnavailableError.code:

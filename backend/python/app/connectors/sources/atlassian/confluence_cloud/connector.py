@@ -53,6 +53,12 @@ from app.connectors.core.base.error.stream_errors import (
     not_found_at_source,
     to_stream_error,
 )
+from app.connectors.core.base.source_metadata import (
+    ContentMetadata,
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -662,6 +668,8 @@ class ConfluenceConnector(BaseConnector):
                 name=str(self.connector_name),
                 logger=self.logger,
             )
+            # Every call still spends the org's shared Atlassian budget (WP-38), not only this process's pace.
+            policy.shared = declared.shared if declared else None
             self._client_policies[rate] = policy
         self._client_policy = policy
         return policy
@@ -679,6 +687,7 @@ class ConfluenceConnector(BaseConnector):
 
             # Build client from services (handles config loading, token, base URL internally)
             self.external_client = await self._build_confluence_client()
+            self.pace_http_client(self.external_client.get_client())
 
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
@@ -931,6 +940,7 @@ class ConfluenceConnector(BaseConnector):
         self._in_use += 1
         self._sync_finished = False
         self._now_blocks = {}
+        self._content_reader().new_sync()
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
@@ -2335,6 +2345,12 @@ class ConfluenceConnector(BaseConnector):
                             continue
 
                         webpage_record = webpage_record_update.record
+                        listed_space = (item_data.get("space") or {}).get("id")
+                        fields = await self._content_reader().fields_for(
+                            datasource, content_type, str(item_id),
+                            str(listed_space) if listed_space else None, held_metadata(existing_record),
+                        )
+                        apply_source_metadata(webpage_record, existing_record, fields)
 
                         # Set indexing status based on filter
                         if not content_indexing_enabled:
@@ -5356,6 +5372,14 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to transform attachment: {e}")
             return None
+
+    def _content_reader(self) -> ContentMetadata:
+        """The sync's source metadata reads, made on first use."""
+        reader = getattr(self, "_content_metadata", None)
+        if reader is None:
+            reader = source_metadata().confluence_metadata(self.logger)
+            self._content_metadata = reader
+        return reader
 
     async def _process_webpage_with_update(
         self,

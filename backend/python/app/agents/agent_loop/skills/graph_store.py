@@ -47,9 +47,12 @@ documents per org, not millions, so this stays cheap.
 
 from __future__ import annotations
 
+import json
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.commands.render import CommandArgument, parse_arguments
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
@@ -57,26 +60,49 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     SkillConflictError,
     SkillFilter,
     SkillMetadata,
+    SkillProvenance,
     SkillReferentialUsage,
     SkillSource,
     SkillStatus,
     SkillVersionInfo,
     matches_filter,
 )
-from app.agent_loop_lib.modules.providers.skills.loader import parse_skill_md, render_skill_md
+from app.agent_loop_lib.modules.providers.skills.loader import (
+    parse_skill_md,
+    render_skill_md,
+)
 from app.agent_loop_lib.modules.providers.skills.store import (
     SkillCandidateStore,
     SkillHistoryReader,
     SkillStore,
 )
 from app.agent_loop_lib.modules.providers.skills.validator import SkillValidator
+from app.agents.agent_loop.skills.provenance import (
+    UNKNOWN_LABEL,
+    content_label,
+    join_wire,
+)
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import org_of
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Mapping
+
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-__all__ = ["GraphSkillStore"]
+__all__ = [
+    "GraphSkillStore",
+    "SharedSkillRights",
+    "SkillLabels",
+    "SkillScope",
+    "SkillSharing",
+    "SkillVisibility",
+    "erase_org_skill_candidates",
+    "erase_session_learned_skills",
+    "erase_session_skill_candidates",
+    "erase_skill_author",
+]
 
 _SKILLS = CollectionNames.AGENT_SKILLS.value
 _VERSIONS = CollectionNames.AGENT_SKILL_VERSIONS.value
@@ -108,6 +134,116 @@ def _next_updated_at(existing: Any, now: int | None = None) -> int:
     clock = get_epoch_timestamp_in_ms() if now is None else now
     prev = int(existing or 0)
     return clock if clock > prev else prev + 1
+
+
+def _content_text(skill: Skill) -> str:
+    unversioned = skill.metadata.model_copy(update={"version": "", "created_at": None, "updated_at": None})
+    return render_skill_md(skill.model_copy(update={"metadata": unversioned}))
+
+
+def _command_arguments(doc: dict) -> list[CommandArgument]:
+    raw = doc.get("commandArguments")
+    return parse_arguments(json.loads(raw)) if isinstance(raw, str) and raw else []
+
+
+def _candidate_label(doc: dict) -> dict[str, Any] | None:
+    """A candidate's recorded label; present but unreadable reads as unknown (``{}``), never as none."""
+    raw = doc.get("label")
+    if raw is None:
+        return None
+    try:
+        label = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return {}
+    return label if isinstance(label, dict) else {}
+
+
+class SkillScope:
+    """Who a skill is shared with (SLASH1 D4): only its author, one team, or the whole org."""
+
+    PERSONAL = "personal"
+    TEAM = "team"
+    ORG = "org"
+    SHARED = frozenset({"team", "org"})
+
+
+# Storage columns a content edit carries forward unchanged: sharing is set by `share`, never by SKILL.md.
+_SHARING_FIELDS = ("scope", "teamId", "authorFormer")
+
+
+def _sharing_columns(doc: Mapping[str, Any]) -> dict[str, Any]:
+    return {f: doc[f] for f in _SHARING_FIELDS if f in doc}
+
+
+def _label_columns(doc: Mapping[str, Any], change_note: str | None) -> dict[str, Any]:
+    """A new version's labels: the display name it keeps, and its own note (none: the last one's does not carry
+    over, so it is written empty: an upsert that merges would otherwise keep it). Neo4j holds no null property."""
+    columns: dict[str, Any] = {"changeNote": change_note or ""}
+    if doc.get("displayName"):
+        columns["displayName"] = doc["displayName"]
+    return columns
+
+
+@dataclass(frozen=True, slots=True)
+class SkillSharing:
+    """A stored skill's sharing: its scope, its team, and its author (``None`` once the author was erased, O3)."""
+
+    scope: str
+    team_id: str | None
+    author_id: str | None
+    author_former: bool
+
+    @classmethod
+    def of(cls, doc: Mapping[str, Any]) -> SkillSharing:
+        scope = doc.get("scope") if doc.get("scope") in SkillScope.SHARED else SkillScope.PERSONAL
+        return cls(
+            scope=scope,
+            team_id=doc.get("teamId") if scope == SkillScope.TEAM else None,
+            author_id=doc.get("createdBy"),
+            author_former=doc.get("authorFormer") is True,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillLabels:
+    """What people read about a stored skill beside its content (UI-B4): the name they see, and the note its author
+    gave the current version. Neither is content, so neither makes a version."""
+
+    display_name: str | None
+    change_note: str | None
+    # UI-ADOPT2: the user id of whoever approved the proposal it came from (null: it was not a proposal). Kept apart
+    # from `createdBy`, the learner who owns it, so an admin's approval never takes the skill.
+    approved_by: str | None = None
+
+    @classmethod
+    def of(cls, doc: Mapping[str, Any]) -> SkillLabels:
+        return cls(
+            display_name=doc.get("displayName") or None,
+            change_note=doc.get("changeNote") or None,
+            approved_by=doc.get("approvedBy") or None,
+        )
+
+
+MAX_DISPLAY_NAME = 120
+
+
+def _display_key(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+@dataclass(frozen=True, slots=True)
+class SharedSkillRights:
+    """Who manages a team or org skill: an org admin any of them, a team's owner their team's (CPD-11's roles)."""
+
+    org_admin: bool = False
+    owned_teams: frozenset[str] = frozenset()
+
+    def manages(self, scope: str, team_id: str | None) -> bool:
+        if scope == SkillScope.ORG:
+            return self.org_admin
+        if scope == SkillScope.TEAM:
+            return self.org_admin or (team_id is not None and team_id in self.owned_teams)
+        return False
 
 
 def _doc_id(doc: dict) -> str | None:
@@ -228,6 +364,45 @@ async def collect_referential_usage(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SkillVisibility:
+    """Which of an org's skills a reader sees: builtins always; a custom skill when one of ``viewers`` owns it, or
+    when it is ``shared`` with the reader, which today means assigned to the agent they run (an assignment links
+    only its editor's own skills). ``viewers=None`` reads every skill: only the builtin seeder and the reader of
+    content a run already pinned use it.
+
+    ``teams`` given (the REST API's reader, SLASH1 S4): org-scoped skills and those of these teams are seen too.
+    Unset (the run-time reader), a team or org skill is seen only by its author."""
+
+    viewers: frozenset[str] | None
+    shared: frozenset[str] = frozenset()
+    teams: frozenset[str] | None = None
+
+    @classmethod
+    def everyone(cls) -> SkillVisibility:
+        return cls(None)
+
+    @classmethod
+    def of(
+        cls, viewers: Iterable[str | None], shared: Iterable[str] = (), *, teams: Iterable[str] | None = None,
+    ) -> SkillVisibility:
+        """One principal can be stamped under several ids (the runtime writes its user id, the REST API and agent
+        assignment the graph user key), so all of them are the viewer."""
+        return cls(
+            frozenset(v for v in viewers if v), frozenset(shared), None if teams is None else frozenset(teams),
+        )
+
+    def allows(self, doc: Mapping[str, Any]) -> bool:
+        if self.viewers is None or doc.get("source") == SkillSource.BUILTIN.value:
+            return True
+        if doc.get("createdBy") in self.viewers or doc.get("name") in self.shared:
+            return True
+        if self.teams is None:
+            return False
+        sharing = SkillSharing.of(doc)
+        return sharing.scope == SkillScope.ORG or (sharing.scope == SkillScope.TEAM and sharing.team_id in self.teams)
+
+
 class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
     def __init__(
         self,
@@ -236,31 +411,52 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         user_id: str,
         *,
         validator: SkillValidator | None = None,
-        visibility_scope: str | None = None,
+        visibility: SkillVisibility | None = None,
+        allow_builtin_writes: bool = False,
+        rights: SharedSkillRights | None = None,
+        provenance: Callable[[], SkillProvenance] | None = None,
     ) -> None:
-        """`visibility_scope`, when set, narrows every read to skills whose
-        `createdBy` matches it, EXCEPT builtin-sourced skills (`source ==
-        "builtin"`), which always stay org-visible regardless of scope —
-        see the plan's "Creator scoping" architecture decision. `None`
-        (the default, used by the agent runtime) preserves today's
-        behavior: every org-scoped skill is visible. The REST management
-        API passes the acting user's id here so `GET /skills` only ever
-        lists the caller's own skills, never a co-worker's."""
         self._graph = graph_provider
         self._org_id = org_id
         self._user_id = user_id
         self._validator = validator or SkillValidator()
-        self._visibility_scope = visibility_scope
+        # Unstated, a store reads as its acting user: an org-wide read must be asked for (CPS SK-4).
+        self._visibility = visibility or SkillVisibility.of([user_id])
+        self._allow_builtin_writes = allow_builtin_writes
+        self._rights = rights or SharedSkillRights()
+        # A run's store: every write is that run's model's, stamped with the run's label as it stands then.
+        self._provenance = provenance
 
     def _key(self, name: str) -> str:
         return f"{self._org_id}_{name}"
 
-    def _is_visible(self, doc: dict) -> bool:
-        if self._visibility_scope is None:
+    def _sees(self, doc: Mapping[str, Any]) -> bool:
+        """Visible to the reader, or a shared skill they govern (an org admin sees every team's commands)."""
+        if self._visibility.allows(doc):
             return True
+        sharing = SkillSharing.of(doc)
+        return sharing.scope in SkillScope.SHARED and self._rights.manages(sharing.scope, sharing.team_id)
+
+    async def _get_writable_doc(self, name: str) -> dict | None:
+        doc = await self._get_org_doc(name)
+        if doc is None:
+            return None
         if doc.get("source") == SkillSource.BUILTIN.value:
-            return True
-        return doc.get("createdBy") == self._visibility_scope
+            if not self._allow_builtin_writes:
+                raise RegistryError("Built-in skills are read-only")
+        else:
+            sharing = SkillSharing.of(doc)
+            if sharing.scope in SkillScope.SHARED:
+                # The role governs a shared skill, not authorship: its author's own agent cannot edit it either.
+                if not self._rights.manages(sharing.scope, sharing.team_id):
+                    raise RegistryError("Skill is not writable by this actor")
+            elif doc.get("createdBy") != self._user_id:
+                raise RegistryError("Skill is not writable by this actor")
+        return doc
+
+    def _validate_source(self, skill: Skill) -> None:
+        if skill.metadata.source == SkillSource.BUILTIN and not self._allow_builtin_writes:
+            raise RegistryError("Only the built-in seeder can write built-in skills")
 
     # ---- internal doc <-> domain-model mapping -----------------------------
 
@@ -287,6 +483,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             replaced_by=doc.get("replacedBy"),
             pack_name=doc.get("packName"),
             pack_version=doc.get("packVersion"),
+            invocation_user=doc.get("invocationUser") is True,
+            invocation_model=doc.get("invocationModel") is not False,
+            arguments=_command_arguments(doc),
         )
 
     def _doc_to_skill(self, doc: dict) -> Skill:
@@ -356,6 +555,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "replacedBy": m.replaced_by,
             "packName": m.pack_name,
             "packVersion": m.pack_version,
+            # Flat: a Neo4j property holds no maps, so the arguments travel as JSON text.
+            "invocationUser": m.invocation_user,
+            "invocationModel": m.invocation_model,
+            "commandArguments": json.dumps([a.wire() for a in m.arguments]) if m.arguments else None,
             "createdBy": created_by,
             "updatedBy": updated_by,
             "createdAtTimestamp": created_at,
@@ -378,11 +581,49 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             return skill
         return skill.model_copy(update={"metadata": skill.metadata.model_copy(update=updates)})
 
+    def _stamped(
+        self, skill: Skill, existing: dict | None, provenance: SkillProvenance | None,
+    ) -> tuple[Skill, list[str]]:
+        """``skill`` with the label its content now carries, and the conversations it derives from. Labels only
+        rise: the stored skill's label, the one the content brings and the writing run's are joined, so neither
+        an edit nor a rollback sheds what a run put in (FOLLOWUPS1-1)."""
+        sessions = [str(s) for s in (existing or {}).get("sourceSessionIds") or []]
+        labels = [skill.metadata.label]
+        if existing is not None:
+            labels.append(self._stored_label(existing))
+        if provenance is not None:
+            labels.append(provenance.label if provenance.label is not None else dict(UNKNOWN_LABEL))
+            if provenance.session_id and provenance.session_id not in sessions:
+                sessions.append(provenance.session_id)
+        label = join_wire(labels)
+        if label != skill.metadata.label:
+            skill = skill.model_copy(update={"metadata": skill.metadata.model_copy(update={"label": label})})
+        return skill, sessions
+
+    def _stored_label(self, doc: dict) -> dict | None:
+        try:
+            stored = parse_skill_md(doc["content"], expected_name=doc.get("name"), validator=self._validator)
+        except Exception:
+            # Unparseable stored content cannot show it holds nothing a run wrote.
+            return dict(UNKNOWN_LABEL) if doc.get("source") == SkillSource.AGENT_CREATED.value else None
+        return content_label(stored.metadata)
+
+    def _stamped_columns(self, doc: dict) -> dict[str, Any]:
+        """A run's resource write changes no SKILL.md text, but its label and conversation go on the skill."""
+        provenance = self._write_provenance()
+        if provenance is None:
+            return {}
+        skill, sessions = self._stamped(self._doc_to_skill(doc), doc, provenance)
+        return {"content": render_skill_md(skill), "sourceSessionIds": sessions}
+
+    def _write_provenance(self) -> SkillProvenance | None:
+        return self._provenance() if self._provenance is not None else None
+
     async def _get_org_doc(self, name: str) -> dict | None:
         doc = await self._graph.get_document(self._key(name), _SKILLS)
-        if doc is None or doc.get("orgId") != self._org_id:
+        if doc is None or org_of(doc) != self._org_id:
             return None
-        if not self._is_visible(doc):
+        if not self._sees(doc):
             return None
         return doc
 
@@ -390,7 +631,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
 
     async def list_skills(self, filter: SkillFilter | None = None) -> list[SkillMetadata]:
         docs = await self._graph.get_nodes_by_filters(_SKILLS, {"orgId": self._org_id})
-        docs = [d for d in docs if self._is_visible(d)]
+        docs = [d for d in docs if self._sees(d)]
         metadatas = [self._doc_to_metadata(d) for d in docs]
         if filter is not None:
             metadatas = [m for m in metadatas if matches_filter(m, filter)]
@@ -416,6 +657,59 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             return {}
         return _resources_from_doc(doc)
 
+    async def content_files(self, name: str, version: str | None = None) -> dict[str, str] | None:
+        """`SKILL.md` and resources of the current content, or of `version`
+        (current or archived), ignoring visibility scoping and deletion: a run
+        pinned the content when it was granted, and the version log keeps
+        what a deleted skill held. None for an unknown skill or version."""
+        current = await self._graph.get_document(self._key(name), _SKILLS)
+        if current is not None and org_of(current) != self._org_id:
+            current = None
+        if current is not None and version in (None, current.get("version") or "1.0.0"):
+            doc = current
+        elif version is None:
+            return None
+        else:
+            doc = await self._get_version_doc(name, version)
+        if doc is None:
+            return None
+        return {**_resources_from_doc(doc), "SKILL.md": doc.get("content") or ""}
+
+    async def content_versions(self, name: str) -> list[str]:
+        """Every version `content_files` can return, current first."""
+        current = await self._graph.get_document(self._key(name), _SKILLS)
+        versions: list[str] = []
+        if current is not None and org_of(current) == self._org_id:
+            versions.append(current.get("version") or "1.0.0")
+        archived = await self._graph.get_nodes_by_filters(_VERSIONS, {"orgId": self._org_id, "name": name})
+        for doc in sorted(archived, key=lambda d: int(d.get("createdAtTimestamp") or 0), reverse=True):
+            version = doc.get("version") or "0.0.0"
+            if version not in versions:
+                versions.append(version)
+        return versions
+
+    async def in_force(self, name: str, agent_key: str | None, viewers: Iterable[str | None] = ()) -> bool:
+        """Whether a run pinned to ``name`` may still use it: the skill exists and is not disabled, and it is still
+        offered to the run (``skills.offer``): a builtin, assigned to the run's agent, or the run's person's own
+        (``viewers``) while the agent assigns none. Deletion, disabling and unassignment narrow runs in flight (FB-11); an edit does not, since a
+        run reads its pinned content from history."""
+        key = self._key(name)
+        doc = await self._graph.get_document(key, _SKILLS)
+        if doc is None or org_of(doc) != self._org_id or doc.get("status") == SkillStatus.DISABLED.value:
+            return False
+        if agent_key is None or doc.get("source") == SkillSource.BUILTIN.value:
+            return True
+        edge = await self._graph.get_edge(
+            from_id=agent_key, from_collection=_AGENT_INSTANCES, to_id=key, to_collection=_SKILLS,
+            collection=_AGENT_HAS_SKILL,
+        )
+        if edge is not None:
+            return True
+        # The person's own skill is offered only while the agent assigns none: an assignment replaces them.
+        if doc.get("createdBy") not in {v for v in viewers if v}:
+            return False
+        return not await self._graph.get_edges_from_node(f"{_AGENT_INSTANCES}/{agent_key}", _AGENT_HAS_SKILL)
+
     async def exists(self, name: str) -> bool:
         return await self._get_org_doc(name) is not None
 
@@ -436,6 +730,86 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "pack_version": doc.get("packVersion"),
         }
 
+    async def sharing(self, name: str) -> SkillSharing | None:
+        doc = await self._get_org_doc(name)
+        return SkillSharing.of(doc) if doc is not None else None
+
+    async def sharings(self) -> dict[str, SkillSharing]:
+        """Every visible skill's sharing by name, in one read, for a listing."""
+        docs = await self._graph.get_nodes_by_filters(_SKILLS, {"orgId": self._org_id})
+        return {d["name"]: SkillSharing.of(d) for d in docs if self._sees(d)}
+
+    async def share(self, name: str, scope: str, team_id: str | None) -> SkillSharing:
+        """Publish a skill to a team or the org, or take it back to its author (SLASH1 D4 ``publish``). The caller
+        must manage the skill as it is now and the scope it goes to; only its author may take a shared skill back
+        to personal, since it becomes theirs alone."""
+        doc = await self._get_writable_doc(name)
+        if doc is None:
+            raise RegistryError(f"Skill {name!r} not found")
+        if doc.get("source") == SkillSource.BUILTIN.value:
+            raise RegistryError("Built-in skills are read-only")
+        if scope in SkillScope.SHARED:
+            if not self._rights.manages(scope, team_id):
+                raise RegistryError("Skill is not writable by this actor")
+        elif doc.get("createdBy") != self._user_id:
+            raise RegistryError("Skill is not writable by this actor")
+        columns = {
+            "scope": scope,
+            "teamId": team_id if scope == SkillScope.TEAM else None,
+            "updatedBy": self._user_id,
+            "updatedAtTimestamp": _next_updated_at(doc.get("updatedAtTimestamp")),
+        }
+        await self._graph.update_node(self._key(name), _SKILLS, columns)
+        return SkillSharing.of({**doc, **columns})
+
+    async def labels(self) -> dict[str, SkillLabels]:
+        """Every visible skill's labels by name, in one read, for a listing."""
+        docs = await self._graph.get_nodes_by_filters(_SKILLS, {"orgId": self._org_id})
+        return {d["name"]: SkillLabels.of(d) for d in docs if self._sees(d)}
+
+    async def label(self, name: str) -> SkillLabels | None:
+        doc = await self._get_org_doc(name)
+        return SkillLabels.of(doc) if doc is not None else None
+
+    async def rename(self, name: str, display_name: str | None, expected_updated_at: int | None = None) -> SkillLabels:
+        """Give a skill the name people see (UI-B4); ``None`` goes back to its id. Its ``name`` stays: agents,
+        installations, commands and history reach it by that, so nothing that names it changes. A name another skill
+        of the org shows (its display name or, without one, its id) is refused, whoever can see that skill."""
+        doc = await self._get_writable_doc(name)
+        if doc is None:
+            raise RegistryError(f"Skill {name!r} not found")
+        if doc.get("source") == SkillSource.BUILTIN.value:
+            raise RegistryError("Built-in skills are read-only")
+        wanted = " ".join((display_name or "").split()) or None
+        if wanted is not None and len(wanted) > MAX_DISPLAY_NAME:
+            raise RegistryError(f"A skill name is at most {MAX_DISPLAY_NAME} characters")
+        if wanted is not None:
+            key = _display_key(wanted)
+            for other in await self._graph.get_nodes_by_filters(_SKILLS, {"orgId": self._org_id}):
+                if other.get("name") == name:
+                    continue
+                if key in {_display_key(str(other.get("displayName") or "")), _display_key(str(other.get("name") or ""))}:
+                    raise RegistryError("Skill name is unavailable")
+        if (doc.get("displayName") or None) == wanted:
+            return SkillLabels.of(doc)
+        observed = int(doc.get("updatedAtTimestamp") or 0)
+        if expected_updated_at is not None and observed != expected_updated_at:
+            raise SkillConflictError(name, current_updated_at=observed, current_version=doc.get("version"))
+        merged = {
+            **{k: v for k, v in doc.items() if k != "displayName"},
+            **({"displayName": wanted} if wanted is not None else {}),
+            "updatedBy": self._user_id,
+            "updatedAtTimestamp": _next_updated_at(observed),
+        }
+        if not await self._graph.update_node_if_match(self._key(name), _SKILLS, merged, "updatedAtTimestamp", observed):
+            current = await self._get_org_doc(name)
+            raise SkillConflictError(
+                name,
+                current_updated_at=int((current or {}).get("updatedAtTimestamp") or 0),
+                current_version=(current or {}).get("version"),
+            )
+        return SkillLabels.of(merged)
+
     # ---- SkillWriter ----------------------------------------------------
 
     def _validate_resources(self, resources: dict[str, str]) -> None:
@@ -445,20 +819,31 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
 
     async def create_skill(
         self, name: str, content: str, category: str | None = None, subcategory: str | None = None,
-        resources: dict[str, str] | None = None,
+        resources: dict[str, str] | None = None, *, provenance: SkillProvenance | None = None,
+        change_note: str | None = None, approved_by: str | None = None,
     ) -> SkillMetadata:
-        if await self.exists(name):
-            raise RegistryError(f"Skill {name!r} already exists")
+        # Visibility-filtered existence must not turn a hidden record into an upsert.
+        if await self._graph.get_document(self._key(name), _SKILLS) is not None:
+            raise RegistryError("Skill name is unavailable")
         skill = parse_skill_md(content, expected_name=name, validator=self._validator)
         self._validator.validate_skill(skill, expected_name=name)
+        self._validate_source(skill)
         skill = self._apply_category_defaults(skill, category, subcategory)
         resources = resources or {}
         self._validate_resources(resources)
+        skill, sessions = self._stamped(skill, None, provenance or self._write_provenance())
 
         now = get_epoch_timestamp_in_ms()
         doc = self._skill_to_doc(
             skill, resources=resources, created_by=self._user_id, created_at=now, updated_at=now,
         )
+        if sessions:
+            doc["sourceSessionIds"] = sessions
+        if change_note:
+            doc["changeNote"] = change_note
+        if approved_by:
+            doc["approvedBy"] = approved_by
+            doc["approvedAtTimestamp"] = now
         await self._graph.batch_upsert_nodes([doc], _SKILLS)
         await self._create_owner_permission_edge(name, now)
         await self._sync_relation_edges(name, skill.metadata, now)
@@ -471,8 +856,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         resources: dict[str, str] | None = None,
         expected_updated_at: int | None = None,
         status: SkillStatus | None = None,
+        change_note: str | None = None,
     ) -> SkillMetadata:
-        existing_doc = await self._get_org_doc(name)
+        existing_doc = await self._get_writable_doc(name)
         if existing_doc is None:
             raise RegistryError(f"Skill {name!r} not found")
         if (
@@ -486,8 +872,14 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             )
         skill = parse_skill_md(content, expected_name=name, validator=self._validator)
         self._validator.validate_skill(skill, expected_name=name)
+        self._validate_source(skill)
         resolved_resources = _resources_from_doc(existing_doc) if resources is None else resources
         self._validate_resources(resolved_resources)
+        skill, sessions = self._stamped(skill, existing_doc, self._write_provenance())
+        if self._holds_content(existing_doc, skill, resolved_resources) and sessions == list(
+            existing_doc.get("sourceSessionIds") or []
+        ):
+            return await self._keep_content(name, existing_doc, status, expected_updated_at)
 
         now = _next_updated_at(existing_doc.get("updatedAtTimestamp"))
         await self._snapshot_revision(existing_doc, now)
@@ -502,6 +894,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             updated_by=self._user_id,
             usage=_extract_usage(existing_doc),
         )
+        doc.update(_sharing_columns(existing_doc))
+        doc.update(_label_columns(existing_doc, change_note))
+        if sessions:
+            doc["sourceSessionIds"] = sessions
         # Pack SKILL.md is always `active`; lifecycle (e.g. a builtin mute)
         # lives on the graph column, so overlay it on this same CAS write
         # rather than a follow-up `set_skill_status`.
@@ -517,6 +913,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         old_string: str,
         new_string: str,
         expected_updated_at: int | None = None,
+        change_note: str | None = None,
     ) -> bool:
         skill = await self.get_skill(name)
         if skill is None or skill.body.count(old_string) != 1:
@@ -527,17 +924,21 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             name,
             render_skill_md(skill.model_copy(update={"body": new_body})),
             expected_updated_at=expected_updated_at,
+            change_note=change_note,
         )
         return True
 
     async def delete_skill(self, name: str) -> bool:
-        if await self._get_org_doc(name) is None:
+        doc = await self._get_writable_doc(name)
+        if doc is None:
             return False
         # Revision history in `agentSkillVersions` is intentionally left in
         # place after a hard-delete — it references this skill by
         # `skillKey`/`name`, not a live graph edge, and audit/compliance
         # value outlives the skill itself (same reasoning as an org's
-        # audit log surviving deletion of the thing it describes).
+        # audit log surviving deletion of the thing it describes). The last
+        # content joins it, so runs pinned to it still resolve (P7.1).
+        await self._snapshot_revision(doc, get_epoch_timestamp_in_ms())
         await self._graph.delete_nodes_and_edges([self._key(name)], _SKILLS)
         return True
 
@@ -559,7 +960,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
 
     async def write_resource(self, skill_name: str, path: str, content: str) -> bool:
         self._validator.validate_resource_path(path)
-        doc = await self._get_org_doc(skill_name)
+        doc = await self._get_writable_doc(skill_name)
         if doc is None:
             return False
         resources = _resources_from_doc(doc)
@@ -567,11 +968,15 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         self._validator.validate_resource_budget(resources)
         return await self._graph.update_node(
             self._key(skill_name), _SKILLS,
-            {**_resources_to_fields(resources), "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+            {
+                **_resources_to_fields(resources),
+                **self._stamped_columns(doc),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            },
         )
 
     async def remove_resource(self, skill_name: str, path: str) -> bool:
-        doc = await self._get_org_doc(skill_name)
+        doc = await self._get_writable_doc(skill_name)
         if doc is None:
             return False
         resources = _resources_from_doc(doc)
@@ -580,7 +985,11 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         del resources[path]
         return await self._graph.update_node(
             self._key(skill_name), _SKILLS,
-            {**_resources_to_fields(resources), "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+            {
+                **_resources_to_fields(resources),
+                **self._stamped_columns(doc),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            },
         )
 
     async def deprecate_skill(self, name: str, reason: str, replaced_by: str | None = None) -> bool:
@@ -657,17 +1066,27 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return skill.model_copy(update={"resources": _resource_listing(_resources_from_doc(archived))})
 
     async def rollback(self, name: str, version: str) -> SkillMetadata:
-        current_doc = await self._get_org_doc(name)
+        current_doc = await self._get_writable_doc(name)
         if current_doc is None:
             raise RegistryError(f"Skill {name!r} not found")
         archived = await self._get_version_doc(name, version)
         if archived is None:
             raise RegistryError(f"Version {version!r} of skill {name!r} not found")
 
+        restored = parse_skill_md(archived["content"], expected_name=name, validator=self._validator)
+        self._validate_source(restored)
+        # The archived text's own label too: a learned version from before labels is unknown, not unlabelled.
+        restored = restored.model_copy(
+            update={"metadata": restored.metadata.model_copy(update={"label": content_label(restored.metadata)})}
+        )
+        restored, sessions = self._stamped(restored, current_doc, self._write_provenance())
+        if self._holds_content(current_doc, restored, _resources_from_doc(archived)) and sessions == list(
+            current_doc.get("sourceSessionIds") or []
+        ):
+            return self._doc_to_metadata(current_doc)
+
         now = get_epoch_timestamp_in_ms()
         await self._snapshot_revision(current_doc, now)
-
-        restored = parse_skill_md(archived["content"], expected_name=name, validator=self._validator)
         # Rollback creates a NEW revision on top of the current one (never
         # reuses the archived version number) — history stays monotonic and
         # a second rollback can always distinguish "restored copy" from
@@ -683,6 +1102,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             updated_by=self._user_id,
             usage=_extract_usage(current_doc),
         )
+        doc.update(_sharing_columns(current_doc))
+        doc.update(_label_columns(current_doc, f"Restored version {version}"))
+        if sessions:
+            doc["sourceSessionIds"] = sessions
         await self._graph.batch_upsert_nodes([doc], _SKILLS)
         await self._sync_relation_edges(name, restored.metadata, now)
         return restored.metadata
@@ -723,6 +1146,28 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             current_version=current.get("version"),
         )
 
+    def _holds_content(self, doc: dict, skill: Skill, resources: dict[str, str]) -> bool:
+        """Whether ``doc`` already stores ``skill``'s text and ``resources``: a version names content, so the
+        same content is never a new one (EV3 FW-7). The version and timestamps written into the text are the
+        store's own bookkeeping, not content."""
+        if _resources_from_doc(doc) != resources:
+            return False
+        try:
+            stored = parse_skill_md(doc["content"], expected_name=skill.metadata.name, validator=self._validator)
+        except Exception:
+            return False
+        return _content_text(stored) == _content_text(skill)
+
+    async def _keep_content(
+        self, name: str, doc: dict, status: SkillStatus | None, expected_updated_at: int | None,
+    ) -> SkillMetadata:
+        """An update that changes no content: only a different lifecycle status is written, under the same
+        If-Match as a content write."""
+        if status is not None and doc.get("status") != status.value:
+            doc = {**doc, "status": status.value, "updatedAtTimestamp": _next_updated_at(doc.get("updatedAtTimestamp"))}
+            await self._commit_skill_update(name, doc, expected_updated_at)
+        return self._doc_to_metadata(doc)
+
     async def _get_version_doc(self, name: str, version: str) -> dict | None:
         docs = await self._graph.get_nodes_by_filters(
             _VERSIONS, {"orgId": self._org_id, "name": name, "version": version},
@@ -753,7 +1198,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "version": version,
             "content": current_doc.get("content", ""),
             **_resources_to_fields(_resources_from_doc(current_doc)),
-            "summary": "",
+            # The note its author gave this version as it was saved (UI-B4).
+            "summary": current_doc.get("changeNote") or "",
             "updatedBy": current_doc.get("updatedBy") or current_doc.get("createdBy"),
             "createdAtTimestamp": now,
         }
@@ -808,6 +1254,12 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
     # ---- SkillCandidateStore ----------------------------------------------
 
     async def queue_candidate(self, candidate: SkillCandidate) -> None:
+        provenance = self._write_provenance()
+        label = candidate.label
+        session_id = candidate.source_session_id
+        if provenance is not None:
+            label = join_wire([label, provenance.label if provenance.label is not None else dict(UNKNOWN_LABEL)])
+            session_id = session_id or provenance.session_id
         doc = {
             "id": candidate.candidate_id,
             "orgId": self._org_id,
@@ -821,6 +1273,14 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "status": candidate.status,
             "sourceTrajectorySummary": candidate.source_trajectory_summary,
             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            # Neo4j stores no null properties: a candidate learned outside a conversation has no field.
+            **({"sessionId": session_id} if session_id else {}),
+            # JSON text: a Neo4j property holds no maps. Approval carries it onto the skill (FOLLOWUPS1-1).
+            **({"label": json.dumps(label, sort_keys=True)} if label is not None else {}),
+            **({"agentKey": candidate.source_agent_key} if candidate.source_agent_key else {}),
+            **({"runId": candidate.source_run_id} if candidate.source_run_id else {}),
+            # The person the learning run acted for: the candidate's owner-to-be, who may decide it.
+            "proposedBy": candidate.proposed_by or self._user_id,
         }
         await self._graph.batch_upsert_nodes([doc], _CANDIDATES)
 
@@ -838,9 +1298,117 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
                 source_trajectory_summary=d.get("sourceTrajectorySummary") or "",
                 created_at=str(d.get("createdAtTimestamp", "")),
                 status=d.get("status") or "pending",
+                source_session_id=d.get("sessionId"),
+                label=_candidate_label(d),
+                source_agent_key=d.get("agentKey") or None,
+                source_run_id=d.get("runId") or None,
+                proposed_by=d.get("proposedBy") or None,
             )
             for d in docs
         ]
 
     async def remove_candidate(self, candidate_id: str) -> None:
         await self._graph.delete_nodes([candidate_id], _CANDIDATES)
+
+
+SESSION_CANDIDATES_PAGE = 50
+
+
+async def erase_session_skill_candidates(
+    graph: IGraphDBProvider, org_id: str, session_id: str, *, page: int = SESSION_CANDIDATES_PAGE,
+) -> tuple[int, bool]:
+    """Up to one page of the skill candidates learned from a conversation, erased with it (CLEANUP-G7): their body and
+    trajectory summary are drawn from its content. Returns ``(erased, remaining)``. Idempotent."""
+    docs = await graph.get_documents_paginated(
+        _CANDIDATES,
+        skip=0,
+        limit=page + 1,
+        filters={"orgId": org_id, "sessionId": session_id},
+        sort_field="_key",
+        raise_on_error=True,
+    )
+    keys = [_doc_id(d) for d in docs[:page]]
+    keys = [k for k in keys if k]
+    if keys:
+        await graph.delete_nodes(keys, _CANDIDATES)
+    return len(keys), len(docs) > page
+
+
+async def erase_session_learned_skills(
+    graph: IGraphDBProvider, org_id: str, session_id: str, *, page: int = SESSION_CANDIDATES_PAGE,
+) -> tuple[int, bool]:
+    """Up to one page of the skills a conversation's runs wrote (FOLLOWUPS1-1), erased with it with their version
+    log, whatever their scope and whoever edited them since: their text derives from it, as a memory derived from a
+    session goes with the session (P7.3). Returns ``(erased, remaining)``. Idempotent."""
+    docs = [
+        d for d in await graph.get_nodes_by_filters(_SKILLS, {"orgId": org_id})
+        if session_id in (d.get("sourceSessionIds") or [])
+    ]
+    erased = 0
+    for doc in docs[:page]:
+        key = _doc_id(doc)
+        if key is None:
+            continue
+        versions = await graph.get_nodes_by_filters(_VERSIONS, {"orgId": org_id, "name": doc["name"]})
+        version_keys = [k for k in (_doc_id(v) for v in versions) if k]
+        if version_keys:
+            await graph.delete_nodes(version_keys, _VERSIONS)
+        await graph.delete_nodes_and_edges([key], _SKILLS)
+        erased += 1
+    return erased, len(docs) > page
+
+
+async def erase_org_skill_candidates(
+    graph: IGraphDBProvider, org_id: str, *, page: int = SESSION_CANDIDATES_PAGE,
+) -> tuple[int, bool]:
+    """Up to one page of every skill candidate of an erased org (CLEANUP-G1), named or not. ``(erased, remaining)``."""
+    docs = await graph.get_documents_paginated(
+        _CANDIDATES, skip=0, limit=page + 1, filters={"orgId": org_id}, sort_field="_key", raise_on_error=True,
+    )
+    keys = [k for k in (_doc_id(d) for d in docs[:page]) if k]
+    if keys:
+        await graph.delete_nodes(keys, _CANDIDATES)
+    return len(keys), len(docs) > page
+
+
+async def erase_skill_author(
+    graph: IGraphDBProvider, org_id: str, author_ids: Iterable[str | None],
+) -> tuple[int, int]:
+    """A deleted user's skills (SLASH1 D4, O3): personal ones are erased with their version log; team and org ones
+    pass to the org, their author shown as a former member. Their id is also cleared from every ``updatedBy``.
+    Idempotent, so a redelivered deletion event is harmless. Returns ``(erased, reassigned)``."""
+    ids = {i for i in author_ids if i}
+    if not ids:
+        return 0, 0
+    erased = reassigned = 0
+    for doc in await graph.get_nodes_by_filters(_SKILLS, {"orgId": org_id}):
+        key = _doc_id(doc)
+        if key is None or doc.get("source") == SkillSource.BUILTIN.value:
+            continue
+        if doc.get("createdBy") not in ids:
+            if doc.get("updatedBy") in ids:
+                await graph.update_node(key, _SKILLS, {"updatedBy": None})
+            continue
+        if SkillSharing.of(doc).scope == SkillScope.PERSONAL:
+            versions = await graph.get_nodes_by_filters(_VERSIONS, {"orgId": org_id, "name": doc["name"]})
+            version_keys = [k for k in (_doc_id(v) for v in versions) if k]
+            if version_keys:
+                await graph.delete_nodes(version_keys, _VERSIONS)
+            await graph.delete_nodes_and_edges([key], _SKILLS)
+            erased += 1
+            continue
+        await graph.batch_delete_edges(
+            [{"from_id": a, "from_collection": _USERS, "to_id": key, "to_collection": _SKILLS} for a in ids],
+            _PERMISSION,
+        )
+        await graph.update_node(key, _SKILLS, {
+            "createdBy": None,
+            "authorFormer": True,
+            **({"updatedBy": None} if doc.get("updatedBy") in ids else {}),
+        })
+        reassigned += 1
+    for version in await graph.get_nodes_by_filters(_VERSIONS, {"orgId": org_id}):
+        key = _doc_id(version)
+        if key is not None and version.get("updatedBy") in ids:
+            await graph.update_node(key, _VERSIONS, {"updatedBy": None})
+    return erased, reassigned

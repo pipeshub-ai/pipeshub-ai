@@ -35,6 +35,9 @@ from app.services.messaging.postgres.admin import PgMessageAdmin
 from app.services.messaging.postgres.consumer import PgMessagingConsumer
 from app.services.messaging.postgres.producer import PgMessagingProducer
 from app.services.messaging.redis_streams.admin import RedisStreamsAdmin
+from app.services.messaging.redis_streams.broadcast_consumer import (
+    RedisStreamsBroadcastConsumer,
+)
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
@@ -472,4 +475,8 @@ class MessagingFactory:
                     priority_lane=priority_lane,
                     worker=worker,
                 )
+            if config.broadcast:
+                # No retry manager: it counts redeliveries from a group's pending
+                # list, and a broadcast subscriber has neither.
+                return RedisStreamsBroadcastConsumer(logger, config)
             return RedisStreamsConsumer(logger, config, retry_manager)

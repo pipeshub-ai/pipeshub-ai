@@ -40,7 +40,11 @@ from app.agents.actions.util.tool_summaries import (
 )
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.exception.exception import HttpStatusCode
@@ -176,7 +180,7 @@ class SearchUsersInput(BaseModel):
     max_results: Optional[int] = Field(default=10, description="Max users to return (1-50). Default 10.")
 
 
-@ToolsetBuilder("Confluence Data Center")\
+@ToolsetBuilder("Confluence Data Center", provider=ToolProvider.CONNECTOR)\
     .in_group("Atlassian")\
     .with_description(
         "Confluence Data Center / Server integration for wiki pages, documentation, and knowledge management"
@@ -464,7 +468,7 @@ class ConfluenceDataCenter:
         short_description="Validate Confluence Data Center connection",
         description="Validate the Confluence Data Center connection and provide diagnostics.",
         parameters=[],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="utility"), Tag(key="effect", value="read")],
     )
     async def validate_connection(self) -> tuple[bool, str]:
         try:
@@ -485,7 +489,7 @@ class ConfluenceDataCenter:
         short_description="Get the current authenticated Confluence Data Center user",
         description="Get the current authenticated Confluence Data Center user (username, userKey, displayName).",
         parameters=[],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_current_user(self) -> tuple[bool, str]:
         try:
@@ -509,7 +513,7 @@ class ConfluenceDataCenter:
         short_description="List Confluence Data Center spaces",
         description="List Confluence Data Center spaces.",
         parameters=[],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda _args: "Fetching Confluence Data Center spaces",
         result_summary=list_summary("results", _confluence_dc_space_label, "space"),
     )
@@ -594,7 +598,7 @@ class ConfluenceDataCenter:
         parameters=[
             ToolParameter(name="space_key", type=ParameterType.STRING, description="Space KEY (e.g. 'DS')", required=True),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_space(self, space_key: str) -> tuple[bool, str]:
         try:
@@ -675,7 +679,7 @@ class ConfluenceDataCenter:
             ToolParameter(name="space_key", type=ParameterType.STRING, description="Space KEY (e.g. 'DS')", required=True),
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max pages to return", required=False),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Listing pages in Confluence space {space_key}", "space_key"),
         result_summary=list_summary("results", _confluence_dc_page_label, "page"),
     )
@@ -738,7 +742,7 @@ class ConfluenceDataCenter:
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching Confluence page {page_id}", "page_id"),
         result_summary=entity_summary(lambda e: f"Fetched page: {_confluence_dc_page_label(e)}"),
     )
@@ -795,7 +799,7 @@ class ConfluenceDataCenter:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=CONFLUENCE_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template('Creating Confluence page "{page_title}"', "page_title"),
         result_summary=entity_summary(lambda e: f"Created page: {_confluence_dc_page_label(e)}"),
     )
@@ -868,7 +872,7 @@ class ConfluenceDataCenter:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note=CONFLUENCE_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Updating Confluence page {page_id}", "page_id"),
         result_summary=entity_summary(lambda e: f"Updated page: {_confluence_dc_page_label(e)}"),
     )
@@ -912,7 +916,7 @@ class ConfluenceDataCenter:
             attachment_record_ids_parameter(required=True),
             attachment_display_parameter(inline_note=CONFLUENCE_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Attaching files to Confluence page {page_id}", "page_id"),
     )
     async def add_attachments(
@@ -985,7 +989,7 @@ class ConfluenceDataCenter:
             ToolParameter(name="page_id", type=ParameterType.STRING, description="The parent page id", required=True),
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max child pages to return", required=False),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_child_pages(self, page_id: str, limit: Optional[int] = None) -> tuple[bool, str]:
         try:
@@ -1021,7 +1025,7 @@ class ConfluenceDataCenter:
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_page_versions(self, page_id: str) -> tuple[bool, str]:
         try:
@@ -1075,7 +1079,7 @@ class ConfluenceDataCenter:
             attachment_record_ids_parameter(required=False),
             attachment_display_parameter(inline_note="In a comment, 'inline' lists the attached file names."),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def add_comment(
         self,
@@ -1129,7 +1133,7 @@ class ConfluenceDataCenter:
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_comments(self, page_id: str) -> tuple[bool, str]:
         try:
@@ -1248,7 +1252,7 @@ class ConfluenceDataCenter:
             ToolParameter(name="space_key", type=ParameterType.STRING, description="Space KEY to limit the search (optional)", required=False),
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max results", required=False),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Confluence pages: "{title}"', "title"),
         result_summary=list_summary("results", _confluence_dc_page_label, "page"),
     )
@@ -1279,7 +1283,7 @@ class ConfluenceDataCenter:
             ToolParameter(name="order_by", type=ParameterType.STRING, description="CQL ORDER BY clause, e.g. 'lastmodified desc' (optional)", required=False),
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max results (1-50). Default 25.", required=False),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda args: (
             f'Searching Confluence: "{args["query"]}"' if args.get("query") else "Searching Confluence content"
         ),
@@ -1333,7 +1337,7 @@ class ConfluenceDataCenter:
             ToolParameter(name="query", type=ParameterType.STRING, description="Display name, username, or userKey.", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max users to return (1-50). Default 10.", required=False),
         ],
-        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Confluence users: "{query}"', "query"),
         result_summary=list_summary("results", _confluence_dc_user_label, "user"),
     )

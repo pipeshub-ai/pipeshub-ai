@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import uuid
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -75,6 +75,13 @@ from app.connectors.sources.google.drive.utils.folder_removal import remove_fold
 from app.connectors.sources.google.drive.utils.native_revisions import native_content_changed
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
+)
+from app.connectors.core.base.source_metadata import (
+    HELD_DRIVE_METADATA,
+    DriveMetadata,
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
 )
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_DRIVES_LIST_FIELDS,
@@ -149,7 +156,8 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
+from app.sources.client.google.google import GOOGLE_HTTP_TIMEOUT_SECONDS, GoogleClient
+from app.sources.client.google.send_safe_http import install_send_safe_http
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
@@ -183,6 +191,13 @@ _MEMBERSHIP_REQUIRED = "teamDriveMembershipRequired"
     .with_description("Sync files and folders from Google Drive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=100,
+        max_retries=0,
+    )\
     .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
@@ -408,10 +423,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 )
 
                 # Create Google Drive Data Source from the client
-                self.drive_data_source = GoogleDriveDataSource(
+                self.drive_data_source = self._with_metadata(GoogleDriveDataSource(
                     self.google_client.get_client(),
                     executor=self._drive_executor,
-                )
+                    resilience=self.resilience,
+                ))
 
                 self.logger.info(
                     "✅ Google Drive client and data source initialized successfully"
@@ -601,6 +617,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 last_modified_by=people.last_modified_by,
                 owners=people.owners,
             )
+            held = held_metadata(existing_record)
+            if apply_source_metadata(file_record, existing_record, self._drive_metadata.fields_for(metadata, held)):
+                is_updated = True
+                metadata_changed = True
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
@@ -1712,10 +1732,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             from googleapiclient.discovery import build
 
             service = build("drive", "v3", credentials=credentials)
-            configure_google_http_timeout(service)
+            install_send_safe_http(service, timeout=GOOGLE_HTTP_TIMEOUT_SECONDS)
             self._stream_service = service
             self._stream_data_source = GoogleDriveDataSource(
-                service, executor=self._drive_executor
+                service, executor=self._drive_executor, resilience=self.resilience
             )
         else:
             self._stream_service._http.credentials = credentials
@@ -2273,6 +2293,30 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 sync_key, {"pageToken": current, **released(stored_point)}
             )
 
+    # The sync's source metadata reads, prepared once per sync (``source_metadata``).
+    _drive_metadata: DriveMetadata = HELD_DRIVE_METADATA
+
+    def _with_metadata(self, source: GoogleDriveDataSource) -> GoogleDriveDataSource:
+        """``source``, asking Drive for what the sync's metadata reads need where it needs it."""
+        return source_metadata().drive_source(source, lambda: self._drive_metadata)
+
+    async def _refresh_drive_metadata(self) -> None:
+        """The sync's metadata reads, prepared with the scopes the reader names; none when they are not granted."""
+
+        async def build(scopes: Sequence[str]) -> object:
+            client = await GoogleClient.build_from_services(
+                service_name="drivelabels",
+                logger=self.logger,
+                config_service=self.config_service,
+                is_individual=True,
+                version="v2",
+                connector_instance_id=self.connector_id,
+                delegated_scopes=list(scopes),
+            )
+            return client.get_client()
+
+        self._drive_metadata = await source_metadata().drive_metadata(build, self.logger)
+
     async def run_sync(self) -> None:
         """One run. A run that could not read part of Drive does everything else it can, then fails, so it is
         recorded as failed and nothing it did not read is treated as deleted; a sign-in Google no longer
@@ -2316,6 +2360,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         self._unseen_folder_ids = set()
         self._sync_ledger = FullSyncLedger()
         self._shortcut_cache = {}
+        await self._refresh_drive_metadata()
         self._member_drive_ids = set()
         if self._folder_seed_ids:
             self.logger.info(

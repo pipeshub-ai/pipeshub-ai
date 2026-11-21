@@ -24,16 +24,23 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_user_instances_prefix,
 )
 from app.agents.mcp.models import MCPAuthMode, MCPServerConfig, MCPServerTemplate
-from app.agents.mcp.naming import assign_namespaces, namespace_key
+from app.agents.mcp.naming import (
+    assign_namespaces,
+    build_namespaced_tool_name,
+    namespace_key,
+)
 from app.agents.mcp.registry import get_mcp_registry
+from app.agents.mcp.runner_fields import runner_fields
 from app.config.configuration_service import ConfigurationService
-from app.services.featureflag.config.config import CONFIG
-from app.services.featureflag.platform_settings import read_platform_feature_flag
+from app.core.org_context import org_of
+from app.services.featureflag.platform_settings import is_mcp_enabled
 from app.utils.concurrency import gather_with_concurrency
+from harness_core.refusals import HarnessRefusal
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "MCPInstancesUnavailable",
     "SCOPE_ORG",
     "SCOPE_PERSONAL",
     "belongs_to_org",
@@ -50,6 +57,7 @@ __all__ = [
     "SHARED_CREDENTIAL_SLOT_MARKER",
     "adopt_legacy_shared_credential",
     "credential_owner_id",
+    "legacy_shared_credential",
     "resolve_effective_user_auth",
     "uses_shared_credential",
     "catalog_template",
@@ -59,6 +67,7 @@ __all__ = [
     "is_effective_auth_authenticated",
     "get_authenticated_mcp_servers",
     "server_namespace",
+    "mcp_tool_full_name",
     "is_mcp_enabled",
 ]
 
@@ -66,6 +75,14 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Instance storage
 # ---------------------------------------------------------------------------
+
+
+class MCPInstancesUnavailable(HarnessRefusal):
+    """The instance store could not be read: the org's MCP servers are unknown, not absent (CPD-7 FB-3). An empty
+    list here made a config-store outage look like "no MCP servers": their tools vanished from runs unannounced."""
+
+    reason_code = "mcp_instances_unavailable"
+    http_status = 503
 
 
 SCOPE_ORG = "org"
@@ -102,31 +119,42 @@ def _owned_by(instance: dict[str, Any], user_id: Optional[str]) -> bool:
 _PREFIX_READ_CONCURRENCY = 16
 
 
-async def _load_instance_key(config_service: ConfigurationService, key: str) -> Optional[dict[str, Any]]:
+async def _load_instance_key(
+    config_service: ConfigurationService, key: str, failures: Optional[list[Exception]] = None,
+) -> Optional[dict[str, Any]]:
     try:
         data = await config_service.get_config(key, default=None, use_cache=False)
     except Exception as e:
         logger.warning(f"Failed to load MCP instance at {key}: {e}")
+        if failures is not None:
+            failures.append(e)
         return None
     return data if isinstance(data, dict) else None
 
 
 async def _load_prefix(config_service: ConfigurationService, prefix: str) -> list[dict[str, Any]]:
+    """Raises ``MCPInstancesUnavailable`` when the store cannot be listed, or when it lists instances none of
+    which can be read; one unreadable record among readable ones is skipped."""
     try:
         keys = await config_service.list_keys_in_directory(prefix)
     except Exception as e:
         logger.error(f"Failed to list MCP instance keys under {prefix}: {e}", exc_info=True)
-        return []
+        raise MCPInstancesUnavailable(f"MCP instances could not be listed: {type(e).__name__}") from e
+    failures: list[Exception] = []
     records = await gather_with_concurrency(
-        _PREFIX_READ_CONCURRENCY, *[_load_instance_key(config_service, key) for key in keys],
+        _PREFIX_READ_CONCURRENCY, *[_load_instance_key(config_service, key, failures) for key in keys],
     )
-    return [record for record in records if record is not None]
+    loaded = [record for record in records if record is not None]
+    if failures and not loaded:
+        raise MCPInstancesUnavailable(f"No MCP instance could be read: {type(failures[0]).__name__}") from failures[0]
+    return loaded
 
 
 async def load_org_instances(config_service: ConfigurationService, org_id: str) -> list[dict[str, Any]]:
     """Every org-wide MCP instance of `org_id` (no secrets)."""
     records = await _load_prefix(config_service, get_mcp_instances_prefix())
     return [r for r in records if belongs_to_org(r, org_id) and not is_personal(r)]
+
 
 
 async def load_user_instances(
@@ -230,6 +258,39 @@ def credential_owner_id(instance: dict[str, Any], caller_id: str) -> str:
     return caller_id
 
 
+async def _load_credential(
+    instance: dict[str, Any], owner_id: str, config_service: ConfigurationService,
+) -> Optional[dict[str, Any]]:
+    """`owner_id`'s credential record for `instance`; with CONTROL_PLANE_CREDENTIALS on, through its binding
+    (CPD-8), where a revoked binding is final: no record."""
+    from app.harness.credentials.read_through import credentials_switch_on
+
+    if not credentials_switch_on():
+        record = await config_service.get_config(
+            get_mcp_credentials_path(instance.get("_id"), owner_id), default=None, use_cache=False,
+        )
+        return record if isinstance(record, dict) else None
+    from app.harness.credentials.legacy_records import legacy_records
+    from harness_core.credentials.errors import CredentialRevoked
+
+    try:
+        return await legacy_records(config_service).load("mcp", org_of(instance) or "", instance.get("_id"), owner_id)
+    except CredentialRevoked:
+        return None
+
+
+async def legacy_shared_credential(
+    instance: dict[str, Any], config_service: ConfigurationService,
+) -> Optional[dict[str, Any]]:
+    """A shared credential saved before it had its own slot, still at the creator's credential path; read only."""
+    instance_id, creator = instance.get("_id"), instance.get("createdBy")
+    if instance.get(SHARED_CREDENTIAL_SLOT_MARKER) or not instance_id or not creator:
+        return None
+    # The creator's current material: with CONTROL_PLANE_CREDENTIALS on, its binding, not a frozen old path.
+    legacy = await _load_credential(instance, creator, config_service)
+    return legacy if isinstance(legacy, dict) else None
+
+
 async def adopt_legacy_shared_credential(
     instance: dict[str, Any], config_service: ConfigurationService,
 ) -> Optional[dict[str, Any]]:
@@ -237,16 +298,16 @@ async def adopt_legacy_shared_credential(
     path) into the shared slot, and return it. Moving rather than copying means an admin who
     later disconnects it can't have the old copy found again. A no-op for records saved since
     (they carry the slot marker), so it never adopts anyone's personal credential."""
+    legacy = await legacy_shared_credential(instance, config_service)
+    if legacy is None:
+        return None
     instance_id, creator = instance.get("_id"), instance.get("createdBy")
-    if instance.get(SHARED_CREDENTIAL_SLOT_MARKER) or not instance_id or not creator:
-        return None
-    legacy_path = get_mcp_credentials_path(instance_id, creator)
-    legacy = await config_service.get_config(legacy_path, default=None, use_cache=False)
-    if not isinstance(legacy, dict):
-        return None
+    from app.harness.credentials.legacy_records import legacy_records
+
+    seam, org_id = legacy_records(config_service), org_of(instance) or ""
     try:
-        if await config_service.set_config(get_mcp_credentials_path(instance_id, SHARED_CREDENTIAL_OWNER), legacy):
-            await config_service.delete_config(legacy_path)
+        if await seam.save("mcp", org_id, instance_id, SHARED_CREDENTIAL_OWNER, legacy, user_id=creator):
+            await seam.remove("mcp", org_id, instance_id, creator, user_id=creator)
     except Exception as e:
         logger.warning(f"Could not move the legacy shared credential of MCP instance {instance_id}: {e}")
     return legacy
@@ -256,8 +317,12 @@ async def resolve_effective_user_auth(
     instance: dict[str, Any],
     user_id: str,
     config_service: ConfigurationService,
+    *,
+    adopt: bool = True,
 ) -> Optional[dict[str, Any]]:
     """Resolve which credential record actually backs `instance` for `user_id`.
+
+    `adopt=False` reads a legacy shared credential where it is instead of moving it, for a check that must not write.
 
     - authMode == none: no record needed; returns {} (trivially authenticated).
     - otherwise the record of `credential_owner_id` — the creator's for a shared admin
@@ -268,12 +333,12 @@ async def resolve_effective_user_auth(
         return {}
 
     owner_id = credential_owner_id(instance, user_id)
-    record = await config_service.get_config(
-        get_mcp_credentials_path(instance.get("_id"), owner_id), default=None, use_cache=False,
-    )
+    record = await _load_credential(instance, owner_id, config_service)
     if isinstance(record, dict):
         return record
     if owner_id == SHARED_CREDENTIAL_OWNER:
+        if not adopt:
+            return await legacy_shared_credential(instance, config_service)
         return await adopt_legacy_shared_credential(instance, config_service)
     return None
 
@@ -325,6 +390,7 @@ def instance_config_from_dict(instance: dict[str, Any]) -> MCPServerConfig:
         if template.url_editable is not True:
             locked.append("url")
         instance = {**instance, **{k: launch[k] for k in locked}}
+    runner = runner_fields(instance, template)
     return MCPServerConfig(
         _id=instance.get("_id"),
         org_id=instance.get("orgId"),
@@ -339,6 +405,8 @@ def instance_config_from_dict(instance: dict[str, Any]) -> MCPServerConfig:
         args=instance.get("args") or [],
         required_env=instance.get("requiredEnv") or [],
         optional_env=instance.get("optionalEnv") or [],
+        egress_hosts=list(runner.egress_hosts),
+        runner_image=runner.runner_image,
         url=instance.get("url"),
         header_name=instance.get("headerName"),
         authorization_url=instance.get("authorizationUrl"),
@@ -372,6 +440,11 @@ def server_namespace(mcp_server: dict[str, Any]) -> str:
     return mcp_server.get("namespace") or namespace_key(mcp_server.get("typeId"), mcp_server.get("name"))
 
 
+def mcp_tool_full_name(instance: dict[str, Any], tool_name: str) -> str:
+    """The name live discovery gives one of an instance's tools."""
+    return build_namespaced_tool_name(server_namespace(instance), tool_name)
+
+
 async def get_authenticated_mcp_servers(
     owner_id: str,
     config_service: ConfigurationService,
@@ -380,7 +453,7 @@ async def get_authenticated_mcp_servers(
     org_id: Optional[str] = None,
     resolved: Optional[dict[str, dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
-    """All MCP instances `owner_id` (a user, or an agentKey for a service-account agent) has
+    """Of ``instances``, those `owner_id` (a user, or an agentKey for a service-account agent) has
     completed authentication for — the MCP analog of
     `api/routes/toolsets.py::get_authenticated_toolsets`.
 
@@ -400,10 +473,11 @@ async def get_authenticated_mcp_servers(
             return []
         try:
             instances = await load_visible_instances(config_service, org_id, owner_id)
+        except MCPInstancesUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Failed to load MCP instances: {e}", exc_info=True)
             return []
-
     if not instances:
         return []
 
@@ -435,43 +509,3 @@ async def get_authenticated_mcp_servers(
 
     return authenticated
 
-
-# ---------------------------------------------------------------------------
-# Feature flag gate
-# ---------------------------------------------------------------------------
-
-
-async def is_mcp_enabled(config_service: Optional[ConfigurationService] = None) -> bool:
-    """Deployment-level gate for MCP: agents may only load/use MCP servers when
-    this is true. Source of truth is the ``ENABLE_MCP`` platform feature flag.
-    Defaults to ENABLED when the flag was never saved — admins may opt out from
-    Labs. A saved value that cannot be read is treated as DISABLED, so an outage
-    never re-enables MCP for a workspace that turned it off.
-
-    Resolution order (first hit wins):
-    1. ``config_service`` — live read of the platform settings the Labs UI writes,
-       via the shared ``read_platform_feature_flag`` helper (``fail_closed=True``)
-    2. ``FeatureFlagService`` — only reachable in services that wire an
-       ``EtcdProvider`` (the connectors service); the query service does not, which
-       is why the ``config_service`` read above is the primary path
-    3. Default: ``True`` for an absent flag
-
-    Reads with ``use_cache=False`` (like `load_org_instances`) so flipping the flag
-    in Labs takes effect on the next chat instead of after a service restart.
-    """
-    if config_service is not None:
-        return await read_platform_feature_flag(
-            CONFIG.ENABLE_MCP, config_service, default=True, fail_closed=True,
-        )
-
-    try:
-        from app.services.featureflag.featureflag import FeatureFlagService
-
-        return bool(
-            FeatureFlagService.get_service().is_feature_enabled(
-                CONFIG.ENABLE_MCP, default=True
-            )
-        )
-    except Exception as e:
-        logger.warning(f"FeatureFlagService unavailable for ENABLE_MCP, treating MCP as disabled: {e}")
-        return False

@@ -1,0 +1,6 @@
+# Build backends for the locked packages that ship only a source archive (talon, nats-py, uuid, and
+# html-to-markdown on Linux aarch64) and for the editable install of this project and the git pins in
+# vcs.lock. install.sh installs these first, then everything else with --no-build-isolation, so a build
+# never fetches an unhashed backend from the index.
+setuptools
+maturin>=1.9,<2 ; sys_platform == 'linux' and platform_machine == 'aarch64'

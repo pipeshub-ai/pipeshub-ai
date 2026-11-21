@@ -13,6 +13,7 @@ Architecture:
 
 import asyncio
 import base64
+import copy
 import json
 import logging
 import uuid
@@ -26,8 +27,10 @@ from pydantic import BaseModel, Field
 
 from app.agents import toolset_store
 from app.agents.agent_loop import tool_approvals
+from app.agents.actions.github import repository_picker
 from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.registry.toolset_registry import ToolsetRegistry
+from app.agents.capability_sync import sync_capabilities
 from app.api.middlewares.auth import require_scopes
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.request_log import (
@@ -40,6 +43,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
 from app.config.redaction import OAUTH_CLIENT_SECRET_FIELDS
+from app.core.org_context import current_org_id, org_of
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
@@ -51,6 +55,7 @@ from app.connectors.sources.atlassian.core.auth_fields import (
     apply_confluence_upload_scope,
 )
 from app.edition_containers import ConnectorAppContainer
+from app.harness.credentials.legacy_records import legacy_records
 from app.edition_config import (
     REDACTED_PLACEHOLDER,
     can_reveal_secrets,
@@ -63,6 +68,7 @@ from app.edition_config import (
     mask_oauth_secrets,
     resolve_inherited_from_org_id,
 )
+from app.harness.tool_identity.settings import instance_tool_ids_enabled
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import (
     is_actions_enabled,
@@ -382,6 +388,41 @@ async def _load_instances_for_mutation(
     return await edition_load_instances_for_mutation(org_id, config_service)
 
 
+_INSTANCE_WRITES = asyncio.Lock()
+
+
+async def _save_org_instances(
+    org_id: str,
+    loaded: list[dict[str, Any]],
+    updated: list[dict[str, Any]],
+    config_service: ConfigurationService,
+) -> None:
+    """Write one org's change to the shared instance list, keeping every row the change did not touch.
+
+    The list is one document for every org, and a request holds only its own org's rows, loaded earlier.
+    Writing those back as the whole list erased other orgs' instances and any instance a concurrent request
+    added (R2 F21). Instead the change (``loaded`` -> ``updated``) is replayed onto a fresh read. The lock
+    closes the window within this process; across replicas it stays open until the control plane's
+    installation store, which has compare-and-set, is the store of record (CPD-7).
+    """
+    before = {i.get("_id"): i for i in loaded}
+    after = {i.get("_id"): i for i in updated}
+    removed = before.keys() - after.keys()
+    changed = [i for key, i in after.items() if before.get(key) != i]
+    async with _INSTANCE_WRITES:
+        current = await config_service.get_config(_get_instances_path(org_id), default=[])
+        rows = [i for i in _validate_list(value=current, field_name="toolset instances")
+                if not (org_of(i) == org_id and i.get("_id") in removed)]
+        positions = {i.get("_id"): n for n, i in enumerate(rows)}
+        for instance in changed:
+            at = positions.get(instance.get("_id"))
+            if at is None:
+                rows.append(instance)
+            else:
+                rows[at] = instance
+        await _save_config(config_service, _get_instances_path(org_id), rows)
+
+
 def _get_oauth_config_resolver(request: Request) -> Any | None:
     """Return container oauth_config_resolver if the edition provides one."""
     container = getattr(request.app, "container", None)
@@ -510,6 +551,15 @@ async def _save_config(config_service: ConfigurationService, key: str, value: di
     """``set_config`` reports a failed store write as False, never as an exception."""
     if not await config_service.set_config(key, value):
         raise RuntimeError(f"The config store did not save {key}")
+
+
+async def _save_auth_record(
+    config_service: ConfigurationService, org_id: str, instance_id: str, owner_id: str, record: dict[str, Any],
+    *, user_id: str | None,
+) -> None:
+    """``_save_config`` for an owner's credential record, written through the credential bindings (CPD-8)."""
+    if not await legacy_records(config_service).save("toolset", org_id, instance_id, owner_id, record, user_id=user_id):
+        raise RuntimeError(f"The config store did not save the credentials of toolset instance {instance_id}")
 
 
 async def _load_toolset_instances(
@@ -1304,6 +1354,8 @@ async def _create_personal_instance(
     }
     if not await toolset_store.save_personal_instance(config_service, instance):
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save the action. Please try again.")
+    # The control plane installs it as the owner's alone, so their durable runs can use it.
+    await sync_capabilities(config_service, org_id)
     return {
         "status": "success",
         "instance": _instance_for_response(instance, is_admin=True, secret_fields=_secret_auth_fields(request, instance)),
@@ -1465,16 +1517,15 @@ async def create_toolset_instance(
             new_instance["inheritedFromOrgId"] = inherited
     elif auth_type != "OAUTH":
         new_instance["auth"] = auth_config
-    instances.append(new_instance)
-
-    instances_path = _get_instances_path(org_id)
     try:
-        await _save_config(config_service, instances_path, instances)
+        await _save_org_instances(org_id, instances, [*instances, new_instance], config_service)
     except Exception as e:
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to save toolset instance. Please try again."
         ) from e
+
+    await sync_capabilities(config_service, org_id)
 
     return {
         "status": "success",
@@ -1644,7 +1695,8 @@ async def get_toolset_instance(
 
 async def _deauth_all_instance_users(
     instance_id: str,
-    config_service: ConfigurationService
+    config_service: ConfigurationService,
+    org_id: str | None = None,
 ) -> int:
     """
     Deauthenticate all users who have authenticated against the given instance.
@@ -1673,7 +1725,9 @@ async def _deauth_all_instance_users(
             auth["isAuthenticated"] = False
             auth["deauthReason"] = "admin_oauth_config_updated"
             auth["deauthAt"] = now
-            await config_service.set_config(key, auth)
+            await legacy_records(config_service).save(
+                "toolset", org_id or (org_of(auth) or ""), instance_id, key.rsplit("/", 1)[-1], auth, narrowing=True
+            )
         except Exception as e:
             error_class.log_failure(logger, "toolset.route.failed", e, op="deauth_user")
 
@@ -1716,6 +1770,7 @@ async def _update_personal_instance(
     if not await toolset_store.save_personal_instance(config_service, instance):
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update the action. Please try again.")
     deauthed = await _deauth_all_instance_users(instance["_id"], config_service) if oauth_client_changed else 0
+    await sync_capabilities(config_service, org_of(instance))
     return {
         "status": "success",
         "instance": _instance_for_response(instance, is_admin=True, secret_fields=_secret_auth_fields(request, instance)),
@@ -1770,6 +1825,7 @@ async def update_toolset_instance(
     if idx is None:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
+    loaded = copy.deepcopy(instances)
     instance = instances[idx]
     toolset_type = instance.get("toolsetType", "")
     auth_type = instance.get("authType", "")
@@ -1862,24 +1918,25 @@ async def update_toolset_instance(
             instance.pop("inheritedFromOrgId", None)
 
     instance["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
-    instances[idx] = instance
+    updated = [*instances[:idx], instance, *instances[idx + 1:]]
 
-    instances_path = _get_instances_path(org_id)
     try:
-        await _save_config(config_service, instances_path, instances)
+        await _save_org_instances(org_id, loaded, updated, config_service)
     except Exception as e:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update toolset instance. Please try again.") from e
 
     # Deauthenticate all users in parallel if credentials changed
     deauthed_count = 0
     if oauth_credentials_changed:
-        deauthed_count = await _deauth_all_instance_users(instance_id, config_service)
+        deauthed_count = await _deauth_all_instance_users(instance_id, config_service, org_id)
         if deauthed_count > 0:
             logger.info("Deauthenticated users after an OAuth config update", extra={"users": deauthed_count})
 
     msg = "Toolset instance updated successfully."
     if deauthed_count > 0:
         msg += f" {deauthed_count} user(s) have been deauthenticated and must re-authenticate."
+
+    await sync_capabilities(config_service, org_id)
 
     return {
         "status": "success",
@@ -1913,6 +1970,7 @@ async def delete_toolset_instance(
             deleted_credentials_count = await toolset_store.delete_personal_instance(config_service, personal)
         except RuntimeError as e:
             raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.") from e
+        await sync_capabilities(config_service, current_org_id())
         return {
             "status": "success",
             "message": "Toolset instance deleted successfully.",
@@ -1941,10 +1999,8 @@ async def delete_toolset_instance(
 
     updated = [i for i in instances if i.get("_id") != instance_id]
 
-    instances_path = _get_instances_path(org_id)
     try:
-        # set_config will automatically invalidate cache for this path
-        await _save_config(config_service, instances_path, updated)
+        await _save_org_instances(org_id, instances, updated, config_service)
     except Exception as e:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.") from e
 
@@ -1953,6 +2009,8 @@ async def delete_toolset_instance(
     message = "Toolset instance deleted successfully."
     if deleted_credentials_count > 0:
         message += f" {deleted_credentials_count} user credential(s) were also deleted."
+
+    await sync_capabilities(config_service, org_id)
 
     return {
         "status": "success",
@@ -2140,10 +2198,16 @@ async def get_authenticated_toolsets(
     org_id: str,
     config_service: ConfigurationService,
     registry: ToolsetRegistry,
+    *,
+    include_withdrawn: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """
     Helper method to get all authenticated toolsets for a user.
     Returns only toolsets where the user has completed authentication.
+
+    ``include_withdrawn``: also the toolsets whose saved sign-in the vendor rejected and the harness withdrew
+    (``deauthReason``), marked ``isAuthenticated: False`` with no auth blob, so a run that holds them keeps them
+    listed as waiting for a reconnect instead of losing them (WP-64).
 
     Args:
         user_id: User ID
@@ -2187,10 +2251,12 @@ async def get_authenticated_toolsets(
     authenticated_toolsets = []
     auth_by_instance: dict[str, dict[str, Any]] = {}
     for inst, user_auth in results:
-        # Only include authenticated toolsets
-        if not user_auth or not user_auth.get("isAuthenticated", False):
+        authenticated = bool(user_auth and user_auth.get("isAuthenticated", False))
+        withdrawn = bool(include_withdrawn and user_auth and not authenticated and user_auth.get("deauthReason"))
+        if not authenticated and not withdrawn:
             continue
-        auth_by_instance[inst.get("_id", "")] = user_auth
+        if authenticated:
+            auth_by_instance[inst.get("_id", "")] = user_auth
 
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
@@ -2218,7 +2284,7 @@ async def get_authenticated_toolsets(
             "category": meta.get("category", "app") if meta else "app",
             "toolCount": len(tools),
             "tools": tools,
-            "isAuthenticated": True,
+            "isAuthenticated": authenticated,
             "scope": toolset_store.instance_scope(inst),
             "createdAtTimestamp": inst.get("createdAtTimestamp"),
             "updatedAtTimestamp": inst.get("updatedAtTimestamp"),
@@ -2291,9 +2357,8 @@ async def authenticate_toolset_instance(
         # The approval gate reads this: a personal instance's tool rules are the user's own.
         user_auth["scope"] = toolset_store.SCOPE_PERSONAL
 
-    auth_path = _get_user_auth_path(instance_id, user_id)
     try:
-        await _save_config(config_service, auth_path, user_auth)
+        await _save_auth_record(config_service, org_id, instance_id, user_id, user_auth, user_id=user_id)
     except Exception as e:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save credentials.") from e
 
@@ -2323,10 +2388,11 @@ async def update_toolset_credentials(
     instance = await _instance_for_credential_update(instance_id, user_context["org_id"], config_service, user_id)
     _refuse_undeclared_auth_fields(request, instance, auth)
 
-    auth_path = _get_user_auth_path(instance_id, user_id)
+    org_id = current_org_id()
+    records = legacy_records(config_service)
 
     try:
-        existing_auth = await config_service.get_config(auth_path, default=None, raise_on_error=True)
+        existing_auth = await records.load("toolset", org_id, instance_id, user_id, raise_on_error=True)
         if not existing_auth or not isinstance(existing_auth, dict):
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="No existing credentials found for this instance. Please authenticate first.")
 
@@ -2334,7 +2400,7 @@ async def update_toolset_credentials(
         existing_auth["updatedAt"] = get_epoch_timestamp_in_ms()
         existing_auth["updatedBy"] = user_id
 
-        await _save_config(config_service, auth_path, existing_auth)
+        await _save_auth_record(config_service, org_id, instance_id, user_id, existing_auth, user_id=user_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -2367,7 +2433,9 @@ async def remove_toolset_credentials(
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
     try:
-        await config_service.delete_config(auth_path)
+        await legacy_records(config_service).remove(
+            "toolset", current_org_id(), instance_id, user_id, user_id=user_id
+        )
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="delete_credentials")
 
@@ -2406,7 +2474,9 @@ async def reauthenticate_toolset_instance(
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
     try:
-        await config_service.delete_config(auth_path)
+        await legacy_records(config_service).remove(
+            "toolset", current_org_id(), instance_id, user_id, user_id=user_id
+        )
     except Exception as e:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear credentials.") from e
 
@@ -2781,7 +2851,10 @@ async def handle_toolset_oauth_callback(
             updated_auth["agentKey"] = agent_key_from_state
         else:
             updated_auth["updatedBy"] = user_id
-        await _save_config(config_service, auth_storage_path, updated_auth)
+        await _save_auth_record(
+            config_service, org_id, instance_id, agent_key_from_state if is_agent_flow else user_id, updated_auth,
+            user_id=user_id,
+        )
 
         # Schedule token refresh
         try:
@@ -2945,7 +3018,7 @@ async def update_toolset_oauth_config(
     total_deauthed = 0
     if affected_instances:
         deauth_results = await asyncio.gather(
-            *[_deauth_all_instance_users(inst["_id"], config_service) for inst in affected_instances],
+            *[_deauth_all_instance_users(inst["_id"], config_service, org_id) for inst in affected_instances],
             return_exceptions=True
         )
         for r in deauth_results:
@@ -3051,6 +3124,87 @@ async def get_instance_status(
     }
 
 
+_GITHUB_TOOLSET = "github"
+
+
+async def _github_token(instance_id: str, request: Request, config_service: ConfigurationService) -> str:
+    """The caller's own token for a GitHub toolset instance they may use (GIT-FLOW repository picker).
+
+    404 for an instance that is not theirs or the org's, or not a GitHub one; 409 when they are not signed in."""
+    user_context = _get_user_context(request)
+    user_id = user_context["user_id"]
+    instance = await _find_instance(instance_id, current_org_id(), user_id, config_service)
+    if str(instance.get("toolsetType") or "").strip().lower() != _GITHUB_TOOLSET:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This GitHub connection"))
+    try:
+        user_auth = await config_service.get_config(_get_user_auth_path(instance_id, user_id), default=None)
+    except Exception:
+        user_auth = None
+    credentials = user_auth.get("credentials") if isinstance(user_auth, dict) else None
+    token = credentials.get("access_token") if isinstance(credentials, dict) else None
+    if not (isinstance(user_auth, dict) and user_auth.get("isAuthenticated")) or not isinstance(token, str) or not token:
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value, detail="Sign in to this GitHub connection first."
+        )
+    return token
+
+
+def _github_failed(exc: repository_picker.GitHubListingFailed) -> HTTPException:
+    detail = (
+        "GitHub did not accept the saved sign-in. Reconnect GitHub, then try again."
+        if exc.status in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value)
+        else "GitHub could not be reached. Try again in a moment."
+    )
+    return HTTPException(status_code=HttpStatusCode.BAD_GATEWAY.value, detail=detail)
+
+
+@router.get(
+    "/instances/{instance_id}/github/repositories", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))]
+)
+@inject
+async def list_github_repositories(
+    instance_id: str,
+    request: Request,
+    search: str | None = Query(None, max_length=200),
+    page: int = Query(1, ge=1, le=1000),
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+) -> dict[str, Any]:
+    """GIT-FLOW (WP-26) repository picker: the repositories the caller's own sign-in sees, matched by ``search``."""
+    token = await _github_token(instance_id, request, config_service)
+    try:
+        listing = await repository_picker.list_repositories(token, search=search, page=page)
+    except repository_picker.GitHubListingFailed as exc:
+        raise _github_failed(exc) from None
+    except repository_picker.RepositoryNotFound:
+        raise HTTPException(status_code=HttpStatusCode.BAD_GATEWAY.value, detail="GitHub answered no list.") from None
+    return listing.wire()
+
+
+@router.get(
+    "/instances/{instance_id}/github/branches", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))]
+)
+@inject
+async def list_github_branches(
+    instance_id: str,
+    request: Request,
+    repository: str = Query(..., max_length=201),
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+) -> dict[str, Any]:
+    """GIT-FLOW (WP-26) repository picker: one repository's branches, its default first."""
+    if not repository_picker.repository_name_ok(repository):
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Name a repository as owner/name.")
+    token = await _github_token(instance_id, request, config_service)
+    try:
+        branches = await repository_picker.list_branches(token, repository)
+    except repository_picker.GitHubListingFailed as exc:
+        raise _github_failed(exc) from None
+    except repository_picker.RepositoryNotFound:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value, detail="This GitHub connection cannot see that repository."
+        ) from None
+    return {"branches": branches}
+
+
 # ============================================================================
 # Agent-Scoped Toolset Routes
 # ============================================================================
@@ -3072,6 +3226,7 @@ def _get_agent_auth_path(instance_id: str, agent_key: str) -> str:
 def _empty_toolsets_response(page: int, limit: int) -> dict[str, Any]:
     return {
         "status": "success",
+        "instanceToolIds": instance_tool_ids_enabled(),
         "toolsets": [],
         "pagination": {
             "page": page,
@@ -3181,6 +3336,13 @@ async def _build_toolsets_list_response(
             ],
             "isConfigured": True,
             "isAuthenticated": is_authenticated,
+            # WP-64: why a sign-in is no longer there and since when (the harness withdrew one its vendor rejected),
+            # so the person reads why to reconnect; never the credential itself.
+            **(
+                {"deauthReason": auth_record["deauthReason"], "deauthAt": auth_record.get("deauthAt")}
+                if not is_authenticated and isinstance(auth_record, dict) and isinstance(auth_record.get("deauthReason"), str)
+                else {}
+            ),
             "isFromRegistry": False,
             "scope": toolset_store.instance_scope(inst),
             "createdBy": inst.get("createdBy"),
@@ -3292,8 +3454,10 @@ async def _build_toolsets_list_response(
     end = start + limit
     page_items = toolsets[start:end]
 
+    # The agent builder offers a second instance of a type only when saving keeps it (P2.2).
     return {
         "status": "success",
+        "instanceToolIds": instance_tool_ids_enabled(),
         "toolsets": page_items,
         "pagination": {
             "page": page,
@@ -3497,9 +3661,8 @@ async def authenticate_agent_toolset(
         "agentKey": agent_key,
     }
 
-    auth_path = _get_agent_auth_path(instance_id, agent_key)
     try:
-        await _save_config(config_service, auth_path, agent_auth)
+        await _save_auth_record(config_service, org_id, instance_id, agent_key, agent_auth, user_id=user_context["user_id"])
     except Exception as e:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save agent credentials.") from e
 
@@ -3528,16 +3691,19 @@ async def update_agent_toolset_credentials(
     )
     _refuse_undeclared_auth_fields(request, instance, auth)
 
-    auth_path = _get_agent_auth_path(instance_id, agent_key)
+    org_id = current_org_id()
+    records = legacy_records(config_service)
     try:
-        existing_auth = await config_service.get_config(auth_path, default=None, raise_on_error=True)
+        existing_auth = await records.load("toolset", org_id, instance_id, agent_key, raise_on_error=True)
         if not existing_auth or not isinstance(existing_auth, dict):
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="No existing credentials found for this instance. Please authenticate first.")
 
         existing_auth["auth"] = auth
         existing_auth["updatedAt"] = get_epoch_timestamp_in_ms()
         existing_auth["agentKey"] = agent_key  # track which agent these creds belong to
-        await _save_config(config_service, auth_path, existing_auth)
+        await _save_auth_record(
+            config_service, org_id, instance_id, agent_key, existing_auth, user_id=_get_user_context(request)["user_id"]
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -3570,7 +3736,10 @@ async def remove_agent_toolset_credentials(
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
     try:
-        await config_service.delete_config(auth_path)
+        await legacy_records(config_service).remove(
+            "toolset", current_org_id(), instance_id, agent_key,
+            user_id=_get_user_context(request)["user_id"],
+        )
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="delete_credentials")
 
@@ -3610,7 +3779,10 @@ async def reauthenticate_agent_toolset(
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
     try:
-        await config_service.delete_config(auth_path)
+        await legacy_records(config_service).remove(
+            "toolset", current_org_id(), instance_id, agent_key,
+            user_id=_get_user_context(request)["user_id"],
+        )
     except Exception as e:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear agent credentials.") from e
 

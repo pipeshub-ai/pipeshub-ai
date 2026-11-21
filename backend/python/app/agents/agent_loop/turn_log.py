@@ -1,6 +1,6 @@
 """`agent_turn.end`: the one line that says how a chat turn ended (contract: docs/logging.md).
 
-Both bridges (`stream_bridge.run_agent_loop_stream`, `chat_modes.bridge.run_chat_stream`)
+Both routes (`stream_bridge.run_agent_loop_stream`, `stream_bridge.run_chat_stream`)
 count the turn with `AgentRunTiming` and end it with `AgentRunTiming.end`; route exits
 that happen before a bridge exists call `log_turn_end` directly. Ids (org, user,
 conversation, agent, run) come from the bound log context. Counts, sizes and enums
