@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 # lanes, allow admin moves, or keep a group of orgs on lanes of their own.
 # Chat and agent-loop hooks (see app.modules.agents.chat_extension).
 from app.modules.agents.chat_extension import default_chat_extension
+
+# SQL table and query-result hooks (see app.modules.agents.sql_extension).
+from app.modules.agents.sql_extension import default_sql_extension
 from app.services.messaging.lanes.assignment_policy import (
     admin_lane_move_allowed as admin_lane_move_allowed,
 )
@@ -34,6 +37,7 @@ from app.services.messaging.lanes.assignment_policy import (
 )
 
 chat_extension = default_chat_extension
+sql_extension = default_sql_extension
 
 
 def sa_forces_org_sharing() -> bool:

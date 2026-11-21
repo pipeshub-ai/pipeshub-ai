@@ -6,7 +6,6 @@ Query results are returned directly and optionally exported as CSV artifacts.
 
 from __future__ import annotations
 
-import asyncio
 import csv
 import io
 import json
@@ -26,6 +25,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.core.org_context import spawn_in_request
 from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import save_query_result_csv
 from app.sandbox.manager import get_executor, with_executor_sink
@@ -88,15 +88,19 @@ class DatabaseSandbox:
     # CSV artifact helper
     # ------------------------------------------------------------------
 
+    def _export_target(self) -> tuple[str | None, str | None, str | None, Any, str | None]:
+        """A query export's conversation, org, owner, graph provider and run, from the run's state."""
+        state = self.chat_state
+        return (
+            state.get("conversation_id"), state.get("org_id"), artifact_owner_id(state),
+            state.get("graph_provider"), state.get("run_id"),
+        )
+
     def _schedule_csv_export(self, rows: list[dict[str, Any]], label: str, *, provenance: Any = None) -> None:  # noqa: ANN401
         """Export query results as a CSV artifact in the background.
 
         ``provenance`` None leaves the export's sources unknown (hidden from shared viewers)."""
-        conversation_id = self.chat_state.get("conversation_id")
-        org_id = self.chat_state.get("org_id")
-        user_id = artifact_owner_id(self.chat_state)
-        graph_provider = self.chat_state.get("graph_provider")
-        run_id = self.chat_state.get("run_id")
+        conversation_id, org_id, user_id, graph_provider, run_id = self._export_target()
 
         if not (conversation_id and org_id and rows):
             return
@@ -123,11 +127,19 @@ class DatabaseSandbox:
                 rows=row_tuples,
                 file_name=f"{label}_{uuid4().hex[:8]}.csv",
                 source_tool=f"database_sandbox.{label.split('_')[0]}",
+                run_id=run_id,
                 provenance=provenance,
             )
 
-        task = asyncio.create_task(_save())
+        task = spawn_in_request(_save())
         register_task(conversation_id, task)
+
+    async def _keep_result_rows(
+        self, payload: dict[str, Any], rows: list[dict[str, Any]], label: str, *, provenance: Any = None,  # noqa: ANN401
+    ) -> None:
+        """What becomes of a query's full result rows, of which ``payload`` shows only the
+        first ones: here a CSV of them, exported in the background, with the sources it came from."""
+        self._schedule_csv_export(rows, label, provenance=provenance)
 
     # ------------------------------------------------------------------
     # Tools
@@ -177,16 +189,6 @@ class DatabaseSandbox:
             DISPLAY_LIMIT = 100
             displayed_rows = rows[:DISPLAY_LIMIT]
 
-            if rows:
-                from app.agents.agent_loop.artifact_provenance import request_provenance
-
-                # SQLite holds only the model's own SQL; PostgreSQL (below) is an operator's
-                # database whose rows no record names, so its exports stay unknown.
-                self._schedule_csv_export(
-                    rows, "sqlite_result",
-                    provenance=request_provenance(self.chat_state, task_id="database_sandbox.sqlite"),
-                )
-
             payload: dict[str, Any] = {
                 "message": "Query executed successfully" if result.success else "Query execution failed",
                 "row_count": len(rows),
@@ -200,6 +202,15 @@ class DatabaseSandbox:
                 payload["stderr"] = redact_sandbox_paths(_truncate(result.stderr, 4000))
             if result.error:
                 payload["error"] = redact_sandbox_paths(result.error)
+            if rows:
+                from app.agents.agent_loop.artifact_provenance import request_provenance
+
+                # SQLite holds only the model's own SQL; PostgreSQL (below) is an operator's
+                # database whose rows no record names, so its exports stay unknown.
+                await self._keep_result_rows(
+                    payload, rows, "sqlite_result",
+                    provenance=request_provenance(self.chat_state, task_id="database_sandbox.sqlite"),
+                )
 
             return self._result(result.success, payload)
         except Exception as e:
@@ -245,9 +256,6 @@ class DatabaseSandbox:
             DISPLAY_LIMIT = 100
             displayed_rows = rows[:DISPLAY_LIMIT]
 
-            if rows:
-                self._schedule_csv_export(rows, "pg_result")
-
             payload: dict[str, Any] = {
                 "message": "Query executed successfully" if result.success else "Query execution failed",
                 "row_count": len(rows),
@@ -261,6 +269,8 @@ class DatabaseSandbox:
                 payload["stderr"] = redact_sandbox_paths(_truncate(result.stderr, 4000))
             if result.error:
                 payload["error"] = redact_sandbox_paths(result.error)
+            if rows:
+                await self._keep_result_rows(payload, rows, "pg_result")
 
             return self._result(result.success, payload)
         except Exception as e:

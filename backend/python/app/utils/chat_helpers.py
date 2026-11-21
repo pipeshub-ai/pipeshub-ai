@@ -5186,6 +5186,7 @@ def _carries_content(block: dict[str, Any], fragment_map: dict[int, list[dict[st
 
 def _fk_lines_text(record: dict[str, Any]) -> str:
     """The foreign-key tables a SQL table record points to, or ""."""
+    linked_tables_shown(record)
     fk_parent = record.get("fk_parent_record_ids")
     fk_child = record.get("fk_child_record_ids")
     if not (fk_parent or fk_child):
@@ -6450,6 +6451,7 @@ def build_message_content_array(
 
 _FK_RELATION_KEYS = (
     "fk_parent_relations", "fk_child_relations", "implicit_fk_parent_relations", "implicit_fk_child_relations",
+    "fk_parent_record_ids", "fk_child_record_ids",
 )
 
 
