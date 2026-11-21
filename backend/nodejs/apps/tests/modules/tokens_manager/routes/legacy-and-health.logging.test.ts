@@ -193,15 +193,19 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
       ])
     })
 
-    it('a failed publish is one ERROR line with the error, and is still swallowed', async () => {
-      await producerOver(async () => {
-        throw new Error('Connection is closed.')
-      }).publishEvent(event)
+    it('a failed publish rejects with the broker error and writes no line (the request logs it once)', async () => {
+      const failure = new Error('Connection is closed.')
+      let raised: unknown
+      try {
+        await producerOver(async () => {
+          throw failure
+        }).publishEvent(event)
+      } catch (error) {
+        raised = error
+      }
 
-      expect(records.map((r) => [level(r), r.message, r.metadata?.event_type, r.metadata?.topic])).to.deep.equal([
-        ['error', 'broker.event.publish_failed', 'appEnabled', 'entity-events'],
-      ])
-      expect(records[0].metadata.error.message).to.equal('Connection is closed.')
+      expect(raised).to.equal(failure)
+      expect(records).to.deep.equal([])
     })
   })
 

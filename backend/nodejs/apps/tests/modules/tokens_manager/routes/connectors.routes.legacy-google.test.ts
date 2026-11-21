@@ -128,7 +128,8 @@ describe('Connector routes: legacy Google Workspace endpoints', () => {
       expect(event.eventType).to.equal('appEnabled')
       expect(event.payload).to.include({ orgId: ORG_A, appGroup: 'Google Workspace', appGroupId: 'cfg-1', syncAction: 'immediate' })
       expect(event.payload.apps).to.deep.equal(['DRIVE', 'GMAIL', 'CALENDAR'])
-      expect(h.entityEvents.stopped).to.equal(h.entityEvents.started)
+      // The producer is the container's shared one: the route must never disconnect it.
+      expect(h.entityEvents.stopped).to.equal(0)
     })
 
     it('re-enables an existing connector for only the apps the user granted', async () => {

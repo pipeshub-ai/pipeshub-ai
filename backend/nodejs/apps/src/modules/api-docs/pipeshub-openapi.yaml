@@ -62036,6 +62036,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The sync could not be queued (the message broker is unavailable), so nothing was synced.
+            The Google tokens are kept, but the authorization code has been used: the client restarts the
+            Google consent flow and calls this route with the new code, which starts the sync.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== TOOLSETS ENDPOINTS ====================
   # -------------------- Toolset Registry --------------------
