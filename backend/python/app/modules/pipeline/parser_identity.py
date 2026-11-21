@@ -114,7 +114,8 @@ def parser_key(
     """``"<route>@<rev>"`` for the parser a record with these labels is read by, or None when it is not tracked.
 
     The four inputs are all a graph record and a file's ``files`` document hold, and all an event payload carries, so a
-    payload and the graph give the same answer for the same record. The file path is the one the record carries (the dispatch reads the extension from it before the name).
+    payload and the graph give the same answer for the same record. The file path is not held by the graph
+    record, so a key built with one is never compared (see :func:`parser_identity`).
     ``service`` says which dispatch reads the file: the in-process one (``file_types.legacy_route``) or the parsing
     service's (``file_types.parse_format``). The two name different parsers for some labels (``application/json`` with a
     ``csv`` extension is a CSV in process and JSON in the service), so the key is the route of the dispatch that runs.
@@ -150,9 +151,12 @@ def parser_identity(
     file_path: str | None = None,
 ) -> str | None:
     """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or None when not tracked."""
-    key = parser_key(
-        mime_type, extension, record_name, record_type, service=pipeline == PIPELINE_SERVICE, file_path=file_path,
-    )
+    service = pipeline == PIPELINE_SERVICE
+    key = parser_key(mime_type, extension, record_name, record_type, service=service)
+    if file_path and key != parser_key(mime_type, extension, record_name, record_type, service=service, file_path=file_path):
+        # The path decided the parser, and the graph record holds no path: it could never reproduce this key, so a copy
+        # built this way is not tracked (as for source files).
+        return None
     return None if key is None else f"{pipeline}:{key}"
 
 
@@ -170,7 +174,7 @@ def graph_parser_key(
     """The key of a record as the graph holds it: its ``records`` node and the ``files`` document with the same key."""
     return parser_key(
         record.get("mimeType"), (file_doc or {}).get("extension"), record.get("recordName"), record.get("recordType"),
-        service=service, file_path=record.get("filePath"),
+        service=service,
     )
 
 

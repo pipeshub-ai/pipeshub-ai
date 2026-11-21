@@ -101,6 +101,8 @@ def test_the_file_path_names_the_extension_before_the_record_name_in_process() -
     without = pi.parser_key("text/plain", None, "notes", "FILE", service=False)
     assert (dispatch is not None and dispatch.route.value in {"code"}) or as_code
     assert with_path is None and without is not None
+    # the key built with the path is the one the dispatch used; as the graph cannot hold the path it is not recorded
+    assert pi.parser_identity("text/plain", None, "notes", "FILE", pipeline=pi.PIPELINE_IN_PROCESS, file_path="src/x.py") is None
 
 
 def test_the_service_predicate_of_the_event_processor_includes_the_setting(monkeypatch: pytest.MonkeyPatch) -> None:
