@@ -122,11 +122,15 @@ describe('MCP access settings routes', () => {
   })
 
   it('lists the tools from the catalog', async () => {
-    sinon.stub(McpToolCatalog, 'list').resolves([{ name: 'pipeshub_upload', title: 'Upload', writes: true }])
+    const upload = {
+      name: 'pipeshub_upload', title: 'Upload', writes: true, description: 'Upload documents.',
+      arguments: [{ name: 'collectionId', type: 'string', required: true }],
+      hints: { readOnly: false, destructive: false, idempotent: false, openWorld: false },
+      scopes: ['kb:upload'],
+    }
+    sinon.stub(McpToolCatalog, 'list').resolves([upload])
     await serve(async (url) => {
-      expect(await (await fetch(`${url}/access/tools`)).json()).to.deep.equal({
-        tools: [{ name: 'pipeshub_upload', title: 'Upload', writes: true }],
-      })
+      expect(await (await fetch(`${url}/access/tools`)).json()).to.deep.equal({ tools: [upload] })
     })
   })
 

@@ -2712,6 +2712,92 @@
           "pipeshub_code_entry_points": "Enumera por dónde entra la ejecución en un repositorio, como rutas, herramientas de línea de comandos, tareas y hooks. Un punto de partida para leer código desconocido.",
           "pipeshub_entities": "Encuentra personas, equipos, temas, proyectos, carpetas, clientes y títulos de documentos en el grafo de conocimiento del espacio de trabajo, enumera los registros relacionados con uno de ellos y las personas, empresas o productos que se mencionan junto a él. La búsqueda y el listado se ofrecen cuando ya hay entidades indexadas; la lista de menciones conjuntas necesita además la extracción de entidades con nombre. Una aplicación OAuth o un token de acceso necesita además el permiso semantic:read o semantic:write.",
           "pipeshub_find_records": "Enumera registros según a quién pertenecen o qué mencionan, no según sus palabras: los registros que una persona tiene asignados, ha creado, ha escrito o posee, los registros que mencionan un importe, una fecha, una cantidad o un porcentaje, y fragmentos de los registros que nombran a determinadas personas, empresas o productos. Los importes y las fechas necesitan la extracción de entidades con nombre, y los fragmentos solo se ofrecen donde la implementación también activa la búsqueda de entidades. Una aplicación OAuth o un token de acceso necesita además el permiso semantic:read o semantic:write."
+        },
+        "count": "{{offered}} de {{total}} ofrecidas",
+        "searchPlaceholder": "Buscar herramientas, argumentos o permisos",
+        "searchLabel": "Buscar herramientas",
+        "filterLabel": "Mostrar",
+        "filters": {
+          "all": "Todas",
+          "read": "Solo lectura",
+          "writes": "Escribe o cambia datos",
+          "off": "Desactivadas"
+        },
+        "expandAll": "Expandir todo",
+        "collapseAll": "Contraer todo",
+        "noMatch": "Ninguna herramienta coincide con esta búsqueda.",
+        "groupCount": "{{offered}} de {{total}} activadas",
+        "groupSwitch": "Todas las herramientas de {{group}}",
+        "showDetails": "Mostrar detalles de {{tool}}",
+        "hideDetails": "Ocultar detalles de {{tool}}",
+        "groups": {
+          "read": {
+            "label": "Buscar y leer",
+            "description": "Busca, lee y descarga lo que el usuario puede ver."
+          },
+          "people": {
+            "label": "Personas y entidades",
+            "description": "Los usuarios y grupos del espacio de trabajo, y las personas, proyectos, temas y valores de su grafo de conocimiento."
+          },
+          "chat": {
+            "label": "Chat y agentes",
+            "description": "Pregunta al asistente de PipesHub o a uno de los agentes del espacio de trabajo."
+          },
+          "add": {
+            "label": "Añadir contenido",
+            "description": "Crea colecciones, sube documentos, añade sitios web y conecta orígenes."
+          },
+          "viewer": {
+            "label": "Visor de citas",
+            "description": "Muestra las fuentes de una respuesta, en los clientes que pueden mostrarlo."
+          },
+          "code": {
+            "label": "Código",
+            "description": "Explora los repositorios de código indexados.",
+            "availability": "Solo a usuarios que pueden leer un repositorio de código indexado."
+          },
+          "other": {
+            "label": "Otras",
+            "description": "Herramientas que esta versión de la página aún no conoce."
+          }
+        },
+        "kinds": {
+          "readOnly": "Solo lectura",
+          "changes": "Puede cambiar datos",
+          "openWorld": "Sale de PipesHub"
+        },
+        "blocked": {
+          "writesOff": "Desactivada mientras no se permitan las herramientas de escritura.",
+          "chatOff": "Desactivada mientras el chat con PipesHub esté desactivado."
+        },
+        "details": {
+          "scopes": "Permisos OAuth necesarios",
+          "noScopes": "Ninguno: no llama a nada en PipesHub.",
+          "availability": "Cuándo se ofrece",
+          "arguments": "Argumentos · {{n}}",
+          "noArguments": "No recibe argumentos.",
+          "columns": {
+            "name": "Nombre",
+            "type": "Tipo",
+            "description": "Descripción"
+          },
+          "required": "obligatorio",
+          "oneOf": "Uno de: {{values}}",
+          "modelText": "Lo que ve la IA",
+          "hideModelText": "Ocultar lo que ve la IA",
+          "modelTextHint": "La descripción que lee el modelo de IA antes de elegir esta herramienta."
+        },
+        "availability": {
+          "default": "Siempre que esté activada.",
+          "pipeshub_chat": "Siempre que esté activada. Solo ejecuta acciones conectadas mientras se permitan las herramientas de escritura.",
+          "pipeshub_agents": "Solo mientras el chat con PipesHub esté activado.",
+          "pipeshub_create_collection": "Solo mientras se permitan las herramientas de escritura.",
+          "pipeshub_upload": "Solo mientras se permitan las herramientas de escritura.",
+          "pipeshub_add_web_source": "Solo mientras se permitan las herramientas de escritura.",
+          "pipeshub_show_citations": "Solo a los clientes que pueden mostrar el visor de citas, como Claude.",
+          "pipeshub_preview_record": "Solo al visor de citas, nunca al modelo de IA.",
+          "pipeshub_entities": "Buscar entidades y enumerar sus registros, cuando ya hay entidades indexadas. La lista de menciones conjuntas necesita además la extracción de entidades con nombre.",
+          "pipeshub_find_records": "Los registros de una persona, siempre. Los importes y las fechas necesitan la extracción de entidades con nombre, y los fragmentos que nombran personas o empresas necesitan además la búsqueda de entidades activada en la implementación."
         }
       },
       "appliesNote": "Los cambios se aplican a las nuevas solicitudes MCP en unos segundos.",
@@ -2720,6 +2806,45 @@
         "saveSuccess": "Configuración de acceso MCP guardada",
         "saveError": "No se pudo guardar la configuración de acceso MCP",
         "saveErrorDescription": "Comprueba tu conexión e inténtalo de nuevo."
+      },
+      "status": {
+        "on": "Activado · {{offered}} de {{total}} herramientas ofrecidas",
+        "off": "Desactivado · ningún cliente de IA puede conectarse"
+      },
+      "connect": {
+        "title": "Conectar un cliente de IA",
+        "description": "Los clientes se conectan a este endpoint y cada usuario inicia sesión con su propia cuenta de PipesHub. También funciona un token de acceso personal.",
+        "endpointLabel": "Endpoint MCP",
+        "copy": "Copiar",
+        "copied": "Copiado",
+        "copyEndpoint": "Copiar el endpoint MCP",
+        "copySnippet": "Copiar la configuración",
+        "clientsLabel": "Cliente de IA",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "En Claude, abre Personalizar › Conectores, selecciona + y luego Añadir conector personalizado. Pega el endpoint de arriba, elige Conectar e inicia sesión en PipesHub. En un plan Team o Enterprise, primero un propietario añade el conector en la configuración de la organización.",
+            "tip": "Claude se conecta desde la nube de Anthropic, no desde tu ordenador, así que el endpoint debe ser accesible desde internet. Una dirección localhost o de una red privada no funcionará."
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "En chatgpt.com, abre Plugins, selecciona + y luego Añadir servidor MCP personalizado. Pega el endpoint de arriba como URL del servidor, elige OAuth, acepta la advertencia y selecciona Crear como plugin; después inicia sesión en PipesHub. En un espacio de trabajo Business, Enterprise o Edu, un administrador debe permitir los servidores MCP personalizados.",
+            "tip": "ChatGPT se conecta desde los servidores de OpenAI, no desde tu ordenador, así que el endpoint debe ser accesible desde internet. Una dirección localhost o de una red privada no funcionará."
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "Añade el servidor a ~/.cursor/mcp.json, o a .cursor/mcp.json en un proyecto. Cursor te pide iniciar sesión la primera vez que usa una herramienta."
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "Añade el servidor a .vscode/mcp.json, inícialo desde la lista de servidores MCP e inicia sesión."
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "Ejecuta esto en un terminal y luego /mcp en Claude Code para iniciar sesión.",
+            "tip": "Solo para preguntas sobre código, añade ?tools=code al endpoint: el cliente recibe entonces solo las herramientas de código."
+          }
+        }
       }
     },
     "labs": {
