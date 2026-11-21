@@ -39,7 +39,7 @@ const session: ReaderSession = {
 const reader = (userId: string): Reader => ({ userId, orgId: ORG })
 
 let n = 0
-const nextId = (): string => `${(++n).toString(16).padStart(24, '0')}`
+const nextId = (): string => (++n).toString(16).padStart(24, '0')
 
 const DIRECT_KEYS = ['records', 'vrids', 'nodes', 'saVrids', 'personal', 'agents', 'chat', 'projects', 'marks']
 

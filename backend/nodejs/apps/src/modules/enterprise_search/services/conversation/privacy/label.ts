@@ -190,7 +190,8 @@ export function answerLabelFrom(raw: unknown): AnswerProvenance | undefined {
   const complete = valid && label.complete === true;
   const direct = isPlain(label.direct) ? label.direct : {};
   const names = RESTRICTING.some(
-    (key) => Array.isArray(direct[key]) && (direct[key] as unknown[]).length > 0,
+    (key) =>
+      Array.isArray(direct[key]) && (direct[key] as unknown[]).length > 0,
   );
   // An answer built on earlier rows is public only once a reader has checked them.
   const builtOnRows = Array.isArray(label.parents) && label.parents.length > 0;
@@ -355,19 +356,17 @@ export function withoutLabelFields<T>(row: T): T {
   if (row === null || typeof row !== 'object') return row;
   const fields = row as Plain;
   if (!LABEL_ROW_FIELDS.some((field) => field in fields)) return row;
-  const out: Plain = { ...fields };
-  for (const field of LABEL_ROW_FIELDS) delete out[field];
+  const out: Plain = Object.fromEntries(
+    Object.entries(fields).filter(
+      ([key]) => !(LABEL_ROW_FIELDS as readonly string[]).includes(key),
+    ),
+  );
   return out as T;
 }
 
 /** How far a reader may rely on a row's own label. Anything but `ok` means only the asker may read the answer. */
 export type LabelState =
-  | 'ok'
-  | 'legacy'
-  | 'missing'
-  | 'unknown_version'
-  | 'stale'
-  | 'incomplete';
+  'ok' | 'legacy' | 'missing' | 'unknown_version' | 'stale' | 'incomplete';
 
 /**
  * The label of a row's current content, as a reader may use it: `ok` only for a label of this build's schema, of
@@ -399,7 +398,10 @@ export function labelStateOf(row: {
     return 'stale';
   }
   const reasons = label.incomplete as string[] | undefined;
-  if (label.complete !== true || (reasons !== undefined && reasons.length > 0)) {
+  if (
+    label.complete !== true ||
+    (reasons !== undefined && reasons.length > 0)
+  ) {
     return 'incomplete';
   }
   return 'ok';

@@ -60,7 +60,12 @@ export interface LabelDirect {
   marks: LabelMark[];
 }
 
-export const LABEL_PARENT_MODES = ['text', 'full', 'grant', 'preswitch'] as const;
+export const LABEL_PARENT_MODES = [
+  'text',
+  'full',
+  'grant',
+  'preswitch',
+] as const;
 
 export type LabelParentMode = (typeof LABEL_PARENT_MODES)[number];
 

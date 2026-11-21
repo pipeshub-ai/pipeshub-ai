@@ -34,7 +34,6 @@ const decidedByPage = (store: ReadonlyMap<string, Row>, page: Row[]): Set<string
   if (stale.size === 0) return out
   // Any page row built on anything: a stale row on the page is rare enough to leave the page out whole.
   for (const row of page) if (!stale.has(String(row._id))) out.add(String(row._id))
-  void store
   return out
 }
 

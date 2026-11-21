@@ -149,7 +149,10 @@ async function run(
 const unsealed = (rows: unknown): unknown =>
   Array.isArray(rows)
     ? rows.map((row) => {
-        const { _ref: _r, _ver: _v, _pub: _p, ...rest } = row as Record<string, unknown>
+        const rest = { ...(row as Record<string, unknown>) }
+        delete rest._ref
+        delete rest._ver
+        delete rest._pub
         return rest
       })
     : rows

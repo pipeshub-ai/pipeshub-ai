@@ -128,7 +128,7 @@ describe('the row writer keeps the closure of each answer it stores', () => {
     ])
     expect(out).to.have.length(1)
     expect(kept.docs.size).to.equal(0)
-    const said = warn.getCalls().filter((c) => String(c.args[0]).startsWith('The answer closure store did not answer'))
+    const said = warn.getCalls().filter((c) => c.args[0].startsWith('The answer closure store did not answer'))
     expect(said).to.have.length(1)
     expect(said[0]?.args[1]).to.include({ call: 'put', error: 'store down' })
   })

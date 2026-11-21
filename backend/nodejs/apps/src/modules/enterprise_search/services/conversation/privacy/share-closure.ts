@@ -10,7 +10,8 @@ import {
 /** Who a share would reach: every member of the chat, the people named, or someone outside the chat (a file grant). */
 export type ShareAudience = 'everyone' | { userIds: string[] } | 'outside';
 
-export type ShareRefusalCode = 'SHARE_NOT_WIDENABLE' | 'SHARE_NOT_ALLOWED_AGENT';
+export type ShareRefusalCode =
+  'SHARE_NOT_WIDENABLE' | 'SHARE_NOT_ALLOWED_AGENT';
 
 export interface WidenResult {
   ok: boolean;
@@ -66,15 +67,30 @@ export interface ConsentViewer {
 
 export interface ShareClosureDeps {
   /** Which of `ids` (records and containers) the person can open now, asked fresh; null when the check failed. */
-  readable(orgId: string, userId: string, ids: string[]): Promise<ReadonlySet<string> | null>;
+  readable(
+    orgId: string,
+    userId: string,
+    ids: string[],
+  ): Promise<ReadonlySet<string> | null>;
   /** A row of the org by id, with its label fields, removed or not; null when there is none. */
   row(orgId: string, id: string): Promise<ShareableRow | null>;
   /** The agent of the chat that holds a row; undefined for none, null when it could not be read. */
-  sessionAgent(orgId: string, sessionId: string): Promise<string | undefined | null>;
+  sessionAgent(
+    orgId: string,
+    sessionId: string,
+  ): Promise<string | undefined | null>;
   /** Whether the agent runs as a service account, asked as `userId`; null when that could not be read. */
-  agentIsService(orgId: string, userId: string, agentKey: string): Promise<boolean | null>;
+  agentIsService(
+    orgId: string,
+    userId: string,
+    agentKey: string,
+  ): Promise<boolean | null>;
   /** Whether the person can use the agent; null when that could not be read. */
-  canUseAgent(orgId: string, userId: string, agentKey: string): Promise<boolean | null>;
+  canUseAgent(
+    orgId: string,
+    userId: string,
+    agentKey: string,
+  ): Promise<boolean | null>;
 }
 
 /** The most rows one check reads; a longer chain is never judged partly, so it can't be shared or shown. */
@@ -83,7 +99,9 @@ export const SHARE_CLOSURE_MAX_ROWS = 200;
 let configured: ShareClosureDeps | undefined;
 
 /** What the checks below read through in this process; bound once at start. */
-export const useShareClosureDeps = (deps: ShareClosureDeps | undefined): void => {
+export const useShareClosureDeps = (
+  deps: ShareClosureDeps | undefined,
+): void => {
   configured = deps;
 };
 
@@ -92,7 +110,13 @@ export const shareClosureDeps = (): ShareClosureDeps | undefined => configured;
 const isPlain = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
 
-const idOf = (v: unknown): string => (v == null ? '' : String(v));
+/** A stored id (a string or an ObjectId) as text; '' for none. */
+const idOf = (v: unknown): string =>
+  v == null
+    ? ''
+    : typeof v === 'string'
+      ? v
+      : (v as { toString(): string }).toString();
 
 type ArchivedVersion = LabelHistoryEntry & {
   consent?: StoredConsent;
@@ -119,7 +143,7 @@ export function versionOf(row: ShareableRow, ver: string): Version | undefined {
     };
   }
   const history = Array.isArray(row.labelHistory)
-    ? (row.labelHistory as ArchivedVersion[])
+    ? (row.labelHistory as Array<ArchivedVersion | null | undefined>)
     : [];
   const entry = history.find((e) => e?.ver === ver);
   if (!entry) return undefined;
@@ -136,13 +160,21 @@ export function versionOf(row: ShareableRow, ver: string): Version | undefined {
 const usableLabel = (label: unknown): label is AnswerProvenance => {
   if (!isPlain(label) || label.v !== LABEL_SCHEMA_VERSION) return false;
   if (label.complete !== true) return false;
-  if (Array.isArray(label.incomplete) && label.incomplete.length > 0) return false;
+  if (Array.isArray(label.incomplete) && label.incomplete.length > 0)
+    return false;
   const direct = label.direct;
   if (!isPlain(direct)) return false;
-  if (Object.keys(direct).some((k) => !(LABEL_DIRECT_KEYS as readonly string[]).includes(k))) {
+  if (
+    Object.keys(direct).some(
+      (k) => !(LABEL_DIRECT_KEYS as readonly string[]).includes(k),
+    )
+  ) {
     return false;
   }
-  return LABEL_DIRECT_KEYS.every((k) => Array.isArray(direct[k])) && Array.isArray(label.parents);
+  return (
+    LABEL_DIRECT_KEYS.every((k) => Array.isArray(direct[k])) &&
+    Array.isArray(label.parents)
+  );
 };
 
 interface Node {
@@ -158,9 +190,10 @@ class Refused extends Error {
   }
 }
 
-const refuse = (code: ShareRefusalCode = 'SHARE_NOT_WIDENABLE'): never => {
+// A declaration, not an arrow: a call to it then ends the path for the type checker too.
+function refuse(code: ShareRefusalCode = 'SHARE_NOT_WIDENABLE'): never {
   throw new Refused(code);
-};
+}
 
 /** How a chain is judged: by whose access, and what may stand in for a parent the person can't pass. */
 interface Judgement {
@@ -202,7 +235,11 @@ export async function widenCheck(
     },
   };
   try {
-    if (row.messageType !== 'bot_response' || row.removedAt != null || row.status === 'stopped') {
+    if (
+      row.messageType !== 'bot_response' ||
+      row.removedAt != null ||
+      row.status === 'stopped'
+    ) {
       refuse();
     }
     if (idOf(row.labelVer) !== ver || labelStateOf(row) !== 'ok') refuse();
@@ -229,7 +266,8 @@ export async function fullCheck(
   const judgement: Judgement = {
     who: viewer.userId,
     covered: (version) => consentCoversVersion(version, viewer),
-    configShown: async (key) => (await deps.canUseAgent(orgId, viewer.userId, key)) === true,
+    configShown: async (key) =>
+      (await deps.canUseAgent(orgId, viewer.userId, key)) === true,
   };
   try {
     if (idOf(row.labelVer) === ver && labelStateOf(row) !== 'ok') return false;
@@ -254,20 +292,26 @@ async function judge(
   }
   const ids = new Set<string>();
   for (const node of nodes.values()) {
-    for (const id of [...node.label.direct.records, ...node.label.direct.nodes]) ids.add(id);
+    for (const id of [...node.label.direct.records, ...node.label.direct.nodes])
+      ids.add(id);
   }
-  const readable = ids.size === 0 ? new Set<string>() : await deps.readable(orgId, judgement.who, [...ids]);
+  const readable =
+    ids.size === 0
+      ? new Set<string>()
+      : await deps.readable(orgId, judgement.who, [...ids]);
   if (readable === null) refuse();
-  const opens = readable!;
+  const opens = readable;
 
   const passes = (key: string, seen: ReadonlySet<string>): boolean => {
     const node = nodes.get(key);
     if (!node || seen.has(key)) return false;
     const { direct } = node.label;
-    if ([...direct.records, ...direct.nodes].some((id) => !opens.has(id))) return false;
+    if ([...direct.records, ...direct.nodes].some((id) => !opens.has(id)))
+      return false;
     if (direct.personal.some((p) => p !== judgement.who)) return false;
     if (direct.projects.length > 0) return false;
-    if (direct.chat.some((c) => c.conversationId !== idOf(node.row.sessionId))) return false;
+    if (direct.chat.some((c) => c.conversationId !== idOf(node.row.sessionId)))
+      return false;
     const next = new Set(seen).add(key);
     return node.parents.every((p) => {
       const parentKey = `${p.id}@${p.ver}`;
@@ -288,23 +332,28 @@ async function closureOf(
 ): Promise<Map<string, Node>> {
   const nodes = new Map<string, Node>();
   const queue: Array<{ row: ShareableRow; ver: string }> = [{ row: root, ver }];
-  while (queue.length > 0) {
-    const { row, ver: at } = queue.shift()!;
+  for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+    const { row, ver: at } = next;
     const key = `${idOf(row._id)}@${at}`;
     if (nodes.has(key)) continue;
     if (nodes.size >= SHARE_CLOSURE_MAX_ROWS) refuse();
     const version = versionOf(row, at);
     if (!version || !usableLabel(version.label)) refuse();
-    const label = version!.label as AnswerProvenance;
-    nodes.set(key, { row, label, version: version!, parents: label.parents });
+    const label = version.label;
+    nodes.set(key, { row, label, version, parents: label.parents });
     for (const parent of label.parents) {
       // A file, a direct grant or a pre-switch view is someone's own access, never something to pass on.
-      if (parent.mode === 'grant' || parent.mode === 'preswitch' || !parent.id || parent.artifactId) {
+      if (
+        parent.mode === 'grant' ||
+        parent.mode === 'preswitch' ||
+        !parent.id ||
+        parent.artifactId
+      ) {
         refuse();
       }
       const parentRow = await deps.row(orgId, parent.id);
       if (!parentRow || idOf(parentRow.orgId) !== orgId) refuse();
-      queue.push({ row: parentRow!, ver: parent.ver });
+      queue.push({ row: parentRow, ver: parent.ver });
     }
   }
   return nodes;
@@ -342,24 +391,36 @@ async function agentConfigsOf(
     if (key) keys.add(key);
   }
   for (const key of keys) {
-    if ((await deps.agentIsService(orgId, who, key)) !== false) refuse('SHARE_NOT_ALLOWED_AGENT');
+    if ((await deps.agentIsService(orgId, who, key)) !== false)
+      refuse('SHARE_NOT_ALLOWED_AGENT');
   }
   return config;
 }
 
 /** `versionOf` keeps only a consent made for that very version; a share with people covers the current one only. */
-const consentCoversVersion = (version: Version, viewer: ConsentViewer): boolean => {
+const consentCoversVersion = (
+  version: Version,
+  viewer: ConsentViewer,
+): boolean => {
   const { consent } = version;
   if (!consent || viewer.member !== true) return false;
-  if (consent.scope === 'everyone') return true;
-  return (
-    consent.scope === 'people' &&
-    version.current &&
-    viewer.memberSince !== undefined &&
-    version.consentTo.some(
-      (entry) => idOf(entry.userId) === viewer.userId && entry.memberSince === viewer.memberSince,
-    )
-  );
+  switch (consent.scope) {
+    case 'everyone':
+      return true;
+    case 'people':
+      return (
+        version.current &&
+        viewer.memberSince !== undefined &&
+        version.consentTo.some(
+          (entry) =>
+            idOf(entry.userId) === viewer.userId &&
+            entry.memberSince === viewer.memberSince,
+        )
+      );
+    default:
+      // A stored scope this code does not know covers no one.
+      return false;
+  }
 };
 
 /**

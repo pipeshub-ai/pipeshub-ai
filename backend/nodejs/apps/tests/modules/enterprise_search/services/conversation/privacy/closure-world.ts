@@ -328,7 +328,7 @@ export function makeWorld(seed: number): World {
       const runId = `${String(row.runId)}-again-${i}`
       row.runId = runId
       runs.push(runId)
-      row.provenance = labelFor(String(row.requestedBy ?? DANA), String(row.sessionId), labelVer, content, parts)
+      row.provenance = labelFor(typeof row.requestedBy === 'string' ? row.requestedBy : DANA, String(row.sessionId), labelVer, content, parts)
       versions.vers.push(labelVer)
       record('write', row)
     }

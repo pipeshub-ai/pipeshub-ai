@@ -91,7 +91,7 @@ const label = (over: Record<string, unknown> = {}, ver = '', hash = ''): Record<
 })
 
 let n = 0
-const nextId = (): string => `${(++n).toString(16).padStart(24, '0')}`
+const nextId = (): string => (++n).toString(16).padStart(24, '0')
 
 /** An answer row stored the way the save seals it: its label bound to its version and to the hash of its text. */
 const answer = (
@@ -563,7 +563,7 @@ describe('the reader check: who may see an answer', () => {
     it('a shared copy in the chat is text for its members', async () => {
       const copy = { _id: nextId(), sessionId: ROOM, messageType: 'shared_answer', authorUserId: DANA, requestedBy: DANA, content: 'Shared.' }
       const w = world([copy])
-      expect((await verdictsFor(BOB, [copy], w)).get(String(copy._id))?.verdict).to.equal('consented')
+      expect((await verdictsFor(BOB, [copy], w)).get(copy._id)?.verdict).to.equal('consented')
     })
   })
 
@@ -859,18 +859,18 @@ describe('the reader check: who may see an answer', () => {
       const card = { _id: nextId(), sessionId: ROOM, messageType: 'tool_call', requestedBy: DANA, content: 'card' }
       const a = answer('R says.', {}, { direct: { records: [R] } })
       const w = world([q, card, a])
-      expect((await verdictsFor(DANA, [q, card, a], w)).get(String(card._id))?.verdict).to.equal('visible')
-      expect((await verdictsFor(CAROL, [q, card, a], w)).get(String(card._id))?.verdict).to.equal('visible')
+      expect((await verdictsFor(DANA, [q, card, a], w)).get(card._id)?.verdict).to.equal('visible')
+      expect((await verdictsFor(CAROL, [q, card, a], w)).get(card._id)?.verdict).to.equal('visible')
       const bob = await verdictsFor(BOB, [q, card, a], w)
-      expect(bob.get(String(card._id))?.verdict).to.equal('hidden')
+      expect(bob.get(card._id)?.verdict).to.equal('hidden')
       expect(bob.get(String(q._id))?.verdict).to.equal('visible')
     })
 
     it('a card read without its answer is its asker\'s alone', async () => {
       const card = { _id: nextId(), sessionId: ROOM, messageType: 'tool_call', requestedBy: DANA, content: 'card' }
       const w = world([card])
-      expect((await verdictsFor(DANA, [card], w)).get(String(card._id))?.verdict).to.equal('visible')
-      expect((await verdictsFor(CAROL, [card], w)).get(String(card._id))?.verdict).to.equal('hidden')
+      expect((await verdictsFor(DANA, [card], w)).get(card._id)?.verdict).to.equal('visible')
+      expect((await verdictsFor(CAROL, [card], w)).get(card._id)?.verdict).to.equal('hidden')
     })
 
     it("another person's steps never reach a reader who sees the answer", async () => {
@@ -977,7 +977,7 @@ describe('the reader check: who may see an answer', () => {
       const w = world([q, card, a])
       const dana = await verdictsFor(DANA, [q, card, a], w)
       expect(dana.get(String(a._id))?.verdict).to.equal('hidden')
-      expect(dana.get(String(card._id))?.verdict).to.equal('hidden')
+      expect(dana.get(card._id)?.verdict).to.equal('hidden')
     })
   })
 
@@ -1036,18 +1036,10 @@ describe('the reader check: who may see an answer', () => {
 
     /** A stored row as the detail read hands it to the check: the views took its share and label fields, and its place. */
     const asDetailShows = (row: Row): Row => {
-      const {
-        consent: _consent,
-        consentTo: _to,
-        shareRequests: _requests,
-        provenance: _label,
-        labelHistory: _history,
-        sessionId: _session,
-        orgId: _org,
-        seq: _seq,
-        changeRev: _rev,
-        ...shown
-      } = row
+      const shown = { ...row }
+      for (const field of ['consent', 'consentTo', 'shareRequests', 'provenance', 'labelHistory', 'sessionId', 'orgId', 'seq', 'changeRev']) {
+        delete shown[field]
+      }
       return shown
     }
     const SHAPES: Array<[string, (row: Row) => Row]> = [
@@ -1062,7 +1054,9 @@ describe('the reader check: who may see an answer', () => {
       share: { consent?: Record<string, unknown>; consentTo?: unknown[] },
       { audience = false }: { audience?: boolean } = {},
     ): Row => {
-      const { consent: _c, consentTo: _t, ...rest } = row
+      const rest = { ...row }
+      delete rest.consent
+      delete rest.consentTo
       const next: Row = { ...rest, ...share }
       w.store.set(String(row._id), next)
       if (audience) w.audience.set(ROOM, (w.audience.get(ROOM) ?? 0) + 1)

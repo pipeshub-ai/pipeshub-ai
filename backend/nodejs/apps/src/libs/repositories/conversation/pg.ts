@@ -1866,14 +1866,14 @@ export class PgConversationRepository
     });
   }
 
-  async listMessagesOfRuns(
+  listMessagesOfRuns(
     _orgId: string,
     _sessionIds: string[],
     _runIds: string[],
   ): Promise<MessageLabelRow[]> {
     // This store keeps no run on a message, so no writer is found: a file read from another run hides what was built
     // on it, as before runs were named.
-    return [];
+    return Promise.resolve([]);
   }
 
   async findOpeningMessage(

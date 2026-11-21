@@ -402,7 +402,10 @@ export class Application {
         ConfigService.getInstance().getScopedJwtSecret(),
       );
       // What the AI backend is sent in place of a caller's app session, so a run never holds one.
-      const runTokens = new AuthTokenService(appConfig.jwtSecret, appConfig.scopedJwtSecret);
+      const runTokens = new AuthTokenService(
+        appConfig.jwtSecret,
+        appConfig.scopedJwtSecret,
+      );
       useRunTokenMinter((bearer) => runTokens.runTokenFor(bearer));
 
       // Ensure message broker topics/streams exist

@@ -2426,14 +2426,8 @@ export function consentedView(
   deps: Pick<VisibilityDeps, 'sharedText'> = configured,
 ): Record<string, unknown> {
   if (row.messageType === SHARED_ANSWER) {
-    const {
-      citations: _c,
-      referenceData: _r,
-      parts: _p,
-      tools: _t,
-      reasoning: _s,
-      ...copy
-    } = row;
+    const copy: Record<string, unknown> = { ...row };
+    for (const field of ['citations', 'referenceData', 'parts', 'tools', 'reasoning']) delete copy[field];
     return copy;
   }
   let text: string;

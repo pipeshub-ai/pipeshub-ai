@@ -409,7 +409,7 @@ const defaultDeps = (): VisibilityDeps => ({
       ids.map(async (id) => {
         const chat = await repo.findById(id);
         if (chat && idOf(chat.orgId) === orgId) {
-          out.set(id, chat as unknown as ReaderSession);
+          out.set(id, chat);
         }
       }),
     );
@@ -426,7 +426,7 @@ const defaultDeps = (): VisibilityDeps => ({
       })
     ).map((row) => row.dto as unknown as ReaderRow),
   perRecordView: async (reader, rows, ownerId, opts) =>
-    (await redactMessagesFor(
+    await redactMessagesFor(
       (opts.appConfig ?? appConfigOf?.()) as AppConfig,
       reader,
       rows as unknown as ViewerMessage[],
@@ -436,7 +436,7 @@ const defaultDeps = (): VisibilityDeps => ({
         timeoutMs: opts.timeoutMs,
         leadUnknown: opts.leadUnknown,
       },
-    )) as unknown as ReaderRow[],
+    ),
 });
 
 /** Ids the closures this process keeps in memory may hold together; past it the least recently used go. */
@@ -1048,7 +1048,10 @@ class Judge {
   /** Rows whose earlier versions were not all read (too deep or too many): they hide. */
   private readonly cut = new Set<string>();
   /** For each run a file parent names, the row versions it wrote in the chats read; empty when none was found. */
-  private readonly writers = new Map<string, Array<{ id: string; ver: string }>>();
+  private readonly writers = new Map<
+    string,
+    Array<{ id: string; ver: string }>
+  >();
   private readonly sessionIds: Set<string>;
   private readonly sharesRead: ReadonlySet<string> | undefined;
   /**

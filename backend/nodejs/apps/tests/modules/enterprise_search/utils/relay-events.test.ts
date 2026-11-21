@@ -144,6 +144,21 @@ describe('stream relay: what reaches the browser', () => {
     expect(seen).to.deep.equal([[undefined, 'ab'], [{ n: 1 }, 'cd'], [undefined, 'ef']])
   })
 
+  it("keys a message's sanitiser state by its string ids; an id that is not a string counts as none", () => {
+    const seen: unknown[] = []
+    sinon.stub(sanitizer, 'sanitizeAnswerDelta').callsFake((state, text) => {
+      seen.push(state)
+      return { state: { n: ((state as { n?: number } | undefined)?.n ?? 0) + 1 }, out: text }
+    })
+    const relay = new StreamRelay()
+    const content = (fields: Row) => relayed(relay, 'TEXT_MESSAGE_CONTENT', { type: 'TEXT_MESSAGE_CONTENT', delta: 'x', ...fields })
+    content({ messageId: 'm1', runId: RUN })
+    content({ messageId: 'm1', runId: 'run-2' })
+    content({ messageId: { id: 'm1' }, runId: RUN })
+    content({ runId: RUN })
+    expect(seen).to.deep.equal([undefined, undefined, undefined, { n: 1 }])
+  })
+
   it('flushes what the sanitiser held back when the message ends', () => {
     sinon.stub(sanitizer, 'sanitizeAnswerDelta').callsFake((_state, text) => ({ state: { held: true } as never, out: text }))
     sinon.stub(sanitizer, 'flushAnswerDelta').callsFake(() => ({ state: {} as never, out: ' tail' }))

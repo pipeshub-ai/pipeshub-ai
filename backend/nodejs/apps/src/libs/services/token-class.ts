@@ -18,7 +18,9 @@ export const TOKEN_CLASS = {
 export type TokenClass = (typeof TOKEN_CLASS)[keyof typeof TOKEN_CLASS];
 
 /** Whether an authenticated request's user is the app's own interactive session, and nothing a run or a client holds. */
-export const isAppSession = (user: Record<string, unknown> | undefined): boolean =>
+export const isAppSession = (
+  user: Record<string, unknown> | undefined,
+): boolean =>
   user !== undefined &&
   user.isOAuth !== true &&
   user[TOKEN_CLASS_CLAIM] === TOKEN_CLASS.session;
@@ -37,11 +39,19 @@ export const useRunTokenMinter = (next: RunTokenMinter | undefined): void => {
  * `headers` (lower-case names) with an app session's bearer swapped for the run's copy, so a run never holds a token
  * that passes for the app: the same claims and lifetime, marked `run`. Any other bearer is left as it is.
  */
-export function withRunBearer(headers: Record<string, string>): Record<string, string> {
+export function withRunBearer(
+  headers: Record<string, string>,
+): Record<string, string> {
   const authorization = headers.authorization;
-  if (!minter || typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
+  if (
+    !minter ||
+    typeof authorization !== 'string' ||
+    !authorization.startsWith('Bearer ')
+  ) {
     return headers;
   }
   const run = minter(authorization.slice('Bearer '.length));
-  return run === undefined ? headers : { ...headers, authorization: `Bearer ${run}` };
+  return run === undefined
+    ? headers
+    : { ...headers, authorization: `Bearer ${run}` };
 }

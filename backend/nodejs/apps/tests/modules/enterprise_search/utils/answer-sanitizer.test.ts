@@ -220,7 +220,7 @@ describe('sanitizeAnswerDelta', () => {
     for (const text of texts) {
       const whole = sanitizeAnswerMarkdown(text)
       expect(stream(text, []), 'one delta').to.equal(whole)
-      expect(stream(text, [...text].map((_c, i) => i).slice(1)), 'one character at a time').to.equal(whole)
+      expect(stream(text, Array.from({ length: text.length }, (_c, i) => i).slice(1)), 'one character at a time').to.equal(whole)
       for (let run = 0; run < 20; run += 1) {
         const cuts = [...new Set([...Array(4)].map(() => Math.floor(random() * text.length)))].sort((a, b) => a - b)
         expect(stream(text, cuts), `cuts ${cuts.join(',')}`).to.equal(whole)

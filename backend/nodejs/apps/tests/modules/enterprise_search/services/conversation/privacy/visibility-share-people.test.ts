@@ -21,7 +21,7 @@ const T0 = new Date('2026-10-01T10:00:00Z')
 const DIRECT_KEYS = ['records', 'vrids', 'nodes', 'saVrids', 'personal', 'agents', 'chat', 'projects', 'marks']
 
 let n = 0
-const nextId = (): string => `${(++n).toString(16).padStart(24, '0')}`
+const nextId = (): string => (++n).toString(16).padStart(24, '0')
 
 const person = (i: number): string => `${(0x500000 + i).toString(16)}${'0'.repeat(18)}`
 

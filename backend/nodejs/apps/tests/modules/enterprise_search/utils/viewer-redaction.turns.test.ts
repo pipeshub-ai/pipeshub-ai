@@ -158,7 +158,9 @@ describe('the per-record view judges an answer with its whole turn', () => {
 
   describe('redactWithTurns, a frame (one run of the chat, rows with no place)', () => {
     const bare = (m: Record<string, unknown>) => {
-      const { seq: _seq, sessionId: _sid, ...rest } = m
+      const rest = { ...m }
+      delete rest.seq
+      delete rest.sessionId
       return rest as ViewerMessage
     }
 

@@ -150,8 +150,7 @@ export function failFastEpochSource(
 /** Where this deployment's counters are, read fast or not at all. */
 export const epochSourceFor = (
   provider:
-    | Pick<IRedisConnectionProvider, 'getClient' | 'keyNamespace'>
-    | undefined,
+    Pick<IRedisConnectionProvider, 'getClient' | 'keyNamespace'> | undefined,
 ): EpochSource => {
   const mode = defaultRedisMode().toLowerCase();
   if (mode === 'postgres') return failFastEpochSource(pgEpochSource);

@@ -297,7 +297,7 @@ describe('TelemetryService', () => {
 
       const eventsCall = postStub
         .getCalls()
-        .find((c) => String(c.args[0]).includes('collect-events'));
+        .find((c) => c.args[0].includes('collect-events'));
       expect(eventsCall, 'expected a POST to collect-events').to.exist;
       const payload = eventsCall!.args[1] as any;
       expect(payload.instanceId).to.equal('install-1234');
@@ -315,7 +315,7 @@ describe('TelemetryService', () => {
 
       const eventsCall = postStub
         .getCalls()
-        .find((c) => String(c.args[0]).includes('collect-events'));
+        .find((c) => c.args[0].includes('collect-events'));
       expect(eventsCall).to.be.undefined;
     });
 

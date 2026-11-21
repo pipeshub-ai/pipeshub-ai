@@ -282,6 +282,25 @@ describe('the share check: an answer and everything it built on', () => {
       const regenerated = { ...a, ...answer('a', DANA), consent: a.consent };
       expect(consentCoversViewer(regenerated, regenerated.labelVer, { userId: BOB, member: true, memberSince: 'direct:1' })).to.equal(false);
     });
+
+    it('a stored share whose scope this code does not know covers no one', () => {
+      const a = answer('a', DANA);
+      Object.assign(a, peopleShare(a, DANA, [[BOB, 'direct:1']]));
+      expect(consentCoversViewer(a, a.labelVer, { userId: BOB, member: true, memberSince: 'direct:1' })).to.equal(true);
+      Object.assign(a.consent as object, { scope: 'team' });
+      expect(consentCoversViewer(a, a.labelVer, { userId: BOB, member: true, memberSince: 'direct:1' })).to.equal(false);
+    });
+
+    it('an archived version is found past an empty entry of the archive', () => {
+      const a = answer('a', DANA);
+      const archived = {
+        ver: 'ver-archived',
+        provenance: labelOf(),
+        consent: { by: DANA, at: new Date(), ver: 'ver-archived', scope: 'everyone' as const },
+      };
+      Object.assign(a, { labelHistory: [null, archived] });
+      expect(consentCoversViewer(a, 'ver-archived', { userId: BOB, member: true })).to.equal(true);
+    });
   });
 
   describe('fullCheck', () => {

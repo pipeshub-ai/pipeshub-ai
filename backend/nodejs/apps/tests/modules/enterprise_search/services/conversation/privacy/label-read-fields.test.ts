@@ -188,8 +188,12 @@ const PAGE = STORED.filter((r) => !READ_FOR_ITSELF.includes(r))
 
 /** A row as a page read gets it: the fields stored apart from the row's text stay in the store. */
 const asPaged = (row: Row): Row => {
-  const { provenance: _p, labelHistory: _h, consentTo: _c, shareRequests: _s, ...rest } = row
-  return rest as Row
+  const rest = { ...row }
+  delete rest.provenance
+  delete rest.labelHistory
+  delete rest.consentTo
+  delete rest.shareRequests
+  return rest
 }
 
 const onlyReadFields = (row: Row): Row =>

@@ -58,13 +58,15 @@ const FIELDS: Record<string, readonly string[]> = {
 };
 
 /** Each forwarded event type, with the fields it may carry. */
-export const RELAYED_EVENT_FIELDS: ReadonlyMap<string, ReadonlySet<string>> =
-  new Map(
-    Object.entries(FIELDS).map(([type, fields]) => [
-      type,
-      new Set([...BASE, ...fields]),
-    ]),
-  );
+export const RELAYED_EVENT_FIELDS: ReadonlyMap<
+  string,
+  ReadonlySet<string>
+> = new Map(
+  Object.entries(FIELDS).map(([type, fields]) => [
+    type,
+    new Set([...BASE, ...fields]),
+  ]),
+);
 
 /** The custom events the asker's client acts on. */
 export const RELAYED_CUSTOM_EVENTS: ReadonlySet<string> = new Set([
@@ -107,6 +109,10 @@ const LABEL_FIELDS: ReadonlySet<string> = new Set(LABEL_ROW_FIELDS);
 const MAX_DEPTH = 32;
 
 type Frame = Record<string, unknown>;
+
+/** An id field of a frame as key text: the protocol's ids are strings, and a frame without one keys as ''. */
+const idText = (value: unknown): string =>
+  typeof value === 'string' ? value : '';
 
 const isPlain = (value: unknown): value is Frame =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -237,7 +243,9 @@ export class StreamRelay {
       }
       ops.push({ op: op.op, path: op.path, ...('value' in op && { value }) });
     }
-    return ops.length > 0 ? frameOf('STATE_DELTA', { ...frame, delta: ops }) : '';
+    return ops.length > 0
+      ? frameOf('STATE_DELTA', { ...frame, delta: ops })
+      : '';
   }
 
   private textDelta(type: string, frame: Frame): string {
@@ -276,6 +284,6 @@ export class StreamRelay {
   }
 
   private keyOf(contentType: string, frame: Frame): string {
-    return `${contentType}:${String(frame.runId ?? '')}:${String(frame.messageId ?? '')}`;
+    return `${contentType}:${idText(frame.runId)}:${idText(frame.messageId)}`;
   }
 }

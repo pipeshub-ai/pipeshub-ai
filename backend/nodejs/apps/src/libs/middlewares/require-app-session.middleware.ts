@@ -9,7 +9,11 @@ export const APP_SESSION_REQUIRED = 'APP_SESSION_REQUIRED';
 
 export class AppSessionRequiredError extends DomainHttpError {
   constructor() {
-    super(APP_SESSION_REQUIRED, 'This can be done only in the PipesHub app', 403);
+    super(
+      APP_SESSION_REQUIRED,
+      'This can be done only in the PipesHub app',
+      403,
+    );
   }
 }
 

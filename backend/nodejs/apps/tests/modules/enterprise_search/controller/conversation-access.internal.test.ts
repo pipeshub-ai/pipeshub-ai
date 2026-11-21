@@ -15,7 +15,6 @@ import { invokeRoute } from '../helpers/route-invoker'
  */
 
 const INTERNAL = CONVERSATION_ROUTES.filter((r) => r.internal)
-const AGENT_ID = 'agent-1'
 
 const scoped = (email: string): Record<string, unknown> => ({ tokenPayload: { email, orgId: String(ORG) } })
 /** Hydration resolves the deployment's only org before it looks up the user. Stub after `seed()`, which restores sinon. */

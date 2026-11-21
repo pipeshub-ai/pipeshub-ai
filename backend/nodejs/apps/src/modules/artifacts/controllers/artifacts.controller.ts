@@ -231,14 +231,19 @@ const namedRefusal = (response: {
 }): DomainHttpError | undefined => {
   if (response.statusCode !== 403) return undefined;
   const detail = (response.data as { detail?: unknown } | undefined)?.detail as
-    | { code?: unknown; message?: unknown }
-    | undefined;
-  if (!detail || typeof detail.code !== 'string' || !NAMED_REFUSAL.test(detail.code)) {
+    { code?: unknown; message?: unknown } | undefined;
+  if (
+    !detail ||
+    typeof detail.code !== 'string' ||
+    !NAMED_REFUSAL.test(detail.code)
+  ) {
     return undefined;
   }
   return new ArtifactShareRefusedError(
     detail.code,
-    typeof detail.message === 'string' ? detail.message : 'This file cannot be shared',
+    typeof detail.message === 'string'
+      ? detail.message
+      : 'This file cannot be shared',
   );
 };
 

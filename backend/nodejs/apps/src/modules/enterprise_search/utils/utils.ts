@@ -581,9 +581,9 @@ const withoutStoredLabel = (
   doc: IChatSessionMessageDocument,
 ): IChatSessionMessageDocument =>
   typeof (doc as Partial<IChatSessionMessageDocument>).toObject === 'function'
-    ? (ChatSessionMessage.hydrate(
+    ? ChatSessionMessage.hydrate(
         withoutLabelFields(doc.toObject() as Record<string, unknown>),
-      ) as IChatSessionMessageDocument)
+      )
     : withoutLabelFields(doc);
 
 /** The row with its label fields, which no ordinary read selects. */
@@ -591,10 +591,14 @@ const readWithLabel = async (
   filter: QueryFilter<IChatSessionMessageDocument>,
   mongoSession?: ClientSession | null,
 ): Promise<StoredLabelRow | null> =>
-  (await ChatSessionMessage.findOne(filter, '+provenance +labelHistory +consentTo', {
-    session: mongoSession || undefined,
-    lean: true,
-  })) as StoredLabelRow | null;
+  await ChatSessionMessage.findOne(
+    filter,
+    '+provenance +labelHistory +consentTo',
+    {
+      session: mongoSession || undefined,
+      lean: true,
+    },
+  );
 
 /**
  * Append one or more messages to a session's message collection. Allocates
@@ -658,7 +662,10 @@ export const updateMessageById = async (
   // The history comes from the stored row, never from the new content.
   const { labelHistory: _carried, ...next } = storedForm(newContent);
   for (let attempt = 1; ; attempt += 1) {
-    const existing = await readWithLabel({ _id: messageId, orgId }, mongoSession);
+    const existing = await readWithLabel(
+      { _id: messageId, orgId },
+      mongoSession,
+    );
     if (!existing) {
       return null;
     }
@@ -1146,7 +1153,10 @@ export const withViewerSources = async <C extends { messages?: unknown }>(
   ) {
     return conversation;
   }
-  const chat = conversation as { userId?: unknown; initiator?: unknown };
+  const chat = conversation as {
+    userId?: { toString(): string } | null;
+    initiator?: { toString(): string } | null;
+  };
   const ownerId = String(chat.userId ?? chat.initiator ?? viewer.userId);
   return {
     ...conversation,
@@ -1860,7 +1870,7 @@ const sealOf = (
     _pub?: unknown;
   };
   if (
-    ANSWER_ROLES.has(String(msg.messageType)) &&
+    ANSWER_ROLES.has(msg.messageType) &&
     !givesData &&
     !(typeof msg.content === 'string' && msg.content.trim() !== '')
   ) {
@@ -2946,9 +2956,7 @@ const askerOfTurn = (
   run: TurnRun | undefined,
   conversation: IChatSessionDocument,
 ): mongoose.Types.ObjectId | undefined =>
-  (run?.requestedBy ?? conversation.userId) as
-    | mongoose.Types.ObjectId
-    | undefined;
+  run?.requestedBy ?? conversation.userId;
 
 /**
  * A regeneration that edits the chat's first question moves the title with it, in memory, and whatever saves the chat's

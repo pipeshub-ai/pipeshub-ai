@@ -1411,7 +1411,11 @@ export class MongoConversationRepository implements ConversationRepository {
         '+provenance +labelHistory +consentTo',
         { session: sessionOf(tx), lean: true },
       )) as
-        | (StoredLabelFields & { sessionId: unknown; orgId: unknown; seq: number })
+        | (StoredLabelFields & {
+            sessionId: unknown;
+            orgId: unknown;
+            seq: number;
+          })
         | null;
       if (!existing) return null;
       const labelHistory = archivedLabelHistory(existing);

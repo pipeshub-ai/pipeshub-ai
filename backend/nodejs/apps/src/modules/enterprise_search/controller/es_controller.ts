@@ -683,7 +683,9 @@ const turnEdgesOf = async <M extends ViewerMessage>(
 const unselectedSessionPaths = (): Record<string, 0> => {
   const hidden: Record<string, 0> = {};
   ChatSession.schema.eachPath((path, type) => {
-    if ((type as { options?: { select?: unknown } }).options?.select === false) {
+    if (
+      (type as { options?: { select?: unknown } }).options?.select === false
+    ) {
       hidden[path] = 0;
     }
   });
