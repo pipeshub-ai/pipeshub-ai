@@ -3375,7 +3375,7 @@ class SharePointConnector(BaseConnector):
         try:
             users = await self._fetch_graph_group_members(group_id, is_owner=is_owner)
         except Exception as e:
-            if self._group_grace.refused(key, e):
+            if await self._group_grace.refused(key, e):
                 self._health.skipped(f"members of Entra group {key}", e)
                 return []
             raise
@@ -3511,7 +3511,7 @@ class SharePointConnector(BaseConnector):
             if isinstance(result, Exception):
                 complete = False
                 self._health.skipped(f"members of Entra group {getattr(group, 'display_name', group.id)}", result)
-                if self._group_grace.refused(group.id, result):
+                if await self._group_grace.refused(group.id, result):
                     group_with_members.append((self._app_user_group(group), []))
             else:
                 self._group_grace.read(group.id)
@@ -3579,7 +3579,7 @@ class SharePointConnector(BaseConnector):
                     # Still not applied once the grace is over: the page is read again until the members are.
                     applied = False
                     self._health.skipped(f"members of Entra group {getattr(group, 'display_name', group.id)}", e)
-                    if self._group_grace.refused(group.id, e):
+                    if await self._group_grace.refused(group.id, e):
                         refreshed.append((self._app_user_group(group), []))
             if refreshed:
                 await self.data_entities_processor.on_new_user_groups(refreshed)

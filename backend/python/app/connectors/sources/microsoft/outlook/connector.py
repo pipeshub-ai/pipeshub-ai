@@ -902,7 +902,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     except Exception as e:
                         self._full_sync_incomplete = True
                         self._skipped["groups"] += 1
-                        if grace.refused(group_id, e):
+                        if await grace.refused(group_id, e):
                             self.logger.error(f"Withdrawing the stored members of group {group_id}: {e}")
                             members = []
                         else:

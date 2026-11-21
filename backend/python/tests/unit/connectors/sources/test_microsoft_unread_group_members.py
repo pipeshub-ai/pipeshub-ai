@@ -21,6 +21,7 @@ from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
+from app.services.notification.types import NotificationOutcome
 
 N = UNCONFIRMED_SYNCS_BEFORE_CLOSE
 
@@ -90,7 +91,7 @@ class Outlook:
         self.proc = _processor()
         self.c = OutlookConnector(logging.getLogger("t"), self.proc, MagicMock(), MagicMock(), "c1", "team", "creator")
         self.c.user_sync_point = _SyncPoint()
-        self.c.notify = AsyncMock()
+        self.c.notify_and_wait = AsyncMock(return_value=NotificationOutcome.SENT)
         self.c.sync_filters = FilterCollection()
         self.c._skipped = {"mailboxes": 0, "folders": 0, "groups": 0, "mails": 0}
         self.c._full_sync_incomplete = False
@@ -121,7 +122,7 @@ class SharePoint:
         self.c = SharePointConnector(logging.getLogger("t"), self.proc, MagicMock(), MagicMock(), "c1", "team", "creator")
         self.c.user_sync_point = _SyncPoint()
         self.c._group_grace.sync_point = self.c.user_sync_point
-        self.c.notify = AsyncMock()
+        self.c.notify_and_wait = AsyncMock(return_value=NotificationOutcome.SENT)
         self.c.msgraph_client = MagicMock()
         self.c.msgraph_client.get_all_user_groups = AsyncMock(return_value=[_group("g1")])
         self.c.msgraph_client.get_groups_delta_response = AsyncMock(
@@ -168,15 +169,15 @@ async def test_a_lasting_refusal_withdraws_the_stored_members_at_the_bound_and_t
     for _ in range(N - 1):
         await world.sync()
     assert _written(world.proc, "g1") == [["ann@x.com"]], "kept within the grace"
-    world.c.notify.assert_not_awaited()
+    world.c.notify_and_wait.assert_not_awaited()
     with caplog.at_level(logging.ERROR):
         await world.sync()
     assert _written(world.proc, "g1")[-1] == [], "the stored members lose the group's access at the bound"
     assert any("unverified past the grace" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records)
-    world.c.notify.assert_awaited_once()
+    world.c.notify_and_wait.assert_awaited_once()
     await world.sync()
     assert _written(world.proc, "g1")[-1] == [], "stays closed while the refusal lasts"
-    world.c.notify.assert_awaited_once()
+    world.c.notify_and_wait.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -201,7 +202,7 @@ async def test_a_successful_read_starts_the_count_again(world: Outlook | SharePo
         world.answer = ok
         await world.sync()
     assert [] not in _written(world.proc, "g1")
-    world.c.notify.assert_not_awaited()
+    world.c.notify_and_wait.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -210,7 +211,7 @@ async def test_a_read_that_never_reached_microsoft_keeps_and_is_not_counted(worl
     for _ in range(N + 2):
         await world.sync()
     assert [] not in _written(world.proc, "g1")
-    world.c.notify.assert_not_awaited()
+    world.c.notify_and_wait.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -268,7 +269,7 @@ async def test_sharepoint_site_group_drops_an_entra_group_refused_past_the_grace
         with pytest.raises(ODataError):
             await members()  # the SharePoint group keeps its stored members within the grace
     assert await members() == ["bob@x.com"]
-    w.c.notify.assert_awaited_once()
+    w.c.notify_and_wait.assert_awaited_once()
     w.answer = [{"id": "u-ann", "email": "ann@x.com", "name": "Ann"}]
     assert await members() == ["ann@x.com", "bob@x.com"]
 
@@ -280,3 +281,66 @@ async def test_outlook_keeps_within_the_grace_through_note_kept() -> None:
     await w.sync()
     w.proc.note_kept_user_group.assert_awaited_once_with("c1", "g1")
     assert w.c._full_sync_incomplete
+
+
+def _notices(w: Outlook | SharePoint) -> list[str]:
+    return [c.kwargs["message"] for c in w.c.notify_and_wait.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_the_notice_is_owed_before_the_group_is_written_empty(world: Outlook | SharePoint) -> None:
+    owed_at_write: list[str] = []
+
+    async def write(batch: list) -> None:
+        if any(g.source_user_group_id == "g1" and not users for g, users in batch):
+            owed_at_write.append(world.c.user_sync_point.data[GROUP_CHECK_KEY]["pending_notice"])
+
+    world.proc.on_new_user_groups.side_effect = write
+    world.answer = _odata(403)
+    for _ in range(N):
+        await world.sync()
+    assert owed_at_write and owed_at_write[0] == '["g1"]'
+    assert world.c.user_sync_point.data[GROUP_CHECK_KEY]["pending_notice"] == "[]", "cleared once sent"
+
+
+@pytest.mark.asyncio
+async def test_an_undelivered_notice_is_sent_again_until_it_is_delivered(world: Outlook | SharePoint) -> None:
+    world.c.notify_and_wait.return_value = NotificationOutcome.FAILED
+    world.answer = _odata(403)
+    for _ in range(N + 1):
+        await world.sync()
+    assert len(_notices(world)) == 2, "owed from the close, sent again the next sync"
+    assert world.c.user_sync_point.data[GROUP_CHECK_KEY]["pending_notice"] == '["g1"]'
+    world.c.notify_and_wait.return_value = NotificationOutcome.SENT
+    await world.sync()
+    await world.sync()
+    assert len(_notices(world)) == 3, "sent once more, then no longer owed"
+    assert all(c.kwargs["suppress_repeats"] is False for c in world.c.notify_and_wait.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_two_closes_give_two_notices() -> None:
+    w = Outlook()
+    w.c._get_all_microsoft_365_groups = AsyncMock(return_value=[_group("g1"), _group("g2")])
+    refused: set[str] = {"g1"}
+    by_group = w.c.external_users_client.client.groups.by_group_id
+    plain = by_group.return_value.transitive_members.get
+
+    def builder(gid: str) -> MagicMock:
+        b = MagicMock()
+
+        async def get(*a: object, **k: object) -> MagicMock:
+            if gid in refused:
+                raise _odata(403)
+            return await plain(*a, **k)
+
+        b.transitive_members.get = get
+        return b
+
+    by_group.side_effect = builder
+    for _ in range(N):
+        await w.sync()
+    refused.add("g2")
+    for _ in range(N):
+        await w.sync()
+    assert len(_notices(w)) == 2, "the second close is not suppressed as a repeat of the first"

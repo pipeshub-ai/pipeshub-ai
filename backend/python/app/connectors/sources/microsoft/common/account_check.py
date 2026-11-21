@@ -207,7 +207,10 @@ class GroupMemberGrace:
     https://learn.microsoft.com/en-us/graph/api/group-list-transitivemembers) would otherwise let a person removed
     from the group keep it for good. A read that succeeds starts the count again and writes the members back; a read
     that never reached Microsoft keeps the members and is not counted; a sync that does not read the group leaves
-    its count as it is.
+    its count as it is. Every group read is attempted each sync (no read budget), so the count needs no turn order.
+
+    The owner's notice of a close is owed from the moment the close is decided (saved before the empty write) until
+    the notification service takes it, as for accounts.
 
     ``load`` once per sync, ``read`` or ``refused`` per group read, ``finish`` at the end. Before ``load`` it closes
     nothing and counts nothing."""
@@ -215,7 +218,8 @@ class GroupMemberGrace:
     def __init__(self, connector: "BaseConnector", sync_point: SyncPoint) -> None:
         self.connector, self.sync_point = connector, sync_point
         self.streaks: dict[str, int] | None = None
-        self.saved: dict[str, int] = {}
+        self.pending: set[str] = set()
+        self.saved: dict[str, str] = {}
         self.closed: list[str] = []
         self.counted: set[str] = set()
 
@@ -232,14 +236,15 @@ class GroupMemberGrace:
             saved = json.loads(state.get("streaks") or "{}")
         except (TypeError, ValueError):
             saved = {}
-        self.saved = {k: v for k, v in saved.items() if isinstance(v, int)} if isinstance(saved, dict) else {}
-        self.streaks = dict(self.saved)
+        self.streaks = {k: v for k, v in saved.items() if isinstance(v, int)} if isinstance(saved, dict) else {}
+        self.pending = _ids(state.get("pending_notice"))
+        self.saved = self._state()
 
     def read(self, group_id: str) -> None:
         if self.streaks is not None:
             self.streaks.pop(group_id, None)
 
-    def refused(self, group_id: str, error: BaseException) -> bool:
+    async def refused(self, group_id: str, error: BaseException) -> bool:
         """Count a failed member read. True when the group's stored members must lose its access now."""
         if self.streaks is None or not isinstance(error, ODataError):
             return False
@@ -247,8 +252,10 @@ class GroupMemberGrace:
             self.counted.add(group_id)
             self.streaks[group_id] = self.streaks.get(group_id, 0) + 1
         n = self.streaks[group_id]
-        if n == UNCONFIRMED_SYNCS_BEFORE_CLOSE:
+        if n == UNCONFIRMED_SYNCS_BEFORE_CLOSE and group_id not in self.closed:
             self.closed.append(group_id)
+            self.pending.add(group_id)
+            await self._save()  # the notice is owed before the caller writes the group empty
         return n >= UNCONFIRMED_SYNCS_BEFORE_CLOSE
 
     async def finish(self) -> None:
@@ -262,18 +269,33 @@ class GroupMemberGrace:
         if self.closed:
             log.error(f"The group members are unverified past the grace: {len(self.closed)} group(s) whose member read "
                       f"Microsoft refused for {UNCONFIRMED_SYNCS_BEFORE_CLOSE} syncs in a row lose their stored members' access")
-            await self.connector.notify(
+        if self.pending:
+            # Not suppressed as a repeat: each close is sent once, through ``pending_notice``.
+            outcome = await self.connector.notify_and_wait(
                 type=NotificationType.CONNECTOR_GROUP_SYNC_ERROR,
                 severity=NotificationSeverity.WARNING,
                 title=f"{self.connector.connector_name.value}: groups Microsoft would not list lost their members",
-                message=(f"Microsoft refused to list the members of {len(self.closed)} group(s) for "
+                message=(f"Microsoft refused to list the members of {len(self.pending)} group(s) for "
                          f"{UNCONFIRMED_SYNCS_BEFORE_CLOSE} syncs in a row, so their members no longer have access "
                          "through these groups. It comes back on the first sync that can read the members."),
                 recipient_user_ids=[self.connector.created_by],
+                suppress_repeats=False,
             )
-        if self.streaks != self.saved:
-            try:
-                await self.sync_point.update_sync_point(GROUP_CHECK_KEY, {"streaks": json.dumps(self.streaks, sort_keys=True)})
-                self.saved = dict(self.streaks)
-            except Exception as e:
-                log.warning(f"Could not save the unread-group-member count: {e}")
+            if outcome is NotificationOutcome.SENT:
+                self.pending = set()
+            else:
+                log.info(f"The notice of {len(self.pending)} closed group(s) was not delivered ({outcome.value}); the next sync sends it")
+        await self._save()
+
+    def _state(self) -> dict[str, str]:
+        return {"streaks": json.dumps(self.streaks or {}, sort_keys=True), "pending_notice": json.dumps(sorted(self.pending))}
+
+    async def _save(self) -> None:
+        state = self._state()
+        if state == self.saved:
+            return
+        try:
+            await self.sync_point.update_sync_point(GROUP_CHECK_KEY, state)
+            self.saved = state
+        except Exception as e:
+            self.connector.logger.warning(f"Could not save the unread-group-member count: {e}")
