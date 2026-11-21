@@ -74,8 +74,10 @@ from app.connectors.sources.atlassian.core.confluence_access import (
     apply_page_access_to_dependents,
     group_key,
     listing_modified_after,
+    ChildrenUnreadable,
     read_all_pages,
     read_page,
+    repeats,
     unresolved_principal_permission,
     user_key,
     v1_next_start,
@@ -712,6 +714,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             # Pagination variables
             batch_size = 200 if USE_DATA_CENTER_APIS else 100
             start = 0
+            listed_users: set = set()
             total_synced = 0
             total_skipped = 0
             listed: set[str] = set()      # source ids of the active users listed, for the withdrawal below
@@ -755,6 +758,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     read_complete = False
                     break
                 users_data = page.results
+                if repeats(users_data, lambda u: user_key(u) or u.get("accountId"), listed_users):
+                    self.logger.error("Failed to fetch users: the user listing repeated a page")
+                    self._sync_read_incomplete = True
+                    read_complete = False
+                    break
 
                 if not users_data:
                     break
@@ -852,6 +860,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             # Pagination variables for groups
             batch_size = 50
             start = 0
+            listed_groups: set = set()
             total_groups_synced = 0
             total_memberships_synced = 0
 
@@ -877,6 +886,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     self._sync_read_incomplete = True
                     break
                 groups_data = page.results
+                if repeats(groups_data, group_key, listed_groups):
+                    self.logger.error("Failed to fetch groups: the group listing repeated a page")
+                    self._sync_read_incomplete = True
+                    break
 
                 if not groups_data:
                     break
@@ -888,6 +901,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         group_name = group_data.get("name")
 
                         if not group_name:
+                            # Listed but not nameable by name, the key Data Center uses: unread, not absent.
+                            self._sync_read_incomplete = True
                             continue
 
                         self.logger.debug(f"  Processing group: {group_name} ({group_id})")
@@ -908,6 +923,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         # Create user group
                         user_group = self._transform_to_user_group(group_data)
                         if not user_group:
+                            self._sync_read_incomplete = True  # not written, so a full sync must not unlink it
                             continue
 
                         # Get AppUser objects for members
@@ -983,6 +999,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             self._saved_space_ids = set()
             # A listed space that couldn't be processed would look like one that left.
             skipped_a_space = False
+            listed_space_ids: set[str] = set()
 
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -1006,6 +1023,12 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     break
                 spaces_data = page.results
                 listed_count = len(spaces_data)
+                page_space_ids = {str(s.get("id")) for s in spaces_data}
+                if spaces_data and page_space_ids <= listed_space_ids:
+                    # The same page again: the offset is being ignored, so the rest can't be read.
+                    self.logger.error("The space listing repeated a page; no space is removed this sync")
+                    break
+                listed_space_ids |= page_space_ids
 
                 # Extract base URL from first response
                 if not base_url and response_data.get("_links", {}).get("base"):
@@ -1110,9 +1133,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 keys=[space_key], limit=1, expand="homepage"
             )
             if not space_resp or space_resp.status != HttpStatusCode.SUCCESS.value:
+                self._sync_read_incomplete = True  # the homepage it can't place may be the one the search misses
                 return None, None, None
             space_page = read_page(space_resp.json())
-            if space_page is None or not space_page.results:
+            if space_page is None:
+                self._sync_read_incomplete = True
+                return None, None, None
+            if not space_page.results:
                 return None, None, None
             space_results = space_page.results
             homepage = space_results[0].get("homepage") or {}
@@ -1133,6 +1160,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             self.logger.warning(
                 "Failed to fetch space homepage for %s: %s", space_key, e
             )
+            self._sync_read_incomplete = True
             return None, None, None
 
     async def _backfill_space_homepage_from_api(
@@ -1214,6 +1242,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 e,
                 exc_info=True,
             )
+            self._sync_read_incomplete = True
             return 0
 
     async def _sync_content(
@@ -1335,6 +1364,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             total_permissions_synced = 0
             listing_complete = True
             seen: set[str] = set()
+            listed_item_ids: set[Optional[str]] = set()
             failed_items: list[FailedItem] = []
             # Items given up on, id -> last modified then; skipped until it changes.
             given_up = stored_map((last_sync_data or {}).get("givenUpPages"))
@@ -1414,6 +1444,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     listing_complete = False
                     break
                 items_data = page.results
+                page_item_ids = {listed_item_id(i) for i in items_data}
+                if items_data and page_item_ids <= listed_item_ids:
+                    # The same page again: the offset is being ignored, so the rest can't be read.
+                    self.logger.error(f"The {content_type} listing of space {space_key} repeated a page")
+                    listing_complete = False
+                    break
+                listed_item_ids |= page_item_ids
 
                 # Extract api_base_url from response root for URL construction
                 api_base_url = page.base
@@ -1477,6 +1514,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         )
 
                         if not webpage_record_update.record:
+                            # Skipping it would leave it unlisted: a full sync would unlink it and no later sync
+                            # read it again. It is synced again by id instead.
+                            failed_items.append((str(item_id), str(item_title or ""), item_revision_marker(item_data) or ""))
                             continue
 
                         webpage_record = webpage_record_update.record
@@ -1548,6 +1588,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                         api_base_url=api_base_url
                                     )
 
+                                    if not attachment_record:
+                                        raise ChildrenUnreadable(f"attachment {attachment_id} could not be built")
                                     if attachment_record:
                                         # Set indexing status based on filter
                                         if not content_attachments_indexing_enabled:
@@ -1562,8 +1604,12 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                         self.logger.debug(f"Attachment: {attachment_record.record_name}")
 
                                 except Exception as att_error:
+                                    # Dropping it would save the page as if it had no such attachment.
                                     self.logger.error(f"❌ Failed to process attachment: {att_error}")
-                                    continue
+                                    self._sync_read_incomplete = True
+                                    raise ChildrenUnreadable(
+                                        f"an attachment of {content_type} {item_title} could not be processed"
+                                    ) from att_error
 
                         # Process comments (always fetch; DC /content/search omits childTypes.comment even when present)
                         self.logger.debug(f"Fetching comments for {content_type} {item_title}...")
@@ -2289,8 +2335,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     # A body that isn't the documented OperationRestriction is not "unrestricted".
                     self.logger.error(f"View permissions of page {page_id} came back in an unknown shape")
                     return None
-                full_page = new = False
-                step = self._RESTRICTION_PAGE
+                new = False
+                next_starts: list[int] = []
                 for kind, out, identify in (("user", users, user_key), ("group", groups, group_key)):
                     listing = restrictions.get(kind)
                     entries_page = read_page(listing, identify)
@@ -2300,21 +2346,26 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         return None
                     entries = entries_page.results
                     for entry in entries:
-                        key = (kind, str(entry.get("userKey") or entry.get("username") or entry.get("name")
-                                         or entry.get("id") or entry))
+                        key = (kind, identify(entry))
                         if key not in seen:
                             seen.add(key)
                             new = True
                             out.append(entry)
-                    # The page size Confluence used, which a system limit may set below ours.
-                    size = listing.get("limit") if isinstance(listing.get("limit"), int) else self._RESTRICTION_PAGE
-                    if size > 0 and len(entries) >= size:
-                        full_page = True
-                        step = min(step, size)
-                # A full page may be followed by more; one that adds nothing new (a server ignoring start) ends it.
-                if not full_page or not new:
+                    # The page size Confluence used, which a system limit may set below ours. Each list goes on while
+                    # it links onward or (PageResponseObject documents no links) comes back full; never past its rows.
+                    size = listing.get("limit") if isinstance(listing.get("limit"), int) and listing["limit"] > 0 \
+                        else self._RESTRICTION_PAGE
+                    following = v1_next_start(listing, start, len(entries), size, use_link_offset=False)
+                    if following is not None:
+                        next_starts.append(following)
+                if not next_starts:
                     break
-                start += step
+                if not new:
+                    # More is said to follow, yet the page named nobody new: a server ignoring start. Saving what
+                    # it read as the whole allow-list could drop the rest; keep the stored access.
+                    self.logger.error(f"View permissions of page {page_id} repeat a page; they can't be read to the end")
+                    return None
+                start = min(next_starts)
             else:
                 self.logger.error(f"View permissions of page {page_id} have more than {self._RESTRICTION_MAX_PAGES} pages")
                 return None
@@ -2361,7 +2412,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             # The attachments it did not read would read as gone to a full sync.
             self.logger.warning(f"The attachments of content {content_id} were not read in full")
             self._sync_read_incomplete = True
-            return [], None
+            raise ChildrenUnreadable(f"the attachments of content {content_id} were not read in full")
         return listing
 
     async def _fetch_attachment_file_records(
@@ -2420,9 +2471,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
             return records_with_permissions
 
+        except ChildrenUnreadable:
+            raise
         except Exception as e:
+            # One it could not save would read as gone to a full sync, and no later sync would read it again.
             self.logger.error(f"❌ Failed to fetch attachment file records for comment {comment_id}: {e}")
-            return []
+            self._sync_read_incomplete = True
+            raise ChildrenUnreadable(f"the attachments of comment {comment_id} could not be processed") from e
 
     async def _fetch_comments_recursive(
         self,
@@ -2473,7 +2528,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # The ones it did not read would read as gone to a full sync: keep what is stored.
                 self.logger.warning(f"The {comment_type} comments of {page_title} were not read in full")
                 self._sync_read_incomplete = True
-                return []
+                raise ChildrenUnreadable(f"The {comment_type} comments of {page_title} were not read in full")
             comments_data, base_url = listing
 
             for comment_data in comments_data:
@@ -2506,6 +2561,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         parent_node_id=parent_node_id,
                     )
 
+                    if comment_record is None and (normalized.get("version") or {}).get("authorId"):
+                        # It had what a comment record needs, so building it failed: unknown, not skipped. (One
+                        # without an author, as an anonymous comment, is never stored, so skipping it loses nothing.)
+                        self._sync_read_incomplete = True
+                        raise ChildrenUnreadable(f"comment {comment_id_str} could not be built")
                     if comment_record:
                         comment_record.inherit_permissions = True
                         comment_record.rewrite_permissions = True
@@ -2593,18 +2653,24 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     )
                     all_comments.extend(children)
 
+                except ChildrenUnreadable:
+                    raise
                 except Exception as comment_error:
+                    # Dropping it would save the rest as the whole list: the page is synced again by id instead.
                     self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
-                    continue
+                    self._sync_read_incomplete = True
+                    raise ChildrenUnreadable(f"comment {comment_data.get('id')} could not be processed") from comment_error
 
 
             self.logger.debug(f"✓ Fetched {len(all_comments)} {comment_type} comments (including replies) for page {page_title}")
             return all_comments
 
+        except ChildrenUnreadable:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch {comment_type} comments for page {page_title}: {e}")
             self._sync_read_incomplete = True
-            return []
+            raise ChildrenUnreadable(f"the {comment_type} comments of {page_title} could not be read") from e
 
     async def _fetch_comment_children_recursive(
         self,
@@ -2647,7 +2713,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # The ones it did not read would read as gone to a full sync: keep what is stored.
                 self.logger.warning(f"The replies to comment {comment_id} were not read in full")
                 self._sync_read_incomplete = True
-                return []
+                raise ChildrenUnreadable(f"The replies to comment {comment_id} were not read in full")
             children_data, base_url = listing
 
             for child_data in children_data:
@@ -2674,6 +2740,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         parent_node_id=parent_node_id,
                     )
 
+                    if child_record is None and (normalized.get("version") or {}).get("authorId"):
+                        # It had what a comment record needs, so building it failed: unknown, not skipped. (One
+                        # without an author, as an anonymous comment, is never stored, so skipping it loses nothing.)
+                        self._sync_read_incomplete = True
+                        raise ChildrenUnreadable(f"comment {child_id_str} could not be built")
                     if child_record:
                         child_record.inherit_permissions = True
                         child_record.rewrite_permissions = True
@@ -2761,17 +2832,23 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     )
                     all_children.extend(grandchildren)
 
+                except ChildrenUnreadable:
+                    raise
                 except Exception as child_error:
+                    # Dropping it would save the rest as the whole list: the page is synced again by id instead.
                     self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
-                    continue
+                    self._sync_read_incomplete = True
+                    raise ChildrenUnreadable(f"reply {child_data.get('id')} could not be processed") from child_error
 
 
             return all_children
 
+        except ChildrenUnreadable:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch children for comment {comment_id}: {e}")
             self._sync_read_incomplete = True
-            return []
+            raise ChildrenUnreadable(f"the replies to comment {comment_id} could not be read") from e
 
     def _transform_to_comment_record(
         self,
@@ -3316,7 +3393,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     self.logger.warning(
                         "Cannot fetch Cloud v2 space permissions: space_id missing for %s", space_name
                     )
-                    return []
+                    return None  # unread, not "no grants": the space keeps its stored ones
 
                 try:
                     space_id_int = int(space_id)
@@ -3326,7 +3403,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         space_id,
                         space_name,
                     )
-                    return []
+                    return None  # unread, not "no grants": the space keeps its stored ones
 
                 batch_size = 100
                 cursor: Optional[str] = None
@@ -3482,6 +3559,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 holders.add(str(subject.get("userKey") or subject.get("key")))
             elif subject.get("type") == "group" and subject.get("name"):
                 start = 0
+                listed_members: set = set()
                 while True:
                     response = await datasource.get_group_members_by_name(group_name=subject["name"], start=start, limit=200)
                     data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
@@ -3490,6 +3568,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         self.logger.error(f"Could not read the members of {subject['name']}, which holds \"Can use\"")
                         return None
                     members = member_page.results
+                    if repeats(members, user_key, listed_members):
+                        self.logger.error(f"The members of {subject['name']}, which holds \"Can use\", repeat a page")
+                        return None
                     holders.update(user_key(m) for m in members)
                     try:
                         next_start = v1_next_start(data, start, len(members), 200, use_link_offset=False)
@@ -3893,8 +3974,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             group_results = group_restrictions.get("results", [])
 
             for group_data in group_results:
-                # Data Center often identifies a group by name only; the lookup falls back to name.
-                principal_id = group_key(group_data)
+                # By id when the entry has one (a stored name may be an old one), else by name, which Data Center
+                # often gives alone; the lookup falls back to name.
+                group_id = group_data.get("id")
+                principal_id = group_id if isinstance(group_id, str) and group_id else group_key(group_data)
                 if principal_id:
                     permission = await self._create_permission_from_principal(
                         "group",
@@ -4412,6 +4495,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             member_emails = []
             batch_size = 200
             start = 0
+            listed: set = set()
 
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -4437,7 +4521,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     )
 
                 if response and response.status == HttpStatusCode.NOT_FOUND.value:
-                    # The group no longer exists, so it has no members to keep (not even earlier pages).
+                    if start:
+                        # It existed a moment ago, when its first members came back: the rest is unread.
+                        self.logger.warning("Keeping the stored members of group %s: it was not found part way", group_name)
+                        return None
+                    # The group no longer exists, so it has no members to keep.
                     self.logger.warning("Group %s was not found while reading its members", group_name)
                     return []
 
@@ -4457,6 +4545,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     self.logger.warning(f"Keeping the stored members of group {group_name}: a page of them was not read in full")
                     return None
                 members_data = page.results
+                if repeats(members_data, lambda m: user_key(m) or m.get("email"), listed):
+                    self.logger.warning(f"Keeping the stored members of group {group_name}: a page of them repeats")
+                    return None
 
                 if not members_data:
                     break
@@ -4486,6 +4577,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                     or member_data.get("userKey")
                                 )
                                 lookup_as = "key"
+                        if not user_identifier:
+                            # Named only by username, which the email lookup can't take: skipping them would drop
+                            # their access through the group.
+                            self.logger.warning("Keeping the stored members of group %s: a member has no user key", group_name)
+                            return None
                         if user_identifier:
                             email = await self._resolve_user_email(
                                 user_identifier, datasource, lookup_as=lookup_as

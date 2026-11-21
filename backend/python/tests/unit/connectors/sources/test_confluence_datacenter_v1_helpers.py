@@ -114,3 +114,39 @@ async def test_read_all_pages_is_unread_when_any_page_is(second) -> None:
 async def test_read_all_pages_of_content_that_is_gone_is_empty() -> None:
     from app.connectors.sources.atlassian.core.confluence_access import read_all_pages
     assert await read_all_pages(_pages({0: _Answer(404, {"message": "No content found"})}, [])) == ([], None)
+
+
+@pytest.mark.asyncio
+async def test_read_all_pages_with_a_404_after_rows_came_back_is_unread() -> None:
+    from app.connectors.sources.atlassian.core.confluence_access import read_all_pages
+    answers = {0: _Answer(200, {"results": [{"id": "1"}], "_links": {"next": "/x?start=1"}}),
+               1: _Answer(404, {"message": "No content found"})}
+    assert await read_all_pages(_pages(answers, [])) is None, "it existed a moment ago: the rest is unread, not gone"
+
+
+@pytest.mark.asyncio
+async def test_read_all_pages_follows_the_continuation_a_9x_child_list_names() -> None:
+    from app.connectors.sources.atlassian.core.confluence_access import read_all_pages
+    asked: list[int] = []
+    answers = {0: _Answer(200, {"results": [{"id": "1"}], "start": 0, "limit": 25, "next": "/x?limit=25&start=25"}),
+               1: _Answer(200, {"results": [{"id": "2"}], "start": 1, "limit": 25})}
+    assert await read_all_pages(_pages(answers, asked)) == ([{"id": "1"}, {"id": "2"}], None)
+    assert asked == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_read_all_pages_reads_on_while_the_total_count_says_more() -> None:
+    from app.connectors.sources.atlassian.core.confluence_access import read_all_pages
+    answers = {0: _Answer(200, {"results": [{"id": "1"}], "totalCount": 2, "_links": {"base": "b"}}),
+               1: _Answer(200, {"results": [{"id": "2"}], "totalCount": 2, "_links": {"base": "b"}})}
+    assert await read_all_pages(_pages(answers, [])) == ([{"id": "1"}, {"id": "2"}], "b")
+
+
+@pytest.mark.asyncio
+async def test_a_null_size_is_an_absent_one() -> None:
+    from app.connectors.sources.atlassian.core.confluence_access import (
+        read_all_pages,
+        v1_next_start,
+    )
+    assert v1_next_start({"results": [{"id": "1"}], "size": None}, 0, 1, 100, use_link_offset=False) is None
+    assert await read_all_pages(_pages({0: _Answer(200, {"results": [{"id": "1"}], "size": None})}, [])) == ([{"id": "1"}], None)

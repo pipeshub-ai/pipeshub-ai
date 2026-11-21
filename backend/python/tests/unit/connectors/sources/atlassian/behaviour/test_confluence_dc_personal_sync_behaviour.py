@@ -491,6 +491,73 @@ class TestAttachmentsAndComments:
 
         assert set(saved(records_db, RecordType.FILE)) == {"att1", "att2"}
 
+    @pytest.mark.parametrize("path", ["content/p1/child/comment", "content/p1/child/attachment"])
+    async def test_a_child_list_that_failed_holds_the_checkpoint_and_is_read_next_sync(
+        self, atlassian_api, records_db, checkpoints, search, path
+    ) -> None:
+        earlier = "2024-04-01T00:00:00.000Z"
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1", attachments=[attachment("att1")], attachment_total=2)]))
+        whole = {"content/p1/child/comment": [footer_comment("c1"), footer_comment("c2")],
+                 "content/p1/child/attachment": [attachment("att1"), attachment("att2", "notes.txt", "text/plain")]}
+        atlassian_api.on_suffix("GET", "/child/comment", {"results": [], "_links": {"base": BASE}})
+        for other, rows in whole.items():
+            atlassian_api.on("GET", f"{API}/{other}", {"results": rows, "_links": {"base": BASE}})
+        pages = {"0": json_response({"results": whole[path][:1], "_links": {"base": BASE, "next": f"{API}/{path}?start=1"}}),
+                 "1": json_response({"message": "busy"}, status=503)}
+        atlassian_api.on("GET", f"{API}/{path}", lambda r: pages[AtlassianApiStub.query(r).get("start", "0")])
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG")
+        await connector.pages_sync_point.update_sync_point(key, {"last_sync_time": earlier})
+
+        await connector.run_sync()
+
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] == earlier
+
+        atlassian_api.on("GET", f"{API}/{path}", {"results": whole[path], "_links": {"base": BASE}})
+        await connector.run_sync()
+
+        assert {r["id"] for r in whole[path]} <= set(records_db.records), "read again without another edit"
+
+    async def test_a_space_listing_that_repeats_its_page_is_incomplete(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        page = {"results": [space("ENG", 10)], "_links": {"base": BASE, "next": f"{API}/space?start=1"}}
+        end = {"results": [], "_links": {"base": BASE}}
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q.get("expand") == "homepage":
+                return json_response({"results": []})
+            return json_response(page if int(q.get("start", "0")) < 4 else end)
+
+        atlassian_api.on("GET", f"{API}/space", answer)
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False, "a repeated page is not the rest of the list"
+
+    @pytest.mark.parametrize("broken", ["c2", "r1"])
+    async def test_a_comment_or_reply_it_cannot_process_makes_the_page_sync_again(
+        self, atlassian_api, records_db, checkpoints, search, broken
+    ) -> None:
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1")]))
+        atlassian_api.on_suffix("GET", "/child/comment", {"results": [], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment",
+                         {"results": [footer_comment("c1"), footer_comment("c2")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/comment", {"results": [footer_comment("r1")], "_links": {"base": BASE}})
+        records_db.fail_lookup_for = {broken}
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False, "the rest is not the whole list"
+        records_db.fail_lookup_for = set()
+        await connector.run_sync()
+        assert {"c1", "c2", "r1"} <= set(records_db.records), "the page is synced again by id, comments and all"
+
     @pytest.mark.parametrize("path", ["content/p1/child/comment", "content/c1/child/comment", "content/p1/child/attachment"])
     async def test_a_child_list_that_fails_part_way_leaves_the_full_sync_incomplete(
         self, atlassian_api, records_db, checkpoints, search, path

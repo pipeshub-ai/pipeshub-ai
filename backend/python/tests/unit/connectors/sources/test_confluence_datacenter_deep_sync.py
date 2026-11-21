@@ -16,6 +16,8 @@ from uuid import uuid4
 
 import pytest
 
+from app.connectors.sources.atlassian.core.confluence_access import ChildrenUnreadable
+
 pytestmark = pytest.mark.confluence_datacenter
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
@@ -1044,6 +1046,7 @@ class TestFetchCommentsRecursive:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
         connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
 
         comments = await connector._fetch_comments_recursive(
@@ -1108,6 +1111,7 @@ class TestFetchCommentsRecursive:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
 
         child_comment = (MagicMock(), [])
         connector._fetch_comment_children_recursive = AsyncMock(return_value=[child_comment])
@@ -1119,16 +1123,16 @@ class TestFetchCommentsRecursive:
         assert len(comments) == 2
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_an_api_failure_is_unread_not_empty(self):
         connector = _make_connector()
         ds = MagicMock()
         ds.get_content_comments_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        comments = await connector._fetch_comments_recursive(
-            "12345", "TestPage", "footer", [], "s1", "page", "node-1"
-        )
-        assert comments == []
+        with pytest.raises(ChildrenUnreadable):
+            await connector._fetch_comments_recursive(
+                "12345", "TestPage", "footer", [], "s1", "page", "node-1"
+            )
 
     @pytest.mark.asyncio
     async def test_extract_storage_attachment_filenames(self):

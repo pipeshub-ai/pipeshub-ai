@@ -92,11 +92,23 @@ def read_page(body: object, item_id: Optional[Callable[[dict[str, Any]], Optiona
     next_url = links.get("next")
     if next_url is not None and (not isinstance(next_url, str) or not next_url):
         return None
+    next_url = next_url or continuation(body)
     if next_url and not results:
         return None
+    if next_url and not links.get("next"):
+        links = {**links, "next": next_url}
     if item_id is not None and not all(item_id(item) for item in results):
         return None
     return Page(results, links)
+
+
+def continuation(body: dict[str, Any]) -> Optional[str]:
+    """The next page a listing names: ``_links.next``, or the top-level ``next`` the 9.x child lists document."""
+    links = body.get("_links") if isinstance(body.get("_links"), dict) else {}
+    for value in (links.get("next"), body.get("next")):
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def v1_next_start(
@@ -115,11 +127,9 @@ def v1_next_start(
     Raises ValueError when a Cloud next link has no usable offset, or when an empty page still
     links to a next one, so the caller fails the read instead of taking a cut listing as whole.
     """
-    links = response_data.get("_links")
-    if isinstance(links, dict) and links:
-        next_url = links.get("next")
-        if not next_url:
-            return None
+    links = response_data.get("_links") if isinstance(response_data.get("_links"), dict) else {}
+    next_url = continuation(response_data)
+    if next_url:
         if not page_len:
             raise ValueError(f"an empty page links to a next one: {next_url}")
         # Cloud's link points at the next page. On Data Center ``start`` is "the index of the first item within the
@@ -130,8 +140,32 @@ def v1_next_start(
         if not values or not values[0].isdigit() or int(values[0]) <= start:
             raise ValueError(f"next page link has no usable start offset: {next_url}")
         return int(values[0])
-    size = response_data.get("size", page_len)
+    total = response_data.get("totalCount")
+    if isinstance(total, int) and not isinstance(total, bool) and page_len and start + page_len < total:
+        return start + page_len  # Data Center 10+ counts the whole list
+    if links:
+        return None
+    size = response_data.get("size")
+    size = size if isinstance(size, int) and not isinstance(size, bool) else page_len
     return start + page_len if size >= batch_size and page_len else None
+
+
+class ChildrenUnreadable(Exception):
+    """A page's comment, reply or attachment list could not be read, or one of its items processed, in full.
+
+    Raised instead of returning the rest: the item that holds the list fails and is synced again by id, so its
+    checkpoint does not move past what was never written.
+    """
+
+
+def repeats(rows: list[dict[str, Any]], key: Callable[[dict[str, Any]], object], seen: set) -> bool:
+    """True when a non-empty page lists only rows already read, as a server ignoring ``start`` answers; otherwise
+    the page's rows are added to ``seen``. Such a list can't be read to its end, so its caller treats it as unread."""
+    keys = {key(row) for row in rows}
+    if rows and keys <= seen:
+        return True
+    seen |= keys
+    return False
 
 
 async def read_all_pages(
@@ -144,22 +178,26 @@ async def read_all_pages(
     ``fetch(start, limit)`` returns the HTTP response of one page. The next page starts where the rows read so far
     end (``v1_next_start``): ``start`` is "the index of the first item within the result set" and the limit "may be
     restricted by fixed system limits" (the Data Center REST specs), so neither the offset a next link names nor a
-    short page decides it. A 404 means the content is gone, so it has no children. Any other failed request, an
-    exception, a page ``read_page`` refuses, or an empty page that links onward makes the whole listing unread.
+    short page decides it. A 404 on the first request means the content is gone, so it has no children; on a
+    later page it is unread. Any other failed request, an exception, a page ``read_page`` refuses, or an empty page that links onward makes the whole listing unread.
     """
     rows: list[dict[str, Any]] = []
     base: Optional[str] = None
     start = 0
+    seen: set = set()
+    key = item_id or (lambda row: repr(sorted(row.items())))
     while True:
         try:
             response = await fetch(start, batch_size)
             if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
-                return [], None  # the content is gone (or out of sight), and its children with it
+                # On the first request the content is gone (or out of sight), and its children with it. After rows
+                # came back it existed a moment ago: a 404 then says nothing about the rows after them.
+                return ([], None) if start == 0 else None
             body = response.json() if response is not None and response.status == HttpStatusCode.SUCCESS.value else None
         except Exception:
             return None
         page = read_page(body, item_id)
-        if page is None:
+        if page is None or repeats(page.results, key, seen):
             return None
         rows.extend(page.results)
         base = base or page.base

@@ -73,6 +73,7 @@ from app.connectors.sources.atlassian.core.confluence_access import (
 )
 from app.connectors.sources.atlassian.core.confluence_access import (
     listing_modified_after,
+    ChildrenUnreadable,
     read_all_pages,
     read_page,
     v1_next_start,
@@ -582,6 +583,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             self._saved_space_ids = set()
             # A listed space that couldn't be processed would look like one that left.
             skipped_a_space = False
+            listed_space_ids: set[str] = set()
 
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -605,6 +607,12 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     break
                 spaces_data = page.results
                 listed_count = len(spaces_data)
+                page_space_ids = {str(s.get("id")) for s in spaces_data}
+                if spaces_data and page_space_ids <= listed_space_ids:
+                    # The same page again: the offset is being ignored, so the rest can't be read.
+                    self.logger.error("The space listing repeated a page; no space is removed this sync")
+                    break
+                listed_space_ids |= page_space_ids
 
                 # Extract base URL from first response
                 if not base_url and response_data.get("_links", {}).get("base"):
@@ -692,9 +700,13 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 keys=[space_key], limit=1, expand="homepage"
             )
             if not space_resp or space_resp.status != HttpStatusCode.SUCCESS.value:
+                self._sync_read_incomplete = True  # the homepage it can't place may be the one the search misses
                 return None, None, None
             space_page = read_page(space_resp.json())
-            if space_page is None or not space_page.results:
+            if space_page is None:
+                self._sync_read_incomplete = True
+                return None, None, None
+            if not space_page.results:
                 return None, None, None
             space_results = space_page.results
             homepage = space_results[0].get("homepage") or {}
@@ -715,6 +727,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             self.logger.warning(
                 "Failed to fetch space homepage for %s: %s", space_key, e
             )
+            self._sync_read_incomplete = True
             return None, None, None
 
     async def _backfill_space_homepage_from_api(
@@ -785,6 +798,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 e,
                 exc_info=True,
             )
+            self._sync_read_incomplete = True
             return 0
 
     async def _sync_content(
@@ -906,6 +920,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             total_comments_synced = 0
             listing_complete = True
             seen: set[str] = set()
+            listed_item_ids: set[Optional[str]] = set()
             # (id, title, last modified) of items that failed to save this run.
             failed_items: list[tuple[str, str, str]] = []
             # Items given up on, id -> last modified then; skipped until it changes.
@@ -986,6 +1001,13 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     listing_complete = False
                     break
                 items_data = page.results
+                page_item_ids = {listed_item_id(i) for i in items_data}
+                if items_data and page_item_ids <= listed_item_ids:
+                    # The same page again: the offset is being ignored, so the rest can't be read.
+                    self.logger.error(f"The {content_type} listing of space {space_key} repeated a page")
+                    listing_complete = False
+                    break
+                listed_item_ids |= page_item_ids
 
                 # Extract api_base_url from response root for URL construction
                 api_base_url = page.base
@@ -1041,6 +1063,9 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         )
 
                         if not webpage_record_update.record:
+                            # Skipping it would leave it unlisted: a full sync would unlink it and no later sync
+                            # read it again. It is synced again by id instead.
+                            failed_items.append((str(item_id), str(item_title or ""), item_revision_marker(item_data) or ""))
                             continue
 
                         webpage_record = webpage_record_update.record
@@ -1103,6 +1128,8 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                                         api_base_url=api_base_url
                                     )
 
+                                    if not attachment_record:
+                                        raise ChildrenUnreadable(f"attachment {attachment_id} could not be built")
                                     if attachment_record:
                                         # Set indexing status based on filter
                                         if not content_attachments_indexing_enabled:
@@ -1116,8 +1143,12 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                                         self.logger.debug(f"Attachment: {attachment_record.record_name}")
 
                                 except Exception as att_error:
+                                    # Dropping it would save the page as if it had no such attachment.
                                     self.logger.error(f"❌ Failed to process attachment: {att_error}")
-                                    continue
+                                    self._sync_read_incomplete = True
+                                    raise ChildrenUnreadable(
+                                        f"an attachment of {content_type} {item_title} could not be processed"
+                                    ) from att_error
 
                         # Process comments (always fetch; DC /content/search omits childTypes.comment even when present)
                         self.logger.debug(f"Fetching comments for {content_type} {item_title}...")
@@ -1249,7 +1280,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             # The attachments it did not read would read as gone to a full sync.
             self.logger.warning(f"The attachments of content {content_id} were not read in full")
             self._sync_read_incomplete = True
-            return [], None
+            raise ChildrenUnreadable(f"the attachments of content {content_id} were not read in full")
         return listing
 
     async def _fetch_attachment_file_records(
@@ -1307,9 +1338,13 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
             return records_with_permissions
 
+        except ChildrenUnreadable:
+            raise
         except Exception as e:
+            # One it could not save would read as gone to a full sync, and no later sync would read it again.
             self.logger.error(f"❌ Failed to fetch attachment file records for comment {comment_id}: {e}")
-            return []
+            self._sync_read_incomplete = True
+            raise ChildrenUnreadable(f"the attachments of comment {comment_id} could not be processed") from e
 
     async def _fetch_comments_recursive(
         self,
@@ -1360,7 +1395,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 # The ones it did not read would read as gone to a full sync: keep what is stored.
                 self.logger.warning(f"The {comment_type} comments of {page_title} were not read in full")
                 self._sync_read_incomplete = True
-                return []
+                raise ChildrenUnreadable(f"The {comment_type} comments of {page_title} were not read in full")
             comments_data, base_url = listing
 
             for comment_data in comments_data:
@@ -1393,6 +1428,11 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         parent_node_id=parent_node_id,
                     )
 
+                    if comment_record is None and (normalized.get("version") or {}).get("authorId"):
+                        # It had what a comment record needs, so building it failed: unknown, not skipped. (One
+                        # without an author, as an anonymous comment, is never stored, so skipping it loses nothing.)
+                        self._sync_read_incomplete = True
+                        raise ChildrenUnreadable(f"comment {comment_id_str} could not be built")
                     if comment_record:
                         comment_record.inherit_permissions = True
                         comment_record.rewrite_permissions = True
@@ -1481,18 +1521,24 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     )
                     all_comments.extend(children)
 
+                except ChildrenUnreadable:
+                    raise
                 except Exception as comment_error:
+                    # Dropping it would save the rest as the whole list: the page is synced again by id instead.
                     self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
-                    continue
+                    self._sync_read_incomplete = True
+                    raise ChildrenUnreadable(f"comment {comment_data.get('id')} could not be processed") from comment_error
 
 
             self.logger.debug(f"✓ Fetched {len(all_comments)} {comment_type} comments (including replies) for page {page_title}")
             return all_comments
 
+        except ChildrenUnreadable:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch {comment_type} comments for page {page_title}: {e}")
             self._sync_read_incomplete = True
-            return []
+            raise ChildrenUnreadable(f"the {comment_type} comments of {page_title} could not be read") from e
 
     async def _fetch_comment_children_recursive(
         self,
@@ -1535,7 +1581,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 # The ones it did not read would read as gone to a full sync: keep what is stored.
                 self.logger.warning(f"The replies to comment {comment_id} were not read in full")
                 self._sync_read_incomplete = True
-                return []
+                raise ChildrenUnreadable(f"The replies to comment {comment_id} were not read in full")
             children_data, base_url = listing
 
             for child_data in children_data:
@@ -1562,6 +1608,11 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         parent_node_id=parent_node_id,
                     )
 
+                    if child_record is None and (normalized.get("version") or {}).get("authorId"):
+                        # It had what a comment record needs, so building it failed: unknown, not skipped. (One
+                        # without an author, as an anonymous comment, is never stored, so skipping it loses nothing.)
+                        self._sync_read_incomplete = True
+                        raise ChildrenUnreadable(f"comment {child_id_str} could not be built")
                     if child_record:
                         child_record.inherit_permissions = True
                         child_record.rewrite_permissions = True
@@ -1650,17 +1701,23 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     )
                     all_children.extend(grandchildren)
 
+                except ChildrenUnreadable:
+                    raise
                 except Exception as child_error:
+                    # Dropping it would save the rest as the whole list: the page is synced again by id instead.
                     self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
-                    continue
+                    self._sync_read_incomplete = True
+                    raise ChildrenUnreadable(f"reply {child_data.get('id')} could not be processed") from child_error
 
 
             return all_children
 
+        except ChildrenUnreadable:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch children for comment {comment_id}: {e}")
             self._sync_read_incomplete = True
-            return []
+            raise ChildrenUnreadable(f"the replies to comment {comment_id} could not be read") from e
 
     def _transform_to_comment_record(
         self,

@@ -33,6 +33,9 @@ from app.config.constants.arangodb import (
     Connectors,
     OriginTypes,
 )
+from app.connectors.core.base.sync_point.sync_point import (
+    generate_record_sync_point_key,
+)
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
@@ -753,7 +756,7 @@ class TestUsersAndGroups:
         assert db.members_of("eng") == ["alice@example.com", "ldap@example.com"]
         assert len(db.user_groups) == saves_before, "the group is not saved again with a shorter list"
 
-    async def test_a_group_that_disappears_part_way_through_its_members_ends_up_empty(self, atlassian_api, db, store) -> None:
+    async def test_a_group_not_found_part_way_through_its_members_keeps_them(self, atlassian_api, db, store) -> None:
         connector = await make_connector(atlassian_api, db, store)
         people = [user(f"m{i}", f"m{i}@example.com") for i in range(200)]
 
@@ -772,7 +775,10 @@ class TestUsersAndGroups:
 
         await connector._sync_user_groups()
 
-        assert db.members_of("eng") == [], "a deleted group keeps no members"
+        # It existed when its first members came back: a 404 after them says nothing about the rest. If it was
+        # deleted, the next group listing leaves it out and it goes then.
+        assert db.members_of("eng") is None, "not saved with the members read so far"
+        assert connector.full_sync_coverage().complete is False
 
 
     async def test_short_pages_that_say_more_follow_are_followed(self, atlassian_api, db, store) -> None:
@@ -1246,6 +1252,47 @@ class TestPageRestrictions:
         assert stand_in, "a user with no email yet keeps access through a stand-in group"
         assert db.records["open"].access_rule == AccessRule.STRICT
         assert db.record_permissions["open"] == []
+
+    async def test_a_short_restriction_page_that_links_onward_is_followed(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com"), user("bob", "bob@example.com")], {})
+        search.add("page", 0, listing([content("p1")]))
+        pages = {"0": {"results": [{"type": "known", "userKey": "alice"}], "start": 0, "limit": 100, "size": 1,
+                       "_links": {"next": f"{API}/content/p1/restriction/byOperation/read?start=100"}},
+                 "1": {"results": [{"type": "known", "userKey": "bob"}], "start": 1, "limit": 100, "size": 1}}
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            users = pages[AtlassianApiStub.query(request).get("start", "0")]
+            return json_response({"operation": "read", "restrictions": {
+                "user": users, "group": {"results": [], "start": 0, "limit": 100, "size": 0}}})
+
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", answer)
+
+        await connector.run_sync()
+
+        readers = {p.email for p in db.record_permissions["p1"] if p.email}
+        assert {"alice@example.com", "bob@example.com"} <= readers, "a short page that links onward is not the last"
+
+    async def test_a_restriction_server_ignoring_start_keeps_the_stored_access(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com"), user("bob", "bob@example.com")], {})
+        search.add("page", 0, listing([content("p1")]))
+        restriction = f"{API}/content/p1/restriction/byOperation/read"
+        atlassian_api.on("GET", restriction, restricted_to(users=[{"type": "known", "userKey": "alice"},
+                                                                {"type": "known", "userKey": "bob"}]))
+        await connector.run_sync()
+        stored = {p.email for p in db.record_permissions["p1"] if p.email}
+        assert {"alice@example.com", "bob@example.com"} <= stored
+
+        # Every request answers the same full first page, whatever start it asks for.
+        atlassian_api.on("GET", restriction, {"operation": "read", "restrictions": {
+            "user": {"results": [{"type": "known", "userKey": "alice"}], "start": 0, "limit": 1, "size": 1},
+            "group": {"results": [], "start": 0, "limit": 1, "size": 0}}})
+        store.sync_points.clear()
+        await connector.run_sync()
+
+        assert {p.email for p in db.record_permissions["p1"] if p.email} == stored, "bob is not dropped from the allow-list"
+        assert connector.full_sync_coverage().complete is False
 
     async def test_a_restriction_naming_a_user_only_by_username_keeps_the_page_restricted(
         self, atlassian_api, db, store, search
@@ -1935,7 +1982,7 @@ class TestCommentsDeep:
             assert db.records[reply].record_type == RecordType.INLINE_COMMENT, "replies keep their thread's kind"
         assert all(r.external_record_id != "f1" or r.record_type == RecordType.COMMENT for r in db.records.values())
 
-    async def test_one_broken_comment_does_not_lose_its_siblings(self, atlassian_api, db, store, search) -> None:
+    async def test_a_comment_it_cannot_process_makes_the_page_sync_again(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         search.add("page", 0, listing([content("p1")]))
         atlassian_api.on(
@@ -1946,8 +1993,13 @@ class TestCommentsDeep:
 
         await connector.run_sync()
 
-        assert {"c1", "c3"} <= set(db.records)
         assert "c2" not in db.records
+        assert connector.full_sync_coverage().complete is False, "the rest is not the whole list"
+
+        db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert {"c1", "c2", "c3"} <= set(db.records), "the page is synced again by id, comments and all"
 
 
 class TestCommentAndAttachmentPaging:
@@ -1979,6 +2031,28 @@ class TestCommentAndAttachmentPaging:
 
         assert {"c1", "c2", "r1", "r2"} <= set(db.records), "the rows between the short page and its link are read"
         assert connector.full_sync_coverage().complete is True
+
+    @pytest.mark.parametrize("repeats", ["content", "spaces"])
+    async def test_a_listing_that_repeats_its_page_is_incomplete(self, atlassian_api, db, store, search, repeats) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        # Every start answers the same page, as a server ignoring start would, until start 4.
+        for start in range(4 if repeats == "content" else 1):
+            search.add("page", start, listing([content("p1")], next_start=start + 1))
+        if repeats == "spaces":
+            spaces = {"results": [space("ENG", 10)], "_links": {"base": BASE, "next": f"{API}/space?start=1"}}
+            end = {"results": [], "_links": {"base": BASE}}
+
+            def answer(request: httpx.Request) -> httpx.Response:
+                q = AtlassianApiStub.query(request)
+                if q.get("expand") == "homepage":
+                    return json_response({"results": []})
+                return json_response(spaces if int(q.get("start", "0")) < 4 else end)
+
+            atlassian_api.on("GET", f"{API}/space", answer)
+
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False, "a repeated page is not the rest of the list"
 
     async def test_attachments_content_and_spaces_after_a_short_page_are_read(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -2026,6 +2100,60 @@ class TestCommentAndAttachmentPaging:
         await connector.run_sync()
 
         assert {"a1", "a2"} <= set(db.records), "unknown is not empty: the attachments are read on their own"
+
+    @pytest.mark.parametrize("path", ["content/p1/child/comment", "content/c1/child/comment", "content/p1/child/attachment"])
+    async def test_a_child_list_that_failed_holds_the_checkpoint_and_is_read_next_sync(
+        self, atlassian_api, db, store, search, path
+    ) -> None:
+        earlier = "2024-04-01T00:00:00.000Z"
+        connector = await make_connector(atlassian_api, db, store)
+        page = content("p1", attachments=[attachment("a1")])
+        page["children"]["attachment"]["size"] = 2  # truncated inline: the attachments are read on their own
+        search.add("page", 0, listing([page]))
+        whole = {"content/p1/child/comment": [comment("c1"), comment("c2")],
+                 "content/c1/child/comment": [comment("r1"), comment("r2")],
+                 "content/p1/child/attachment": [attachment("a1"), attachment("a2")]}
+        for other, rows in whole.items():
+            if other != path:
+                self._paged(atlassian_api, other, {"0": {"results": rows, "_links": {"base": BASE}}})
+        self._paged(atlassian_api, "content/c2/child/comment", {"0": {"results": [], "_links": {"base": BASE}}})
+        self._paged(atlassian_api, path, {
+            "0": {"results": whole[path][:1], "_links": {"base": BASE, "next": f"{API}/{path}?start=1"}},
+            "1": json_response({"message": "busy"}, status=503),
+        })
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG")
+        await connector.pages_sync_point.update_sync_point(key, {"last_sync_time": earlier})
+
+        await connector.run_sync()
+
+        assert store.values_for("confluence_pages/ENG")["last_sync_time"] == earlier, "not past a page it must read again"
+
+        self._paged(atlassian_api, path, {"0": {"results": whole[path], "_links": {"base": BASE}}})
+        # Nothing at the source changed since: the search lists p1 (last modified 2024-05-01) only while the window
+        # still starts before it, as it does when the checkpoint was held.
+        search.pages.clear()
+
+        def by_window(request: httpx.Request) -> httpx.Response:
+            cql = AtlassianApiStub.query(request)["cql"]
+            held = cql.startswith("type=page") and 'lastModified > "2024-' in cql
+            return json_response(listing([page] if held else []))
+
+        atlassian_api.on("GET", f"{API}/content/search", by_window)
+        await connector.run_sync()
+
+        assert {r["id"] for r in whole[path]} <= set(db.records), "the children are read without another edit"
+
+    async def test_a_404_after_the_first_page_is_unread_not_the_end(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")]))
+        self._paged(atlassian_api, "content/p1/child/comment", {
+            "0": {"results": [comment("c1")], "_links": {"base": BASE, "next": f"{API}/content/p1/child/comment?start=1"}},
+            "1": json_response({"message": "No content found"}, status=404),
+        })
+
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False, "the page existed a moment ago; the rest is unread"
 
     @pytest.mark.parametrize("path", ["content/p1/child/comment", "content/c1/child/comment", "content/p1/child/attachment"])
     async def test_a_page_that_fails_part_way_keeps_the_rest_and_the_sync_incomplete(

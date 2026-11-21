@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 import pytest
 
+from app.connectors.sources.atlassian.core.confluence_access import ChildrenUnreadable
+
 pytestmark = pytest.mark.confluence_datacenter
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
@@ -1261,6 +1263,7 @@ class TestFetchCommentsRecursive:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
         connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
 
         comments = await connector._fetch_comments_recursive(
@@ -1284,6 +1287,7 @@ class TestFetchCommentsRecursive:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
         connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
 
         comments = await connector._fetch_comments_recursive(
@@ -1292,16 +1296,16 @@ class TestFetchCommentsRecursive:
         assert len(comments) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_an_api_failure_is_unread_not_empty(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_content_comments_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        comments = await connector._fetch_comments_recursive(
-            "12345", "Test", "footer", [], None, "page"
-        )
-        assert comments == []
+        with pytest.raises(ChildrenUnreadable):
+            await connector._fetch_comments_recursive(
+                "12345", "Test", "footer", [], None, "page"
+            )
 
 
 # ===========================================================================
@@ -1331,6 +1335,7 @@ class TestFetchCommentChildrenRecursive:
         ])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
 
         children = await connector._fetch_comment_children_recursive(
             "11111", "footer", "12345", "space-1", []
@@ -1352,6 +1357,7 @@ class TestFetchCommentChildrenRecursive:
         ])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
 
         children = await connector._fetch_comment_children_recursive(
             "11111", "inline", "12345", "space-1", []
@@ -1359,16 +1365,16 @@ class TestFetchCommentChildrenRecursive:
         assert len(children) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_an_api_failure_is_unread_not_empty(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_content_comments_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        children = await connector._fetch_comment_children_recursive(
-            "11111", "footer", "12345", "space-1", []
-        )
-        assert children == []
+        with pytest.raises(ChildrenUnreadable):
+            await connector._fetch_comment_children_recursive(
+                "11111", "footer", "12345", "space-1", []
+            )
 
 # =============================================================================
 # Merged from test_confluence_connector_coverage.py

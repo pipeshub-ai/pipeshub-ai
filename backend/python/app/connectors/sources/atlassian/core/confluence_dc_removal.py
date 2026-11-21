@@ -23,6 +23,8 @@ from app.connectors.core.registry.filters import SyncFilterKey
 from app.connectors.sources.atlassian.core.confluence_access import (
     content_id,
     read_page,
+    repeats,
+    v1_next_start,
 )
 from app.models.entities import Record, RecordGroup, RecordGroupType, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
@@ -281,6 +283,7 @@ class ConfluenceDataCenterRemovalMixin:
         datasource = await self._get_fresh_datasource()
         for status in statuses:
             start = 0
+            seen: set = set()
             while True:
                 try:
                     response = await datasource.list_space_content_v1(
@@ -308,11 +311,15 @@ class ConfluenceDataCenterRemovalMixin:
                         "nothing removed"
                     )
                     return None
+                if repeats(page.results, content_id, seen):
+                    self.logger.warning(f"The {content_type} listing of space {space_key} repeats a page; nothing removed")
+                    return None
                 for item in page.results:
                     listed[str(item["id"])] = self._listed_item(item, status)
-                if not page.next_url:
+                following = v1_next_start(data, start, len(page.results), CONTENT_LIST_LIMIT, use_link_offset=False)
+                if following is None:
                     break
-                start += len(page.results)
+                start = following
         return listed
 
     @staticmethod

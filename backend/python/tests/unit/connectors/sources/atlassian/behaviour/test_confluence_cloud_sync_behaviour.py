@@ -463,18 +463,27 @@ class TestPageSync:
         pytest.param({"results": [], "size": 0, "_links": {"next": "/rest/api/content/10/child/attachment?start=25"}},
                      id="empty-but-links-on"),
     ])
-    async def test_an_unreadable_inline_attachment_list_does_not_complete_the_listing(
+    async def test_an_unreadable_inline_attachment_list_is_read_on_its_own(
         self, api, db, checkpoints, search, inline
     ) -> None:
         page = v1_page("10")
         page["children"]["attachment"] = inline
         search.by_cursor[None] = search_page([page])
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "busy"}, status=503))
         connector, _ = await ready_connector(db, checkpoints)
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         saved = checkpoints.values_for("confluence_pages/ENG") or {}
-        assert not saved.get("last_sync_time"), "its attachments are unread, not none: the window is read again"
+        assert not saved.get("last_sync_time"), "neither list was read: the window is read again"
+
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": [
+            {"id": "att1", "title": "a.pdf", "mediaType": "application/pdf", "fileSize": 10, "version": {"number": 1},
+             "_links": {"download": "/download/attachments/10/a.pdf"}}], "_links": {"base": WIKI}})
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" in db.records, "the attachment list is read on its own, though the expansion listed none"
 
     async def test_a_failed_listing_page_does_not_move_the_checkpoint(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10")], cursor="C2")
@@ -821,7 +830,7 @@ class TestGroups:
 
         assert len(db.user_groups) == saves, "the group is not saved without the members it never read"
 
-    async def test_a_group_that_disappears_part_way_through_its_members_ends_up_empty(self, api, db, checkpoints) -> None:
+    async def test_a_group_not_found_part_way_through_its_members_keeps_them(self, api, db, checkpoints) -> None:
         db.app_users.append(AppUser(
             app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id="acc-ana",
             org_id="org-1", email="ana@acme.com", full_name="Ana",
@@ -836,8 +845,9 @@ class TestGroups:
 
         await connector._sync_user_groups()
 
-        group, saved_members = db.user_groups[-1]
-        assert group.source_user_group_id == "grp-eng" and saved_members == [], "a deleted group keeps no members"
+        # It existed when its first members came back: a 404 after them says nothing about the rest.
+        assert not db.user_groups, "not saved with the members read so far"
+        assert connector.full_sync_coverage().complete is False
 
 
 class TestRestrictedPageFiles:

@@ -105,6 +105,7 @@ from app.connectors.sources.atlassian.core.confluence_access import (
     group_key,
     listing_modified_after,
     read_page,
+    repeats,
     unresolved_principal_permission,
     user_key,
     v1_next_start,
@@ -1643,6 +1644,7 @@ class ConfluenceConnector(BaseConnector):
             # Pagination variables for groups
             batch_size = 50
             start = 0
+            listed_groups: set = set()
             total_groups_synced = 0
             total_memberships_synced = 0
 
@@ -1671,6 +1673,11 @@ class ConfluenceConnector(BaseConnector):
                     group_list_complete = False
                     break
                 groups_data = page.results
+                if repeats(groups_data, group_key, listed_groups):
+                    self._note_problem("The Confluence group list repeated a page")
+                    every_member_list_read = False
+                    group_list_complete = False
+                    break
 
                 if not groups_data:
                     break
@@ -1683,6 +1690,9 @@ class ConfluenceConnector(BaseConnector):
                         if group_id:
                             listed_group_ids.add(str(group_id))
                         if not group_id or not group_name:
+                            # Listed but not written: a full sync must not unlink it.
+                            self._note_problem("A Confluence group came back without its id or name")
+                            every_member_list_read = False
                             continue
 
                         self.logger.debug(f"  Reading group: {group_name} ({group_id})")
@@ -1733,6 +1743,8 @@ class ConfluenceConnector(BaseConnector):
                 try:
                     user_group = self._transform_to_user_group(group_data)
                     if not user_group:
+                        self._note_problem(f"Couldn't save group {group_data.get('name')}")
+                        every_member_list_read = False
                         continue
 
                     try:
@@ -2065,6 +2077,8 @@ class ConfluenceConnector(BaseConnector):
                         )
 
                         if not folder_record:
+                            self._note_skipped(space_key, "folders that failed to sync")
+                            listing_complete = False
                             continue
 
                         # A READ restriction keeps inheriting and is recorded as
@@ -2350,6 +2364,9 @@ class ConfluenceConnector(BaseConnector):
                         )
 
                         if not webpage_record_update.record:
+                            # Not written, so not seen: the listing is not a full one.
+                            self._note_skipped(space_key, f"{content_type}s that failed to sync")
+                            listing_complete = False
                             continue
 
                         webpage_record = webpage_record_update.record
@@ -2389,14 +2406,10 @@ class ConfluenceConnector(BaseConnector):
                         attachments_complete = not attachments and not attachment_data.get("size") and not (
                             attachment_data.get("_links") or {}
                         ).get("next")
-                        if not attachments and not attachments_complete:
-                            # Unreadable, or empty while it says it holds some: its attachments are unread, not none.
-                            listing_complete = False
-                            self._note_skipped(
-                                space_key, f"{content_type}s whose attachment list could not be read in full"
-                            )
+                        # Unreadable, or empty while it says it holds some: its attachments are read on their own.
+                        inline_unread = not attachments and not attachments_complete
 
-                        if attachments:
+                        if attachments or inline_unread:
                             # v2 list API puts base URL only on response _links, not per attachment
                             v2_attachments_base_url: str | None = None
 
@@ -2416,8 +2429,15 @@ class ConfluenceConnector(BaseConnector):
                                         self._note_skipped(
                                             space_key, f"{content_type}s whose attachment list could not be read in full"
                                         )
+                                except AtlassianQuotaExhausted:
+                                    raise
                                 except Exception as v2_error:
-                                    self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
+                                    # Neither list was read in full: the window is read again.
+                                    self.logger.warning(f"Could not list the attachments of {content_type} {item_id}: {v2_error}")
+                                    listing_complete = False
+                                    self._note_skipped(
+                                        space_key, f"{content_type}s whose attachment list could not be read in full"
+                                    )
 
                                 attachment_mime_types: dict[str, str] = {}
                                 for att in attachments:
@@ -5513,6 +5533,7 @@ class ConfluenceConnector(BaseConnector):
             member_account_ids: list[str] = []
             batch_size = 100
             start = 0
+            listed: set = set()
 
             # Paginate through group members
             while True:
@@ -5523,8 +5544,12 @@ class ConfluenceConnector(BaseConnector):
                     limit=batch_size
                 )
 
+                if response and response.status == HttpStatusCode.NOT_FOUND.value and start:
+                    # It existed a moment ago, when its first members came back: the rest is unread.
+                    self.logger.warning(f"Group {group_name} was not found part way through its members")
+                    return None
                 if response and response.status == HttpStatusCode.NOT_FOUND.value:
-                    # The group no longer exists, so it has no members to keep (not even earlier pages).
+                    # The group no longer exists, so it has no members to keep.
                     self.logger.warning(f"Group {group_name} was not found while reading its members")
                     return [], []
 
@@ -5540,6 +5565,9 @@ class ConfluenceConnector(BaseConnector):
                     self.logger.warning(f"A page of the members of group {group_name} was not read in full")
                     return None
                 members_data = members_page.results
+                if repeats(members_data, lambda m: user_key(m) or m.get("email"), listed):
+                    self.logger.warning(f"A page of the members of group {group_name} repeats; its stored members are kept")
+                    return None
 
                 if not members_data:
                     break
