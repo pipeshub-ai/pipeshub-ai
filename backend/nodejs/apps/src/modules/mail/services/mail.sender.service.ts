@@ -120,7 +120,8 @@ export function buildMailHeaders(
       ) {
         return { error: 'Date is too far from the time of sending' };
       }
-      date = value;
+      // a copy: the send awaits the stored settings before the transport reads it, and a caller's later change must not reach the message
+      date = new Date(value.getTime());
       continue;
     }
     if (

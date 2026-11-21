@@ -215,6 +215,31 @@ describe('MailSenderService message date', () => {
     });
   });
 
+  it('sends the date it validated, even if the caller changes its Date while the send waits for the stored settings', async () => {
+    const date = new Date(Date.now() - 3 * HOUR);
+    const accepted = date.getTime();
+    const logger: any = {
+      debug: sinon.stub(),
+      info: sinon.stub(),
+      error: sinon.stub(),
+      warn: sinon.stub(),
+    };
+    const waiting = new MailSenderService(
+      () => ({ smtp }) as any,
+      logger,
+      async () => {
+        date.setTime(0);
+        return smtp;
+      },
+    );
+    (waiting as any).recordAudit = () => undefined;
+    const result = await waiting.send(body, smtp, undefined, { Date: date });
+    expect(result.status).to.equal('sent');
+    const message = sendMail.firstCall.args[0];
+    expect(message.date.getTime()).to.equal(accepted);
+    expect(message.date).to.not.equal(date);
+  });
+
   it('leaves the date to the transport when none is set', async () => {
     for (const extra of [
       undefined,
