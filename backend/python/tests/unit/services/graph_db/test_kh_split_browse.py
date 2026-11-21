@@ -251,3 +251,28 @@ async def test_the_sidebar_asks_an_arrow_only_of_records_that_are_not_folders(st
     (query, params), = seen
     assert "NOT n:RecordGroup" in query and "n.orgId = $org_id" in query and folder in query
     assert params["ids"] == ["f1", "r1"] and params["org_id"] == "o"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("skipping", "limit"), [(True, 25), (False, 1000)])
+async def test_a_read_before_a_page_split_cannot_decide_is_read_by_legacy_a_page_at_a_time(skipping: bool, limit: int) -> None:
+    """The reads before a numbered page take up to 1,000 rows on split; legacy holds every row it keeps in transaction memory, so when it
+    answers one of them it reads a page's worth, and the reads go on from its cursor. Outside those reads the limit is the page's own."""
+    from app.services.graph_db.interface.graph_db_provider import KH_SKIP_READS
+
+    p = object.__new__(Neo4jProvider)
+    p.logger = logging.getLogger("test_kh_split_browse")
+    asked: list[dict[str, Any]] = []
+
+    async def page(**k: Any) -> dict:  # noqa: ANN401
+        asked.append(k)
+        return {"rows": []}
+
+    p.get_knowledge_hub_connector_page_v3 = page  # type: ignore[method-assign]
+    token = KH_SKIP_READS.set({"page_rows": 25}) if skipping else None
+    try:
+        await p._kh_split_answered_by_legacy(_KhSplitUndecided("wide"), "A", {"limit": 1000, "app_id": "A"}, "split")
+    finally:
+        if token is not None:
+            KH_SKIP_READS.reset(token)
+    assert [(a["limit"], a["browse_mode"]) for a in asked] == [(limit, "legacy")]
