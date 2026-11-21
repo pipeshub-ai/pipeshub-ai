@@ -6805,6 +6805,7 @@ components:
         - "SALESFORCE"
         - "S3"
         - "MINIO"
+        - "CLOUDFLARE R2"
         - "GCS"
         - "AZURE BLOB"
         - "AZURE FILES"
