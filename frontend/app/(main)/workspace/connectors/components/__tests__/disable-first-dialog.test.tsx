@@ -159,6 +159,20 @@ describe('DisableFirstDialog', () => {
     expect(onProceed).not.toHaveBeenCalled();
   });
 
+  it('keeps the dialog busy until the read after a failed disable returns', async () => {
+    let answer: (v: unknown) => void = () => {};
+    toggleConnector.mockRejectedValue({ type: 'SERVER_ERROR', message: 'slow', statusCode: 504 });
+    getConnectorInstance.mockReturnValue(new Promise((r) => (answer = r)));
+    renderDialog();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
+
+    await waitFor(() => expect(getConnectorInstance).toHaveBeenCalledWith('conn-1'));
+    expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true);
+    answer(makeInstance({ isActive: true }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false));
+  });
+
   it('leaves the instance as it is when the failed disable did not land', async () => {
     const instance = makeInstance({ isActive: true });
     useConnectorsStore.setState({ instances: [instance] });

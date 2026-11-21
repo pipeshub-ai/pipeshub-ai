@@ -97,7 +97,12 @@ async def test_a_sync_disable_writes_the_requested_state_and_sends_its_event() -
     result, request, graph = await _toggle({"type": "sync", "enabled": False}, isActive=True)
 
     assert result["changed"] is True and result["enabled"] is False
-    update = request.app.state.connector_registry.update_connector_instance.await_args
+    registry = request.app.state.connector_registry
+    lookup = registry.get_connector_instance.await_args
+    assert lookup.kwargs == {"connector_id": "c1", "user_id": "u1", "org_id": "o1", "is_admin": True}
+    update = registry.update_connector_instance.await_args
+    assert update.kwargs["connector_id"] == "c1" and update.kwargs["transaction"] == "txn1"
+    assert (update.kwargs["user_id"], update.kwargs["org_id"], update.kwargs["is_admin"]) == ("u1", "o1", True)
     assert update.kwargs["updates"]["isActive"] is False
     graph.increment_node_field.assert_awaited_once()
     message = request.app.container.messaging_producer.send_message.await_args.kwargs["message"]

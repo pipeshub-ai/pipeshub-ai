@@ -103,13 +103,15 @@ export function DisableFirstDialog({
     try {
       await ConnectorsApi.toggleConnector(connectorId, 'sync', false);
     } catch (err: unknown) {
-      setIsBusy(false);
       // A timed-out disable may still have landed; show the state the backend has.
-      void ConnectorsApi.getConnectorInstance(connectorId)
+      // Read while the dialog is still busy, so the user can neither switch the
+      // panel to another connector nor change this one before the result is written.
+      await ConnectorsApi.getConnectorInstance(connectorId)
         .then((fresh) => {
           if (fresh && !fresh.isActive) markInactiveInStore(connectorId);
         })
         .catch(() => {});
+      setIsBusy(false);
       // The interceptor exempts desktop refusals from its toast, so they are worded here.
       const refusal = readDesktopRefusal(err);
       if (refusal) {
