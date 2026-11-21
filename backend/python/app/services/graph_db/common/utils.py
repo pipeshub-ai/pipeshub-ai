@@ -499,14 +499,12 @@ def merge_same_id_record_docs(earlier: dict[str, Any], later: dict[str, Any]) ->
     return merged
 
 
-def collapse_repeated_records(records: list[Any]) -> list[Any]:  # noqa: ANN401
+def collapse_repeated_records(records: list[Any]) -> list[Any]:
     """The records of one ``batch_upsert_records`` call with each id once, by the rule every store applies to repeated ids: the last row
     is the record written (its type, so its type document and edge are written once, and its fields), with ``createdAtTimestamp`` the
     earliest positive value any row gave and a promotion mark if any row had one. Order follows each id's first appearance."""
-    last: dict[Any, Any] = {}
-    for record in records:
-        last[record.id] = record
-    if len(last) == len(records):
+    ids = [getattr(record, "id", None) for record in records]
+    if None in ids or len(set(ids)) == len(ids):
         return records
     out: list[Any] = []
     seen: set[Any] = set()

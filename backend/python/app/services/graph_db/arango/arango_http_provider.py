@@ -9807,12 +9807,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         2. Upserts specific type to type-specific collection (files, mails, etc.)
         3. Creates IS_OF_TYPE edge
         """
-        records = collapse_repeated_records(records)          # one row per id, by the rule every store applies
         record_ids = [r.id for r in records]
         seen = set()
         duplicates = {x for x in record_ids if x in seen or seen.add(x)}
         if duplicates:
             self.logger.warning(f"DUPLICATE RECORD IDS IN BATCH: {duplicates}")
+            records = collapse_repeated_records(records)          # written once, by the rule every store applies
 
         try:
             for record in records:
