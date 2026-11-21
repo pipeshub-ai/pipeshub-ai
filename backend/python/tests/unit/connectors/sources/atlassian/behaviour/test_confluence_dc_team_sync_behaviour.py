@@ -513,6 +513,51 @@ class TestUsersAndGroups:
         assert "bob" in {link.source_user_id for link in await db.get_app_user_links(CONNECTOR_ID)}
         assert db.withdrawn_users == []
 
+    async def test_a_can_use_member_list_cut_by_an_empty_page_links_and_withdraws_nobody(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/server-information", {"version": "9.2.5", "versionNumbers": [9, 2, 5]})
+        connector._authenticated_source_user_id = "svc"
+        use = {"targetType": "application", "operationKey": "use"}
+        atlassian_api.on("GET", f"{API}/permissions", json_response([
+            {"operation": use, "subject": {"type": "group", "name": "confluence-users"}}]))
+        pages = {"0": {"results": [user("svc", "svc@example.com")], "size": 1,
+                       "_links": {"base": BASE, "next": f"{API}/group/confluence-users/member?start=1"}},
+                 "1": {"results": [], "size": 0, "_links": {"base": BASE, "next": f"{API}/group/confluence-users/member?start=2"}}}
+        atlassian_api.on("GET", f"{API}/group/confluence-users/member",
+                         lambda r: json_response(pages[AtlassianApiStub.query(r).get("start", "0")]))
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [user("ana", "ana@example.com"), user("svc", "svc@example.com")]})
+        db.app_users.append(AppUser(app_name=Connectors.CONFLUENCE_DATA_CENTER, connector_id=CONNECTOR_ID,
+                                    source_user_id="ana", email="ana@example.com", full_name="Ana", org_id="org-1"))
+
+        await connector._sync_users()
+
+        assert db.withdrawn_users == [], "ana may be on the page that was never read"
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_group_member_list_cut_by_an_empty_page_keeps_the_stored_members(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        people = [user("ana", "ana@example.com"), user("bob", "bob@example.com")]
+        with_directory(atlassian_api, people, {"eng": people})
+        await connector._sync_users()
+        await connector._sync_user_groups()
+        assert db.members_of("eng") == ["ana@example.com", "bob@example.com"]
+
+        pages = {"0": {"results": people[:1], "size": 1, "_links": {"base": BASE, "next": f"{API}/group/eng/member?start=1"}},
+                 "1": {"results": [], "size": 0, "_links": {"base": BASE, "next": f"{API}/group/eng/member?start=2"}}}
+        atlassian_api.on("GET", f"{API}/group/eng/member", lambda r: json_response(pages[AtlassianApiStub.query(r).get("start", "0")]))
+        await connector._sync_user_groups()
+
+        assert db.members_of("eng") == ["ana@example.com", "bob@example.com"]
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_group_listing_cut_by_an_empty_page_is_incomplete(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/group", {"results": [], "_links": {"base": BASE, "next": f"{API}/group?start=50"}})
+
+        await connector._sync_user_groups()
+
+        assert connector.full_sync_coverage().complete is False
+
     async def test_an_empty_page_that_links_onward_withdraws_nobody(self, atlassian_api, db, store) -> None:
         connector = await make_connector(atlassian_api, db, store)
         ana, bob = user("ana", "ana@example.com"), user("bob", "bob@example.com")
@@ -886,19 +931,47 @@ class TestSpacePermissions:
 
     @pytest.mark.parametrize("entry", [
         {"operation": {"operationKey": "read", "targetType": "space"}},
-        {"operation": {"targetType": "space"}, "subject": {"type": "group", "name": "eng"}},
-        {"subject": {"type": "group", "name": "eng"}},
+        {"operation": {"targetType": "space"}, "subject": {"type": "group", "name": "ops"}},
+        {"subject": {"type": "group", "name": "ops"}},
         "read",
-    ], ids=["no-subject", "no-operation-key", "no-operation", "not-an-object"])
-    async def test_a_space_permission_of_neither_shape_grants_nothing(self, atlassian_api, db, store, search, entry) -> None:
+        {"operation": {"operation": "read", "targetType": "space"}, "subjects": {"group": {"size": 1}, "user": {"results": []}}},
+        {"operation": {"operation": "read", "targetType": "space"}, "subjects": {"group": {"results": "ops"}, "user": {"results": []}}},
+        {"operation": {"operation": "read", "targetType": "space"},
+         "subjects": {"group": {"results": [], "size": 1}, "user": {"results": []}}},
+        {"operation": {"operation": "read", "targetType": "space"}, "subjects": {"group": None, "user": {"results": []}}},
+    ], ids=["no-subject", "no-operation-key", "no-operation", "not-an-object", "bundled-no-results",
+            "bundled-results-not-a-list", "bundled-fewer-than-size", "bundled-listing-not-an-object"])
+    async def test_an_unreadable_space_permission_keeps_the_stored_access(
+        self, atlassian_api, db, store, search, entry
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": [], "ops": []})
+        view = {"operationKey": "read", "targetType": "space"}
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response(
+            [{"operation": view, "subject": {"type": "group", "name": "eng"}},
+             {"operation": view, "subject": {"type": "group", "name": "ops"}}]))
+        await connector.run_sync()
+        stored = {p.external_id for p in db.record_group_permissions["10"]}
+        assert stored == {"eng", "ops"}
+
+        # A valid eng grant next to an entry it can't read: saving only eng would drop ops.
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response(
+            [{"operation": view, "subject": {"type": "group", "name": "eng"}}, entry]))
+        await connector.run_sync()
+
+        assert {p.external_id for p in db.record_group_permissions["10"]} == stored
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_bundled_listing_read_in_full_and_empty_is_still_valid(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": []})
-        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response([entry]))
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response([
+            {"operation": {"operation": "read", "targetType": "space"},
+             "subjects": {"group": {"results": [{"name": "eng"}], "size": 1}, "user": {"results": [], "size": 0}}}]))
 
         await connector.run_sync()
 
-        assert db.record_group_permissions["10"] == []
-        assert connector.full_sync_coverage().complete is False
+        assert {p.external_id for p in db.record_group_permissions["10"]} == {"eng"}
 
     async def test_anonymous_view_reaches_logged_in_users_and_administrators_see_every_space(
         self, atlassian_api, db, store, search

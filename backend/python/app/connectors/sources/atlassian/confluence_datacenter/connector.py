@@ -866,6 +866,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 groups_data = response_data.get("results", [])
 
                 if not groups_data:
+                    if (response_data.get("_links") or {}).get("next"):
+                        # An empty page that links onward leaves groups unread.
+                        self.logger.error("Failed to fetch groups: an empty page of the group listing links to a next one")
+                        self._sync_read_incomplete = True
                     break
 
                 # Process each group and its members
@@ -3372,10 +3376,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 for entry in perm_entries:
                     subjects = self._space_permission_subjects(entry)
                     if subjects is None:
-                        # Neither shape: it grants nothing, and a full sync unlinks nothing for this run.
-                        self.logger.error("A space permission of %s came back in an unknown shape; it grants nothing", space_name)
-                        self._sync_read_incomplete = True
-                        continue
+                        # An entry it can't read may grant someone: the space keeps its stored grants this run.
+                        self.logger.error("A space permission of %s came back in an unknown shape; its stored access is kept", space_name)
+                        return None
                     grants.extend(subjects)
                 # "View gives you permission to access the content in this space"
                 # (https://confluence.atlassian.com/doc/space-permissions-overview-139521.html): another space
@@ -3509,10 +3512,16 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             subjects = [entry["subject"]]
         elif isinstance(entry.get("subjects"), dict) or entry.get("anonymousAccess") is True:
             bundled = entry.get("subjects") or {}
-            subjects = [{**u, "type": "user"} for u in ((bundled.get("user") or {}).get("results") or [])
-                        if isinstance(u, dict)]
-            subjects += [{**g, "type": "group"} for g in ((bundled.get("group") or {}).get("results") or [])
-                         if isinstance(g, dict)]
+            subjects = []
+            for kind in ("user", "group"):
+                # A listing that isn't there names nobody of that kind; one that is there must be read in full.
+                listing = bundled.get(kind, {"results": []})
+                results = listing.get("results") if isinstance(listing, dict) else None
+                count = listing.get("size") if isinstance(listing, dict) else None
+                if not isinstance(results, list) or (isinstance(count, int) and count > len(results)) or \
+                        not all(isinstance(r, dict) for r in results):
+                    return None  # a listing missing, cut short or of another shape is unread, not empty
+                subjects += [{**r, "type": kind} for r in results]
             if entry.get("anonymousAccess") is True:
                 subjects.append({"type": "anonymous"})
         else:
@@ -3559,7 +3568,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         self.logger.error(f"Could not read the members of {subject['name']}, which holds \"Can use\"")
                         return None
                     holders.update(str(m.get("userKey") or m.get("key")) for m in members if m.get("userKey") or m.get("key"))
-                    next_start = v1_next_start(data, start, len(members), 200, use_link_offset=False)
+                    try:
+                        next_start = v1_next_start(data, start, len(members), 200, use_link_offset=False)
+                    except ValueError as e:
+                        self.logger.error(f"The members of {subject['name']}, which holds \"Can use\", were cut short: {e}")
+                        return None
                     if next_start is None:
                         break
                     start = next_start
@@ -4516,6 +4529,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 members_data = response_data.get("results", [])
 
                 if not members_data:
+                    if (response_data.get("_links") or {}).get("next"):
+                        # Saving the members read so far would drop the ones on the pages it never read.
+                        self.logger.warning(f"Keeping the stored members of group {group_name}: an empty page links onward")
+                        return None
                     break
 
                 for member_data in members_data:

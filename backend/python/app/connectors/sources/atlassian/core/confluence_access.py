@@ -39,14 +39,16 @@ def v1_next_start(
     Confluence can return fewer results than asked for before the end, so when the response
     has links, ``_links.next`` decides whether more pages follow. Without links, a full page
     means more. Pass ``use_link_offset=True`` on Cloud and False on Data Center.
-    Raises ValueError when a Cloud next link has no usable offset, so the caller fails the
-    read instead of guessing one.
+    Raises ValueError when a Cloud next link has no usable offset, or when an empty page still
+    links to a next one, so the caller fails the read instead of taking a cut listing as whole.
     """
     links = response_data.get("_links")
     if isinstance(links, dict) and links:
         next_url = links.get("next")
-        if not next_url or not page_len:
+        if not next_url:
             return None
+        if not page_len:
+            raise ValueError(f"an empty page links to a next one: {next_url}")
         # Cloud's link points at the next page; Data Center's short page still links to start + limit (CONFSERVER-95272).
         if not use_link_offset:
             return start + page_len
