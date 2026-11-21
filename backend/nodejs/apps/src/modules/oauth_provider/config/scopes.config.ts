@@ -357,6 +357,25 @@ export const AdminOnlyScopes = new Set<string>([
   'crawl:delete',
 ]);
 
+/**
+ * Scopes a non-admin may hold but is never asked for on the consent page.
+ * `usergroup:read` stays open to non-admins for PATs and the app (several
+ * group reads have no admin check), but the one route an OAuth client such
+ * as an MCP client uses it for, `GET /userGroups` (pipeshub_directory
+ * list_groups), is admin-only. Asking a non-admin for it grants nothing.
+ */
+export const AdminOnlyConsentScopes = new Set<string>(['usergroup:read']);
+
+/** Drops the scopes a non-admin is not asked for on the consent page. */
+export function consentScopesForRole(
+  scopes: string[],
+  isAdmin: boolean,
+): string[] {
+  return isAdmin
+    ? scopes
+    : scopes.filter((scope) => !AdminOnlyConsentScopes.has(scope));
+}
+
 export const DefaultMcpScopes = [
   'openid',
   'profile',

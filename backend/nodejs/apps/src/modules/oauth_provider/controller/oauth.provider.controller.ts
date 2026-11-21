@@ -39,6 +39,8 @@ import {
 import { getUserRepository } from '../../../libs/repositories/user';
 import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { getOrgRepository } from '../../../libs/repositories/org';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
+import { consentScopesForRole } from '../config/scopes.config';
 import {
   isKnowledgeLimitWithin,
   toKnowledgeLimit,
@@ -141,17 +143,24 @@ export class OAuthProviderController {
     }
 
     try {
+      const user = req.user;
       this.oauthTokenService.audienceFor(query.resource);
 
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(
         query.scope,
       );
-      const { granted, notGranted } =
-        this.scopeValidatorService.resolveGrantedScopes(
-          requestedScopes,
-          app.allowedScopes,
-        );
+      const resolved = this.scopeValidatorService.resolveGrantedScopes(
+        requestedScopes,
+        app.allowedScopes,
+      );
+      const isAdmin = await isUserOrgAdmin(user.userId, user.orgId);
+      const granted = this.scopeValidatorService.consentScopesForRole(
+        resolved.granted,
+        isAdmin,
+      );
+      // Not listed as refused either: the person is simply not asked.
+      const notGranted = consentScopesForRole(resolved.notGranted, isAdmin);
 
       // RFC 9700: PKCE is REQUIRED for public clients
       if (!app.isConfidential && !query.code_challenge) {
@@ -169,7 +178,6 @@ export class OAuthProviderController {
       }
 
       // Build consent data
-      const user = req.user;
       const toScopeInfo = (scopes: string[]): ConsentData['scopes'] =>
         this.scopeValidatorService.getScopeDefinitions(scopes).map((s) => ({
           name: s.name,
@@ -311,10 +319,29 @@ export class OAuthProviderController {
 
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(scope);
-      const { granted } = this.scopeValidatorService.resolveGrantedScopes(
+      const registered = this.scopeValidatorService.resolveGrantedScopes(
         requestedScopes,
         app.allowedScopes,
-      );
+      ).granted;
+      let granted: string[];
+      try {
+        granted = this.scopeValidatorService.consentScopesForRole(
+          registered,
+          await isUserOrgAdmin(user.userId, user.orgId),
+        );
+      } catch (error) {
+        if (!(error instanceof InvalidScopeError)) {
+          throw error;
+        }
+        // Nothing left for this person: sent back to the client like the
+        // other errors here, with its state.
+        const redirectUrl = new URL(redirect_uri as string);
+        redirectUrl.searchParams.set('error', 'invalid_scope');
+        redirectUrl.searchParams.set('error_description', error.message);
+        redirectUrl.searchParams.set('state', state as string);
+        res.json({ redirectUrl: redirectUrl.toString() });
+        return;
+      }
 
       // A metadata document client is stored only now, once the person has consented.
       await client.store({ orgId: user.orgId, userId: user.userId });

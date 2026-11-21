@@ -178,6 +178,23 @@ describe('ScopeValidatorService', () => {
     })
   })
 
+  describe('consentScopesForRole', () => {
+    it('drops usergroup:read for a non-admin and keeps it for an admin', () => {
+      const granted = ['user:read', 'usergroup:read']
+      expect(service.consentScopesForRole(granted, false)).to.deep.equal(['user:read'])
+      expect(service.consentScopesForRole(granted, true)).to.deep.equal(granted)
+    })
+
+    it('throws when a non-admin is left with no scopes', () => {
+      expect(() => service.consentScopesForRole(['usergroup:read'], false))
+        .to.throw(InvalidScopeError)
+    })
+
+    it('leaves an empty grant empty', () => {
+      expect(service.consentScopesForRole([], false)).to.deep.equal([])
+    })
+  })
+
   describe('resolveGrantedScopes', () => {
     it('grants the allowed scopes and reports the rest as not granted', () => {
       const result = service.resolveGrantedScopes(

@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import { setWorkspaceMismatchDetails } from '../../../../src/modules/oauth_provider/services/oauth.app.service'
 import sinon from 'sinon'
+import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service'
 import { OAuthProviderController } from '../../../../src/modules/oauth_provider/controller/oauth.provider.controller'
 import {
   InvalidClientError,
@@ -89,7 +90,11 @@ describe('OAuthProviderController', () => {
       getGrantedScopes: sinon.stub().callsFake((requested: string[], allowed: string[]) =>
         new ScopeValidatorService().getGrantedScopes(requested, allowed),
       ),
+      consentScopesForRole: sinon.stub().callsFake((granted: string[], isAdmin: boolean) =>
+        new ScopeValidatorService().consentScopesForRole(granted, isAdmin),
+      ),
     }
+    sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true)
     mockOAuthDeviceService = {
       poll: sinon.stub(),
       createAuthorization: sinon.stub(),
@@ -298,6 +303,79 @@ describe('OAuthProviderController', () => {
       const response = mockRes.json.firstCall.args[0]
       expect(response.requiresConsent).to.be.undefined
       expect(response.redirectUrl).to.include('error=invalid_scope')
+    })
+  })
+
+  // GET /userGroups, the only route an OAuth client uses usergroup:read for, is
+  // admin-only, so a non-admin is not asked for it.
+  describe('usergroup:read for non-admins', () => {
+    const app = { orgId: 'o1', name: 'App', allowedScopes: ['user:read', 'usergroup:read'],
+      isConfidential: true, createdBy: { toString: () => 'u1' } }
+    const scope = 'user:read usergroup:read'
+
+    beforeEach(() => {
+      mockOAuthAppService.getAppByClientId.resolves(app)
+      mockScopeValidatorService.parseScopes.returns(['user:read', 'usergroup:read'])
+      mockScopeValidatorService.resolveGrantedScopes.returns({ granted: ['user:read', 'usergroup:read'], notGranted: [] })
+      mockScopeValidatorService.getScopeDefinitions.callsFake((names: string[]) =>
+        new ScopeValidatorService().getScopeDefinitions(names))
+      mockAuthCodeService.generateCode.resolves('code-1')
+    })
+
+    const authorizeReq = () => ({
+      query: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope, state: 's' },
+      user: { userId: 'u1', orgId: 'o1', email: 'u@e.com', fullName: 'U' },
+    }) as any
+    const consentReq = () => ({
+      body: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope, state: 's', consent: 'granted' },
+      user: { userId: 'u1', orgId: 'o1' },
+    }) as any
+
+    it('is neither shown nor listed as refused on a non-admin consent page', async () => {
+      stubOrgLookup(null)
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      await controller.authorize(authorizeReq(), mockRes, mockNext)
+      const { consentData } = mockRes.json.firstCall.args[0]
+      expect(consentData.scopes.map((s: any) => s.name)).to.deep.equal(['user:read'])
+      expect(consentData.notGrantedScopes).to.deep.equal([])
+    })
+
+    it('is left off the code a non-admin consents to', async () => {
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      await controller.authorizeConsent(consentReq(), mockRes, mockNext)
+      expect(mockAuthCodeService.generateCode.firstCall.args[4]).to.deep.equal(['user:read'])
+    })
+
+    it('is not listed as refused to a non-admin when the app does not allow it', async () => {
+      stubOrgLookup(null)
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      mockScopeValidatorService.parseScopes.returns(['user:read', 'usergroup:read', 'kb:read'])
+      mockScopeValidatorService.resolveGrantedScopes.returns({ granted: ['user:read'], notGranted: ['usergroup:read', 'kb:read'] })
+      await controller.authorize(authorizeReq(), mockRes, mockNext)
+      expect(mockRes.json.firstCall.args[0].consentData.notGrantedScopes.map((s: any) => s.name))
+        .to.deep.equal(['kb:read'])
+    })
+
+    it('sends a non-admin left with no scopes back to the client as invalid_scope', async () => {
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      mockScopeValidatorService.parseScopes.returns(['usergroup:read'])
+      mockScopeValidatorService.resolveGrantedScopes.returns({ granted: ['usergroup:read'], notGranted: [] })
+      await controller.authorizeConsent(consentReq(), mockRes, mockNext)
+      const url = new URL(mockRes.json.firstCall.args[0].redirectUrl)
+      expect(url.origin + url.pathname).to.equal('https://example.com/cb')
+      expect(url.searchParams.get('error')).to.equal('invalid_scope')
+      expect(url.searchParams.get('state')).to.equal('s')
+      expect(mockAuthCodeService.generateCode.called).to.be.false
+      expect(mockNext.called).to.be.false
+    })
+
+    it('is still shown to and granted to an admin', async () => {
+      stubOrgLookup(null)
+      await controller.authorize(authorizeReq(), mockRes, mockNext)
+      expect(mockRes.json.firstCall.args[0].consentData.scopes.map((s: any) => s.name))
+        .to.deep.equal(['user:read', 'usergroup:read'])
+      await controller.authorizeConsent(consentReq(), mockRes, mockNext)
+      expect(mockAuthCodeService.generateCode.firstCall.args[4]).to.deep.equal(['user:read', 'usergroup:read'])
     })
   })
 
