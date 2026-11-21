@@ -108,7 +108,12 @@ async def _load_instance_key(
     config_service: ConfigurationService, key: str, *, strict: bool = False,
 ) -> Optional[dict[str, Any]]:
     try:
-        data = await config_service.get_config(key, default=None, use_cache=False)
+        # The service answers `default` for a failed store read unless asked to raise; only a
+        # strict read asks, so every other caller and test double keeps the plain call.
+        if strict:
+            data = await config_service.get_config(key, default=None, use_cache=False, raise_on_error=True)
+        else:
+            data = await config_service.get_config(key, default=None, use_cache=False)
     except Exception as e:
         if strict:
             raise

@@ -7,6 +7,7 @@ resolver/service lookups against one in-memory store.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,6 +38,8 @@ from app.api.routes.mcp_servers import (
     update_instance,
     update_oauth_config,
 )
+from app.config.configuration_service import ConfigurationService
+from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
@@ -300,6 +303,25 @@ class TestUniqueNames:
         assert await _status(create_instance(_as(store, "admin-1"), _payload(name="brand new"))) == 503
         assert await _status(update_instance(_as(store, "u-alice"), "alice-own", _payload(name="renamed"))) == 503
         assert store.data == before
+
+    async def test_a_failed_read_behind_the_configuration_service_is_not_read_as_no_server(self) -> None:
+        # The real service, over a store that reports one failed read the way the encrypted
+        # stores do: no value unless asked to raise. Read as "no server", the name would pass.
+        log = logging.getLogger("mcp-name-check")
+
+        class FailingRead(InMemoryKeyValueStore):
+            async def get_key(self, key: str, *, raise_on_error: bool = False) -> object:
+                if key == ORG_PATH.format("org-inst"):
+                    if raise_on_error:
+                        raise RuntimeError("store down")
+                    return None
+                return await super().get_key(key, raise_on_error=raise_on_error)
+
+        config = ConfigurationService(log, FailingRead(log))
+        await config.set_config(ORG_PATH.format("org-inst"), _record("org-inst"))
+
+        assert await _status(create_instance(_as(config, "admin-1"), _payload(name="org-inst"))) == 503
+        assert await config.list_keys_in_directory(ORG_PATH.format("")) == [ORG_PATH.format("org-inst")]
 
 
 class TestOwnerOnlyAccess:
