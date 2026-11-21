@@ -8527,7 +8527,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
-            self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.get_user_by_user_id.failed", e, include_error_text=False)
             return None
 
     async def apply_verified_user_email(
@@ -27802,28 +27802,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Delete edges to remove team members.
         """
-        try:
-            delete_query = f"""
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            REMOVE permission IN {CollectionNames.PERMISSION.value}
-            RETURN OLD
-            """
+        delete_query = f"""
+        FOR permission IN {CollectionNames.PERMISSION.value}
+        FILTER permission._to == @teamId
+        FILTER SPLIT(permission._from, '/')[1] IN @userIds
+        REMOVE permission IN {CollectionNames.PERMISSION.value}
+        RETURN OLD
+        """
 
-            deleted_list = await self.execute_query(
-                delete_query,
-                bind_vars={
-                    "userIds": user_ids,
-                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-                },
-                transaction=transaction
-            )
-            return deleted_list if deleted_list else []
-
-        except Exception as e:
-            self.logger.error(f"Error in delete_team_member_edges: {str(e)}", exc_info=True)
-            return []
+        deleted_list = await self.execute_query(
+            delete_query,
+            bind_vars={
+                "userIds": user_ids,
+                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
+            },
+            transaction=transaction
+        )
+        return deleted_list if deleted_list else []
 
     async def batch_update_team_member_roles(
         self,
@@ -27835,40 +27830,35 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Batch update user roles in a team.
         """
-        try:
-            batch_update_query = f"""
-            FOR user_role IN @user_roles
-                LET user_id = user_role.userId
-                LET new_role = user_role.role
-                FOR permission IN {CollectionNames.PERMISSION.value}
-                    FILTER permission._to == @team_id
-                    FILTER SPLIT(permission._from, '/')[1] == user_id
-                    UPDATE permission WITH {{
-                        role: new_role,
-                        updatedAtTimestamp: @timestamp
-                    }} IN {CollectionNames.PERMISSION.value}
-                    RETURN {{
-                        _key: NEW._key,
-                        _from: NEW._from,
-                        role: NEW.role,
-                        updatedAt: NEW.updatedAtTimestamp
-                    }}
-            """
+        batch_update_query = f"""
+        FOR user_role IN @user_roles
+            LET user_id = user_role.userId
+            LET new_role = user_role.role
+            FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == @team_id
+                FILTER SPLIT(permission._from, '/')[1] == user_id
+                UPDATE permission WITH {{
+                    role: new_role,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.PERMISSION.value}
+                RETURN {{
+                    _key: NEW._key,
+                    _from: NEW._from,
+                    role: NEW.role,
+                    updatedAt: NEW.updatedAtTimestamp
+                }}
+        """
 
-            updated_permissions = await self.execute_query(
-                batch_update_query,
-                bind_vars={
-                    "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
-                    "user_roles": user_roles,
-                    "timestamp": timestamp
-                },
-                transaction=transaction
-            )
-            return updated_permissions if updated_permissions else []
-
-        except Exception as e:
-            self.logger.error(f"Error in batch_update_team_member_roles: {str(e)}", exc_info=True)
-            return []
+        updated_permissions = await self.execute_query(
+            batch_update_query,
+            bind_vars={
+                "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
+                "user_roles": user_roles,
+                "timestamp": timestamp
+            },
+            transaction=transaction
+        )
+        return updated_permissions if updated_permissions else []
 
     async def delete_all_team_permissions(
         self,

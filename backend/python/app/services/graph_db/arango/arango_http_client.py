@@ -357,7 +357,7 @@ class ArangoHTTPClient:
                     return False
 
         except Exception as e:
-            error_class.log_failure(self.logger, "db.connect.failed", e, backend="arango")
+            error_class.log_failure(self.logger, "db.connect.failed", e, backend="arango", include_error_text=False)  # names the host
             return False
 
     async def disconnect(self) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,7 +22,7 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import TokenScopes, config_node_constants
 from app.core.org_context import OrgContext, bind
-from app.utils import user_lookup
+from app.utils import error_class, user_lookup
 from app.utils.user_lookup import (
     USER_NODE_ENSURE_PATH,
     check_record_access_or_503,
@@ -33,6 +34,7 @@ from app.utils.user_lookup import (
     get_user_or_503,
 )
 from app.utils.user_messages import DATABASE_UNREACHABLE
+from tests.support.log_capture import assert_text_free
 
 
 async def _read_fails(user_id: str, *, raise_on_error: bool = False) -> dict[str, Any] | None:
@@ -53,6 +55,25 @@ def _assert_outage(exc: HTTPException) -> None:
     assert exc.status_code == 503
     assert exc.detail == DATABASE_UNREACHABLE
     assert exc.headers == {"Retry-After": "5"}
+
+
+@pytest.mark.parametrize("call", ["user", "document", "record"])
+async def test_a_failed_read_is_logged_without_the_drivers_text(call: str, caplog: pytest.LogCaptureFixture) -> None:
+    """The 503's cause is stamped: a driver's text can quote what was sent (an email, a value)."""
+    seeded = "SENTINEL-driver-text alice@" + "example.com"
+    graph = AsyncMock()
+    graph.get_user_by_user_id = graph.get_document = graph.get_record_by_id = AsyncMock(side_effect=ConnectionError(seeded))
+    read = {
+        "user": lambda: get_user_or_503(graph, "u1"),
+        "document": lambda: get_document_or_503(graph, "k1", CollectionNames.APPS.value),
+        "record": lambda: get_record_or_503(graph, "r1"),
+    }[call]
+    with pytest.raises(HTTPException) as exc:
+        await read()
+    _assert_outage(exc.value)
+    error_class.log_failure(logging.getLogger("test.user_lookup"), "x.end", exc.value)
+    assert [r.getMessage() for r in caplog.records] == ["x.end"]
+    assert_text_free(caplog.records, seeded)
 
 
 class TestGetUserOr503:
