@@ -448,6 +448,8 @@ tags:
       in the body, not in the HTTP status.
   - name: Mail
     description: Internal service-to-service endpoints of the mail service — send a templated email through the configured SMTP server and reload the SMTP configuration. They accept scoped service tokens only, never a user session token.
+  - name: Support
+    description: Contact support and Send feedback from the app. Both are emailed to `SUPPORT_EMAIL` (else the product's support address) through the instance's SMTP; nothing is stored.
   - name: API Documentation
     description: |
       The built-in API reference: the HTML documentation UI served at `/api/v1/docs`, the JSON
@@ -586,6 +588,11 @@ x-pipeshub-nav:
         description: Service-to-service email sending and SMTP setup
         tags:
           - Mail
+      - name: Support
+        icon: mail
+        description: Contact support and Send feedback
+        tags:
+          - Support
       - name: Health
         icon: activity
         description: Health of the deployment, and the build that it runs
@@ -81518,6 +81525,258 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== SUPPORT ====================
+  /support/context:
+    get:
+      tags:
+        - Support
+      summary: What the Contact support form shows the signed-in user
+      description: |
+        Whether this instance can send email (SMTP is set up and turned on), the address requests
+        go to (`SUPPORT_EMAIL`, else the product's support address), the workspace name, and the
+        details the form lists as sent with every request. Returns no secrets.
+      operationId: getSupportContext
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Form context
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - smtpConfigured
+                  - supportEmail
+                  - workspaceName
+                  - details
+                properties:
+                  smtpConfigured:
+                    type: boolean
+                  supportEmail:
+                    type: string
+                    format: email
+                  workspaceName:
+                    type: string
+                    description: Empty when the workspace has no name.
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - label
+                        - value
+                      properties:
+                        label:
+                          type: string
+                          example: Signed in as
+                        value:
+                          type: string
+                          example: Ada Lovelace (ada@example.com)
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /support:
+    post:
+      tags:
+        - Support
+      summary: Send a support request
+      description: |
+        Emails the request to `SUPPORT_EMAIL` with a Reply-To of the requester, then sends the
+        requester a copy built only from what the form showed them. Attachments go in one zip
+        (`support-<reference>.zip`) with the email, and the copy carries the same zip; nothing is
+        stored. Only an interactive user
+        session can send, not an OAuth or personal access token. The organization and user come from the token.
+
+        The same `requestKey` sent again within an hour answers with the first result instead of
+        sending a second email. Each user may send 5 requests an hour.
+
+        The response waits up to 15 seconds for the mail server. `outcome` is `sent`; `pending`
+        (the mail server had not answered yet; the requester's copy is not sent); `failed`; or
+        `no_smtp` (email is not set up, nothing was sent). On `failed` and `no_smtp` the form
+        offers the requester a ready-made email to send from their own mail app.
+      operationId: createSupportRequest
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        description: The request, its recent browser errors and up to 5 attachments.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - area
+                - description
+                - requestKey
+              properties:
+                area:
+                  type: string
+                  enum:
+                    - connectors
+                    - chat
+                    - agents
+                    - files
+                    - access
+                    - people
+                    - other
+                description:
+                  type: string
+                  minLength: 10
+                  maxLength: 5000
+                requestKey:
+                  type: string
+                  format: uuid
+                  description: One per form opening, so a retry never sends twice.
+                recentErrors:
+                  type: string
+                  description: |
+                    JSON array of up to 5 failed requests from the browser, each with `method`,
+                    `path` (no query string), `status`, an optional `requestId`, and `at`.
+                attachments:
+                  type: array
+                  maxItems: 5
+                  description: JPEG, PNG, WebP, GIF, PDF, text, log or CSV files; 5 MB each, 8 MB in total.
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '201':
+          description: Request handled; `outcome` says whether the email went out
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - reference
+                  - outcome
+                  - supportEmail
+                properties:
+                  reference:
+                    type: string
+                    example: SUP-7K3M9Q
+                  outcome:
+                    type: string
+                    enum:
+                      - sent
+                      - pending
+                      - failed
+                      - no_smtp
+                  supportEmail:
+                    type: string
+                    format: email
+        '400':
+          description: Validation error, an unsupported file type, or attachments over the size limits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token or a personal access token rather than an interactive user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: More than 5 requests from this user in the last hour
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+  /feedback:
+    post:
+      tags:
+        - Support
+      summary: Send product feedback or a feature request
+      description: |
+        Emails the feedback to `SUPPORT_EMAIL` with a Reply-To of the sender. Once that email is
+        sent, the sender gets a copy with the same zip. Attachments go in one zip
+        (`feedback-<reference>.zip`) and nothing is stored. Only an interactive user session can
+        send, not an OAuth or personal access token. Each user may
+        send 5 an hour. `outcome` is `sent`, `pending`, `failed` or `no_smtp`, as for a support
+        request.
+      operationId: createFeedback
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        description: The feedback and up to 5 attachments.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - kind
+                - description
+              properties:
+                kind:
+                  type: string
+                  description: '`issue` is general feedback; `feedback` is a feature request.'
+                  enum:
+                    - issue
+                    - feedback
+                description:
+                  type: string
+                  minLength: 10
+                  maxLength: 5000
+                attachments:
+                  type: array
+                  maxItems: 5
+                  description: JPEG, PNG, WebP, GIF, PDF, text, log or CSV files; 5 MB each, 8 MB in total.
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '201':
+          description: Feedback handled; `outcome` says whether the email went out
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - outcome
+                properties:
+                  outcome:
+                    type: string
+                    enum:
+                      - sent
+                      - pending
+                      - failed
+                      - no_smtp
+        '400':
+          description: Validation error, an unsupported file type, or attachments over the size limits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token or a personal access token rather than an interactive user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: More than 5 from this user in the last hour
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
 
   # ==================== HEALTH ====================
   /health/services:
