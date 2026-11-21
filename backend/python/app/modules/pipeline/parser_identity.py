@@ -71,8 +71,8 @@ def identity_write_enabled() -> bool:
     """``RECORD_PARSER_IDENTITY_WRITE``: write the identity and judge twins by it.
 
     Off (the default) in the release that adds the fields: a process on the previous record schema re-applies it at start and
-    refuses a write of a field it does not know, so the schema ships first and the writes one release later. Records that
-    already carry an identity are still compared while it is off.
+    refuses a write of a field it does not know, so the schema ships first and the writes one release later. While it is off
+    no stored identity is compared either: nothing would refresh a stale label.
     """
     return os.getenv("RECORD_PARSER_IDENTITY_WRITE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
