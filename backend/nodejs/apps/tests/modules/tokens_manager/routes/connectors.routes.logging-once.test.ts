@@ -3,7 +3,6 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import express from 'express'
 import http from 'http'
-import winston from 'winston'
 import { Container } from 'inversify'
 import type { AddressInfo } from 'net'
 import { Logger } from '../../../../src/libs/services/logger.service'
@@ -14,6 +13,7 @@ import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { runWithRequestContext } from '../../../../src/libs/context/request-context'
+import { captureLogRecords, newRequestId, recordsOf } from '../../../helpers/log-capture'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
 import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
@@ -64,7 +64,6 @@ describe('Connector routes: a request is logged once, with its connector', funct
   // Every record the process writes while a test runs; `mine()` is the current request's.
   let records: Row[]
   let requestId = ''
-  let sent = 0
 
   before(async () => {
     await backend.start()
@@ -75,13 +74,7 @@ describe('Connector routes: a request is logged once, with its connector', funct
   })
 
   beforeEach(async () => {
-    records = []
-    // Every winston logger, whichever root a module got at load, at every level.
-    sinon.stub(winston.Logger.prototype, 'isLevelEnabled').returns(true)
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Row) {
-      records.push(info)
-      return this
-    } as any)
+    records = captureLogRecords()
     registerAppUpstreams(config)
     backend.reset()
     sinon.stub(Users, 'findOne').callsFake((() => query(ADMIN)) as any)
@@ -124,8 +117,7 @@ describe('Connector routes: a request is logged once, with its connector', funct
   /** Sends one request and returns its status once the access line is written. */
   const send = async (method: string, path: string, body?: unknown): Promise<number> => {
     records.length = 0
-    sent += 1
-    requestId = `n5f-logging-once-${sent}`
+    requestId = newRequestId('connectors-logging-once')
     const res = await fetch(`${origin}${path}`, {
       method,
       headers: {
@@ -142,11 +134,7 @@ describe('Connector routes: a request is logged once, with its connector', funct
     }
     return res.status
   }
-  /**
-   * This request's records: those written in its context, the background work it starts included. A timer
-   * another test left running (a chat run's heartbeat) logs in its own context, or in none, and is not counted.
-   */
-  const mine = (): Row[] => records.filter((r) => r.request_id === requestId)
+  const mine = (): Row[] => recordsOf(records, requestId)
   const visible = (): Row[] => mine().filter(atLeastInfo)
   const byMessage = (message: string): Row[] => mine().filter((r) => r.message === message)
 

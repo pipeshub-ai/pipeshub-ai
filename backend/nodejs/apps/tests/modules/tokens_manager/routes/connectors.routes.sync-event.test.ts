@@ -8,11 +8,11 @@ import fs from 'fs'
 import path from 'path'
 import yaml from 'js-yaml'
 import jwt from 'jsonwebtoken'
-import winston from 'winston'
 import { Container } from 'inversify'
 import type { AddressInfo } from 'net'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
+import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
@@ -25,6 +25,7 @@ import { AppConfig, registerAppUpstreams } from '../../../../src/modules/tokens_
 import { SYNC_NOT_STARTED_MESSAGE, createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
 import { EntitiesEventProducer } from '../../../../src/modules/tokens_manager/services/entity_event.service'
 import { FakeBackend, RecordingProducer, buildConfig } from './connectors-http-harness'
+import { captureLogRecords, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 /**
  * POST /getTokenFromCode publishes the appEnabled event that asks for the sync. When it cannot be published the
@@ -56,6 +57,8 @@ describe('Connector routes: getTokenFromCode when the sync event cannot be publi
   let origin: string
   let server: http.Server
   let records: Row[]
+  // The request under test; a line from any other context is not this test's.
+  let requestId = ''
   let published: unknown[]
   let brokerDown: boolean
   let disconnects: number
@@ -69,12 +72,7 @@ describe('Connector routes: getTokenFromCode when the sync event cannot be publi
   })
 
   beforeEach(async () => {
-    records = []
-    sinon.stub(winston.Logger.prototype, 'isLevelEnabled').returns(true)
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Row) {
-      records.push(info)
-      return this
-    } as any)
+    records = captureLogRecords()
     registerAppUpstreams(config)
     backend.reset()
     published = []
@@ -108,6 +106,7 @@ describe('Connector routes: getTokenFromCode when the sync event cannot be publi
     const crawling = new Container()
     crawling.bind(CrawlingSchedulerService).toConstantValue({} as CrawlingSchedulerService)
     const app = express()
+    app.use(requestContextMiddleware)
     app.use(express.json())
     app.use('/api/v1/connectors', createConnectorRouter(container, crawling))
     app.use(ErrorMiddleware.handleError())
@@ -137,16 +136,17 @@ describe('Connector routes: getTokenFromCode when the sync event cannot be publi
   const exchange = async (): Promise<{ status: number; body: Record<string, any> }> => {
     googleGrants()
     records.length = 0
+    requestId = newRequestId('sync-event')
     const token = tokens.generateToken({ userId: ADMIN._id, orgId: ORG, email: ADMIN.email, fullName: ADMIN.fullName, accountType: 'business', role: 'admin' })
     const res = await fetch(`${origin}/api/v1/connectors/getTokenFromCode`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-request-id': requestId },
       body: JSON.stringify({ tempCode: 'consent-code' }),
     })
     return { status: res.status, body: (await res.json()) as Record<string, any> }
   }
   const failureLines = (): Array<[string, string, unknown]> =>
-    records.filter((r) => ['warn', 'error'].includes(level(r)) && r.message !== 'upstream.call.end').map((r) => [r.message, level(r), r.error_class])
+    recordsOf(records, requestId).filter((r) => ['warn', 'error'].includes(level(r)) && r.message !== 'upstream.call.end').map((r) => [r.message, level(r), r.error_class])
 
   /** A ConnectorsConfig the route finds on its first read (null: first connect) and creates on its second. */
   const rows = (existing: Row | null): Array<{ isEnabled: boolean }> => {
@@ -174,7 +174,7 @@ describe('Connector routes: getTokenFromCode when the sync event cannot be publi
     expect(r.body.error.message).to.equal(SYNC_NOT_STARTED_MESSAGE)
     expect(published).to.have.length(0)
     expect(failureLines()).to.deep.equal([['http.request.error', 'warn', 'unavailable']])
-    const failure = records.find((x) => x.message === 'http.request.error')
+    const failure = recordsOf(records, requestId).find((x) => x.message === 'http.request.error')
     expect(failure?.metadata.error.cause.message, 'the broker error is the cause').to.equal('Connection is closed.')
     // No rollback: nothing but this route reads the row, and connecting again republishes.
     expect(saved).to.deep.equal([{ isEnabled: true }])
@@ -216,7 +216,7 @@ describe('Connector routes: getTokenFromCode when the sync event cannot be publi
     rows(null)
     expect((await exchange()).status).to.equal(201)
     sinon.restore()
-    sinon.stub(winston.Logger.prototype, 'log').returns(undefined as any)
+    records = captureLogRecords()
     sinon.stub(Users, 'findOne').callsFake((() => query(ADMIN)) as any)
     sinon.stub(UserActivities, 'findOne').callsFake((() => query(null)) as any)
     sinon.stub(tokensConfig, 'loadAppConfig').resolves({ frontendUrl: 'https://app.acme.test/' } as AppConfig)

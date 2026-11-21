@@ -948,7 +948,9 @@ saved changes get no line here; the team service's own log has them.
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
 from `backend/nodejs/apps/src/libs/http/upstream-call.ts`: the service commands in `libs/commands` (through `upstreamFetch`)
 and every call on the default axios instance (instrumented in `index.ts`) or the knowledge base's own instance. A retry,
-`fetchWithRetry`'s or axios-retry's, is a new line. Not covered, so they write no line: the raw `fetch` to a signed upload URL
+`fetchWithRetry`'s or axios-retry's, is a new line. The default instance's retries (`libs/http/retry-policy.ts`,
+installed in `index.ts`) cover reads only (GET, HEAD, OPTIONS): a write (POST, PATCH, PUT, DELETE) is sent once, and a
+call we cancelled is not retried. Not covered, so they write no line: the raw `fetch` to a signed upload URL
 (`knowledge_base/utils/utils.ts`, `uploadFileToSignedUrl`), the S3 health check's signed GET
 (`storage/utils/s3-health-check.util.ts`), the Slack events proxy in `app.ts` (an `http.request` to the local Slack bot that
 passes the client's headers, its `x-request-id` included, on as they came), and the cloud SDKs (AWS, Azure, Google), which use
