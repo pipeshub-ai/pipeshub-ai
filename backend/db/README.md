@@ -192,7 +192,7 @@ database, and the doctor command should too):
    the expected state; a `remove:` key drops the base lines the location replaces; the OSS default has none), plus files named in `PG_MIGRATE_SURFACE_FILES`). One sorted line per fact about the security surface: roles and
    attributes, every membership edge with its ADMIN/INHERIT/SET options, role and database settings, ACLs on databases, schemas,
    relations, columns, functions, types, languages, large objects and foreign servers, default privileges, policies, RLS and FORCE
-   flags, rules, triggers, constraints, indexes, extended statistics (`CREATE STATISTICS`), view and function definitions (hashed), SECURITY DEFINER / LEAKPROOF flags and function
+   flags, rules, triggers, constraints, indexes, extended statistics (`CREATE STATISTICS`, listed for a partition too: they do not recurse onto partitions, so one on a leaf is its own object), view and function definitions (hashed), SECURITY DEFINER / LEAKPROOF flags and function
    settings, operators and casts, built-in function attributes (name, arguments, language, owner, SECURITY DEFINER, LEAKPROOF, volatility, kind, settings; not the OID, body or library path, which differ between builds of one major; a hash per PostgreSQL major, `sysfuncs@17 ...`, and a line for any built-in that is SECURITY DEFINER or has settings), extensions, foreign data, publications, subscriptions and event triggers. A live line that is not
    expected, or an expected line that is not live, is a violation (rule `50`). A change to any of it shows up as a diff in the pull
    request that makes it: regenerate with `UPDATE_SURFACE=1 pytest` (or `python -m db.surface` on a migrated database) and review.

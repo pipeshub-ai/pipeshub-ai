@@ -1819,6 +1819,19 @@ def test_an_online_build_analyzes_a_table_that_got_an_expression_index(db):
     with connect(cluster, name) as c:
         assert c.execute(stats, ("public.rt_1_rt_k1",)).fetchone()[0] == 1          # the leaf index's expression column
         assert c.execute(stats, ("public.rt_1",)).fetchone()[0] == 1
+        # what is an expression is read from the catalog, not from the text of the key: a plain column whose name holds a parenthesis is
+        # not one, so the table is not analyzed for it
+        c.execute('CREATE TABLE public.pt (k int, "a(b)" int) PARTITION BY LIST (k)')
+        c.execute("CREATE TABLE public.pt_1 PARTITION OF public.pt FOR VALUES IN (1) WITH (autovacuum_enabled = off)")
+        c.execute('INSERT INTO public.pt SELECT 1, 1 FROM generate_series(1, 1000)')
+    engine = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as c:
+            migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[{"table": "public.pt", "name": "pt_ab", "cols": '"a(b)"'}])], [])
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute(stats, ("public.pt_1",)).fetchone()[0] == 0
 
 
 def test_a_long_online_build_logs_its_progress(db, monkeypatch, capsys):

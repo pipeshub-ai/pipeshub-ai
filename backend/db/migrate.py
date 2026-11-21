@@ -233,8 +233,10 @@ def _build_online(c: Connection, modules: list, started: list[str]) -> None:
                     f"{str(exc.orig).strip().splitlines()[0]})")
                 continue
             log(f"index {qname}: built in {time.monotonic() - t0:.1f}s")
-        # A key that is not a plain column is an expression. Also when a stopped run built the index: it may have stopped before the ANALYZE.
-        if "(" in ix["cols"] and ix["table"] not in analyze:
+        # The catalog says which key is an expression (pg_index.indexprs), not the text of the key. Also when a stopped run built the index:
+        # it may have stopped before the ANALYZE.
+        if ix["table"] not in analyze and c.exec_driver_sql(
+                "SELECT indexprs IS NOT NULL FROM pg_index WHERE indexrelid = to_regclass(%s)", (qname,)).scalar():
             analyze.append(ix["table"])
     for table in analyze:
         t0 = time.monotonic()

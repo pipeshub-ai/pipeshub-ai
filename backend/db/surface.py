@@ -112,7 +112,8 @@ QUERIES = [
         f"|| ' def=' || md5(pg_get_indexdef(i.indexrelid)) FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE {_NSP} AND {_NOT_FOLDED.format(rel="i.indrelid")}"),
     ("statistics", f"SELECT quote_ident(n.nspname) || '.' || quote_ident(s.stxname) || ' on ' || s.stxrelid::regclass || ' owner=' || s.stxowner::regrole "
         f"|| ' def=' || md5(pg_get_statisticsobjdef(s.oid)) FROM pg_statistic_ext s JOIN pg_namespace n ON n.oid = s.stxnamespace "
-        f"WHERE {_NSP} AND {_NOT_FOLDED.format(rel="s.stxrelid")}"),
+        # not folded with a leaf: CREATE STATISTICS does not recurse onto partitions, so one on a leaf is its own object, read after pruning
+        f"WHERE {_NSP}"),
     ("operator", f"SELECT o.oid::regoperator || ' owner=' || o.oprowner::regrole || ' function=' || o.oprcode FROM pg_operator o JOIN pg_namespace n ON n.oid = o.oprnamespace WHERE {_NSP}"),
     ("cast", "SELECT c.castsource::regtype || ' -> ' || c.casttarget::regtype || ' function=' || c.castfunc::regproc || ' context=' || c.castcontext::text "
         "FROM pg_cast c WHERE c.oid >= 16384"),

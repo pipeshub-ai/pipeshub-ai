@@ -707,6 +707,8 @@ def test_a_refused_upgrade_leaves_the_revisions_and_epochs_as_they_were(db, tmp_
 
 def test_extended_statistics_are_part_of_the_surface(db):
     """A CREATE STATISTICS object is a line of the security surface, like an index: one that no snapshot lists fails the check."""
+    from psycopg import sql
+
     from db import surface
     cluster, name = db
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
@@ -717,6 +719,17 @@ def test_extended_statistics_are_part_of_the_surface(db):
         assert [k for k, _ in found] == ["50 surface: unexpected"] and re.fullmatch(
             r"statistics kernel\.probe_stats on kernel\.schema_epoch owner=\S+ def=[0-9a-f]{32}", found[0][1]), found
         c.execute("DROP STATISTICS kernel.probe_stats")
+        assert surface.violations(c) == []
+        # CREATE STATISTICS does not recurse onto partitions: one on a leaf is its own object, which the planner reads after pruning, so a leaf
+        # folded into its root (its indexes and policies are the root's) still lists its statistics
+        leaf = c.execute("SELECT f.oid::regclass::text FROM (" + surface._FOLD_SELECT + ") f ORDER BY 1 LIMIT 1").fetchone()[0]
+        a, b = (r[0] for r in c.execute("SELECT quote_ident(attname) FROM pg_attribute WHERE attrelid = %s::regclass AND attnum > 0 "
+                                        "AND NOT attisdropped ORDER BY attnum LIMIT 2", (leaf,)))
+        c.execute(sql.SQL("CREATE STATISTICS kernel.leaf_stats (ndistinct) ON {}, {} FROM {}").format(
+            sql.SQL(a), sql.SQL(b), sql.SQL(leaf)))
+        found = surface.violations(c)
+        assert [k for k, _ in found] == ["50 surface: unexpected"] and found[0][1].startswith(f"statistics kernel.leaf_stats on {leaf} "), found
+        c.execute("DROP STATISTICS kernel.leaf_stats")
         assert surface.violations(c) == []
 
 
