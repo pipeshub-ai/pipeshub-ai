@@ -17,8 +17,8 @@ from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.common.account_check import (
     GROUP_CHECK_KEY,
     UNCONFIRMED_SYNCS_BEFORE_CLOSE,
-    EmptyGraphAnswer,
 )
+from app.connectors.sources.microsoft.common.msgraph_client import EmptyGraphAnswer
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,

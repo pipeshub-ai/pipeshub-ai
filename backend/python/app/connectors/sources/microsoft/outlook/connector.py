@@ -87,7 +87,6 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.registry.types import FieldType
 from app.connectors.sources.microsoft.common.account_check import (
-    EmptyGraphAnswer,
     GroupMemberGrace,
     withdraw_unconfirmed_accounts,
 )
@@ -96,6 +95,7 @@ from app.connectors.sources.microsoft.common.content_type_utils import (
     attachment_metadata_from_graph,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import (
+    EmptyGraphAnswer,
     RecordUpdate,
     UserListing,
     read_user_status,

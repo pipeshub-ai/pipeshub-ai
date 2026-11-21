@@ -99,13 +99,13 @@ from app.connectors.core.registry.types import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.account_check import (
-    EmptyGraphAnswer,
     GroupMemberGrace,
     withdraw_unconfirmed_accounts,
 )
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
+    EmptyGraphAnswer,
     MSGraphClient,
     RecordUpdate,
     UserListing,

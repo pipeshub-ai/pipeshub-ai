@@ -212,11 +212,6 @@ async def _save(sync_point: SyncPoint, log: Logger, before: dict, after: dict) -
 GROUP_CHECK_KEY = "unread-group-members"
 
 
-class EmptyGraphAnswer(Exception):
-    """A member page Microsoft answered with no body: neither a member list nor a transport failure. It is counted
-    like a refusal, so it can keep stored members only for the grace; the docs do not describe such an answer."""
-
-
 class GroupMemberGrace:
     """The same bound for a group whose member read Microsoft refuses: its stored members keep the group's access for
     ``UNCONFIRMED_SYNCS_BEFORE_CLOSE`` syncs in a row, then lose it. A refusal that lasts (a 403 on a group whose
