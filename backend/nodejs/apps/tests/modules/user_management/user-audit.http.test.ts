@@ -81,6 +81,9 @@ describe('user and group audit lines (HTTP)', function () {
   let orgCount: number;
   let activityFails: boolean;
   let everyoneWriteFails: boolean;
+  /** The role another admin gives the new account before a failed create's undo runs. */
+  let roleSetDuringCreate: string | undefined;
+  let softRemovalFails: boolean;
   let clearPasswordFails: boolean;
   let promotedDuringDelete: boolean;
   let publishFails: boolean;
@@ -146,6 +149,8 @@ describe('user and group audit lines (HTTP)', function () {
     orgCount = 1;
     activityFails = false;
     everyoneWriteFails = false;
+    roleSetDuringCreate = undefined;
+    softRemovalFails = false;
     clearPasswordFails = false;
     promotedDuringDelete = false;
     publishFails = false;
@@ -197,7 +202,7 @@ describe('user and group audit lines (HTTP)', function () {
       hasRemovedAccount: async (o: string, e: string) => users.some((u) => u.orgId === o && u.email === e && u.isDeleted),
       listLiveMembershipsByEmail: async (e: string) => users.filter((u) => u.email === e && !u.isDeleted),
       // Like both stores: matched on org and id (a removed row too), and on the role when asked.
-      markDeleted: async (o: string, id: string, extra?: Row) => { const u = users.find((x) => x._id === id && x.orgId === o); if (!u || (extra?.onlyMember && u.role !== 'member')) return null; u.isDeleted = true; return { ...u }; },
+      markDeleted: async (o: string, id: string, extra?: Row) => { if (softRemovalFails) throw new Error('user store down'); const u = users.find((x) => x._id === id && x.orgId === o); if (!u || (extra?.onlyMember && u.role !== 'member')) return null; u.isDeleted = true; return { ...u }; },
       listByEmails: async (o: string, es: string[]) => users.filter((u) => u.orgId === o && es.includes(u.email)).map((u) => ({ ...u })),
       restoreByEmails: async (o: string, es: string[]) => users.filter((u) => u.orgId === o && es.includes(u.email) && u.isDeleted).map((u) => { u.isDeleted = false; return { ...u }; }),
       promoteToAdmin: async (_o: string, ids: string[]) => { for (const u of users) if (ids.includes(u._id)) u.role = 'admin'; },
@@ -208,7 +213,14 @@ describe('user and group audit lines (HTTP)', function () {
       withAdminLease: async (_o: string, fn: (lease: { confirm(): Promise<boolean> }) => Promise<unknown>) => fn({ confirm: async () => true }),
     }));
     sinon.stub(groupRepo, 'getGroupRepository').returns(fake('group', {
-      addToEveryone: async (o: string, id: string) => { if (everyoneWriteFails) throw new Error('group store down'); if (o === orgId && !everyone.users.includes(id)) everyone.users.push(id); },
+      addToEveryone: async (o: string, id: string) => {
+        if (everyoneWriteFails) {
+          const u = roleSetDuringCreate ? users.find((x) => x._id === id) : undefined;
+          if (u) u.role = roleSetDuringCreate;
+          throw new Error('group store down');
+        }
+        if (o === orgId && !everyone.users.includes(id)) everyone.users.push(id);
+      },
       removeFromEveryone: async () => undefined,
       removeFromAll: async (o: string, id: string) => { for (const g of groups) if (g.orgId === o) g.users = g.users.filter((x: string) => x !== id); },
       addMemberToGroups: async (_o: string, gids: string[], id: string) => { for (const g of groups) if (gids.includes(g._id) && !g.users.includes(id)) g.users.push(id); },
@@ -486,6 +498,32 @@ describe('user and group audit lines (HTTP)', function () {
       everyoneWriteFails = true;
       expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED })).status).to.equal(500);
       expect(audits()).to.deep.equal([]);
+      expectNoPrivateData();
+    });
+
+    it('T1m a failed create whose account was made an admin meanwhile → kept, 500, user.create partial kept_after_failure', async () => {
+      everyoneWriteFails = true;
+      roleSetDuringCreate = 'admin';
+      expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED })).status).to.equal(500);
+      const cora = users.find((u) => u.email === CREATED);
+      expect(cora).to.include({ role: 'admin', isDeleted: false });
+      expect(audits()).to.deep.equal([
+        { event: 'user.create', outcome: 'partial', reason: 'kept_after_failure', actor: ada._id, target: cora!._id },
+      ]);
+      expectNoPrivateData();
+    });
+
+    it('T1n a failed admin create someone already demoted, whose removal then fails → kept, user.create partial and no new_admin', async () => {
+      everyoneWriteFails = true;
+      // Its own demotion is then refused as the last admin's, though the account is a member.
+      roleSetDuringCreate = 'member';
+      softRemovalFails = true;
+      expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED, role: 'admin' })).status).to.equal(500);
+      const cora = users.find((u) => u.email === CREATED);
+      expect(cora).to.include({ role: 'member', isDeleted: false });
+      expect(audits()).to.deep.equal([
+        { event: 'user.create', outcome: 'partial', reason: 'kept_after_failure', actor: ada._id, target: cora!._id },
+      ]);
       expectNoPrivateData();
     });
 

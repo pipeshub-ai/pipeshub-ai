@@ -31,6 +31,7 @@ import { MongoUserRepository, adminLeaseTiming } from '../../src/libs/repositori
 import { MongoOrgRepository } from '../../src/libs/repositories/org/mongo';
 import { adminInviter, withoutSideStores } from './admin-invite-race';
 import { deleteRace, gate, waitUntil, type DeleteOutcome, type DeleteRace } from './admin-delete-race';
+import { createRace, type CreateOutcome, type CreateRace } from './admin-create-race';
 import { USER_PROMOTED_DURING_DELETE } from '../../src/modules/user_management/controller/users.controller';
 
 function requireEnv(name: string): string {
@@ -646,6 +647,123 @@ describe('MongoDB code paths against a real MongoDB', function () {
         setUserRepository();
         await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, true);
         await expectKeptAsAdmin(orgId, u, a, await del.done);
+      });
+    }
+  });
+  describe('a failed create taking back an account the org relies on', () => {
+    let race: CreateRace;
+    before(() => { race = createRace(rsAvailable); });
+    after(() => race.restore());
+    afterEach(() => setUserRepository());
+
+    const email = () => `b-${randomUUID().slice(0, 8)}@example.com`;
+    const idOf = async (address: string) => String((await Users.findOne({ email: address }).lean())?._id);
+    const expectKeptAsAdmin = async (orgId: string, address: string, outcome: CreateOutcome) => {
+      expect(outcome.status).to.equal('failed');
+      expect((outcome as { error: Error }).error.message).to.equal('everyone-group write failed');
+      expect(await Users.findOne({ email: address }).lean()).to.include({ role: 'admin', isDeleted: false });
+      expect(await adminCount(orgId)).to.equal(1);
+    };
+
+    it('an admin create the only other admin was demoted on is kept: the org keeps its admin', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const address = email();
+      const create = race.start(orgId, a, address, 'admin');
+      await create.parked;
+      // Passes: the new admin counts.
+      await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, rsAvailable);
+      create.fail();
+      await expectKeptAsAdmin(orgId, address, await create.done);
+      expect(await Users.findById(a).lean()).to.include({ role: 'member' });
+    });
+
+    it('a member create promoted meanwhile, with the other admin demoted, is kept: the org keeps its admin', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const address = email();
+      const create = race.start(orgId, a, address, 'member');
+      await create.parked;
+      await saveUserEnsuringAdminCap(orgId, await idOf(address), { role: 'admin' }, rsAvailable);
+      await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, rsAvailable);
+      create.fail();
+      await expectKeptAsAdmin(orgId, address, await create.done);
+    });
+
+    it('with nothing in the window, the account is removed and the address is free again', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const address = email();
+      const create = race.start(orgId, a, address, 'admin');
+      await create.parked;
+      create.fail();
+      expect((await create.done).status).to.equal('failed');
+      expect(await Users.findOne({ email: address }).lean()).to.equal(null);
+      const demote = await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, rsAvailable).catch((e: Error) => e);
+      expect(demote).to.be.instanceOf(BadRequestError);
+      expect(await adminCount(orgId)).to.equal(1);
+    });
+
+    it('an admin create someone already demoted is removed, though its own demotion is refused', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const address = email();
+      const create = race.start(orgId, a, address, 'admin');
+      await create.parked;
+      await saveUserEnsuringOrgRetainsAdmin(orgId, await idOf(address), { role: 'member' }, rsAvailable);
+      create.fail();
+      expect((await create.done).status).to.equal('failed');
+      expect(await Users.findOne({ email: address }).lean()).to.equal(null);
+      expect(await Users.findById(a).lean()).to.include({ role: 'admin' });
+    });
+
+    if (rsAvailable) {
+      it('a removal sent while a promotion of the account is uncommitted waits for it, then keeps the new admin', async () => {
+        const orgId = await newOrg();
+        const a = String((await newUser(orgId, 'admin'))._id);
+        const address = email();
+        const create = race.start(orgId, a, address, 'member');
+        await create.parked;
+        const real = new MongoUserRepository();
+        const written = gate();
+        const commit = gate();
+        // Installed after the create took its repository: only the promotion is held.
+        setUserRepository(new Proxy(real, {
+          get: (t, k: keyof UserRepository) => (k === 'updateProfile'
+            ? async (...args: Parameters<UserRepository['updateProfile']>) => {
+              const saved = await real.updateProfile(...args);
+              written.open();
+              await commit.opened; // still inside the transaction
+              return saved;
+            }
+            : (t[k] as (...x: unknown[]) => unknown).bind(t)),
+        }) as UserRepository);
+        const b = await idOf(address);
+        const promotion = saveUserEnsuringAdminCap(orgId, b, { role: 'admin' }, true);
+        let settled = false;
+        try {
+          await written.opened;
+          create.fail();
+          void create.done.then(() => { settled = true; });
+          // The conditional removal reached the server and is held there by the open transaction.
+          const admin = mongo.getConnection().getClient().db('admin');
+          await waitUntil('the removal is in flight', async () => (await admin.aggregate([
+            { $currentOp: { allUsers: true } },
+            { $match: {
+              ns: `${dbName}.users`,
+              'command.findAndModify': 'users',
+              'command.query._id': new mongoose.Types.ObjectId(b),
+              'command.query.role': { $exists: true },
+            } },
+          ]).toArray()).length > 0);
+          expect(settled, 'the removal finished before the promotion committed').to.equal(false);
+        } finally {
+          commit.open();
+        }
+        await promotion;
+        setUserRepository();
+        await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, true);
+        await expectKeptAsAdmin(orgId, address, await create.done);
       });
     }
   });
