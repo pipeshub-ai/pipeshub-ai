@@ -101,7 +101,7 @@ class TestGetEntityAccessContext:
         p = _provider([])
         await p.get_entity_access_context("u1", "org1")
         query = _queries(p)[0]
-        assert "OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)" in query
+        assert "OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User|SourceAccount)" in query
         assert "MATCH (app:App {id: principal.connectorId})" in query
         # USER, group/role and team seeds run per principal, pinned to its connector.
         assert query.count("WITH principal.user AS pu, principal.connectorId AS linked_connector") == 3

@@ -70,13 +70,13 @@ _ARANGO_ORG_HOP = re.compile(r"FOR (\w+)(?:, (\w+))? IN 1\.\.1 ANY org\._id")
 # a list that holds the organization: written from the grantee, or from the node.
 _NEO4J_GRANTEE_HOP = re.compile(
     r"\((?P<g1>\w+)\)-\[(?P<e1>\w*):PERMISSION\]->\(\w+:Record\|RecordGroup\)"
-    r"|\(\w+\)<-\[(?P<e2>\w*):PERMISSION\]-\((?P<g2>\w+)\)"
+    r"|\(\w+\)<-\[(?P<e2>\w*):PERMISSION\]-\((?P<g2>\w+)(?::[\w|]+)?\)"
 )
 _PERMISSION = CollectionNames.PERMISSION.value
 _ARANGO_GRANTEE_HOP = re.compile(
     rf"FOR (?P<g1>\w+) IN kh_grantees\s+FOR (?P<e1>\w+) IN {_PERMISSION}\s+FILTER (?P=e1)\._from == (?P=g1)"
     rf"|FOR (?P<e2>\w+) IN {_PERMISSION}\s+FILTER (?P=e2)\._to == \w+\._id\s+"
-    r"AND PARSE_IDENTIFIER\((?P=e2)\._from\)\.key IN @grantee_ids"
+    r"AND (?P=e2)\._from IN kh_holders"
 )
 # Grantees that are never an organization: the groups, roles and teams of the
 # source account a user authenticated a connector as.
@@ -153,7 +153,8 @@ def _assert_only_org_shares(recorder: _Recorder) -> None:
     "WHERE EXISTS { (t)<-[kh_gp:PERMISSION]-(kh_g) WHERE kh_g.id IN $granteeIds }",
     "WHERE EXISTS { (t)<-[kh_gp:PERMISSION]-(kh_g) WHERE (NOT kh_g:Organization OR kh_gp.type IN ['DOMAIN']) }",
     f"FOR g IN kh_grantees FOR p IN {_PERMISSION} FILTER p._from == g FILTER STARTS_WITH(p._to, 'records/')",
-    f"FOR kh_g IN {_PERMISSION} FILTER kh_g._to == t._id AND PARSE_IDENTIFIER(kh_g._from).key IN @grantee_ids LIMIT 1",
+    f"FOR kh_g IN {_PERMISSION} FILTER kh_g._to == t._id AND kh_g._from IN kh_holders LIMIT 1",
+    "WHERE EXISTS { (t)<-[kh_gp:PERMISSION]-(kh_g:User|Organization) WHERE kh_g.id IN $granteeIds }",
 ])
 def test_a_grantee_hop_without_the_rule_is_found(query: str) -> None:
     assert _unfiltered_org_hops(query)

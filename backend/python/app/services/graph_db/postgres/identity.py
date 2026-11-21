@@ -565,7 +565,9 @@ class IdentityMixin(PgBase):
                 AND p.to_coll = 'groups' AND p.doc->>'type' = 'USER'
               UNION
               SELECT p.to_id FROM u JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = u.id
-                JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = l.to_id AND p.to_coll = 'groups' AND p.doc->>'type' = 'USER'
+                AND l.to_coll IN ('users', 'sourceAccounts')
+                AND NOT EXISTS (SELECT 1 FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id AND s.doc->>'state' = 'withdrawn')
+                JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = l.to_coll AND p.from_id = l.to_id AND p.to_coll = 'groups' AND p.doc->>'type' = 'USER'
                 JOIN graph.nodes sg ON sg.org_id = $1 AND sg.coll = 'groups' AND sg.id = p.to_id AND sg.doc->>'connectorId' = l.doc->>'connectorId')
             SELECT g.id AS "id", coalesce(g.doc->>'externalGroupId', '') AS "externalId", coalesce(g.doc->>'name', '') AS "name",
                    coalesce(g.doc->>'connectorId', '') AS "connectorId", coalesce(g.doc->>'connectorName', '') AS "appName"
@@ -671,7 +673,8 @@ class IdentityMixin(PgBase):
               SELECT e.to_id AS app FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'apps'
               UNION SELECT t.to_id FROM graph.edges p JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = p.to_id AND t.to_coll = 'apps'
                 WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2 AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
-              UNION SELECT l.doc->>'connectorId' FROM graph.edges l WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $2)
+              UNION SELECT l.doc->>'connectorId' FROM graph.edges l WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $2
+                AND NOT EXISTS (SELECT 1 FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id AND s.doc->>'state' = 'withdrawn'))
             SELECT DISTINCT a.id FROM ids JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'apps' AND a.id = ids.app
             WHERE NOT coalesce((a.doc->>'isHidden')::boolean, false)""", [current_org_id(), user_key], transaction)
         return [r["id"] for r in rows]

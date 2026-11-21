@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 MAX_LEVELS = 51
 KIND = {"apps": "app", "recordGroups": "group", "records": "record"}
-PRINCIPAL_COLLS = ("users", "groups", "roles", "teams", "organizations")
+PRINCIPAL_COLLS = ("users", "sourceAccounts", "groups", "roles", "teams", "organizations")      # access_sql.PRINCIPALS and sourceAccounts: a source account's grant is a literal of a class too
 _NODE_COLLS = list(KIND)
 
 

@@ -490,6 +490,26 @@ async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(kh_layer) 
     assert not bad, _describe(bad)
 
 
+@pytest.mark.parametrize("variant", ["accounts", "withdrawn"])
+async def test_linked_source_accounts_list_what_the_viewer_may_read(kh_layer, monkeypatch, variant: str) -> None:
+    """The worlds that link a user to a source account, the account stored as a SourceAccount node (listed, or withdrawn: it gives nothing): the
+    rows, totals, counts, facets and arrows are still the oracle's, from kg and from the walk."""
+    from tests.permissions.gen import adversarial
+    monkeypatch.setattr(adversarial, "RULES", [r for r in adversarial.RULES if r != "INHERITED"])      # as test_generated_worlds_list_what_the_viewer_may_read
+    kh_layer.variant = variant
+    worlds = [*dict.fromkeys(w for w in (*(s.final_world() for s in load_all()), *KH_WORLDS) if w.links), *(w for _, w in gen.linked(6))]
+    assert worlds
+    bad: list[KhFinding] = []
+    for start in range(0, len(worlds), CHUNK):
+        chunk = worlds[start:start + CHUNK]
+        await kh_layer.preload(chunk)
+        for offset, world in enumerate(chunk):
+            bad += _bad(await check(kh_layer, world, f"linked-{start + offset}"))
+        await kh_layer.release(chunk)
+    assert not bad, f"{kh_layer.name}+{variant}\n{_describe(bad)}"
+    assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} worlds were refused as not copied"
+
+
 async def test_a_group_that_carries_access_only_is_no_row_and_each_record_under_it_is_listed_once(kh_layer) -> None:
     """LEVELS (a Jira security level's group): as on Neo4j and ArangoDB, the group is never listed, every issue under it is listed once where it
     is filed, and a granted record below it whose other parent the viewer cannot open is a chain-top of its own group."""

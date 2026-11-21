@@ -96,19 +96,23 @@ jobs:
         # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once. Shard 5 runs
         # the folder minus what the others name, so a new test file runs there. scripts/test_pg_runtime_shards.py checks that
         # every case runs exactly once; each shard checks its run against its own collection, so no count is written here.
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6]
         include:
           # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own
           - shard: 1
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: '[not_current-adversarial]'
+            graph_k: '[not_current-adversarial] and not linked_source_accounts'
           # also runs tests/integration/db and tests/integration/pg_runtime
           - shard: 2
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and [current-adversarial]
+            graph_k: not [not_current-adversarial] and [current-adversarial] and not linked_source_accounts
           - shard: 3
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and not [current-adversarial]
+            graph_k: not [not_current-adversarial] and not [current-adversarial] and not linked_source_accounts
+          # the worlds that link a user to a source account (both kg states): on their own, so shard 3 does not grow
+          - shard: 6
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: linked_source_accounts
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4
@@ -243,7 +247,7 @@ jobs:
           python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-graph.collected" "${args[@]}"
           python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
 
-      # One job is enough: the split is the same in every job. Collecting the folder and the five shards takes a few minutes.
+      # One job is enough: the split is the same in every job. Collecting the folder and every shard takes a few minutes.
       - name: Every graph case runs in exactly one shard
         if: ${{ matrix.shard == 3 && matrix.pg == '17' }}
         run: python scripts/test_pg_runtime_shards.py --collect

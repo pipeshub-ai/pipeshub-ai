@@ -248,6 +248,8 @@ class CollectionNames(Enum):
     # Users and groups
     PEOPLE = "person"
     USERS = "users"
+    # One account of a source directory, per (org, connector, source user id); a user reads its grants through authenticatedAs
+    SOURCE_ACCOUNTS = "sourceAccounts"
     GROUPS = "groups"
     ROLES = "roles"
     ORGS = "organizations"
@@ -281,7 +283,7 @@ class CollectionNames(Enum):
     APPS = "apps"
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"
-    AUTHENTICATED_AS = "authenticatedAs"  # User -> User: connector creator -> source account it authenticated as, per connectorId
+    AUTHENTICATED_AS = "authenticatedAs"  # User -> User or SourceAccount: a user -> a source account whose grants they read inside connectorId
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
     PROSPECT = "prospect"  # Org -> Org: prospect/account relationship
     CUSTOMER = "customer"  # Org -> Org: customer relationship

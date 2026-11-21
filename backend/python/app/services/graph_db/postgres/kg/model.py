@@ -18,7 +18,10 @@ CODE_COLL = {v: k for k, v in COLL_CODE.items()}
 RECORD_COLLS = ("apps", "recordGroups", "records")          # the nodes that have a kg.records row; kind = position + 1
 KIND = {"apps": 1, "recordGroups": 2, "records": 3}
 GROUP_LIKE = ("groups", "roles", "teams")                    # what a user is a member of (R1)
-PRINCIPALS = ("users", "groups", "roles", "teams", "organizations")      # the nodes a grant can come from (main's ``access_sql.PRINCIPALS``)
+# The nodes a grant can come from, as kg keys them (``access_sql.PRINCIPALS``: no sourceAccounts).
+# shortcut: kg keys no source account (no coll code), so its grants make no kg.scope_members rows and its links no principal closure rows; no verdict
+# reads either (the stamps take a source account's grants as literals, stampgraph.PRINCIPAL_COLLS), so add a code before a reader of them is written.
+PRINCIPALS = ("users", "groups", "roles", "teams", "organizations")
 HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")
 EDGE_COLLS = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs")
 LINK_HIERARCHY, LINK_GROUP, LINK_PARENT_CHILD = 1, 2, 3     # kg.links.kind; 3 (kg_0014): every PARENT_CHILD parent, the primary one too

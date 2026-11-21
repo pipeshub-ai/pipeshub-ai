@@ -62,7 +62,7 @@ def test_an_app_or_a_user_is_never_a_seed() -> None:
 
 
 def test_the_grantees_of_a_permission_are_the_principal_collections_only() -> None:
-    assert set(PRINCIPALS) == {"users", "groups", "roles", "teams", "organizations"}
+    assert set(PRINCIPALS) == {"users", "groups", "roles", "teams", "organizations"}      # a SourceAccount grants by collection and id only
 
 
 def test_the_service_account_predicate_reads_kind_and_the_reserved_address_and_keeps_people_without_either() -> None:

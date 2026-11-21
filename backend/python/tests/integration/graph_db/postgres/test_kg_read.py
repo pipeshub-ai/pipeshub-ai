@@ -39,7 +39,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(1800)]
 
 
 def _hex(name: str) -> str:
-    return hashlib.sha1(name.encode()).hexdigest()[:24]
+    return hashlib.sha256(name.encode()).hexdigest()[:24]
 
 
 def _bound(org: str):  # noqa: ANN202
@@ -198,6 +198,20 @@ async def test_generated_worlds_answered_from_kg_equal_the_walk_and_the_oracle(l
             chunk = worlds[start:start + CHUNK]
             await _gate(layer, pg_provider, chunk, f"{kind}{seed}x{start}x", decided, need_kg=kind == "proptest")
             await layer.release(chunk)
+
+
+@pytest.mark.parametrize("kind", ["scenarios", *sorted(gen.GENERATORS)])
+async def test_linked_source_accounts_answered_from_kg_equal_the_walk_and_the_oracle(layer, pg_provider, decided, kind) -> None:
+    """The worlds that link a user to a source account, the account stored as a SourceAccount node: kg (its stamps take the account's grants as
+    literals) answers as the walk and the oracle do."""
+    layer.variant = "accounts"
+    worlds = ([s.final_world() for s in load_all() if s.final_world().links] if kind == "scenarios"
+              else [w for name, w in gen.linked(25) if name.startswith(f"{kind}-")])
+    assert worlds
+    for start in range(0, len(worlds), CHUNK):
+        chunk = worlds[start:start + CHUNK]
+        await _gate(layer, pg_provider, chunk, f"acct-{kind}x{start}x", decided, need_kg=kind != "adversarial")
+        await layer.release(chunk)
 
 
 # ---- targeted cases -----------------------------------------------------------------------------------------------------------------------
