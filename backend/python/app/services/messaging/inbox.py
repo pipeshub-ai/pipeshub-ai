@@ -10,10 +10,13 @@ transaction (a graph write is many units, Neo4j and ArangoDB are not PostgreSQL)
 finished but whose record was lost (a crash in between, a failed write) runs again when the message comes back. On the PostgreSQL
 broker the record and the acknowledgement are one transaction, so a message is acknowledged exactly when it is recorded.
 
-Rows older than :func:`app.core.envelope.replay_window_seconds` (the longest any copy of an envelope can still be accepted) are deleted
-as the jobs role, at most once a minute per process. Without PostgreSQL as a store, or without the jobs login that prunes the table,
-:func:`shared_inbox` is None and says so once: consumers keep the broker's at-least-once delivery, and a signed replay is still bounded
-by the envelope's age. A Redis seen-id set is not used instead: eviction would drop ids (a replay runs) and ``noeviction`` lets them fill
+Rows older than :func:`app.core.envelope.replay_window_seconds` are deleted as the jobs role, at most once a minute per process. In
+enforce mode (``ORG_CONTEXT_MODE=enforce``) every copy of a signed envelope older than that is refused as stale, so a replay is refused
+whenever it comes. In shadow mode (the default) a stale signature is logged and accepted, so a copy replayed after its row is gone runs
+again, and an unsigned message has no age in either mode: past the window the inbox skips redeliveries, not every replay. Keeping rows
+for as long as shadow mode would accept a copy means keeping them for ever, so the bound stays and the age check in enforce mode is what
+ends a replay. Without PostgreSQL as a store, or without the jobs login that prunes the table, :func:`shared_inbox` is None and says so
+once: consumers keep the broker's at-least-once delivery, and only enforce mode refuses a signed replay (once stale). A Redis seen-id set is not used instead: eviction would drop ids (a replay runs) and ``noeviction`` lets them fill
 the server.
 """
 

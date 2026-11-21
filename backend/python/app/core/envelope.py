@@ -495,8 +495,10 @@ async def record_processed(inbox: Inbox | None, consumer: str, ctx: OrgContext |
 
 
 def replay_window_seconds() -> float:
-    """How long a copy of an envelope can still be accepted after it was first processed (the age, or a stored admission, plus the
-    future skew): the inbox keeps an event id this long, so no accepted copy outlives its record."""
+    """How long the inbox keeps an event id: the longest a copy of a signed envelope passes the age check after it was processed (its
+    age, or a stored admission, plus the future skew). That covers every copy only in enforce mode. In shadow mode a stale signature
+    is logged and accepted, so a copy replayed after this runs again (counted in ``pipeshub_envelope_stale_total``), and an unsigned
+    message has no age at all, in either mode."""
     return max(max_age_seconds(), admitted_max_age_seconds()) + MAX_FUTURE_SKEW_SECONDS
 
 

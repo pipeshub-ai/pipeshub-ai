@@ -96,7 +96,7 @@ async def until(cond, timeout: float = 15.0) -> None:
 
 
 async def _settled(broker, topic: str, group: str = "g") -> None:
-    """Give a consumer time to have taken (and skipped) whatever is queued: the queue or stream has nothing open for the group."""
+    """Wait until the group has read and acknowledged everything queued: nothing unread and nothing unacknowledged."""
     kind, _ = broker
     if kind == "postgres":
         q = PgQueue()
@@ -112,8 +112,13 @@ async def _settled(broker, topic: str, group: str = "g") -> None:
         redis = StandaloneRedisProvider(RedisConnectionConfig(host=host, port=int(port))).get_client()
 
         async def empty() -> bool:
-            info = await redis.xpending(topic, group)
-            return int(info["pending"] if isinstance(info, dict) else info[0]) == 0
+            # XPENDING counts only delivered-but-unacknowledged entries, so an entry not yet read would pass it. XINFO GROUPS gives both:
+            # "pending: ... messages that were delivered but are yet to be acknowledged" and "lag: the number of entries in the stream
+            # that are still waiting to be delivered to the group's consumers, or a NULL when that number can't be determined"
+            # (https://redis.io/docs/latest/commands/xinfo-groups/). A NULL lag is not settled.
+            groups = await redis.xinfo_groups(topic)
+            (g,) = [x for x in groups if (x["name"].decode() if isinstance(x["name"], bytes) else x["name"]) == group]
+            return g["pending"] == 0 and g.get("lag") == 0
     end = asyncio.get_running_loop().time() + 15
     while not await empty():
         if asyncio.get_running_loop().time() > end:
