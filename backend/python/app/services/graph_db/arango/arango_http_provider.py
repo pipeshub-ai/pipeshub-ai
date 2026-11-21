@@ -4058,6 +4058,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self._upsert_record_base_docs(arango_nodes, transaction)
                 return True
 
+            if collection == CollectionNames.RECORDS.value:
+                # the insert-only switch is off: the older write, except that an update never writes the incarnation id
+                arango_nodes = [{k: v for k, v in n.items() if k != "incarnationId"} for n in arango_nodes]
+
             result = await self.http_client.batch_insert_documents(
                 collection, arango_nodes, txn_id=transaction, overwrite=True
             )

@@ -181,7 +181,7 @@ class CoreMixin(PgBase):
         from app.services.graph_db.postgres.records import _upsert_record_docs
 
         org = current_org_id()
-        kept = set(RECORD_UPDATE_DROPPED_FIELDS) if record_created_at_insert_only() else set()
+        kept = set(RECORD_UPDATE_DROPPED_FIELDS) if record_created_at_insert_only() else {"incarnationId"}      # a null never clears the id, with either switch
         clears = _j([{"id": d["id"], "nulls": nulls} for d in docs if (nulls := [k for k, v in d.items() if v is None and k not in kept])])
 
         async def go(tx: Tx) -> None:

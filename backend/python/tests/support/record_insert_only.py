@@ -305,6 +305,11 @@ async def a_restore_survives_a_same_id_write_with_the_kill_switch_off(store: Sto
     assert restored is not None
     await store.upsert([make_record(key, created_at=200, name="after-restore")])
     assert minted(await store.doc(key)) == restored, store.name
+    base = {"id": key, "orgId": "g55-org", "recordName": "dict", "externalRecordId": f"ext-{key}", "recordType": "FILE",
+            "origin": "CONNECTOR", "connectorName": "KB", "connectorId": "g55-conn", "version": 0}
+    for sent in ("forged", None):          # a dict that names another id, or a null, leaves the stored id alone
+        await store.upsert_nodes([{**base, "incarnationId": sent}])
+        assert minted(await store.doc(key)) == restored, f"{store.name}: {sent!r} changed the id"
 
 
 async def a_carried_id_never_starts_a_new_vertex(store: StoreAdapter, flag: bool) -> None:

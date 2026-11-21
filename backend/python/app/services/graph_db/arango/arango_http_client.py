@@ -1078,7 +1078,7 @@ class ArangoHTTPClient:
             if earlier is not None:
                 merged = {**earlier, **row, "insert": merge_same_id_record_docs(earlier["insert"], row["insert"]), "new": bool(earlier.get("new") and row.get("new"))}
                 if "patch" in earlier or "patch" in row:
-                    merged["patch"] = {**earlier.get("patch", {}), **row.get("patch", {})}
+                    merged["patch"] = {**patch_of(earlier), **patch_of(row)}
             by_key[row["key"]] = merged
         rows = list(by_key.values())
         insert_keys = [r["key"] for r in rows if r.get("new")]

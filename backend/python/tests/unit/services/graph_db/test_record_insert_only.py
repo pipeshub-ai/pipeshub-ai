@@ -350,6 +350,18 @@ async def test_a_key_given_twice_is_written_once_with_the_fields_of_both_rows(cl
     assert calls[0][1] == [{"_key": "a", "x": 1, "y": 2, "z": 3}]
 
 
+async def test_a_key_given_twice_merges_the_derived_patch_of_a_row_without_one(client) -> None:
+    rows = [
+        {"key": "a", "insert": {"_key": "a", "a": 1}, "patch": {"a": 1}, "new": False},
+        {"key": "a", "insert": {"_key": "a", "b": 2, "createdAtTimestamp": 9}, "new": False},
+    ]
+    session = MagicMock()
+    session.request.side_effect = [_ok()]
+    with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=session):
+        await client.batch_upsert_documents("records", rows, drop=RECORD_UPDATE_DROPPED_FIELDS)
+    assert session.request.call_args.kwargs["json"] == [{"_key": "a", "a": 1, "b": 2}]
+
+
 async def test_a_key_given_twice_is_patched_first_unless_every_row_is_new(client) -> None:
     rows = [
         {"key": "a", "insert": {"_key": "a", "x": 1}, "new": True},
