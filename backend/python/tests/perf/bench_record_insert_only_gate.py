@@ -112,7 +112,7 @@ async def arango(a, rng):
 
     cfg = AsyncMock()
     cfg.get_config = AsyncMock(return_value={"url": os.environ["ARANGO_IT_URL"], "username": "root",
-                                             "password": os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass"), "db": "qa55_bench"})
+                                             "password": os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass"), "db": "record_insert_only_bench"})
     p = ArangoHTTPProvider(logging.getLogger("bench"), cfg)
     assert await p.connect()
     if not await p.http_client.has_collection(RECORDS):

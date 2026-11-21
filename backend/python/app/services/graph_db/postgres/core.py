@@ -141,10 +141,13 @@ class CoreMixin(PgBase):
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool | None:
         if not nodes:
             return True
-        org = current_org_id()
-        if collection == CollectionNames.RECORDS.value:
-            from app.services.graph_db.common.utils import merge_same_id_record_docs
+        from app.services.graph_db.common.utils import (
+            merge_same_id_record_docs,
+            record_created_at_insert_only,
+        )
 
+        org = current_org_id()
+        if collection == CollectionNames.RECORDS.value and record_created_at_insert_only():
             merged: dict[str, dict] = {}
             for n in nodes:
                 d = _node(n, collection)

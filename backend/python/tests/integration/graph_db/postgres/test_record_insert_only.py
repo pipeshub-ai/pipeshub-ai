@@ -47,3 +47,9 @@ async def test_a_restore_survives_a_same_id_write_with_the_kill_switch_off(store
     monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", "false")
     monkeypatch.setenv("RECORD_INCARNATION_WRITE", "true")
     await cases.a_restore_survives_a_same_id_write_with_the_kill_switch_off(store, True)
+
+
+async def test_with_the_kill_switch_off_repeated_ids_are_written_in_order(store: cases.StoreAdapter, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", "false")
+    monkeypatch.setenv("RECORD_INCARNATION_WRITE", "true")
+    await cases.with_the_kill_switch_off_repeated_ids_are_written_in_order(store, True)

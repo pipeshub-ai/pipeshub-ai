@@ -24,7 +24,6 @@ from app.services.graph_db.common.utils import (
     RECORD_UPDATE_DROPPED_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     collapse_repeated_records,
-    merge_same_id_record_docs,
     record_created_at_insert_only,
     record_insert_doc,
 )
@@ -87,7 +86,7 @@ async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
     stored row, so two writers that both read the stub cannot both overwrite it. The id is never touched."""
     by_id: dict[str, dict] = {}
     for d in docs:
-        by_id[d["id"]] = merge_same_id_record_docs(by_id[d["id"]], d) if d["id"] in by_id else d
+        by_id[d["id"]] = {**by_id.get(d["id"], {}), **d}      # callers hand one row per id (collapsed or merged); with the switch off, last wins as before
     if not by_id:
         return
     # One document per row: the update branch derives what an existing record may take from it in SQL (``x2.doc - dropped keys``), so the

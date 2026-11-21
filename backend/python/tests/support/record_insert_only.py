@@ -51,7 +51,7 @@ def minted(doc: dict[str, Any] | None) -> str | None:
 # ---- the cases ------------------------------------------------------------------------------------------------------
 
 async def resync_keeps_created_at(store: StoreAdapter, flag: bool) -> None:
-    """S1, S2, S3, S5: a first insert writes both fields (the id only with the flag); every later write of the record keeps them."""
+    """a first insert writes both fields (the id only with the flag); every later write of the record keeps them."""
     key = new_key()
     await store.upsert([make_record(key, created_at=100, known_new=True)])
     first = await store.doc(key)
@@ -66,7 +66,7 @@ async def resync_keeps_created_at(store: StoreAdapter, flag: bool) -> None:
 
 
 async def nodes_path_keeps_both_fields(store: StoreAdapter, flag: bool) -> None:
-    """S4, S7: the dict writers' path (``batch_upsert_nodes``) is insert-only too, and a null cannot remove a stored value."""
+    """the dict writers' path (``batch_upsert_nodes``) is insert-only too, and a null cannot remove a stored value."""
     key = new_key()
     await store.upsert([make_record(key, created_at=100)])
     before = await store.doc(key)
@@ -81,7 +81,7 @@ async def nodes_path_keeps_both_fields(store: StoreAdapter, flag: bool) -> None:
 
 
 async def a_new_key_through_nodes_gets_an_id(store: StoreAdapter, flag: bool) -> None:
-    """S24: a dict writer that mints a new key gets an incarnation id at the store insert (flag on), none with it off."""
+    """a dict writer that mints a new key gets an incarnation id at the store insert (flag on), none with it off."""
     key = new_key()
     await store.upsert_nodes([{"id": key, "orgId": "g55-org", "recordName": "dict", "externalRecordId": f"ext-{key}", "recordType": "FILE",
                                "origin": "CONNECTOR", "connectorName": "KB", "connectorId": "g55-conn", "createdAtTimestamp": 42, "version": 0}])
@@ -91,7 +91,7 @@ async def a_new_key_through_nodes_gets_an_id(store: StoreAdapter, flag: bool) ->
 
 
 async def stub_then_real(store: StoreAdapter, flag: bool, *, hinted: bool) -> None:
-    """S23: the stub's date becomes the earlier positive one when the real record replaces it, its id stays, and the cycle stub,
+    """the stub's date becomes the earlier positive one when the real record replaces it, its id stays, and the cycle stub,
     full, stub, full keeps the original. An unhinted promotion on ArangoDB and Neo4j keeps the stub's date (the processor marks promotions)."""
     key = new_key()
     await store.upsert([make_record(key, created_at=500, placeholder=True, known_new=True)])
@@ -122,7 +122,7 @@ async def a_promotion_ignores_an_unreal_date(store: StoreAdapter, flag: bool) ->
 
 
 async def restore_resets_the_id(store: StoreAdapter, flag: bool) -> None:
-    """S11: a restore from the trash gives a new id (flag on) and keeps the date; an upsert onto a trashed vertex neither untrashes
+    """a restore from the trash gives a new id (flag on) and keeps the date; an upsert onto a trashed vertex neither untrashes
     it nor changes the id."""
     key = new_key()
     await store.upsert([make_record(key, created_at=100, known_new=True)])
@@ -146,7 +146,7 @@ async def restore_resets_the_id(store: StoreAdapter, flag: bool) -> None:
 
 
 async def an_id_sent_through_the_upsert_is_ignored(store: StoreAdapter, flag: bool) -> None:
-    """S11: the reset is never written by the upsert."""
+    """the reset is never written by the upsert."""
     key = new_key()
     await store.upsert([make_record(key, created_at=100, known_new=True)])
     first = await store.doc(key)
@@ -157,7 +157,7 @@ async def an_id_sent_through_the_upsert_is_ignored(store: StoreAdapter, flag: bo
 
 
 async def an_older_process_leaves_the_id(store: StoreAdapter, flag: bool) -> None:
-    """S13: a writer that does not know the field merges its document: it may overwrite the date, never the id."""
+    """a writer that does not know the field merges its document: it may overwrite the date, never the id."""
     key = new_key()
     await store.upsert([make_record(key, created_at=100, known_new=True)])
     first = await store.doc(key)
@@ -168,7 +168,7 @@ async def an_older_process_leaves_the_id(store: StoreAdapter, flag: bool) -> Non
 
 
 async def concurrent_first_inserts_agree(store: StoreAdapter, flag: bool) -> None:
-    """S12: writers racing to insert one key leave one document whose fields are those one of them wrote and that stay put."""
+    """writers racing to insert one key leave one document whose fields are those one of them wrote and that stay put."""
     import asyncio
 
     key = new_key()
@@ -369,8 +369,35 @@ async def batch_upsert_records_with_one_id_twice_keeps_the_last_type(store: Stor
     assert await store.type_doc(key, CollectionNames.FILES.value) is None, f"{store.name} wrote the first row's type document"
 
 
+async def a_carried_id_on_a_dict_insert_is_replaced(store: StoreAdapter, flag: bool) -> None:
+    """A dict insert through ``batch_upsert_nodes`` that carries an incarnation id (copied from a deleted record) gets a freshly minted
+    one, or none when minting is off."""
+    key = new_key()
+    await store.upsert_nodes([{"id": key, "orgId": "g55-org", "recordName": "dict", "externalRecordId": f"ext-{key}", "recordType": "FILE",
+                               "origin": "CONNECTOR", "connectorName": "KB", "connectorId": "g55-conn", "version": 0,
+                               "createdAtTimestamp": 9, "incarnationId": "copied-" + key}])
+    stored = minted(await store.doc(key))
+    assert stored != "copied-" + key, store.name
+    assert (stored is not None) is flag, store.name
+
+
+async def with_the_kill_switch_off_repeated_ids_are_written_in_order(store: StoreAdapter, flag: bool) -> None:
+    """With ``RECORD_CREATED_AT_INSERT_ONLY=false`` a batch that repeats an id behaves as it did before the switch existed: the last row
+    wins, dates included, for typed records and for dict writers alike. Run with the switch off."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100, name="first", known_new=True), make_record(key, created_at=5000, name="second", known_new=True)])
+    doc = await store.doc(key)
+    assert doc["createdAtTimestamp"] == 5000 and doc["recordName"] == "second", f"{store.name} typed: {doc}"
+    other = new_key()
+    base = {"id": other, "orgId": "g55-org", "externalRecordId": f"ext-{other}", "recordType": "FILE", "origin": "CONNECTOR",
+            "connectorName": "KB", "connectorId": "g55-conn", "version": 0}
+    await store.upsert_nodes([{**base, "recordName": "first", "createdAtTimestamp": 100}, {**base, "recordName": "second", "createdAtTimestamp": 5000}])
+    doc = await store.doc(other)
+    assert doc["createdAtTimestamp"] == 5000 and doc["recordName"] == "second", f"{store.name} dict: {doc}"
+
+
 async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None:
-    """S6: only the ``records`` document is insert-only; the type document (``files``) is written as before."""
+    """only the ``records`` document is insert-only; the type document (``files``) is written as before."""
     key = new_key()
     await store.upsert([make_record(key, created_at=100, known_new=True)])
     await store.upsert([make_record(key, created_at=999, name="second.txt")])
@@ -380,6 +407,7 @@ async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None
 
 
 ALL_CASES = (
+    a_carried_id_on_a_dict_insert_is_replaced,
     batch_upsert_records_with_one_id_twice_is_one_record, batch_upsert_records_with_one_id_twice_keeps_the_last_type,
     one_id_twice_in_a_batch_is_merged_by_one_rule,
     a_carried_id_never_starts_a_new_vertex,

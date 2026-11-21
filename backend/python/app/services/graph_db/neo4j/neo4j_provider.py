@@ -568,18 +568,17 @@ def _record_insert_split(doc: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     One pass over the document (it runs for every record of a batch, and two or three passes cost more than the extra clause does)."""
     insert_only = record_created_at_insert_only()
     dropped = RECORD_UPDATE_DROPPED_FIELDS if insert_only else ("incarnationId",)
-    keep_id = record_incarnation_write()
-    mint = insert_only and keep_id
+    mint = insert_only and record_incarnation_write()
     rest: dict[str, Any] = {}
     ins: dict[str, Any] = {}
     for key, value in doc.items():
-        if key == "incarnationId" and not keep_id:
-            continue                      # an older record schema refuses the key (as record_insert_doc drops it)
+        if key == "incarnationId":
+            continue                      # never taken from the caller: the store mints it (as record_insert_doc does)
         if key in dropped:
             ins[key] = value
         else:
             rest[key] = value
-    if mint and not ins.get("incarnationId"):
+    if mint:
         ins["incarnationId"] = new_incarnation_id()
     return rest, ins
 
@@ -2326,10 +2325,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
         RETURN n.id
         """
-            # documents that share an id are merged first (one rule on every store: ``merge_same_id_record_docs``)
+            # documents that share an id are merged first (one rule on every store: ``merge_same_id_record_docs``); with the
+            # insert-only switch off every row is written as given, in order, as before
             merged: dict[Any, dict[str, Any]] = {}
-            for node in neo4j_nodes:
-                merged[node["id"]] = merge_same_id_record_docs(merged[node["id"]], node) if node["id"] in merged else node
+            for position, node in enumerate(neo4j_nodes):
+                key = node["id"] if record_created_at_insert_only() else position
+                merged[key] = merge_same_id_record_docs(merged[key], node) if key in merged else node
             rows = [dict(zip(("rest", "ins"), _record_insert_split(node))) for node in merged.values()]
             await self.client.execute_query(
                 query, parameters={"nodes": _in_lock_order(rows, lambda r: _by_id(r["rest"]))}, txn_id=transaction

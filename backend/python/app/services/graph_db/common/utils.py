@@ -503,6 +503,8 @@ def collapse_repeated_records(records: list[Any]) -> list[Any]:
     """The records of one ``batch_upsert_records`` call with each id once, by the rule every store applies to repeated ids: the last row
     is the record written (its type, so its type document and edge are written once, and its fields), with ``createdAtTimestamp`` the
     earliest positive value any row gave and a promotion mark if any row had one. Order follows each id's first appearance."""
+    if not record_created_at_insert_only():
+        return records                  # the switch restores the older write: rows are written as given, in order
     ids = [getattr(record, "id", None) for record in records]
     if None in ids or len(set(ids)) == len(ids):
         return records
@@ -521,15 +523,15 @@ def collapse_repeated_records(records: list[Any]) -> list[Any]:
 
 
 def record_insert_doc(doc: dict[str, Any]) -> dict[str, Any]:
-    """The document written when the vertex does not exist: the caller's, with an incarnation id minted when the flag is on.
+    """The document written when the vertex does not exist: the caller's, without any incarnation id it carries, and with a freshly
+    minted one when ``RECORD_INCARNATION_WRITE`` is on. A carried id (a copy from a stored or deleted record) never starts a vertex.
 
     With ``RECORD_CREATED_AT_INSERT_ONLY`` off nothing is minted on any store: that switch restores the older write, which knew no
     incarnation id, so the older and the newer behaviour never both stand for a record."""
+    out = {k: v for k, v in doc.items() if k != "incarnationId"} if "incarnationId" in doc else doc
     if record_incarnation_write() and record_created_at_insert_only():
-        return doc if doc.get("incarnationId") else {**doc, "incarnationId": new_incarnation_id()}
-    if "incarnationId" in doc and not record_incarnation_write():
-        return {k: v for k, v in doc.items() if k != "incarnationId"}
-    return doc
+        return {**out, "incarnationId": new_incarnation_id()}
+    return out
 
 
 # Bookkeeping the services keep on a stored record for their own use: the trash

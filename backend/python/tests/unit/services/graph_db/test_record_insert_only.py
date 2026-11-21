@@ -55,7 +55,8 @@ def test_an_insert_mints_an_id_only_with_the_flag(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("RECORD_INCARNATION_WRITE", "true")
     minted = record_insert_doc({"a": 1})["incarnationId"]
     assert minted and minted != record_insert_doc({"a": 1})["incarnationId"]
-    assert record_insert_doc({"a": 1, "incarnationId": "held"})["incarnationId"] == "held"
+    carried = record_insert_doc({"a": 1, "incarnationId": "held"})["incarnationId"]
+    assert carried and carried != "held", "an id copied from another record never starts a vertex"
     assert record_insert_doc({"a": 1, "incarnationId": None})["incarnationId"]
 
 
@@ -93,8 +94,10 @@ def test_the_neo4j_one_pass_split_equals_the_two_document_helpers(monkeypatch: p
     doc = {"id": "k", "recordName": "n", "createdAtTimestamp": 5, "incarnationId": "held", "isDeleted": False, "deleteBatchId": None}
     rest, ins = _record_insert_split(doc)
     full = record_insert_doc(doc)
-    assert rest == record_update_doc(full)
-    assert {**rest, **ins} == full
+    without_id = lambda d: {k: v for k, v in d.items() if k != "incarnationId"}  # noqa: E731  (minted ids differ per call)
+    assert without_id(rest) == without_id(record_update_doc(full))
+    assert without_id({**rest, **ins}) == without_id(full)
+    assert ins.get("incarnationId") != "held", "an id carried on the document never starts a vertex"
     _, ins2 = _record_insert_split({k: v for k, v in doc.items() if k != "incarnationId"})
     assert ("incarnationId" in ins2) == (insert_only == "true" and flag == "true")
 
@@ -146,6 +149,36 @@ def test_collapsing_a_large_batch_with_one_repeated_id_reads_each_id_once_per_ro
     out = collapse_repeated_records(rows)
     assert len(out) == n and out[0].created_at == 1
     assert reads <= 4 * len(rows), reads
+
+
+def test_a_batch_of_records_without_an_id_is_returned_as_given() -> None:
+    """Records that carry no ``id`` cannot be grouped: the list is returned untouched, not collapsed on a missing key."""
+    from app.services.graph_db.common.utils import collapse_repeated_records
+
+    class NoId:
+        _promotes_stub = False
+        _known_new = True
+
+    rows = [NoId(), NoId()]
+    assert collapse_repeated_records(rows) is rows
+
+
+def test_a_collapsed_row_is_known_new_only_if_every_row_was() -> None:
+    from app.services.graph_db.common.utils import collapse_repeated_records
+
+    a, b = _file("k", created_at=1), _file("k", created_at=2)
+    a._known_new, b._known_new = True, False
+    assert collapse_repeated_records([a, b])[0]._known_new is False
+    a._known_new, b._known_new = True, True
+    assert collapse_repeated_records([a, b])[0]._known_new is True
+
+
+def test_with_the_kill_switch_off_repeated_records_are_not_collapsed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.graph_db.common.utils import collapse_repeated_records
+
+    monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", "false")
+    rows = [_file("k", created_at=100), _file("k", created_at=5000)]
+    assert collapse_repeated_records(rows) is rows
 
 
 # ---- restore -------------------------------------------------------------------------------------------------------
