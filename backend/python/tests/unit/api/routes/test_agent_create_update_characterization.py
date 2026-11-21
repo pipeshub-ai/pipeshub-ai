@@ -279,7 +279,7 @@ def _load() -> dict[str, Any]:
     return json.loads(GOLDEN.read_text()) if GOLDEN.exists() else {}
 
 
-@pytest.mark.usefixtures("org_wide_service_account_agents", "default_chat_hooks")
+@pytest.mark.usefixtures("org_wide_service_account_agents", "default_chat_hooks", "default_caller_policy")
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=[s[0] for s in SCENARIOS])
 def test_route_behaviour_is_unchanged(scenario) -> None:
     actual = _run(scenario)
