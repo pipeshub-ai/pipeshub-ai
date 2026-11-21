@@ -4,6 +4,7 @@ tests/integration/pg_runtime/test_consumer_inbox.py."""
 
 import json
 import logging
+from collections.abc import Awaitable, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,7 +12,11 @@ import pytest
 from app.core import envelope, org_context
 from app.services.messaging import inbox as inbox_mod
 from app.services.messaging import message_log
-from app.services.messaging.config import ConsumerType, MessageBrokerType, RedisStreamsConfig
+from app.services.messaging.config import (
+    ConsumerType,
+    MessageBrokerType,
+    RedisStreamsConfig,
+)
 from app.services.messaging.inbox import PgInbox, inbox_message_id, shared_inbox
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
@@ -39,8 +44,8 @@ class _Inbox:
 
 
 @pytest.fixture(autouse=True)
-def _keys():
-    async def keys():
+def _keys() -> Iterator[None]:
+    async def keys() -> tuple[bytes, ...]:
         return (KEY,)
 
     envelope.configure(keys)
@@ -52,7 +57,7 @@ def _wire() -> dict:
     return envelope.sign(KEY, TOPIC, {"orgId": "org_a", "i": 1}, CTX, event_type="orgUpdated")
 
 
-def _handler(result: bool = True):
+def _handler(result: bool = True) -> Callable[..., Awaitable[bool]]:
     calls: list = []
 
     async def handle(message) -> bool:

@@ -55,12 +55,12 @@ from app.services.messaging.consumer_concurrency import (
     work_key,
 )
 from app.services.messaging.disposition import describe_message, notify_abandoned
-from app.services.messaging.inbox import PgInbox
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
     is_expected_outcome,
 )
+from app.services.messaging.inbox import PgInbox
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.membership import register_group
 from app.services.messaging.message_log import bound_message
@@ -69,7 +69,7 @@ from app.services.messaging.storage_protocol import tagged
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
 from app.utils import error_class
 from app.utils import indexing_timing as timing
-from app.utils.logging_fields import log_fields
+from app.utils.logging_fields import log_fields, log_once
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
@@ -484,7 +484,7 @@ class PgMessagingConsumer(IMessagingConsumer):
 
     async def _decide(self, d: Delivery, seen: "dict[str, Any] | None" = None) -> str:
         """Process ``d`` and ack, nack or dead-letter it; returns the indexing timeline's outcome."""
-        group, max_attempts = self.config.group_id, messaging_env.max_delivery_attempts
+        max_attempts = messaging_env.max_delivery_attempts
         if (
             d.attempts > max_attempts
         ):  # handed out past the limit (a consumer that keeps dying mid-handler)
@@ -594,7 +594,8 @@ class PgMessagingConsumer(IMessagingConsumer):
             return await self.inbox.record_and_ack(group, ctx, self.queue, group, d)
         except Exception as e:
             INBOX_ERRORS.inc("record")
-            self.logger.warning("Could not record %s in the consumer inbox; acknowledging it alone: %s", d.message_id, type(e).__name__)
+            if log_once(f"inbox-ack:{group}", 30):    # the counter carries the exact count
+                self.logger.warning("Could not record %s in the consumer inbox; acknowledging it alone: %s", d.message_id, type(e).__name__)
             return await self.queue.ack(group, d)
 
     @staticmethod

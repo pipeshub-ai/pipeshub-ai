@@ -3,6 +3,7 @@
 import json
 import time
 import uuid
+from collections.abc import Iterator
 
 import pytest
 
@@ -175,8 +176,8 @@ class _Inbox:
 
 
 @pytest.fixture
-def configured_key():
-    async def keys():
+def configured_key() -> Iterator[None]:
+    async def keys() -> tuple[bytes, ...]:
         return (KEY,)
 
     envelope.configure(keys)

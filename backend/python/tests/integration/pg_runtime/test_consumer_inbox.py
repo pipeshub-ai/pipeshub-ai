@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import uuid
+from collections.abc import AsyncIterator
 from logging import getLogger
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 from app.core import envelope, org_context
 from app.services.messaging.config import MessageBrokerType, RedisStreamsConfig
 from app.services.messaging.inbox import PgInbox, inbox_message_id, shared_inbox
+from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.postgres.queue import PgQueue
 from tests.support.require_service import missing
@@ -21,10 +23,11 @@ from tests.support.require_service import missing
 LOG = getLogger("consumer-inbox-it")
 KEY = envelope.derive_key("consumer-inbox-it")
 JOBS_URL = os.environ.get("PG_TEST_JOBS_URL", "")
+ORG_A, ORG_B = "a0" * 12, "b0" * 12   # org ids are 24 hex digits (a check on the table)
 
 
 @pytest.fixture(params=["postgres", "redis"])
-async def broker(request, runtime, monkeypatch):
+async def broker(request, runtime, monkeypatch) -> AsyncIterator[tuple[str, list]]:
     if not JOBS_URL:
         missing("PG_TEST_JOBS_URL is not set")
     monkeypatch.setenv("PG_JOBS_URL", JOBS_URL)
@@ -39,7 +42,7 @@ async def broker(request, runtime, monkeypatch):
     else:
         monkeypatch.setenv("MESSAGE_BROKER", "postgres")
 
-    async def keys():
+    async def keys() -> tuple[bytes, ...]:
         return (KEY,)
 
     envelope.configure(keys, KEY)
@@ -60,7 +63,7 @@ def _config(kind: str, topic: str, group: str) -> RedisStreamsConfig:
     return RedisStreamsConfig(topics=[topic], group_id=group, client_id="c1", batch_size=5, block_ms=100, claim_min_idle_ms=0, **extra)
 
 
-async def _start(broker, topic: str, handler, group: str = "g"):
+async def _start(broker, topic: str, handler, group: str = "g") -> IMessagingConsumer:
     kind, consumers = broker
     cfg = _config(kind, topic, group)
     c = MessagingFactory.create_consumer(LOG, cfg, broker_type=MessageBrokerType(kind))
@@ -79,7 +82,7 @@ async def _send(broker, topic: str, wire: dict) -> None:
         await p.cleanup()
 
 
-def _signed_for(topic: str, org: str = "org-a", i: int = 0) -> dict:
+def _signed_for(topic: str, org: str = ORG_A, i: int = 0) -> dict:
     ctx = org_context.OrgContext(org, None, "service", "jwt", "req-1")
     return envelope.sign(KEY, topic, {"orgId": org, "i": i}, ctx, event_type="orgUpdated")
 
@@ -160,7 +163,7 @@ async def test_a_replayed_envelope_is_rejected_after_the_original_was_acknowledg
 async def test_a_handler_that_fails_leaves_the_event_unrecorded_so_it_is_retried(broker) -> None:
     topic, attempts = _topic(), []
     wire = _signed_for(topic, i=3)
-    ctx = org_context.OrgContext("org-a", None, "service", "envelope", "r", event_id=wire["ctx"]["eventId"])
+    ctx = org_context.OrgContext(ORG_A, None, "service", "envelope", "r", event_id=wire["ctx"]["eventId"])
     inbox = PgInbox()
     rows_while_failing: list[bool] = []
 
@@ -183,8 +186,8 @@ async def test_a_handler_that_fails_leaves_the_event_unrecorded_so_it_is_retried
 async def test_another_group_and_another_org_keep_their_own_rows(runtime, monkeypatch) -> None:
     inbox = PgInbox()
     event = uuid.uuid4().hex
-    a = org_context.OrgContext("org-a", None, "service", "envelope", "r", event_id=event)
-    b = org_context.OrgContext("org-b", None, "service", "envelope", "r", event_id=event)
+    a = org_context.OrgContext(ORG_A, None, "service", "envelope", "r", event_id=event)
+    b = org_context.OrgContext(ORG_B, None, "service", "envelope", "r", event_id=event)
     await inbox.record("g1", a)
     await inbox.record("g1", a)   # idempotent
     assert await inbox.seen("g1", a)
@@ -201,7 +204,7 @@ async def test_the_sweep_removes_rows_past_the_replay_window_and_keeps_the_rest(
     window = envelope.replay_window_seconds()
     inbox = PgInbox()
     old, fresh = uuid.uuid4().hex, uuid.uuid4().hex
-    for org in ("org-a", "org-b"):
+    for org in (ORG_A, ORG_B):
         with org_context.bind(org_context.OrgContext(org, None, "service", "envelope", "r")):
             async with (await inbox.rt.db()).uow(write=True) as tx:
                 await tx.execute(
@@ -213,7 +216,7 @@ async def test_the_sweep_removes_rows_past_the_replay_window_and_keeps_the_rest(
                     org, inbox_message_id("g", fresh), window - 30.0,
                 )
     assert await inbox.sweep() >= 2   # other tests' old rows may go too; these two must
-    for org in ("org-a", "org-b"):
+    for org in (ORG_A, ORG_B):
         def ctx(e: str, org: str = org) -> org_context.OrgContext:
             return org_context.OrgContext(org, None, "service", "envelope", "r", event_id=e)
 
@@ -223,8 +226,23 @@ async def test_the_sweep_removes_rows_past_the_replay_window_and_keeps_the_rest(
 
 async def test_the_service_role_cannot_delete_rows_only_the_jobs_role_prunes(runtime) -> None:
     inbox = PgInbox()
-    ctx = org_context.OrgContext("org-a", None, "service", "envelope", "r", event_id=uuid.uuid4().hex)
+    ctx = org_context.OrgContext(ORG_A, None, "service", "envelope", "r", event_id=uuid.uuid4().hex)
     await inbox.record("g", ctx)
     with org_context.bind(ctx), pytest.raises(Exception, match="permission denied"):
         async with (await inbox.rt.db()).uow(write=True) as tx:
-            await tx.execute("DELETE FROM platform.consumer_inbox WHERE org_id = $1", "org-a")
+            await tx.execute("DELETE FROM platform.consumer_inbox WHERE org_id = $1", ORG_A)
+
+
+async def test_an_event_the_inbox_cannot_record_is_still_processed_and_acknowledged(broker) -> None:
+    topic, calls = _topic(), []
+
+    async def handler(m) -> bool:
+        calls.append(m.payload["i"])
+        return True
+
+    await _start(broker, topic, handler)
+    before = envelope.INBOX_ERRORS._metric.labels("record")._value.get()
+    await _send(broker, topic, _signed_for(topic, org="not-an-org-id", i=9))   # refused by the table's org id check
+    await until(lambda: calls == [9])
+    await _settled(broker, topic)
+    assert envelope.INBOX_ERRORS._metric.labels("record")._value.get() > before
