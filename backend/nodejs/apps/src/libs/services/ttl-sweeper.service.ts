@@ -20,8 +20,11 @@ const DEFAULT_ACTIVITY_RETENTION_DAYS = 90;
 const ACTIVITY_SWEEP_EVERY_MS = 24 * HOUR_MS;
 
 /** `USER_ACTIVITY_RETENTION_DAYS`: whole days of sign-in history to keep (default 90); anything else stops the start. */
-export function activityRetentionDays(raw = process.env.USER_ACTIVITY_RETENTION_DAYS): number {
-  if (raw === undefined || raw.trim() === '') return DEFAULT_ACTIVITY_RETENTION_DAYS;
+export function activityRetentionDays(
+  raw = process.env.USER_ACTIVITY_RETENTION_DAYS,
+): number {
+  if (raw === undefined || raw.trim() === '')
+    return DEFAULT_ACTIVITY_RETENTION_DAYS;
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 1)
     throw new Error(
@@ -218,7 +221,9 @@ export class TtlSweeper {
       }
     }
     if (failed > 0)
-      throw new Error(`${failed} of ${orgs.length} organisations failed (${total} rows removed)`);
+      throw new Error(
+        `${String(failed)} of ${String(orgs.length)} organisations failed (${String(total)} rows removed)`,
+      );
     return total;
   }
 
