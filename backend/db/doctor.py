@@ -29,10 +29,16 @@ def check(conn: psycopg.Connection) -> None:
     for p in problems:
         log(f"PROBLEM {p}: run python -m db.migrate with this build" if "<" in p else f"PROBLEM {p}: this build is older than the schema")
     if rows:                                                  # a database never migrated has no catalog checks to run yet
-        try:
-            migrate._report(conn)
-        except RunnerError as exc:
-            problems.append(str(exc))
+        # _report runs the catalog, vetted and surface layers only when the view exists (a migrate below kernel_0004 has none); every
+        # build that has a doctor needs it, so a migrated database without it is a problem, not a pass
+        if not conn.execute("SELECT to_regclass('kernel.rls_violations') IS NOT NULL").fetchone()[0]:
+            problems.append("kernel.rls_violations is missing: the catalog, vetted function and surface checks cannot run")
+            log(f"PROBLEM {problems[-1]}")
+        else:
+            try:
+                migrate._report(conn)
+            except RunnerError as exc:
+                problems.append(str(exc))
     if problems:
         raise RunnerError(EXIT_CHECK, f"{len(problems)} problem(s) found")
 

@@ -759,6 +759,11 @@ def test_the_doctor_reports_each_layer_and_changes_nothing(db):
     assert r.returncode == 4 and "01 unregistered" in r.stdout, r.stdout
     with connect(cluster, name) as c:
         assert c.execute("SELECT to_regclass('loose.t') IS NOT NULL").fetchone()[0]    # reported, not repaired
+        c.execute("DROP SCHEMA loose CASCADE")
+        # every epoch current, but the semantic check is gone: the catalog, vetted and surface layers cannot run, which is not healthy
+        c.execute("ALTER VIEW kernel.rls_violations RENAME TO rls_violations_away")
+    r = run_doctor(url)
+    assert r.returncode == 4 and "kernel.rls_violations is missing" in r.stdout and "healthy" not in r.stdout, r.stdout
 
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------
