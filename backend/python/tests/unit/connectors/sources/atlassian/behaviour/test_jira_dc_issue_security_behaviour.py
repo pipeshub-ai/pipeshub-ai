@@ -8,6 +8,7 @@ and every issue stored before levels were applied are read again from the checkp
 """
 
 import json
+from collections.abc import Iterator
 from typing import Any, Optional
 from unittest.mock import AsyncMock
 
@@ -114,8 +115,11 @@ class SecuredSearch(IssueSearch):
 
 
 @pytest.fixture
-def jql_search() -> SecuredSearch:
-    return SecuredSearch()
+def jql_search() -> Iterator[SecuredSearch]:
+    search = SecuredSearch()
+    SEARCHES.append(search)
+    yield search
+    SEARCHES.remove(search)
 
 
 def sec_issue(
@@ -142,16 +146,110 @@ def sec_issue(
     return {"id": iid, "key": key, "fields": fields}
 
 
+# The people of the stub site: key -> (username, email). Jira lists only active users; "ghost" is none of them.
+PEOPLE = {"alice-key": ("alice", "alice@example.com"), "bob-key": ("bob", "bob@example.com"),
+          "carol-key": ("carol", "carol@example.com"), "dave-key": ("dave", None), "frank-key": ("frank", None)}
+SEARCHES: list["SecuredSearch"] = []  # the issue search of the running test, for the viewers route to read issues from
+
+
+def _answer(jira: AtlassianApiStub, path: str, **query: str) -> Any:  # noqa: ANN401
+    response = jira(httpx.Request("GET", f"https://jira.example.com{path}", params=query))
+    return response.json() if response.status_code == 200 else None
+
+
+def _group_keys(jira: AtlassianApiStub, name: str) -> set[str]:
+    keys: set[str] = set()
+    start = 0
+    while (page := _answer(jira, f"{API}/group/member", groupname=name, startAt=str(start))) is not None:
+        keys |= {m.get("key") for m in page.get("values") or []}
+        if page.get("isLast", True) or not page.get("values"):
+            break
+        start += len(page["values"])
+    return keys
+
+
+def _person(ref: object) -> str | None:
+    """The key of a person named by key or username."""
+    if not isinstance(ref, dict):
+        return None
+    key = ref.get("key") or next((k for k, (name, _) in PEOPLE.items() if name == ref.get("name")), None)
+    return key if key in PEOPLE else None
+
+
+def _issue_by_key(jira: AtlassianApiStub, key: str) -> dict[str, Any] | None:
+    for search in SEARCHES:
+        for issue in search.source.values():
+            if issue.get("key") == key:
+                return issue
+    for method, path, response in jira._routes:
+        if method == "GET" and path.startswith(f"{API}/issue/") and isinstance(response, dict) and response.get("key") == key:
+            return response
+    return None
+
+
+def _level_members(jira: AtlassianApiStub, holders: list[dict[str, Any]], fields: dict[str, Any]) -> set[str]:
+    """Who a level holds on an issue, as Jira expands its holders (users, groups, roles, the lead, issue roles)."""
+    keys: set[str] = set()
+    for h in holders:
+        kind, param = h.get("type"), h.get("parameter")
+        if kind == "user":
+            keys.add(_person({"key": param}) or _person({"name": param}) or "")
+        elif kind == "group":
+            keys |= _group_keys(jira, param)
+        elif kind == "projectRole":
+            for actor in (_answer(jira, f"{API}/project/ENG/role/{param}") or {}).get("actors") or []:
+                if actor.get("type") == "atlassian-group-role-actor":
+                    keys |= _group_keys(jira, actor.get("name"))
+                else:
+                    keys.add(_person(actor) or "")
+        elif kind == "projectLead":
+            keys.add(_person(((_answer(jira, f"{API}/project") or [{}])[0]).get("lead")) or "")
+        elif kind in ("reporter", "assignee"):
+            keys.add(_person(fields.get(kind)) or "")
+        elif kind == "applicationRole":
+            for role in _answer(jira, f"{API}/applicationrole") or []:
+                if not param or role.get("key") == param:
+                    for group in role.get("groups") or []:
+                        keys |= _group_keys(jira, group)
+        elif kind == "userCustomField":
+            value = fields.get(param)
+            keys |= {_person(v) or "" for v in (value if isinstance(value, list) else [value])}
+        elif kind == "groupCustomField":
+            value = fields.get(param)
+            for group in value if isinstance(value, list) else [value]:
+                if isinstance(group, dict):
+                    keys |= _group_keys(jira, group.get("name"))
+        elif kind == "anyone":
+            keys |= set(PEOPLE)
+    return keys & set(PEOPLE)
+
+
 def serve_scheme(
-    jira: AtlassianApiStub, levels: dict[str, list[dict[str, Any]]], scheme: str = SCHEME, *, members: object = None,
+    jira: AtlassianApiStub, levels: dict[str, list[dict[str, Any]]], scheme: str = SCHEME, *, viewers: object = None,
 ) -> None:
-    """The project's scheme and, unless ``members`` replaces it, the holders of each level."""
+    """The project's scheme and its levels, and, unless ``viewers`` replaces it, who may browse each issue
+    (``GET /user/permission/search``): the people its level holds, as Jira expands its holders (Data Center lists no
+    level's members). An issue with no level is not asked about."""
     jira.on("GET", f"{API}/project/ENG/issuesecuritylevelscheme", {
         "id": scheme, "name": "Scheme", "levels": [{"id": lid, "name": f"level {lid}"} for lid in levels],
     })
-    rows = [{"issueSecurityLevelId": lid, "holder": h} for lid, hs in levels.items() for h in hs]
-    jira.on("GET", f"{API}/issuesecurityschemes/{scheme}/members",
-            members if members is not None else {"values": rows, "isLast": True})
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        q = AtlassianApiStub.query(request)
+        issue = _issue_by_key(jira, q.get("issueKey", ""))
+        if issue is None or q.get("permissions") != "BROWSE_PROJECTS":
+            return json_response({"errorMessages": ["no such issue"]}, status=404)
+        fields = issue["fields"]
+        level = (fields.get("security") or {}).get("id")
+        keys = _level_members(jira, levels.get(level, []), fields) if level else set(PEOPLE)
+        wanted = (q.get("username") or "").lower()
+        rows = [{"key": k, "name": name, **({"emailAddress": email} if email else {}), "active": True}
+                for k, (name, email) in sorted(PEOPLE.items()) if k in keys and (not wanted or any(
+                    word.startswith(wanted) for word in [name, *(email or "").replace("@", " ").split()]))]
+        start, size = int(q.get("startAt", 0)), int(q.get("maxResults", 50))
+        return json_response(rows[start:min(start + size, 100)])
+
+    jira.on("GET", f"{API}/user/permission/search", viewers if viewers is not None else answer)
 
 
 def no_scheme(jira: AtlassianApiStub) -> None:
@@ -180,7 +278,8 @@ def readers(db: JiraRecordsDb, external_id: str) -> set[tuple[str, str]]:
 
 
 def hidden_from_project(record: TicketRecord) -> bool:
-    return record.access_rule == AccessRule.RESTRICTED
+    """Closed, or read only by its own grants (a leveled issue granted to the users Jira lists, inheriting nothing)."""
+    return record.access_rule == AccessRule.RESTRICTED or record.inherit_permissions is False
 
 
 def store_open(connector: JiraDataCenterConnector, db: JiraRecordsDb, store: FakeCheckpointStore, *issues: dict) -> None:
@@ -232,15 +331,13 @@ class TestLevelHolders:
 
         assert not hidden_from_project(db.records["1"]) and readers(db, "1") == set()
         assert hidden_from_project(db.records["2"])
+        # Granted to exactly the people Jira lists as able to browse it, each by their own grant, inheriting nothing.
+        assert db.records["2"].inherit_permissions is False
         assert readers(db, "2") == {
-            ("USER", "alice@example.com"),            # a user holder by key, and the assignee
-            ("USER", "carol@example.com"),            # a user holder named by username only
-            ("GROUP", "devs"),
-            ("ROLE", "ENG_10002"),
-            ("ROLE", "ENG_projectLead"),
-            ("USER", "bob@example.com"),              # the reporter, and the user field
-            ("GROUP", "jira-software-users"),         # the application role, as its groups
-            ("GROUP", "ops"),                         # the group field
+            ("USER", "alice@example.com"),            # a user holder by key, the assignee, devs, the lead
+            ("USER", "carol@example.com"),            # a user holder named by username, devs, the role
+            ("USER", "bob@example.com"),              # the reporter, the user field, the application role
+            ("USER", "dave@example.com"),             # the application role's group
         }
 
     async def test_an_attachment_and_a_sub_task_of_a_secured_issue_follow_it(self, jira, db, store, jql_search) -> None:
@@ -259,7 +356,8 @@ class TestLevelHolders:
         assert file.parent_external_record_id == "2" and file.inherit_permissions
         assert db.record_permissions["attachment_200"] == []  # it takes its issue's readers, none of its own
         sub = db.records["3"]
-        assert sub.parent_external_record_id == "2" and hidden_from_project(sub)
+        # Its own viewers need not read its parent, so it is not filed under it.
+        assert sub.parent_external_record_id is None and hidden_from_project(sub)
         assert readers(db, "3") == {("USER", "alice@example.com")}
 
     async def test_a_holder_outside_the_directory_is_not_granted_and_the_project_still_gates_the_issue(
@@ -273,9 +371,8 @@ class TestLevelHolders:
 
         await connector.run_sync()
 
-        # ghost is not in the active-user list (deactivated or removed): Jira treats the account as gone, so the
-        # level's grant does not name it. The issue still inherits the project and stays closed to it.
-        assert db.records["2"].inherit_permissions is True
+        # ghost is not an active user, so Jira lists no one: the issue is granted to no one and inherits nothing.
+        assert db.records["2"].inherit_permissions is False
         assert hidden_from_project(db.records["2"])
         assert readers(db, "2") == set()
 
@@ -312,13 +409,14 @@ class TestUpgrade:
         assert readers(db, "2") == {("USER", "alice@example.com")}
         written = {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}
         assert written == {"2"}, "only the secured issue is written; the plain one is not touched"
-        assert set(json.loads(store.values_for("project_ENG")["security_levels"])) == {SECRET, TEAM}
+        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "viewers"}
 
-        # It is a one-time read: the next sync with nothing changed writes nothing.
+        # Who may browse a leveled issue can change with no sign in Jira's API, so each sync reads the leveled issues
+        # again; the plain one is never touched.
         batches_after = len(db.record_batches)
         await sync(connector, jql_search, recent=[])
-        assert len(db.record_batches) == batches_after
-        assert not any("level" in q.lower() for q in jql_search.jql)
+        written = {r.external_record_id for batch in db.record_batches[batches_after:] for r in batch}
+        assert written == {"2"} and readers(db, "2") == {("USER", "alice@example.com")}
 
     async def test_a_project_with_no_scheme_is_not_read_again_on_upgrade(self, jira, db, store, jql_search) -> None:
         stub_site(jira, jql_search)  # the project has no scheme
@@ -354,14 +452,18 @@ class TestChangesAtSource:
         moved = sec_issue("2", "ENG-2", level=TEAM, updated=ts(3))
         jql_search.put(moved)
         await sync(connector, jql_search, recent=[moved])
-        assert readers(db, "2") == {("GROUP", "devs")}
+        assert readers(db, "2") == {("USER", "alice@example.com"), ("USER", "carol@example.com")}
 
         cleared = sec_issue("2", "ENG-2", updated=ts(4))
         jql_search.put(cleared)
         await sync(connector, jql_search, recent=[cleared])
         assert not hidden_from_project(db.records["2"]) and readers(db, "2") == set()
 
-    async def test_a_level_that_gains_a_holder_rereads_only_its_own_issues(self, jira, db, store, jql_search) -> None:
+    async def test_a_level_that_gains_a_holder_is_applied_by_the_next_sync_though_no_issue_changed(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """No documented route names a level's holders, so a holder added to a level shows nowhere: the next sync reads
+        every leveled issue's viewers again, and leaves the plain one alone."""
         stub_site(jira, jql_search)
         serve_scheme(jira, {SECRET: [ALICE], TEAM: [DEVS]})
         jql_search.put(
@@ -377,7 +479,7 @@ class TestChangesAtSource:
 
         assert readers(db, "2") == {("USER", "alice@example.com"), ("USER", "carol@example.com")}
         written = {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}
-        assert written == {"2"}
+        assert written == {"2", "3"}
 
     async def test_a_level_that_loses_its_last_holder_or_a_scheme_swap_reads_the_whole_project(
         self, jira, db, store, jql_search,
@@ -395,7 +497,7 @@ class TestChangesAtSource:
         jql_search.put(swapped)
         serve_scheme(jira, {"20001": [DEVS]}, scheme="20050")
         await sync(connector, jql_search, recent=[])
-        assert readers(db, "2") == {("GROUP", "devs")}
+        assert readers(db, "2") == {("USER", "alice@example.com"), ("USER", "carol@example.com")}
 
         # The scheme is taken off the project and the issue loses its level without a new `updated`.
         jql_search.put(sec_issue("2", "ENG-2"))
@@ -405,11 +507,14 @@ class TestChangesAtSource:
 
 
 class TestFailClosed:
-    async def test_a_server_that_does_not_list_level_holders_hides_secured_issues_and_says_so(
+    async def test_an_account_refused_the_viewers_hides_secured_issues_and_names_the_permission(
         self, jira, db, store, jql_search,
     ) -> None:
+        """GET /user/permission/search "can be accessed by users with ADMINISTER_PROJECT permission for the project or
+        global ADMIN or SYSADMIN rights" (403 otherwise): a leveled issue stays closed and the notice says what is missing.
+        The level-members route Data Center does not have is never asked."""
         stub_site(jira, jql_search)
-        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"message": "Not Found"}, status=404))
+        serve_scheme(jira, {SECRET: [ALICE]}, viewers=json_response({"errorMessages": ["not admin"]}, status=403))
         jql_search.put(sec_issue("1", "ENG-1"), sec_issue("2", "ENG-2", level=SECRET))
         jql_search.recent = list(jql_search.source.values())
         connector, notes = await make_connector(db, store)
@@ -419,27 +524,32 @@ class TestFailClosed:
         assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
         assert not hidden_from_project(db.records["1"])
         warning = next(n for n in notes.sent if "issue security levels" in n["title"])
-        assert "does not list who holds" in warning["message"] and "ENG" in warning["message"]
+        assert "Administer Projects" in warning["message"] and "ENG" in warning["message"]
+        assert "does not list who holds" not in warning["message"]
+        assert not jira.calls("GET", f"{API}/issuesecurityschemes/{SCHEME}/members")
 
-    @pytest.mark.parametrize("status", [404, 403, 401])
-    async def test_level_holders_that_cannot_be_read_keep_a_stored_issues_grants(
+    @pytest.mark.parametrize("status", [403, 404, 503])
+    async def test_a_viewers_read_that_fails_closes_the_issue_until_one_passes(
         self, jira, db, store, jql_search, status,
     ) -> None:
-        """The level-members route is not in Data Center's documented REST API (10.3 and 11.2 list only
-        /issuesecurityschemes, /issuesecurityschemes/{id}, /project/{key}/issuesecuritylevelscheme,
-        /project/{key}/securitylevel and /securitylevel/{id}, https://developer.atlassian.com/server/jira/platform/rest/v11002/),
-        so any answer other than the members is a failed read: an unchanged issue keeps what it was granted."""
+        """Who may browse the issue is not known: no one keeps it (fail closed), and the next sync that reads it opens it
+        to its viewers again, though the issue did not change."""
         stub_site(jira, jql_search)
         serve_scheme(jira, {SECRET: [ALICE]})
         secured = sec_issue("2", "ENG-2", level=SECRET)
         jql_search.put(secured)
-        connector, _ = await make_connector(db, store)
+        connector, notes = await make_connector(db, store)
         await sync(connector, jql_search, recent=[secured])
         assert readers(db, "2") == {("USER", "alice@example.com")}
 
-        jira.on("GET", f"{API}/issuesecurityschemes/{SCHEME}/members", json_response({"message": "no"}, status=status))
-        await sync(connector, jql_search, recent=[secured])
+        serve_scheme(jira, {SECRET: [ALICE]}, viewers=json_response({"message": "no"}, status=status))
+        await sync(connector, jql_search, recent=[])
+        assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
+        notices = [n for n in notes.sent if "issue security levels" in n["title"]]
+        assert bool(notices) is (status == 403)
 
+        serve_scheme(jira, {SECRET: [ALICE]})
+        await sync(connector, jql_search, recent=[])
         assert readers(db, "2") == {("USER", "alice@example.com")}
 
     async def test_an_account_refused_the_scheme_hides_secured_issues_and_names_the_permission(
@@ -457,42 +567,6 @@ class TestFailClosed:
         assert hidden_from_project(db.records["2"]) and not hidden_from_project(db.records["1"])
         warning = next(n for n in notes.sent if "issue security levels" in n["title"])
         assert "Administer Jira" in warning["message"] and "hidden from everyone" in warning["message"]
-
-    async def test_an_issue_changed_while_its_level_cannot_be_read_is_closed_and_retried_from_a_marker_saved_first(
-        self, jira, db, store, jql_search,
-    ) -> None:
-        stub_site(jira, jql_search)
-        serve_scheme(jira, {SECRET: [ALICE]})
-        first = sec_issue("2", "ENG-2", level=SECRET, updated=ts(1))
-        jql_search.put(first)
-        connector, _ = await make_connector(db, store)
-        await sync(connector, jql_search, recent=[first])
-        assert readers(db, "2") == {("USER", "alice@example.com")}
-
-        seen_by_search: list[str] = []
-        jira.on("GET", f"{API}/issuesecurityschemes/{SCHEME}/members", json_response({"errorMessages": ["busy"]}, status=503))
-        changed = sec_issue("2", "ENG-2", level=SECRET, updated=ts(2))
-        jql_search.put(changed)
-        original = jql_search.__call__
-
-        def spy(request: httpx.Request) -> httpx.Response:
-            seen_by_search.append(store.values_for("project_ENG").get("security_levels", ""))
-            return original(request)
-
-        jira.on("POST", f"{API}/search", spy)
-        await sync(connector, jql_search, recent=[changed])
-
-        assert "retry" in seen_by_search[0], "the marker is saved before the first page is read"
-        # Jira changed the issue, so it may have another level now: the old level's holders must not keep it.
-        assert hidden_from_project(db.records["2"])
-        assert readers(db, "2") == set()
-
-        jira.on("POST", f"{API}/search", jql_search)
-        serve_scheme(jira, {SECRET: [ALICE, CAROL_BY_NAME]})
-        await sync(connector, jql_search, recent=[])
-        assert readers(db, "2") == {("USER", "alice@example.com"), ("USER", "carol@example.com")}
-        assert "*" not in json.loads(store.values_for("project_ENG")["security_levels"])
-
 
     async def test_issues_stored_open_are_closed_once_when_the_scheme_cannot_be_read(
         self, jira, db, store, jql_search,
@@ -535,74 +609,21 @@ class TestUpgradeWhileTheLevelsCannotBeRead:
         store_open(connector, db, store, plain, secured)
         return connector, notes
 
-    async def test_a_transient_failure_reading_the_holders_hides_the_stored_leveled_issues_until_it_passes(
+    async def test_a_transient_failure_reading_the_viewers_hides_the_stored_leveled_issues_until_it_passes(
         self, jira, db, store, jql_search,
     ) -> None:
         connector, notes = await self._stored(jira, db, store, jql_search)
-        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
+        serve_scheme(jira, {SECRET: [ALICE]}, viewers=json_response({"errorMessages": ["busy"]}, status=503))
 
         await sync(connector, jql_search, recent=[])
 
         assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
         assert not hidden_from_project(db.records["1"])
-        assert "hidden from everyone" in next(n for n in notes.sent if "issue security levels" in n["title"])["message"]
-        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "held"}
-        batches = len(db.record_batches)
-        searches = len(jql_search.jql)
-        notices = len(notes.sent)
-        await sync(connector, jql_search, recent=[])
-        assert len(db.record_batches) == batches, "a read that keeps failing does not repeat the pass"
-        assert len(jql_search.jql) == 1 and searches > 1, "and does not walk the project again"
-        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "held"}
-        again = [n for n in notes.sent[notices:] if "issue security levels" in n["title"]]
-        assert "hidden from everyone" in again[0]["message"] and "keep the access" not in again[0]["message"]
+        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "viewers"}
 
         serve_scheme(jira, {SECRET: [ALICE]})
         await sync(connector, jql_search, recent=[])
         assert readers(db, "2") == {("USER", "alice@example.com")}
-        assert SECRET in json.loads(store.values_for("project_ENG")["security_levels"])
-
-    async def test_an_issue_that_fails_to_build_in_the_closing_pass_is_closed_by_the_next_sync(
-        self, jira, db, store, jql_search,
-    ) -> None:
-        connector, _ = await self._stored(jira, db, store, jql_search)
-        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
-        real = connector._extract_issue_data_with_parent
-        failing = {"on": True}
-
-        async def extract(issue: dict, users: dict) -> dict:
-            if failing["on"] and issue["id"] == "2":
-                raise RuntimeError("cannot build")
-            return await real(issue, users)
-
-        connector._extract_issue_data_with_parent = extract
-
-        await sync(connector, jql_search, recent=[])
-
-        assert not hidden_from_project(db.records["2"]), "it stayed open"
-        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "retry"}, "not marked done"
-
-        failing["on"] = False
-        await sync(connector, jql_search, recent=[])
-        assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
-        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "held"}
-
-    async def test_a_level_naming_application_roles_that_cannot_be_read_is_hidden_until_they_can(
-        self, jira, db, store, jql_search,
-    ) -> None:
-        connector, _ = await self._stored(jira, db, store, jql_search)
-        serve_scheme(jira, {SECRET: [holder("applicationRole", parameter="jira-software")]})
-        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["unauthorized"]}, status=401))
-
-        await sync(connector, jql_search, recent=[])
-
-        assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
-        assert not hidden_from_project(db.records["1"])
-
-        jira.on("GET", f"{API}/applicationrole", json_response([{"key": "jira-software", "groups": ["jira-software-users"]}]))
-        await sync(connector, jql_search, recent=[])
-        assert readers(db, "2") == {("GROUP", "jira-software-users")}
-
 
 class TestAnUnclearNotFoundOnTheSchemeRoute:
     """A 404 that does not say the project has no scheme (a proxy, a missing route, an HTML page) is unknown:
@@ -629,7 +650,7 @@ class TestAnUnclearNotFoundOnTheSchemeRoute:
         await sync(connector, jql_search, recent=[])
 
         assert readers(db, "2") == {("USER", "alice@example.com")} and hidden_from_project(db.records["2"])
-        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {**json.loads(digests), "*": "retry"}
+        assert store.values_for("project_ENG")["security_levels"] == digests, "the viewer grants are kept"
         message = next(n for n in notes.sent if "issue security levels" in n["title"])["message"]
         assert "keep the access they had" in message and "not-found" in message
 
@@ -688,10 +709,10 @@ class TestHierarchy:
 
         await sync(connector, jql_search, recent=list(jql_search.source.values()))
 
-        # Everyone who reads the open story may not read the epic, so it hangs off the project; the
-        # story in the epic's level (one holder on every issue) stays under the epic.
+        # Everyone who reads the open story may not read the epic, so it hangs off the project; so does the story in
+        # the epic's level, whose viewers Jira lists one issue at a time and need not read the epic.
         assert db.records["6"].parent_external_record_id is None and not hidden_from_project(db.records["6"])
-        assert db.records["7"].parent_external_record_id == "5"
+        assert db.records["7"].parent_external_record_id is None and hidden_from_project(db.records["7"])
 
 
     async def test_stories_leave_an_epic_that_gains_a_level_and_return_when_it_loses_it(
@@ -718,9 +739,11 @@ class TestHierarchy:
         await sync(connector, jql_search, recent=[open_again])
         assert db.records["6"].parent_external_record_id == "5"
 
-    async def test_an_epic_changed_with_no_level_before_or_after_does_not_read_its_stories_again(
+    async def test_an_epic_changed_with_no_level_before_or_after_reads_its_stories_again_and_they_stay(
         self, jira, db, store, jql_search,
     ) -> None:
+        """A leveled issue granted to its viewers is stored OPEN, as one with no level is, so whether a changed epic had a
+        level is not known: its stories are read again, and stay filed under it."""
         stub_site(jira, jql_search)
         serve_scheme(jira, {SECRET: [ALICE]})
         jira.on("GET", f"{API}/issue/ENG-5", {"id": "5", "key": "ENG-5"})
@@ -735,8 +758,10 @@ class TestHierarchy:
         batches = len(db.record_batches)
         await sync(connector, jql_search, recent=[commented])
 
-        assert not any("parent in" in q or "cf[" in q for q in jql_search.jql)
-        assert {r.external_record_id for b in db.record_batches[batches:] for r in b} == {"5"}
+        assert any("cf[" in q for q in jql_search.jql)
+        written = {r.external_record_id for b in db.record_batches[batches:] for r in b}
+        assert "6" in written and written <= {"5", "6"}
+        assert db.records["6"].parent_external_record_id == "5" and not hidden_from_project(db.records["6"])
 
         leveled = sec_issue("5", "ENG-5", kind="Epic", level=SECRET, updated=ts(3))
         jql_search.put(leveled)
@@ -766,31 +791,6 @@ class TestHierarchy:
         jql_search.refuse_children, jql_search.fail_plain_from = False, None
         await sync(connector, jql_search, recent=[])
         assert hidden_from_project(db.records["3"]) and readers(db, "3") == {("USER", "alice@example.com")}
-        assert json.loads(store.values_for("project_ENG")["child_parents"]) == {}
-
-    async def test_a_refused_children_jql_in_a_levels_pass_reads_the_project_before_the_digests_are_saved(
-        self, jira, db, store, jql_search,
-    ) -> None:
-        stub_site(jira, jql_search)
-        serve_scheme(jira, {SECRET: [ALICE]})
-        epic, child = sec_issue("5", "ENG-5", kind="Epic", level=SECRET), sec_issue("6", "ENG-6", kind="Sub-task", parent="5", level=SECRET)
-        jql_search.put(epic, child)
-        connector, _ = await make_connector(db, store)
-        await sync(connector, jql_search, recent=[epic, child])
-        before = store.values_for("project_ENG")["security_levels"]
-
-        serve_scheme(jira, {SECRET: [ALICE, CAROL_BY_NAME]})  # no issue's `updated` moves
-        jql_search.refuse_children = True
-        jql_search.fail_plain_from = 2  # the levels pass is the first read of every stored issue; the fallback the second
-        await sync(connector, jql_search, recent=[])
-
-        assert store.values_for("project_ENG")["security_levels"] == before, "not saved before the fallback has read"
-        assert "5" in json.loads(store.values_for("project_ENG")["child_parents"])
-
-        jql_search.refuse_children, jql_search.fail_plain_from = False, None
-        await sync(connector, jql_search, recent=[])
-        assert store.values_for("project_ENG")["security_levels"] != before
-        assert readers(db, "6") == {("USER", "alice@example.com"), ("USER", "carol@example.com")}
         assert json.loads(store.values_for("project_ENG")["child_parents"]) == {}
 
     async def test_a_refused_children_jql_in_a_levels_pass_is_made_up_in_the_same_sync_when_it_can(
@@ -881,7 +881,7 @@ class TestReindex:
         self, jira, db, store, jql_search,
     ) -> None:
         stub_site(jira, jql_search)
-        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
+        serve_scheme(jira, {SECRET: [ALICE]}, viewers=json_response({"errorMessages": ["busy"]}, status=503))
         connector, _ = await make_connector(db, store)
         record = self.stored(connector, db)
         jira.on("GET", f"{API}/issue/2", sec_issue("2", "ENG-2", level=SECRET, updated=ts(2)))
@@ -902,30 +902,26 @@ class TestReindex:
         jql_search.put(plain)
         connector, _ = await make_connector(db, store)
         await sync(connector, jql_search, recent=[plain])
-        digests = json.loads(store.values_for("project_ENG")["security_levels"])
         assert not hidden_from_project(db.records["2"])
 
-        # Jira gives the issue a level; the reindex sees it while the holders cannot be read.
+        # Jira gives the issue a level; the reindex sees it while its viewers cannot be read.
         leveled = sec_issue("2", "ENG-2", level=SECRET, updated=ts(2))
         jql_search.put(leveled)
         jira.on("GET", f"{API}/issue/2", leveled)
-        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
+        serve_scheme(jira, {SECRET: [ALICE]}, viewers=json_response({"errorMessages": ["busy"]}, status=503))
         await connector.reindex_records([db.records["2"]])
         assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
-        marked = json.loads(store.values_for("project_ENG")["security_levels"])
-        assert marked == {**digests, "*": "retry"}
 
-        # The levels read again with the digests unchanged: only the marker brings the issue back.
+        # The next sync reads every leveled issue's viewers again, though the issue did not change since.
         serve_scheme(jira, {SECRET: [ALICE]})
         await sync(connector, jql_search, recent=[])
         assert readers(db, "2") == {("USER", "alice@example.com")}
-        assert "*" not in json.loads(store.values_for("project_ENG")["security_levels"])
 
-    async def test_a_retry_marker_that_cannot_be_saved_does_not_cost_the_close(
+    async def test_a_checkpoint_store_that_fails_does_not_cost_the_close(
         self, jira, db, store, jql_search,
     ) -> None:
         stub_site(jira, jql_search)
-        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
+        serve_scheme(jira, {SECRET: [ALICE]}, viewers=json_response({"errorMessages": ["busy"]}, status=503))
         connector, _ = await make_connector(db, store)
         record = self.stored(connector, db)
         jira.on("GET", f"{API}/issue/2", sec_issue("2", "ENG-2", level=SECRET, updated=ts(2)))
@@ -936,26 +932,26 @@ class TestReindex:
         written = {r.external_record_id: r for batch in db.record_batches for r in batch}["2"]
         assert hidden_from_project(written) and readers(db, "2") == set()
 
-    async def test_a_stored_leveled_issue_keeps_its_grants_when_the_level_cannot_be_read(
+    async def test_a_stored_leveled_issue_is_closed_when_its_viewers_cannot_be_read(
         self, jira, db, store, jql_search,
     ) -> None:
+        """Who may browse it now is not known: no stored grant is kept (it may name someone Jira took it from)."""
         stub_site(jira, jql_search)
-        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
+        serve_scheme(jira, {SECRET: [ALICE]}, viewers=json_response({"errorMessages": ["busy"]}, status=503))
         connector, _ = await make_connector(db, store)
         record = self.stored(connector, db, leveled=True)
         jira.on("GET", f"{API}/issue/2", sec_issue("2", "ENG-2", level=SECRET, updated=ts(2)))
 
         await connector.reindex_records([record])
 
-        assert db.record_batches == []  # nothing is written over the stored issue's grants
-        assert [r.id for r in db.reindexed] == ["t-2"]
-        assert store.values_for("project_ENG") is None  # and no retry is asked for
+        written = {r.external_record_id: r for batch in db.record_batches for r in batch}["2"]
+        assert hidden_from_project(written) and readers(db, "2") == set()
 
-    async def test_a_reindex_does_not_narrow_the_audience_for_a_holder_it_could_not_resolve(
+    async def test_a_reindex_grants_the_viewers_this_process_knows_and_no_one_else(
         self, jira, db, store, jql_search,
     ) -> None:
+        """Jira lists alice and carol; only alice is linked: the issue is granted to her alone, as a sync would."""
         stub_site(jira, jql_search)
-        # Carol is named by username only, and this process has not synced the users: nothing resolves her.
         serve_scheme(jira, {SECRET: [ALICE, CAROL_BY_NAME]})
         connector, _ = await make_connector(db, store)
         db.cached_app_users = [AppUser(
@@ -967,7 +963,7 @@ class TestReindex:
 
         await connector.reindex_records([record])
 
-        assert db.record_batches == []  # not rewritten with alice alone
+        assert readers(db, "2") == {("USER", "alice@example.com")} and db.records["2"].inherit_permissions is False
 
     async def test_a_stored_open_issue_that_now_has_a_level_with_an_unresolved_holder_is_closed(
         self, jira, db, store, jql_search,
@@ -1044,10 +1040,9 @@ class TestProductAccessRegained:
         await sync(connector, jql_search, recent=[])
         assert ("USER", "carol@example.com") in readers(db, "2")
 
-        batches_before = len(db.record_batches)
         await sync(connector, jql_search, recent=[])
-        assert "2" not in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}, (
-            "read again once"
+        assert ("USER", "carol@example.com") in readers(db, "2"), (
+            "kept by the next sync"
         )
         assert store.values_for("project_ENG")["people_read"] == store.values_for("people_reread")["generation"], (
             "ENG covered carol's generation, so a later listing is a new one"
@@ -1177,7 +1172,6 @@ class TestWithdrawnAccounts:
         await sync(connector, jql_search, recent=changed)
         assert connector._user_read_unfinished is True and db.withdrawn_users == []
         assert ("USER", "carol@example.com") in readers(db, "2")
-        assert json.loads(store.values_for("project_ENG")["security_levels"]).get("*") == "retry"
 
         jira.on("GET", f"{API}/user/list", full_list)
         await sync(connector, jql_search, recent=[])
@@ -1241,7 +1235,7 @@ class TestWithdrawnAccounts:
         assert json.loads(store.values_for("people_reread")["accounts"]) == []
 
         await sync(connector, jql_search, recent=[])
-        assert jql_search.plain_calls == 0, "read again once, not every sync"
+        assert jql_search.plain_calls == 1, "the per-sync read of the leveled issues, nothing more"
 
     async def test_a_project_the_sync_did_not_read_while_an_account_was_admitted_reads_its_levels_again_when_back(
         self, jira, db, store, jql_search,
@@ -1342,7 +1336,7 @@ class TestWithdrawnAccounts:
         the generation is spent. The next sync walks, tries ENG-2 again, and frank reads it."""
         connector, _ = await self._given_up_eng2_then_frank_listed(jira, db, store, jql_search)
         serve_scheme(jira, {SECRET: [holder("user", parameter="frank-key", user={"key": "frank-key", "name": "frank"})]},
-                     members=json_response({"errorMessages": ["busy"]}, status=503))
+                     viewers=json_response({"errorMessages": ["busy"]}, status=503))
         await sync(connector, jql_search, recent=[])
         serve_scheme(jira, {SECRET: [holder("user", parameter="frank-key", user={"key": "frank-key", "name": "frank"})]})
         await sync(connector, jql_search, recent=[])
@@ -1364,7 +1358,9 @@ class TestWithdrawnAccounts:
         connector._extract_issue_data_with_parent = fail_once
         await sync(connector, jql_search, recent=[])
         assert failures and ("USER", "frank-key") not in readers(db, "2")
+        batches = len(db.record_batches)
         await sync(connector, jql_search, recent=[])
+        assert "2" in {r.external_record_id for b in db.record_batches[batches:] for r in b}, "built by the next sync"
         assert ("USER", "frank-key") in readers(db, "2")
 
     async def test_an_issue_given_up_on_that_still_fails_does_not_hold_a_level_pass(self, jira, db, store, jql_search) -> None:
@@ -1389,7 +1385,7 @@ class TestWithdrawnAccounts:
         await sync(connector, jql_search, recent=[])
         assert jql_search.plain_calls >= 1, "the level pass read it"
         await sync(connector, jql_search, recent=[])
-        assert jql_search.plain_calls == 0, "and is not repeated"
+        assert jql_search.plain_calls == 1, "only the per-sync read of the leveled issues"
 
     async def test_an_issue_given_up_on_that_fails_a_pass_revoking_a_holder_is_closed(self, jira, db, store, jql_search) -> None:
         """ENG-2's level moves from alice to carol, but ENG-2, given up on, cannot be built: rather than keep alice's grant
@@ -1430,10 +1426,10 @@ class TestWithdrawnAccounts:
         connector._extract_issue_data_with_parent = broken
         for _ in range(8):
             await sync(connector, jql_search, recent=[])
-            if jql_search.plain_calls == 0:
+            if store.values_for("project_ENG").get("people_read") == store.values_for("people_reread")["generation"]:
                 break
-        assert jql_search.plain_calls == 0, "the walks stopped"
         assert store.values_for("project_ENG")["people_read"] == store.values_for("people_reread")["generation"]
+        assert hidden_from_project(db.records["2"]) and readers(db, "2") == set(), "closed while it cannot be built"
 
     async def test_a_short_user_list_that_shows_an_account_deactivated_withdraws_it(
         self, jira, db, store, jql_search,
@@ -1460,3 +1456,81 @@ class TestWithdrawnAccounts:
         assert connector._user_read_unfinished is True
         assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
         assert "carol-key" not in {u.source_user_id for u in await db.get_all_app_users("jira-dc-1")}
+
+
+def serve_version(jira: AtlassianApiStub, version: tuple[int, ...]) -> None:
+    """The server's version; before 10.3.13 and on 10.4 to 10.7 the users are listed by ``/user/search`` alone."""
+    jira.on("GET", f"{API}/serverInfo", {"version": ".".join(map(str, version)), "versionNumbers": list(version)})
+    everyone = [user(k, name, email) for k, (name, email) in PEOPLE.items() if k != "frank-key"]
+    jira.on("GET", f"{API}/user/search", lambda request: json_response(
+        everyone if AtlassianApiStub.query(request).get("username") == "." and AtlassianApiStub.query(request).get(
+            "startAt", "0") == "0" else []))
+
+
+def serve_devs(jira: AtlassianApiStub, members: list[str]) -> None:
+    def answer(request: httpx.Request) -> httpx.Response:
+        if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
+            return json_response({"values": [{"key": k} for k in LICENSED], "isLast": True})
+        return json_response({"values": [{"key": k} for k in members], "isLast": True})
+
+    jira.on("GET", f"{API}/group/member", answer)
+
+
+class TestViewersPerVersion:
+    """Data Center 10.2 to 11.3 document no route that lists a level's members, and document GET /user/permission/search
+    (https://dac-static.atlassian.com/server/jira/platform/jira_software_dc_{10002,10007,11003}_swagger.v3.json): a leveled
+    issue is granted to the users it lists, on the oldest, a middle and the newest supported version; on a version not
+    supported it stays closed and the notice says why."""
+
+    @pytest.mark.parametrize("version", [(10, 2, 0), (10, 7, 4), (11, 3, 13)], ids=["10.2", "10.7", "11.3"])
+    async def test_a_leveled_issue_is_granted_to_its_viewers(self, jira, db, store, jql_search, version) -> None:
+        stub_site(jira, jql_search)
+        serve_version(jira, version)
+        serve_devs(jira, ["alice-key", "carol-key"])
+        serve_scheme(jira, {SECRET: [DEVS, holder("reporter")]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="bob"), sec_issue("1", "ENG-1"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert readers(db, "2") == {("USER", "alice@example.com"), ("USER", "bob@example.com"), ("USER", "carol@example.com")}
+        assert hidden_from_project(db.records["2"]) and not hidden_from_project(db.records["1"])
+        asked = jira.calls("GET", f"{API}/user/permission/search")
+        assert asked and {AtlassianApiStub.query(r)["permissions"] for r in asked} == {"BROWSE_PROJECTS"}
+
+    async def test_on_a_version_not_supported_a_leveled_issue_stays_closed_and_the_notice_says_why(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        stub_site(jira, jql_search)
+        serve_version(jira, (9, 12, 0))
+        serve_scheme(jira, {SECRET: [ALICE]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET))
+        connector, notes = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
+        assert not jira.calls("GET", f"{API}/user/permission/search")
+        warning = next(n for n in notes.sent if "issue security levels" in n["title"])
+        assert "version" in warning["message"] and "ENG" in warning["message"]
+
+    async def test_a_reporter_a_reindex_found_among_the_viewers_who_leaves_before_the_next_sync_loses_it(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """The sync reads devs without carol; the reindex finds carol among the viewers; Jira takes her out again
+        before the next sync. Nothing about the issue or the groups the sync saw changed, but the next sync reads every
+        leveled issue's viewers, so carol loses it."""
+        stub_site(jira, jql_search)
+        serve_devs(jira, ["alice-key"])
+        serve_scheme(jira, {SECRET: [DEVS]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert readers(db, "2") == {("USER", "alice@example.com")}
+
+        serve_devs(jira, ["alice-key", "carol-key"])
+        jira.on("GET", f"{API}/issue/2", sec_issue("2", "ENG-2", level=SECRET, reporter="carol", updated=ts(2)))
+        await connector.reindex_records([db.records["2"]])
+        assert readers(db, "2") == {("USER", "alice@example.com"), ("USER", "carol@example.com")}
+
+        serve_devs(jira, ["alice-key"])
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol", updated=ts(2)))
+        await sync(connector, jql_search, recent=[])
+        assert readers(db, "2") == {("USER", "alice@example.com")}
+

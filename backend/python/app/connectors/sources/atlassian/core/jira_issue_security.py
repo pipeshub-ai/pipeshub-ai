@@ -116,6 +116,9 @@ class IssueSecurityContext:
     # Level id -> the people its same-on-every-issue holders name (``level_readers``), None for a level whose members
     # were not read. None when not tracked: then a person is matched to the level by a user holder only.
     level_readers: dict[str, frozenset[tuple[str, str]] | None] | None = None
+    # Data Center lists no level's members, so each leveled issue is granted to the users Jira lists as able to browse
+    # it (``GET /user/permission/search``), read per issue.
+    viewers: bool = False
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -276,6 +279,8 @@ UNREADABLE_ROLES = "roles"
 UNREADABLE_NOT_LISTED = "not_listed"
 UNREADABLE_MEMBERS_UNREAD = "members_unread"
 UNREADABLE_UNCLEAR_404 = "unclear_404"
+UNREADABLE_VIEWERS_PERMISSION = "viewers_permission"
+UNREADABLE_VIEWERS_VERSION = "viewers_version"
 UNREADABLE_TRANSIENT = "transient"
 UNREADABLE_OTHER = "other"
 
@@ -294,6 +299,13 @@ UNREADABLE_REASONS = {
     UNREADABLE_MEMBERS_UNREAD: (
         "Jira does not list who holds each issue security level (Jira Data Center documents no route for it, "
         "and the one read answered with an error)"
+    ),
+    UNREADABLE_VIEWERS_PERMISSION: (
+        "Jira refused to list who may browse each issue (HTTP 403): the connector's account needs the Administer "
+        "Projects permission on the project, or Jira administrator rights"
+    ),
+    UNREADABLE_VIEWERS_VERSION: (
+        "the Jira Data Center version is not one the connector supports, so who may browse each issue is not read"
     ),
     UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
     UNREADABLE_UNCLEAR_404: (

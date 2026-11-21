@@ -3,6 +3,7 @@
 import json
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -270,15 +271,6 @@ class TestCostPerIssue:
 
         assert len([r for r, _ in built if isinstance(r, TicketRecord)]) == 20
         assert calls == [50], "one pass over the users for the batch of twenty issues"
-
-
-class TestGroupHolders:
-    def test_a_group_holder_is_the_group_named_in_parameter_as_the_permission_scheme_reads_it(self) -> None:
-        rows = [{"issueSecurityLevelId": "1", "holder": {"type": "group", "parameter": "devs", "value": "gid-7"}},
-                {"issueSecurityLevelId": "1", "holder": {"type": "projectLead"}}]
-        fixed = JiraDataCenterConnector._groups_by_name(rows)
-        assert fixed[0]["holder"]["value"] == "devs" and fixed[1] == rows[1]
-        assert rows[0]["holder"]["value"] == "gid-7", "the server's rows are not changed"
 
 
 class TestSkippedHoldersAreReportedOncePerLevel:
@@ -1036,3 +1028,146 @@ class TestStoredNoLevelIssuesHealOnce:
         reread, update = await self._sync({}, pass_fails=True)
         reread.assert_awaited_once()
         assert not self._marked(update)
+
+
+class TestARoleAnsweredWithoutItsActors:
+    """ProjectRoleBean lists ``actors`` (Data Center 10.2 to 11.3 specifications): a role answered without that list has
+    unread members, not none, so its stored members stay. ``[]`` is a role with none."""
+
+    @staticmethod
+    async def _sync(body: dict) -> JiraDataCenterConnector:
+        c = _connector()
+        c.data_source = MagicMock()
+        c.data_entities_processor.on_new_app_roles = AsyncMock()
+        roles, role = MagicMock(status=200), MagicMock(status=200)
+        roles.json = MagicMock(return_value={"Developers": "https://jira/rest/api/2/project/P/role/10002"})
+        role.json = MagicMock(return_value=body)
+        ds = MagicMock()
+        ds.get_project_roles_v2 = AsyncMock(return_value=roles)
+        ds.get_project_role_v2 = AsyncMock(return_value=role)
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_project_roles(["P"], [_user("alice-key", "alice@x.com")], {})
+        return c
+
+    @pytest.mark.parametrize("body", [{"name": "Developers", "id": 10002}, {"name": "Developers", "actors": None}])
+    async def test_its_members_are_unread_and_the_stored_role_stays(self, body: dict) -> None:
+        c = await self._sync(body)
+        c.data_entities_processor.on_new_app_roles.assert_not_called()
+        assert c._kept_unread_access
+
+    async def test_an_empty_list_is_a_role_with_no_members(self) -> None:
+        c = await self._sync({"name": "Developers", "id": 10002, "actors": []})
+        assert c.data_entities_processor.on_new_app_roles.await_args.args[0][0][1] == []
+
+
+class TestViewersPastTheFirstHundred:
+    """GET /user/permission/search returns at most the first 100 results from Data Center 10.6 ("The combination of
+    maxResults and startAt is limited to the first 100 results"). A full page is split by the username filter along the
+    synced accounts' usernames only; every user granted was listed by Jira, so no split can grant more than it read."""
+
+    @staticmethod
+    def _jira(viewers: list[tuple[str, str]]) -> tuple[Any, list[str | None]]:
+        """A viewers route over ``viewers`` ((username, email)): the filter matches the start of any word of the
+        username or email, and a page holds the first 100."""
+        asked: list[str | None] = []
+
+        async def page(_issue_key: str, username: str | None) -> tuple[int, list[dict]]:
+            asked.append(username)
+            rows = [{"key": f"k-{name}", "name": name, "emailAddress": email} for name, email in viewers
+                    if not username or any(w.startswith(username) for w in [name, *email.replace("@", " ").split()])]
+            return 200, rows[:100]
+        return page, asked
+
+    async def test_a_full_page_is_split_along_synced_usernames_only(self) -> None:
+        c = _connector()
+        page, asked = self._jira([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+        c._viewers_page = page
+        status, viewers = await c._issue_viewers("P-1", ["u001", "u120", "u149", "zed"])
+        assert status == 200
+        names = {v["name"] for v in viewers}
+        assert {"u001", "u120", "u149"} <= names and "zed" not in names
+        assert all(a is None or any(n.startswith(a) for n in ["u001", "u120", "u149", "zed"]) for a in asked)
+
+    async def test_a_username_whose_own_page_is_still_full_and_lacks_it_is_not_granted(self) -> None:
+        """Everyone's email shares a word with "ann", so her own page is full of others and she is not on it: she is
+        not granted (fewer readers, never more); someone listed on a page is."""
+        c = _connector()
+        page, _ = self._jira([(f"p{i:03}", f"p{i:03}@ann.example") for i in range(150)] + [("ann", "ann@x.com")])
+        c._viewers_page = page
+        status, viewers = await c._issue_viewers("P-1", ["ann", "p001"])
+        assert status == 200 and {v["name"] for v in viewers} >= {"p001"} and "ann" not in {v["name"] for v in viewers}
+
+    async def test_a_failed_page_fails_the_read(self) -> None:
+        c = _connector()
+        page, _ = self._jira([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+
+        async def failing(issue_key: str, username: str | None) -> tuple[int, list[dict] | None]:
+            return (503, None) if username else await page(issue_key, username)
+        c._viewers_page = failing
+        assert await c._issue_viewers("P-1", ["u120"]) == (503, None)  # u120 is past the first page
+
+
+class TestAFullPageWithNothingToSplitOn:
+    """A full first page lists only the first 100 viewers: with no username to split on (a reindex in a process that has
+    not read the user list) the read is unread and the issue closed, never stored open to the first page alone. A synced
+    account whose username is not known is left out of the split: granted only if a page read lists it."""
+
+    @staticmethod
+    def _page(viewers: list[tuple[str, str]]):  # noqa: ANN205
+        async def page(_key: str, username: str | None) -> tuple[int, list[dict]]:
+            rows = [{"key": f"k-{n}", "name": n, "emailAddress": e} for n, e in viewers if not username or n.startswith(username)]
+            return 200, rows[:100]
+        return page
+
+    async def test_no_username_to_split_on_is_unread(self) -> None:
+        c = _connector()
+        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+        assert await c._issue_viewers("P-1", []) == (200, None)
+
+    async def test_a_reindex_with_a_full_page_and_no_known_username_closes_the_issue(self) -> None:
+        c = _connector()
+        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+        c._dc_name_to_source_id = {}  # a reindex: no user list read in this process
+        record = _ticket()
+        grants = await c._viewer_grants(record, "P-1", "P", {"k-u120": _user("k-u120", "u120@x.com")})
+        assert grants == [] and record.access_rule == AccessRule.RESTRICTED
+
+    async def test_a_full_page_split_along_known_usernames_gives_the_whole_audience(self) -> None:
+        c = _connector()
+        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+        c._dc_name_to_source_id = {"u001": "k-u001", "u120": "k-u120"}
+        record = _ticket()
+        grants = await c._viewer_grants(record, "P-1", "P", {"k-u001": _user("k-u001", "u001@x.com"),
+                                                              "k-u120": _user("k-u120", "u120@x.com")})
+        assert {g.email for g in grants} == {"u001@x.com", "u120@x.com"} and record.access_rule == AccessRule.OPEN
+
+    async def test_an_account_whose_username_is_not_known_is_left_out_and_the_rest_are_granted(self) -> None:
+        """The search fallback (10.2, 10.4 to 10.7) never reads the list in full, so a linked account it did not show is
+        kept without a username. It is left out of the split: granted only if a page lists it, never closing the issue
+        to the viewers the pages did list."""
+        c = _connector()
+        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)] + [("zed", "zed@x.com")])
+        c._dc_name_to_source_id = {"u001": "k-u001", "u120": "k-u120"}
+        record = _ticket()
+        users = {k: _user(k, f"{k[2:]}@x.com") for k in ("k-u001", "k-u120", "k-u130", "k-u050", "k-zed")}
+        grants = await c._viewer_grants(record, "P-1", "P", users)
+        # u050 and u130 have no known username but a page read lists them; zed has none and no page read lists it.
+        assert {g.email for g in grants} == {"u001@x.com", "u120@x.com", "u050@x.com", "u130@x.com"}
+        assert record.access_rule == AccessRule.OPEN
+
+    async def test_a_split_page_that_is_not_a_page_of_users_makes_the_read_unread(self) -> None:
+        c = _connector()
+        good = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+
+        async def broken(key: str, username: str | None) -> tuple[int, list[dict] | None]:
+            return (200, None) if username else await good(key, username)
+        c._viewers_page = broken
+        c._dc_name_to_source_id = {"u120": "k-u120"}
+        record = _ticket()
+        users = {"k-u120": _user("k-u120", "u120@x.com"), "k-u001": _user("k-u001", "u001@x.com")}
+        assert await c._viewer_grants(record, "P-1", "P", users) == [] and record.access_rule == AccessRule.RESTRICTED
+
+        c._viewers_page = good
+        record = _ticket()
+        grants = await c._viewer_grants(record, "P-1", "P", users)
+        assert {g.email for g in grants} == {"u001@x.com", "u120@x.com"} and record.access_rule == AccessRule.OPEN
