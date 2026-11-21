@@ -17,7 +17,7 @@ from db.schema_requirements import heads
 
 
 def log(msg: str) -> None:
-    print(f"doctor: {msg}", flush=True)
+    print(f"doctor: {msg}", flush=True)  # noqa: T201 - a command-line tool; its report is its output
 
 
 def check(conn: psycopg.Connection) -> None:
