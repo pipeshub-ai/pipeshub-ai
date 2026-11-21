@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from app.capacity.budget_policy import Family
 from app.capacity.classes import BIG_CLASSES, CostClass
+from app.config import file_types
 from app.modules.parse_engine import pools as class_pools
 from app.modules.parse_engine import wiring
 from app.services.messaging.config import messaging_env
@@ -67,6 +68,7 @@ from app.services.resource_governor.memory_domain import (
     set_permit_covers,
 )
 from app.services.resource_governor.models import ParseTier, Pool
+from app.services.resource_governor.policy import SERVICE_POOL
 from app.services.resource_governor.probe import memory_domain_id
 from app.utils.error_class import log_failure
 from app.utils.loop_bridge import run_on_loop
@@ -1186,6 +1188,56 @@ def index_gates_saturated(host: ConcurrencyHost) -> bool:
     )
 
 
+def downstream_read_pause(host: ConcurrencyHost, *, scoped: bool) -> float:
+    """Seconds every read and dispatch must still wait out a downstream 429.
+
+    *scoped* is a consumer with the fair scheduler, which can pass over a record: it ignores the services only one
+    index tier calls (``SERVICE_POOL``), whose records ``held_downstream`` holds instead. A broker-order consumer
+    cannot pass over its head, so every pause stops it.
+    """
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    if coordinator is None:
+        return 0.0
+    return coordinator.pause_remaining(ignoring=SERVICE_POOL.keys() if scoped else ())
+
+
+def read_pausing_services(host: ConcurrencyHost, *, scoped: bool) -> list[str]:
+    """The services whose pause ``downstream_read_pause`` waits for, for the log line that names them."""
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    if coordinator is None:
+        return []
+    paused = coordinator.paused_services
+    return sorted(paused - SERVICE_POOL.keys() if scoped else paused)
+
+
+def held_pools(host: ConcurrencyHost) -> frozenset[Pool]:
+    """The index pools whose records wait this turn: those of a paused service that only that tier calls.
+
+    None on a stage consumer: its jobs take no index permit and never call such a service.
+    """
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    if coordinator is None or host.stage_admission is not None:
+        return frozenset()
+    return frozenset(SERVICE_POOL[name] for name in coordinator.paused_services if name in SERVICE_POOL)
+
+
+def held_downstream(host: ConcurrencyHost, message: "StreamMessage", pools: frozenset[Pool]) -> bool:
+    """Whether this record calls a service whose pause holds *pools*: Docling, by its heavy pool or its PDF route."""
+    if not pools:
+        return False
+    if index_pool(dispatch_tier(host, message)) in pools:
+        return True
+    # shortcut: the PDF route is Docling's, the one SERVICE_POOL entry; a second tier-scoped service needs its own test
+    payload = message.payload
+    mime = str(payload.get("mimeType") or "unknown")
+    extension = payload.get("extension") or "unknown"
+    code_ext = file_types.code_extension(extension, payload.get("filePath"), payload.get("recordName"))
+    dispatch = file_types.legacy_route(
+        mime, extension, code_ext=code_ext, reads_as_code_file=file_types.reads_as_source(mime, code_ext)
+    )
+    return dispatch is not None and dispatch.route is file_types.Route.PDF
+
+
 def get_gate_waiter_count(
     host: ConcurrencyHost, tier: ParseTier | None = None
 ) -> int:
@@ -2200,18 +2252,25 @@ def admission_explain(host: ConcurrencyHost) -> dict[str, Any]:
     }
     coordinator = getattr(host, "backpressure_coordinator", None)
     paused: list[str] = []
-    remaining = 0.0
+    held: list[str] = []
+    remaining = reads_held = 0.0
     if coordinator is not None:
+        # Raw: every signalled pause. `downstream` is whether reads wait (a Docling pause on a fair consumer holds
+        # only `heldPools`' records), so `downstream: false` beside a non-zero `pauseRemainingSec` is expected.
         remaining = coordinator.pause_remaining()
         paused = sorted(coordinator.paused_services)
+        held = sorted(pool.value for pool in held_pools(host))
+        probe = getattr(host, "downstream_read_pause", None)
+        reads_held = probe() if callable(probe) else remaining
     explain: dict[str, Any] = {
         "v": 2,
         "consumerId": consumer_id(host),
         "readPause": {
             "admission": _read_paused_for_admission(host),
-            "downstream": remaining > 0.0,
+            "downstream": reads_held > 0.0,
             "pauseRemainingSec": remaining,
             "pausedServices": paused,
+            "heldPools": held,
         },
         "leases": {
             pool: {"limit": limit, "waiting": lease_waiting.get(pool, 0)}

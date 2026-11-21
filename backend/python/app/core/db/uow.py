@@ -521,7 +521,12 @@ class KernelDB:
         except TimeoutError as e:
             raise PoolTimeout("no pooled connection became free in time") from e
         except OSError as e:  # connection refused and similar while opening a new connection
-            raise ConnectionLost(f"cannot connect: {e}", retry_safe=True) from e
+            lost = ConnectionLost("cannot connect", retry_safe=True)
+            error_class.mark_error(lost, hide_text=True)  # no statement exists to record it; the OS text names the host
+            raise lost from e
+        except asyncpg.PostgresError as e:  # the server refused the new connection: 28P01 names the user, 57P03, 53300
+            error_class.mark_error(e, hide_text=True)
+            raise
         waited = time.perf_counter() - t_start
         POOL_WAIT.observe(self.cfg.service, value=waited)
         if timeout_ms and statement_ms <= timeout_ms:      # the caller's budget covers the wait for a connection and the statement together

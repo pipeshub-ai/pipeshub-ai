@@ -1034,12 +1034,12 @@ def _latency_hold(state: PoolState) -> bool:
 # A reporter only one index tier calls. Docling parses PDF-route records, which classify heavy unless their extension
 # and mime disagree: narrowing the light pool for its outage takes no load off it and only queues Jira/Slack records.
 # Every other reporter is called by both tiers.
-_SERVICE_POOL: Mapping[str, Pool] = MappingProxyType({"DoclingService": Pool.INDEX_HEAVY})
+SERVICE_POOL: Mapping[str, Pool] = MappingProxyType({"DoclingService": Pool.INDEX_HEAVY})
 
 
 def _feedback_for(pool: Pool, feedback: FeedbackWindow) -> FeedbackWindow:
     """What *pool* is braked by: the window minus the services only the other tier calls."""
-    return feedback.without({name for name, owner in _SERVICE_POOL.items() if owner is not pool})
+    return feedback.without({name for name, owner in SERVICE_POOL.items() if owner is not pool})
 
 
 def _downstream_shrink_target(

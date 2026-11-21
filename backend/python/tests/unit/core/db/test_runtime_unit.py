@@ -840,3 +840,95 @@ def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
     started = time.monotonic()
     sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
     assert time.monotonic() - started < 5.0
+
+
+# ---- Opening a connection fails: no statement exists to record it, so _open stamps it text-hidden itself ------------
+
+def _refusing_pool(error: BaseException) -> object:
+    from unittest.mock import AsyncMock, MagicMock
+
+    pool = MagicMock()
+    pool.acquire = AsyncMock(side_effect=error)
+    return pool
+
+
+async def _open_with(pool: object) -> BaseException:
+    from app.core.db.config import TIMEOUT_CLASSES
+
+    with pytest.raises(BaseException) as raised:
+        async with _db()._open(pool, role="r", org_id="", request_id="q", klass=next(iter(TIMEOUT_CLASSES)), write=False):
+            pass
+    return raised.value
+
+
+def _logged(exc: BaseException) -> list:
+    import logging
+
+    from app.utils.error_class import log_failure
+
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    probe = logging.getLogger("test.runtime_unit.connect")
+    probe.addHandler(handler)
+    probe.setLevel(logging.DEBUG)
+    try:
+        log_failure(probe, "search.access_unreadable", exc)  # any handler's default line, text included unless hidden
+    finally:
+        probe.removeHandler(handler)
+    return records
+
+
+async def test_a_refused_connection_is_connection_lost_with_no_host_in_any_line() -> None:
+    from app.utils.error_class import classify_error
+    from app.utils.logger import log_record_fields
+    from tests.support.log_capture import assert_text_free
+
+    refused = OSError(111, "Connect call failed ('10.0.0.7', 5432)")
+    lost = await _open_with(_refusing_pool(refused))
+    assert isinstance(lost, ConnectionLost) and lost.retry_safe
+    assert str(lost) == "cannot connect" and lost.__cause__ is refused
+    assert classify_error(lost) == "unavailable"
+    records = _logged(lost)
+    assert "error_message" not in log_record_fields(records[0])
+    assert_text_free(records, "10.0.0.7", "5432")
+
+
+@pytest.mark.parametrize("refusal", [
+    asyncpg.exceptions.InvalidPasswordError('password authentication failed for user "pipeshub_app" at 10.0.0.7'),
+    asyncpg.exceptions.CannotConnectNowError('the database system is starting up (pipeshub_app@10.0.0.7)'),
+    asyncpg.exceptions.TooManyConnectionsError('sorry, too many clients already for "pipeshub_app" on 10.0.0.7'),
+], ids=["28P01", "57P03", "53300"])
+async def test_a_server_refusal_on_connect_is_reraised_text_hidden(refusal: asyncpg.PostgresError) -> None:
+    from app.utils.error_class import is_stamped
+    from tests.support.log_capture import assert_text_free
+
+    raised = await _open_with(_refusing_pool(refusal))
+    assert raised is refusal
+    assert not is_stamped(raised), "hidden only: no client recorded it, so check_access still writes its line"
+    assert_text_free(_logged(raised), "pipeshub_app", "10.0.0.7")
+
+
+async def test_a_refused_connection_is_retried_like_any_safe_connection_loss(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.core.db import uow as uow_mod
+    from app.core.db.config import TIMEOUT_CLASSES
+
+    monkeypatch.setattr(uow_mod.asyncio, "sleep", AsyncMock())
+    db = _db()
+    pool = _refusing_pool(OSError(111, "Connect call failed"))
+    db.uow = lambda **_: db._open(pool, role="r", org_id="", request_id="q", klass=next(iter(TIMEOUT_CLASSES)), write=False)
+
+    async def unit(_tx: object) -> None:
+        raise AssertionError("no connection was opened")
+
+    with pytest.raises(ConnectionLost):
+        await db.run(unit)
+    assert pool.acquire.await_count == uow_mod.RETRIES_MAX + 1
+
+
+async def test_a_pool_timeout_is_unchanged() -> None:
+    from app.core.db.errors import PoolTimeout
+
+    assert isinstance(await _open_with(_refusing_pool(TimeoutError())), PoolTimeout)

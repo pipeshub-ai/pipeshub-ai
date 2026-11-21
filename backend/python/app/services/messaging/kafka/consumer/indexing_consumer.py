@@ -34,6 +34,7 @@ from app.modules.indexing.record_progress import (
     new_progress,
 )
 from app.services.messaging import consumer_concurrency as concurrency
+from app.services.messaging.backpressure import BackpressureEpisode
 from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
@@ -130,9 +131,6 @@ _DWELL_SWEEP_INTERVAL_SECONDS = 30.0
 # no finish signals (a backoff coming due, a downstream pause lifting, records
 # on another partition). Also the poll timeout parallel dispatch keeps.
 _BUSY_POLL_TIMEOUT_MS = 50
-# A finish frees an index permit for one loop turn and that turn's dispatch takes it back, so a backpressure
-# episode ends only once later turns have seen it stay clear for this long: one WARNING and one INFO per episode.
-_BACKPRESSURE_CLEAR_SETTLE_SECONDS = 5.0
 # Sentinel CompositeKeyExtractor uses for an absent fairness field.
 _DEFAULT_KEY_LEVEL = "__default__"
 # A message the read phase has not parsed yet (see __parse_batch).
@@ -338,9 +336,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Shared with the ParsingClient/DoclingClient/EmbeddingServerEmbeddings
         # instances that this consumer's records flow through — see
         # app.services.messaging.backpressure. __apply_backpressure() also
-        # pauses partitions whenever any of them last saw a 429+Retry-After,
-        # instead of pulling more work a saturated downstream would just
-        # reject again.
+        # pauses partitions whenever one every record calls last saw a
+        # 429+Retry-After (a Docling one holds only Docling's records at
+        # dispatch), instead of pulling more work a saturated downstream would
+        # just reject again.
         self.backpressure_coordinator = backpressure_coordinator
         self._consumer_instance_id = uuid.uuid4().hex
         self._distributed_log_times: dict[str, float] = {}
@@ -377,8 +376,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # run one at a time: when the process dies again, the record that
         # took it down is the only suspect in flight. Used on the worker loop.
         self._suspects = asyncio.Lock()
-        self._backpressure_logged = False
-        self._backpressure_clear_since: float | None = None
+        self._backpressure_episode = BackpressureEpisode()
         # Reads are paused because no record could be admitted (not a downstream service asking for a pause).
         self._admission_paused = False
         self._partition_lock = threading.Lock()
@@ -791,6 +789,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Whether reads are paused because no record could be admitted (not a downstream pause)."""
         return self._admission_paused
 
+    def downstream_read_pause(self) -> float:
+        """Seconds every read must still wait out a downstream 429 (see ``consumer_concurrency.downstream_read_pause``)."""
+        return concurrency.downstream_read_pause(self, scoped=self._scheduler is not None)
+
     def admission_explain(self) -> dict[str, Any]:
         """Why this consumer is or is not admitting records (see consumer_concurrency)."""
         return concurrency.admission_explain(self)
@@ -849,8 +851,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.main_loop = asyncio.get_running_loop()
             self._finished = asyncio.Event()
             # An episode a previous run left open must not hide this run's first WARNING.
-            self._backpressure_logged = False
-            self._backpressure_clear_since = None
+            self._backpressure_episode.reset()
 
             if not self.consumer:
                 await self.initialize()
@@ -1065,16 +1066,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         This ensures getmany() is always called (keeping the consumer alive
         and resetting max_poll_interval_ms), while preventing new messages
-        from being returned when at capacity OR when any downstream service
-        (parsing/docling/embedding) last signalled 429+Retry-After via
-        ``backpressure_coordinator`` — pulling more work in that case would
-        just queue up behind the same saturated service.
+        from being returned when at capacity OR when a downstream service
+        every record calls (parsing/embedding) last signalled 429+Retry-After
+        via ``backpressure_coordinator`` — pulling more work in that case would
+        just queue up behind the same saturated service. With the fair
+        scheduler a Docling 429 leaves the partitions read: the dispatch phase
+        holds the records that call Docling (``downstream_read_pause``).
         """
         budget = self._dispatch_budget()
-        downstream_paused = (
-            self.backpressure_coordinator is not None
-            and self.backpressure_coordinator.is_paused()
-        )
+        downstream_paused = self.downstream_read_pause() > 0.0
 
         # Saturation matters as much as queue depth: with both index pools
         # full and nothing queued behind them, the waiter count reads zero
@@ -1099,14 +1099,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if not_paused:
                 self.consumer.pause(*not_paused)
             self._admission_paused = bool(budget.blocked or saturated or scheduler_full)
-            self._backpressure_clear_since = None
-            if not self._backpressure_logged:
+            if self._backpressure_episode.engaged():
                 if downstream_paused:
                     self.logger.warning(
                         "Downstream backpressure from %s: pausing Kafka "
                         "partition reads for %.1fs",
-                        ", ".join(sorted(self.backpressure_coordinator.paused_services)),
-                        self.backpressure_coordinator.pause_remaining(),
+                        ", ".join(concurrency.read_pausing_services(self, scoped=self._scheduler is not None)),
+                        self.downstream_read_pause(),
                     )
                 elif saturated:
                     # Distinct from the queue-depth case below: here the
@@ -1132,7 +1131,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         "admission %s; pausing Kafka partition reads",
                         budget.describe(),
                     )
-                self._backpressure_logged = True
         else:
             # A partition remains paused while one of its messages is in flight;
             # this preserves Kafka's per-partition processing/commit order.
@@ -1148,14 +1146,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if resumable:
                 self.consumer.resume(*resumable)
             self._admission_paused = False
-            if self._backpressure_logged:
-                now = time.monotonic()
-                if self._backpressure_clear_since is None:
-                    self._backpressure_clear_since = now
-                if now - self._backpressure_clear_since >= _BACKPRESSURE_CLEAR_SETTLE_SECONDS:
-                    self.logger.info("Backpressure cleared: %s", budget.describe())
-                    self._backpressure_logged = False
-                    self._backpressure_clear_since = None
+            if self._backpressure_episode.cleared(time.monotonic()):
+                self.logger.info("Backpressure cleared: %s", budget.describe())
 
     def __parallel_dispatch(self) -> bool:
         """Whether several records from one partition may run at once.
@@ -1802,13 +1794,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if retry_offset is not None and self._scheduler is None:
             self.consumer.seek(topic_partition, retry_offset)
             self._rewound_since_poll.add(topic_partition)
-        downstream_paused = (
-            self.backpressure_coordinator is not None
-            and self.backpressure_coordinator.is_paused()
-        )
         if (
             self.running
-            and not downstream_paused
+            and self.downstream_read_pause() <= 0.0
             and topic_partition not in self._lane_paused
             and not self._dispatch_budget().blocked
             and not self.__is_held(topic_partition)
@@ -2914,15 +2902,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._finished.clear()
         parallel = self.__parallel_dispatch()
         budget = self._dispatch_budget()
+        held = concurrency.held_pools(self)
 
         def can_dispatch(
             item: tuple[TopicPartition, ConsumerRecord, StreamMessage],
         ) -> bool:
             tp, message, parsed = item
-            # A tier at its ceiling is passed over, not waited on: DRR skips
-            # the leaf without charging it and moves to the entity's other
-            # tier or the next entity.
+            # A tier at its ceiling, or a record whose downstream asked for a
+            # pause, is passed over, not waited on: DRR skips the leaf without
+            # charging it and moves to the entity's other tier or the next entity.
             if not budget.allows(concurrency.dispatch_tier(self, parsed)):
+                return False
+            if concurrency.held_downstream(self, parsed, held):
                 return False
             if parallel:
                 # A busy record is not refused here: refusing the head stalls
@@ -2933,14 +2924,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         self.__reoffer_released()
         while self.running:
+            # Per record, like the budget: a 429 arriving mid-pass holds the rest of it.
             budget = self._dispatch_budget()
-            downstream_paused = (
-                self.backpressure_coordinator is not None
-                and self.backpressure_coordinator.is_paused()
-            )
+            held = concurrency.held_pools(self)
             if (
                 budget.blocked
-                or downstream_paused
+                or self.downstream_read_pause() > 0.0
                 or concurrency.index_gates_saturated(self)
             ):
                 break

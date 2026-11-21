@@ -7,6 +7,7 @@ to the ambient org; the per-record access filter sits in the agent tools (``Reco
 from __future__ import annotations
 
 import json
+import logging
 import re
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,8 @@ from app.services.graph_db.postgres.base import (
     _field,
     _j,
 )
+from app.utils import error_class
+from app.utils.logging_fields import log_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -312,7 +315,10 @@ class CodeGraphMixin(PgBase):
             with org_context.for_org(org, job="graph.sweep"):
                 yield
         except Exception as e:
-            self.logger.exception("Sweep failed for org %s", org)
+            # A per-org line, not the handling one: _raise_failed raises the first failure after the loop, and its handler
+            # logs it once (log_failure here would mark it logged and demote that line).
+            log_event(self.logger, "graph.provider.step_failed", level=logging.WARNING, op="_sweep", step="org_sweep",
+                      target_org_id=org, outcome="failure", error_class=error_class.classify_error(e), error_type=type(e).__name__)
             errors.append((org, e))
 
     @staticmethod

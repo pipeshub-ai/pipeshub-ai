@@ -175,3 +175,231 @@ describe('McpAccessPage', () => {
     expect(await screen.findByText(strings.loadError)).toBeTruthy();
   });
 });
+
+describe('McpAccessPage, with what the server tells about each tool', () => {
+  const hints = (readOnly: boolean, extra: Partial<{ destructive: boolean; openWorld: boolean }> = {}) => ({
+    readOnly, destructive: false, idempotent: readOnly, openWorld: false, ...extra,
+  });
+  const TOOLS = [
+    {
+      name: 'pipeshub_search', title: 'Semantic search', writes: false,
+      description: 'Vector / semantic search across the org.',
+      arguments: [
+        { name: 'query', type: 'string', required: true, description: 'Natural language query.' },
+        { name: 'mode', type: 'enum', required: false, values: ['fast', 'deep'] },
+      ],
+      hints: hints(true, { openWorld: true }), scopes: ['semantic:write'],
+    },
+    {
+      name: 'pipeshub_upload', title: 'Upload documents', writes: true,
+      description: 'Upload documents into a collection.',
+      arguments: [{ name: 'collectionId', type: 'string', required: true }],
+      hints: hints(false), scopes: ['kb:upload'],
+    },
+    {
+      name: 'pipeshub_create_collection', title: 'Create collection', writes: true,
+      description: 'Create an empty collection.', arguments: [], hints: hints(false), scopes: ['kb:write'],
+    },
+    {
+      name: 'pipeshub_chat', title: 'Chat with PipesHub', writes: false,
+      description: 'Ask the assistant.', arguments: [], hints: hints(false, { destructive: true }), scopes: ['conversation:chat'],
+    },
+    {
+      name: 'pipeshub_connect_source', title: 'Connect a source', writes: false,
+      description: 'Link to connect a source.', arguments: [], hints: hints(true), scopes: [],
+    },
+    {
+      name: 'pipeshub_code_read', title: 'Read code', writes: false,
+      description: 'Read indexed source code.', arguments: [{ name: 'repo', type: 'string', required: true }],
+      hints: hints(true), scopes: ['code:read'],
+    },
+    { name: 'pipeshub_future', title: 'pipeshub_future', writes: false },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(McpAccessApi.getTools).mockResolvedValue(TOOLS);
+  });
+
+  const groupLabel = (group: keyof typeof strings.tools.groups) => strings.tools.groups[group].label;
+  // Radix renders a tab's label twice (a hidden copy keeps its width), so its name is matched by its text.
+  const tab = (label: string) => screen.getAllByRole('tab').find((el) => el.textContent?.startsWith(label))!;
+  const groupSwitches = () => screen.getAllByRole('switch', { name: strings.tools.groupSwitch });
+
+  it('groups the tools, and labels what each can do to data', async () => {
+    renderPage();
+    expect(await screen.findByText(groupLabel('read'))).toBeTruthy();
+    for (const group of ['add', 'chat', 'code', 'other'] as const) expect(screen.getByText(groupLabel(group))).toBeTruthy();
+    expect(screen.queryByText(groupLabel('people')), 'a group with no tool is not shown').toBeNull();
+    expect(screen.getAllByText(strings.tools.kinds.readOnly).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(strings.tools.writes)).toHaveLength(2);
+    expect(screen.getByText(strings.tools.kinds.changes)).toBeTruthy();
+    expect(screen.getByText(strings.tools.kinds.openWorld)).toBeTruthy();
+    expect(screen.getByText(strings.status.on)).toBeTruthy();
+  });
+
+  it('shows the endpoint and how each client connects to it', async () => {
+    renderPage();
+    const endpoint = (await screen.findByLabelText(strings.connect.endpointLabel)) as HTMLInputElement;
+    expect(endpoint.value).toBe(`${window.location.origin}/mcp`);
+    expect(screen.getByText(strings.connect.clients.claude.steps)).toBeTruthy();
+    fireEvent.mouseDown(tab(strings.connect.clients.cursor.label));
+    expect(await screen.findByText(strings.connect.clients.cursor.steps)).toBeTruthy();
+    expect(screen.getByText(/"mcpServers"/).textContent).toContain(`${window.location.origin}/mcp`);
+    fireEvent.mouseDown(tab(strings.connect.clients.claudeCode.label));
+    expect(await screen.findByText(`claude mcp add --transport http pipeshub '${window.location.origin}/mcp'`)).toBeTruthy();
+    expect(screen.getByText(strings.connect.clients.claudeCode.tip)).toBeTruthy();
+  });
+
+  it('says Claude and ChatGPT need an endpoint reachable from the internet, in the panel of the chosen tab', async () => {
+    renderPage();
+    const panel = await screen.findByRole('tabpanel');
+    expect(panel.textContent).toContain(strings.connect.clients.claude.tip);
+    expect(tab(strings.connect.clients.claude.label).getAttribute('aria-controls')).toBe(panel.id);
+    fireEvent.mouseDown(tab(strings.connect.clients.chatgpt.label));
+    expect(await screen.findByText(strings.connect.clients.chatgpt.tip)).toBeTruthy();
+  });
+
+  it('does not carry "Copied" over to another client\'s configuration', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    renderPage();
+    await screen.findByLabelText(strings.connect.endpointLabel);
+    fireEvent.mouseDown(tab(strings.connect.clients.cursor.label));
+    fireEvent.click(await screen.findByRole('button', { name: strings.connect.copySnippet }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: strings.connect.copySnippet }).textContent).toContain(strings.connect.copied),
+    );
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('"mcpServers"'));
+    fireEvent.mouseDown(tab(strings.connect.clients.vscode.label));
+    await screen.findByText(strings.connect.clients.vscode.steps);
+    expect(screen.getByRole('button', { name: strings.connect.copySnippet }).textContent).not.toContain(strings.connect.copied);
+    Reflect.deleteProperty(navigator, 'clipboard');
+  });
+
+  it('opens a tool to show its scopes, when it is offered, its arguments and what the AI reads', async () => {
+    renderPage();
+    const buttons = await screen.findAllByRole('button', { name: strings.tools.showDetails });
+    fireEvent.click(buttons[0]);
+    expect(screen.getByText('semantic:write')).toBeTruthy();
+    expect(screen.getByText(strings.tools.details.scopes)).toBeTruthy();
+    expect(screen.getByText(strings.tools.availability.default)).toBeTruthy();
+    expect(screen.getByText('query')).toBeTruthy();
+    expect(screen.getByText(strings.tools.details.required)).toBeTruthy();
+    expect(screen.getByText('Natural language query.')).toBeTruthy();
+    expect(screen.getByText(strings.tools.details.oneOf)).toBeTruthy();
+    expect(screen.queryByText('Vector / semantic search across the org.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: strings.tools.details.modelText }));
+    expect(screen.getByText('Vector / semantic search across the org.')).toBeTruthy();
+  });
+
+  it('says a tool that calls nothing needs no scope, and when a write tool is offered', async () => {
+    renderPage();
+    await screen.findByText(groupLabel('add'));
+    for (const button of screen.getAllByRole('button', { name: strings.tools.showDetails })) fireEvent.click(button);
+    expect(screen.getByText(strings.tools.details.noScopes)).toBeTruthy();
+    expect(screen.getAllByText(strings.tools.availability.pipeshub_upload).length).toBeGreaterThan(0);
+    expect(screen.getByText(strings.tools.groups.code.availability)).toBeTruthy();
+    expect(screen.getAllByText(strings.tools.details.noArguments).length).toBeGreaterThan(0);
+  });
+
+  it('offers no details for a tool from a server older than this page', async () => {
+    renderPage();
+    await screen.findByText(groupLabel('other'));
+    expect(screen.getAllByRole('button', { name: strings.tools.showDetails })).toHaveLength(TOOLS.length - 1);
+    expect(screen.getByRole('switch', { name: 'pipeshub_future' })).toBeTruthy();
+  });
+
+  it('finds tools by name, argument or scope, and says when none match', async () => {
+    renderPage();
+    const search = await screen.findByLabelText(strings.tools.searchLabel);
+    fireEvent.change(search, { target: { value: 'collectionId' } });
+    expect(screen.getByRole('switch', { name: 'Upload documents' })).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'Semantic search' })).toBeNull();
+    fireEvent.change(search, { target: { value: 'code:read' } });
+    expect(screen.getByRole('switch', { name: 'Read code' })).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
+    fireEvent.change(search, { target: { value: 'nothing-like-this' } });
+    expect(screen.getByRole('status').textContent).toBe(strings.tools.noMatch);
+  });
+
+  it('finds a tool this build does not describe by the server\'s text, and a described one only by its summary', async () => {
+    vi.mocked(McpAccessApi.getTools).mockResolvedValue([
+      ...TOOLS,
+      { name: 'pipeshub_billing', title: 'pipeshub_billing', writes: false, description: 'Resolve archived invoices.', arguments: [], hints: hints(true), scopes: [] },
+    ]);
+    renderPage();
+    const search = await screen.findByLabelText(strings.tools.searchLabel);
+    fireEvent.change(search, { target: { value: 'invoices' } });
+    expect(screen.getByRole('switch', { name: 'pipeshub_billing' })).toBeTruthy();
+    fireEvent.change(search, { target: { value: 'Vector' } });
+    expect(screen.queryByRole('switch', { name: 'Semantic search' }), 'model text of a described tool').toBeNull();
+  });
+
+  it('filters to the tools that write or change data, and to the ones that are off', async () => {
+    vi.mocked(McpAccessApi.getPolicy).mockResolvedValue({ enabled: true, allowWriteTools: true, disabledTools: ['pipeshub_code_read'] });
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: strings.tools.filters.writes }));
+    expect(screen.getByRole('button', { name: strings.tools.filters.writes }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('switch', { name: 'Upload documents' })).toBeTruthy();
+    expect(screen.getByRole('switch', { name: 'Chat with PipesHub' })).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'Semantic search' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: strings.tools.filters.off }));
+    expect(screen.getByRole('switch', { name: 'Read code' })).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
+  });
+
+  it('folds a group while filtering, and opens it again on the next filter', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: strings.tools.filters.writes }));
+    const addHeader = () =>
+      screen.getAllByRole('button').find((b) => b.getAttribute('aria-controls') === 'mcp-tool-group-add');
+    fireEvent.click(addHeader());
+    expect(addHeader().getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
+    fireEvent.click(addHeader());
+    expect(screen.getByRole('switch', { name: 'Upload documents' })).toBeTruthy();
+    fireEvent.click(addHeader());
+    fireEvent.click(screen.getByRole('button', { name: strings.tools.filters.all }));
+    expect(addHeader().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('turns a whole group off and saves it', async () => {
+    renderPage();
+    await screen.findByText(groupLabel('read'));
+    // Groups in page order: read, chat, add, code, other.
+    fireEvent.click(groupSwitches()[0]);
+    expect(screen.getByRole('switch', { name: 'Semantic search' }).getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(screen.getByText('save'));
+    await waitFor(() =>
+      expect(McpAccessApi.savePolicy).toHaveBeenCalledWith({ enabled: true, allowWriteTools: true, disabledTools: ['pipeshub_search'] }),
+    );
+  });
+
+  it('leaves out of a group switch the tools another setting holds off', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('switch', { name: strings.writeTools.label }));
+    fireEvent.click(groupSwitches()[2]);
+    fireEvent.click(screen.getByText('save'));
+    await waitFor(() =>
+      expect(McpAccessApi.savePolicy).toHaveBeenCalledWith({ enabled: true, allowWriteTools: false, disabledTools: ['pipeshub_connect_source'] }),
+    );
+  });
+
+  it('says why a write tool is off while write tools are not allowed, but not under every tool while MCP is off', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('switch', { name: strings.writeTools.label }));
+    expect(screen.getAllByText(strings.tools.blocked.writesOff)).toHaveLength(2);
+    fireEvent.click(screen.getByRole('switch', { name: strings.enabled.label }));
+    expect(screen.queryByText(strings.tools.blocked.writesOff)).toBeNull();
+    expect(screen.getByRole('switch', { name: 'Semantic search' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText(strings.status.off)).toBeTruthy();
+  });
+
+  it('expands and collapses every tool at once', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: strings.tools.expandAll }));
+    expect(screen.getAllByRole('button', { name: strings.tools.hideDetails })).toHaveLength(TOOLS.length - 1);
+    fireEvent.click(screen.getByRole('button', { name: strings.tools.collapseAll }));
+    expect(screen.queryAllByRole('button', { name: strings.tools.hideDetails })).toHaveLength(0);
+  });
+});

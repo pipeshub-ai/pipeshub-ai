@@ -7,6 +7,7 @@ unusable token URL, and a local aiohttp server for the 200 answers whose text co
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import logging
 from types import SimpleNamespace
@@ -191,6 +192,9 @@ EXCHANGE_FAILURES = {
                  "internal", logging.ERROR),
     "200-bad-created-at": (lambda: _answering(lambda: web.json_response(
         {"access_token": "at-1", "token_type": "bearer", "created_at": BODY})), "internal", logging.ERROR),
+    # A ValueError that is not an OAuthStateError: still a failed sign-in.
+    "200-no-access-token": (lambda: _answering(lambda: web.json_response({"token_type": "bearer", "error_description": BODY})),
+                            "internal", logging.ERROR),
 }
 
 
@@ -219,6 +223,7 @@ async def test_an_exchange_failure_is_one_text_free_line_on_the_request(
         assert "router.py" in end.exc_text and "<message omitted>" in end.exc_text  # frames kept, text dropped
     registry.update_connector_instance.assert_awaited_once()
     assert registry.update_connector_instance.await_args.kwargs["updates"]["isAuthenticated"] is False
+    assert registry.update_connector_instance.await_args.kwargs["connector_id"] == CONNECTOR_ID
 
 
 async def test_a_refused_grant_still_gets_its_friendly_message(
@@ -293,28 +298,135 @@ def _beta_refused(_registry: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(routes, "check_beta_connector_access", AsyncMock(side_effect=HTTPException(403, "beta")))
 
 
-# Each refusal comes before the connector is bound: its id stays off the line.
+MEMBER = {"x-role": "member", "x-user": "u2"}
+
+# (arrange, headers). Each refusal comes before the connector is bound: its id stays off the line, and nothing is written.
 REFUSALS = {
-    "team-connector-member": lambda _registry, _monkeypatch: None,
-    "personal-not-creator": _personal_not_creator,
-    "beta-refused": _beta_refused,
+    "team-connector-member": (lambda _registry, _monkeypatch: None, MEMBER),
+    # The registry lets a team connector's creator update it; only the route refuses a creator who is not an admin.
+    "team-connector-creator-not-admin": (lambda _registry, _monkeypatch: None, {"x-role": "member", "x-user": "u1"}),
+    "personal-not-creator": (_personal_not_creator, MEMBER),
+    "beta-refused-member": (_beta_refused, MEMBER),
+    "beta-refused-admin": (_beta_refused, {}),
 }
 
 
 @pytest.mark.parametrize("case", list(REFUSALS))
-async def test_a_refusal_raised_inside_the_callback_is_forbidden_on_the_line(
+async def test_a_refusal_raised_inside_the_callback_is_forbidden_on_the_line_and_writes_nothing(
     client: httpx.AsyncClient, registry: MagicMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
     case: str,
 ) -> None:
-    REFUSALS[case](registry, monkeypatch)
+    arrange, headers = REFUSALS[case]
+    arrange(registry, monkeypatch)
 
-    response = await client.get(PATH, params={"code": "auth-code", "state": _state()},
-                                headers={"x-role": "member", "x-user": "u2"})
+    response = await client.get(PATH, params={"code": "auth-code", "state": _state()}, headers=headers)
 
+    assert response.status_code == 200
     assert response.json()["error"] == "server_error"
     fields = failure_line(caplog.records, EVENT, "forbidden", logging.WARNING)
     assert (fields["reason"], fields["error_type"]) == ("server_error", "HTTPException")
     assert "connector_id" not in fields and "connector_type" not in fields
+    registry.update_connector_instance.assert_not_awaited()
+
+
+async def test_a_crash_before_the_checks_writes_nothing(
+    client: httpx.AsyncClient, registry: MagicMock, caplog: pytest.LogCaptureFixture,
+) -> None:
+    registry.get_connector_instance.side_effect = RuntimeError("graph down")
+
+    body = await _callback(client, code="auth-code", state=_state())
+
+    assert (body["success"], body["error"]) == (False, "server_error")
+    fields = failure_line(caplog.records, EVENT, "internal", logging.ERROR)
+    assert "connector_id" not in fields
+    registry.update_connector_instance.assert_not_awaited()
+
+
+async def test_an_unauthenticated_caller_writes_nothing(client: httpx.AsyncClient, registry: MagicMock) -> None:
+    response = await client.get(PATH, params={"code": "auth-code", "state": _state()}, headers={"x-user": ""})
+
+    assert (response.status_code, response.json()["error"]) == (200, "server_error")
+    registry.get_connector_instance.assert_not_awaited()
+    registry.update_connector_instance.assert_not_awaited()
+
+
+SAVED = {"access_token": "at-saved", "refresh_token": "rt-saved"}
+# (oauth session, saved credentials, the user message): a callback that is not for the sign-in in progress
+NOT_THIS_SIGN_IN = {
+    "stale-tab-after-a-newer-sign-in": ({"used_codes": ["newer-code"]}, SAVED, "The authentication session has expired"),
+    "sign-in-restarted": ({"state": "newer", "used_codes": []}, SAVED, "The authentication session has expired"),
+    "used-code-replayed-without-credentials": ({"state": "orig", "used_codes": ["auth-code"]}, None, "already been used"),
+}
+
+
+@pytest.mark.parametrize("case", list(NOT_THIS_SIGN_IN))
+async def test_a_callback_for_another_sign_in_changes_nothing(
+    client: httpx.AsyncClient, store: InMemoryConfigService, registry: MagicMock, caplog: pytest.LogCaptureFixture,
+    case: str,
+) -> None:
+    oauth, credentials, message = NOT_THIS_SIGN_IN[case]
+    store.values[CONFIG_PATH]["oauth"] = oauth
+    if credentials:
+        store.values[CONFIG_PATH]["credentials"] = credentials
+    saved = copy.deepcopy(store.values)
+
+    body = await _callback(client, code="auth-code", state=_state())
+
+    assert (body["success"], body["error"]) == (False, "server_error")  # main's answer
+    assert message in body["error_message"]
+    fields = failure_line(caplog.records, EVENT, "internal", logging.ERROR)
+    registry.update_connector_instance.assert_not_awaited()
+    assert store.values == saved
+    assert (fields["reason"], fields["connector_id"], fields["error_type"]) == ("server_error", CONNECTOR_ID, "OAuthStateError")
+
+
+async def test_a_config_read_failure_after_the_checks_still_signs_the_connector_out(
+    client: httpx.AsyncClient, store: InMemoryConfigService, registry: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The caller passed the checks, so a failure from here on is this sign-in's: main's write is kept.
+    read = store.get_config
+
+    async def failing_read(key: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if key == CONFIG_PATH:
+            raise RuntimeError("store down")
+        return await read(key, *args, **kwargs)
+
+    monkeypatch.setattr(store, "get_config", failing_read)
+
+    body = await _callback(client, code="auth-code", state=_state())
+
+    assert (body["success"], body["error"]) == (False, "server_error")
+    fields = failure_line(caplog.records, EVENT, "internal", logging.ERROR)
+    assert (fields["reason"], fields["connector_id"]) == ("server_error", CONNECTOR_ID)
+    registry.update_connector_instance.assert_awaited_once()
+    assert registry.update_connector_instance.await_args.kwargs["connector_id"] == CONNECTOR_ID
+    assert registry.update_connector_instance.await_args.kwargs["updates"]["isAuthenticated"] is False
+
+
+# The code was used and what it saved no longer parses: the connector is broken, whether or not the state still matches.
+UNREADABLE_SAVED_CREDENTIALS = {
+    "state-cleared-by-the-sign-in": {"used_codes": ["auth-code"]},
+    "state-still-matches": {"state": "orig", "used_codes": ["auth-code"]},
+}
+
+
+@pytest.mark.parametrize("case", list(UNREADABLE_SAVED_CREDENTIALS))
+async def test_a_repeated_callback_whose_saved_credentials_no_longer_load_signs_the_connector_out(
+    client: httpx.AsyncClient, store: InMemoryConfigService, registry: MagicMock, caplog: pytest.LogCaptureFixture,
+    case: str,
+) -> None:
+    store.values[CONFIG_PATH]["oauth"] = UNREADABLE_SAVED_CREDENTIALS[case]
+    store.values[CONFIG_PATH]["credentials"] = {"access_token": "at-1", "created_at": BODY}
+
+    body = await _callback(client, code="auth-code", state=_state())
+
+    assert (body["success"], body["error"]) == (False, "server_error")
+    registry.update_connector_instance.assert_awaited_once()
+    assert registry.update_connector_instance.await_args.kwargs["updates"]["isAuthenticated"] is False
+    assert registry.update_connector_instance.await_args.kwargs["connector_id"] == CONNECTOR_ID
+    fields = failure_line(caplog.records, EVENT, "internal", logging.ERROR, BODY)
+    assert (fields["connector_id"], fields["error_type"]) == (CONNECTOR_ID, "ValueError")
 
 
 # (token answer, markers that must stay off the logs, has_refresh_token)
@@ -329,6 +441,12 @@ SIGN_INS = {
 }
 
 
+def _signed_in(registry: MagicMock) -> None:
+    registry.update_connector_instance.assert_awaited_once()
+    updates = registry.update_connector_instance.await_args.kwargs["updates"]
+    assert (updates["isAuthenticated"], updates["authenticatedBy"]) == (True, "u1")
+
+
 def _success_line(caplog: pytest.LogCaptureFixture) -> dict[str, object]:
     (end,) = [r for r in caplog.records if r.getMessage() == EVENT]
     assert end.levelno == logging.INFO
@@ -340,7 +458,8 @@ def _success_line(caplog: pytest.LogCaptureFixture) -> dict[str, object]:
 
 @pytest.mark.parametrize("case", list(SIGN_INS))
 async def test_a_successful_sign_in_is_one_success_line_without_the_providers_token_fields(
-    client: httpx.AsyncClient, local_endpoint: Any, caplog: pytest.LogCaptureFixture, case: str,  # noqa: ANN401
+    client: httpx.AsyncClient, registry: MagicMock, local_endpoint: Any, caplog: pytest.LogCaptureFixture,  # noqa: ANN401
+    case: str,
 ) -> None:
     answer, markers, has_refresh_token = SIGN_INS[case]
     await local_endpoint(lambda: web.json_response(answer))
@@ -349,6 +468,7 @@ async def test_a_successful_sign_in_is_one_success_line_without_the_providers_to
 
     assert body["success"] is True
     assert _success_line(caplog)["has_refresh_token"] is has_refresh_token
+    _signed_in(registry)
     # The ids are bound for the route's own lines too, not only put on the request line.
     (redirect,) = [r for r in caplog.records if r.getMessage().startswith("Callback redirect URI")]
     assert log_record_fields(redirect)["connector_id"] == CONNECTOR_ID
@@ -356,7 +476,7 @@ async def test_a_successful_sign_in_is_one_success_line_without_the_providers_to
 
 
 async def test_a_repeated_callback_reuses_the_saved_token_without_logging_its_fields(
-    client: httpx.AsyncClient, store: InMemoryConfigService, caplog: pytest.LogCaptureFixture,
+    client: httpx.AsyncClient, store: InMemoryConfigService, registry: MagicMock, caplog: pytest.LogCaptureFixture,
 ) -> None:
     # A browser refresh: the code was used and the saved credentials are answered again, with no exchange.
     store.values[CONFIG_PATH]["oauth"]["used_codes"] = ["auth-code"]
@@ -367,6 +487,7 @@ async def test_a_repeated_callback_reuses_the_saved_token_without_logging_its_fi
 
     assert body["success"] is True
     assert _success_line(caplog)["has_refresh_token"] is True
+    _signed_in(registry)
     assert_not_logged(caplog.records, UID, ACCOUNT, TEAM, SCOPE)
 
 

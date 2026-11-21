@@ -36,6 +36,7 @@ from app.services.graph_db.arango.arango_http_provider import (
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.team_grant_role import aql_team_grant_role
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.log_capture import failure_line
 
 
 def _grant_asked(user_key, org_id, *, node_ids=(), **_kwargs):
@@ -1334,6 +1335,7 @@ class TestEnsureSchema:
         """Every write to an app document is checked against the live schema; a sync whose start is refused does not run."""
         from app.config.constants.arangodb import CollectionNames
 
+        connected_provider.http_client.apps_guard = None  # a client with no apps-schema guard writes the schema itself
         connected_provider.http_client.has_collection = AsyncMock(return_value=True)
         connected_provider.http_client.has_graph = AsyncMock(return_value=True)
         connected_provider.http_client.update_collection_schema = AsyncMock(
@@ -1347,6 +1349,7 @@ class TestEnsureSchema:
     async def test_an_apps_collection_not_created_fails_the_ensure(self, connected_provider) -> None:
         from app.config.constants.arangodb import CollectionNames
 
+        connected_provider.http_client.apps_guard = None  # a client with no apps-schema guard writes the schema itself
         connected_provider.http_client.has_collection = AsyncMock(return_value=False)
         connected_provider.http_client.create_collection = AsyncMock(
             side_effect=lambda name, **_: name != CollectionNames.APPS.value
@@ -1362,6 +1365,7 @@ class TestEnsureSchema:
         the schema is applied as to an existing collection, and the ensure fails while it cannot be."""
         from app.config.constants.arangodb import CollectionNames
 
+        connected_provider.http_client.apps_guard = None  # a client with no apps-schema guard writes the schema itself
         connected_provider.http_client.has_collection = AsyncMock(return_value=False)
         connected_provider.http_client.create_collection = AsyncMock(return_value=True)      # the 409 answer
         connected_provider.http_client.has_graph = AsyncMock(return_value=True)
@@ -10126,24 +10130,6 @@ class TestValidateFolderExistsInKb:
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# list_kb_records
-# ---------------------------------------------------------------------------
-
-
-class TestListKbRecords:
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_kb_permission",
-            new_callable=AsyncMock, return_value=None
-        ):
-            records, total, filters = await connected_provider.list_kb_records(
-                "kb1", "u1", "org1", 0, 10, None, None, None, None, None, None, None, "recordName", "asc"
-            )
-            assert records == []
-            assert total == 0
-
 class TestCheckRecordAccessWithDetails:
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
@@ -11827,86 +11813,6 @@ class TestListKbPermissionsExtended:
 
 
 # ---------------------------------------------------------------------------
-# list_kb_records
-# ---------------------------------------------------------------------------
-
-
-class TestListKbRecordsExtended:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[
-                [{"records": [{"id": "r1", "recordName": "Rec1"}], "total": 1}],
-                [[{"id": "f1", "name": "Folder"}]],
-            ]
-        )
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert len(records) == 1
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value=None)
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert records == []
-        assert total == 0
-
-    @pytest.mark.asyncio
-    async def test_with_folder_filter(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[{"records": [], "total": 0}], [[]]]
-        )
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc", folder_id="f1"
-        )
-        assert records == []
-
-    @pytest.mark.asyncio
-    async def test_with_all_filters(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[{"records": [], "total": 0}], [[]]]
-        )
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search="test", record_types=["FILE"], origins=["UPLOAD"],
-            connectors=["KNOWLEDGE_BASE"], indexing_status=["COMPLETED"],
-            date_from=1000, date_to=9999,
-            sort_by="recordName", sort_order="desc"
-        )
-        assert records == []
-
-    @pytest.mark.asyncio
-    async def test_a_failed_read_raises(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(side_effect=Exception("fail"))
-        with pytest.raises(Exception, match="fail"):
-            await connected_provider.list_kb_records(
-                "kb1", "u1", "org1", skip=0, limit=10,
-                search=None, record_types=None, origins=None,
-                connectors=None, indexing_status=None,
-                date_from=None, date_to=None,
-                sort_by="recordName", sort_order="asc"
-            )
-
-
-# ---------------------------------------------------------------------------
 # _validation_error
 # ---------------------------------------------------------------------------
 
@@ -12858,10 +12764,10 @@ class TestDeleteTeamMemberEdges:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_write_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.delete_team_member_edges("t1", ["u1"])
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.delete_team_member_edges("t1", ["u1"])
 
 
 # ---------------------------------------------------------------------------
@@ -12881,12 +12787,12 @@ class TestBatchUpdateTeamMemberRoles:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_write_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.batch_update_team_member_roles(
-            "t1", [{"userId": "u1", "role": "WRITER"}], 1000
-        )
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.batch_update_team_member_roles(
+                "t1", [{"userId": "u1", "role": "WRITER"}], 1000
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -16661,13 +16567,15 @@ class TestUpdateIndexingStatusForRecordIds:
         connected_provider.logger.error.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_failed_statement_is_logged_not_raised(self, connected_provider):
+    async def test_a_failed_statement_is_logged_not_raised(self, connected_provider, caplog):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("Query failed"))
-        connected_provider.logger = MagicMock()
+        connected_provider.logger = logging.getLogger("tests.arango_provider.update_indexing_status")
 
-        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
+        with caplog.at_level(logging.DEBUG, logger=connected_provider.logger.name):
+            await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
 
-        connected_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Query failed")
+        assert fields["op"] == "update_indexing_status_for_record_ids"
 
 class TestEnsureEdgeDefinitionsUpToDate:
     """Tests for _ensure_edge_definitions_up_to_date method."""
@@ -16938,17 +16846,18 @@ class TestEnsureEdgeDefinitionsUpToDate:
         assert "Failed to update edge definition" in warning_msg
 
     @pytest.mark.asyncio
-    async def test_exception_during_update_logs_warning(self, connected_provider):
-        """Should log warning and continue when exception occurs."""
+    async def test_exception_during_update_is_logged_and_skipped(self, connected_provider, caplog):
+        """A failed migration is logged once, without its text, and startup goes on."""
         connected_provider.http_client.get_graph = AsyncMock(
             side_effect=Exception("Connection error")
         )
-        
-        await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
-        
-        connected_provider.logger.warning.assert_called_once()
-        warning_msg = connected_provider.logger.warning.call_args[0][0]
-        assert "Edge definition migration failed" in warning_msg
+        connected_provider.logger = logging.getLogger("tests.arango_provider.edge_definitions")
+
+        with caplog.at_level(logging.DEBUG, logger=connected_provider.logger.name):
+            await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
+
+        fields = failure_line(caplog.records, "graph.provider.step_failed", "internal", logging.ERROR, "Connection error")
+        assert (fields["op"], fields["step"]) == ("_ensure_edge_definitions_up_to_date", "edge_definition_migration")
 
     @pytest.mark.asyncio
     async def test_multiple_edge_definitions_processed(self, connected_provider):
@@ -17483,8 +17392,9 @@ class TestExecuteLocalFsRecordDeletion:
         connected_provider._delete_main_record.assert_called_once_with("rec1", "txn_123")
 
     @pytest.mark.asyncio
-    async def test_event_payload_creation_failure_handled(self, connected_provider):
+    async def test_event_payload_creation_failure_handled(self, connected_provider, caplog):
         """Should handle event payload creation failure gracefully."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.local_fs_deletion")
         connected_provider.http_client.get_document = AsyncMock(return_value=None)
         connected_provider._delete_local_fs_edges = AsyncMock()
         connected_provider._delete_main_record = AsyncMock()
@@ -17492,14 +17402,16 @@ class TestExecuteLocalFsRecordDeletion:
             side_effect=Exception("Event creation failed")
         )
         
-        result = await connected_provider._execute_local_fs_record_deletion(
-            record_id="rec1",
-            record={"_key": "rec1"}
-        )
-        
+        with caplog.at_level(logging.DEBUG, logger=connected_provider.logger.name):
+            result = await connected_provider._execute_local_fs_record_deletion(
+                record_id="rec1",
+                record={"_key": "rec1"}
+            )
+
         assert result["success"] is True
         assert result["eventData"] is None
-        connected_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.step_failed", "internal", logging.ERROR, "Event creation failed")
+        assert (fields["op"], fields["step"]) == ("_execute_local_fs_record_deletion", "deletion_event_payload")
 
     @pytest.mark.asyncio
     async def test_none_event_payload_handled(self, connected_provider):

@@ -16,14 +16,14 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.web.address_guard import guarded_session_kwargs
 from app.utils.logging_fields import log_event, log_once
-from app.utils.oauth_errors import is_permanent_grant_rejection, oauth_error_code
+from app.utils.oauth_errors import (
+    MAX_TOKEN_LIFETIME_S,
+    is_permanent_grant_rejection,
+    oauth_error_code,
+)
 from app.utils.url_fetcher import private_addresses_blocked
 
 logger = logging.getLogger(__name__)
-
-# created_at + timedelta(seconds=v) must stay inside datetime's range (10**12 s already overflows),
-# and no provider issues a token for a century.
-_MAX_LIFETIME_S = 100 * 365 * 24 * 3600
 
 
 class GrantType(Enum):
@@ -62,6 +62,11 @@ class TokenResponseError(ValueError):
 def _require_access_token(data: object) -> None:
     if not isinstance(data, dict) or "access_token" not in data:
         raise TokenResponseError("OAuth token response missing required 'access_token' field. ")
+
+
+class OAuthStateError(ValueError):
+    """The callback is not for the sign-in in progress: its state is stale, replayed or forged, or its code was used.
+    Nothing was exchanged or saved."""
 
 
 class MalformedTokenError(ValueError):
@@ -103,7 +108,7 @@ def _seconds(field_name: str, value: object) -> int | float:
         except ValueError:
             pass
     # NaN compares false and inf is past the bound, so both fail here too.
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) <= _MAX_LIFETIME_S:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) <= MAX_TOKEN_LIFETIME_S:
         return value
     raise MalformedTokenError(field_name)
 
@@ -595,11 +600,12 @@ class OAuthProvider:
                     self.token = token
                     return token
                 except (TypeError, ValueError, KeyError):
-                    # If stored creds are malformed, fall back to error
+                    # Not an OAuthStateError: this code was used and the saved credentials no longer load, so
+                    # the connector is marked signed out.
                     raise ValueError("Invalid or expired state")
 
-            # State mismatch and not a duplicate callback -> genuine error
-            raise ValueError("Invalid or expired state")
+            # State mismatch and not a duplicate callback
+            raise OAuthStateError("Invalid or expired state")
 
         # Check if this specific code has already been used (prevent duplicate code usage)
         used_codes = oauth_data.get("used_codes", [])
@@ -613,9 +619,10 @@ class OAuthProvider:
                     self.token = token
                     return token
                 except (TypeError, ValueError, KeyError):
-                    pass
-            # Code was used but no valid credentials - treat as error
-            raise ValueError("Authorization code has already been used")
+                    # Not an OAuthStateError: the saved credentials no longer load, so the connector is marked signed out.
+                    raise ValueError("Authorization code has already been used") from None
+            # Code was used and nothing was saved
+            raise OAuthStateError("Authorization code has already been used")
         try:
             token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
             self.token = token

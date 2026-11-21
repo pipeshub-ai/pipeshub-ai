@@ -293,6 +293,7 @@ from app.services.graph_db.vector_membership_queries import (
     can_use_membership_cleanup,
 )
 from app.telemetry.backend import METRICS_BACKEND
+from app.utils import error_class
 from app.utils.env_config import env_int, env_seconds
 from app.utils.env_utils import env_bool
 from app.utils.logging_fields import log_event
@@ -1800,7 +1801,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self.client.execute_query(statement)
                 applied += 1
             except Exception as e:
-                self.logger.log(failure_level, "%s: %s failed: %s", what, statement, e)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=failure_level,
+                                        op="ensure_schema", step=what, statement=statement)
         self.logger.info("✅ %d of %d %s in place", applied, len(statements), what)
 
     async def _supports_existence_constraints(self) -> bool:
@@ -1835,7 +1837,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self._remove_duplicate_sync_points()
                 sync_point_duplicates_remain = await self._count_duplicate_sync_point_keys() > 0
             except Exception as e:
-                self.logger.warning(f"Sync point de-duplication failed: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="ensure_schema", step="sync_point_dedup")
             business_key_constraints = self._generate_business_key_constraints()
             if sync_point_duplicates_remain:
                 self.logger.warning(
@@ -1869,17 +1872,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             try:
                 await self.heal_taxonomy_alias_nodes()
-            except Exception:
+            except Exception as e:
                 # Not fatal: affected aliases keep missing tier 0 until the
                 # next start retries, as they did before the heal existed.
-                self.logger.warning("Taxonomy alias heal failed; will retry at next start", exc_info=True)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="ensure_schema", step="taxonomy_alias_heal")
 
             # Seed departments collection with predefined department types
             try:
                 await self._initialize_departments()
             except Exception as e:
-                self.logger.error(f"❌ Error initializing departments: {str(e)}")
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="ensure_schema", step="departments_seed")
 
             self.logger.info("✅ Neo4j schema ensured")
             return True
@@ -1901,7 +1905,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             removed = await self._remove_duplicate_stage_states(label)
             if not removed:
                 raise
-            self.logger.warning("Removed %d duplicate %s nodes to create their unique constraint", removed, label)
+            log_event(self.logger, "graph.provider.duplicates_removed", level=logging.WARNING,
+                      op="ensure_pipeline_schema", removed=removed)
             await self.client.execute_query(constraint)
         for index in _STAGE_STATE_INDEXES:
             await self.client.execute_query(index)
@@ -3876,9 +3881,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             for row in rows
                         ]
                 except Exception as e:
-                    self.logger.debug(
-                        f"Full-text node search unavailable, using scan: {str(e)}"
-                    )
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.DEBUG,
+                                            op="search_nodes_by_field_terms", step="fulltext_search")
 
             conditions = [
                 f"n.{field_name} IS NOT NULL",
@@ -6513,9 +6517,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             user = await memo(("user_by_user_id", user_id), lambda: self._get_user_by_user_id(user_id))
         except Exception as e:
-            self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            error_class.log_failure(self.logger, "graph.get_user_by_user_id.failed", e, include_error_text=False)
             return None
         return copy.deepcopy(user)
 
@@ -7441,9 +7445,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 message = str(apoc_error).lower()
                 if "apoc" not in message and "unknown procedure" not in message:
                     raise
-                self.logger.warning(
-                    f"APOC unavailable ({apoc_error}); recreating {total} edge(s) in batches"
-                )
+                # An expected fallback (APOC not installed), whatever class the driver error reads as.
+                error_class.log_failure(self.logger, "graph.provider.step_failed", apoc_error, include_error_text=False, level=logging.WARNING,
+                                        op="migrate_legacy_relation_edge", step="apoc_rename")
 
             if apoc_ran:
                 # APOC returns normally on partial failure, so committedOperations
@@ -7633,7 +7637,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     await self.rollback_transaction(txn_id)
                 except Exception as rb_err:
-                    self.logger.warning(f"Rollback failed for KB {kb_key}: {rb_err}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", rb_err, include_error_text=False,
+                                            op="migrate_legacy_kb_to_app", step="rollback", kb_id=kb_key)
             return {"success": False, "reason": str(e)}
 
     async def count_legacy_kb_record_groups(self, org_id: str) -> int:
@@ -10607,9 +10612,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             user.email, user.id, org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
-                        self.logger.error(
-                            "Person adoption failed for user %s in org %s: %s", user.id, org_id, migrate_err
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", migrate_err, include_error_text=False,
+                                                op="batch_upsert_app_users", step="person_adoption")
 
                     # A guest is saved so grants to them resolve, but org membership
                     # would hand them every org-wide grant.
@@ -10756,7 +10760,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     except SchemaValidationError:
                         raise
                     except Exception as e:
-                        self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                                op="ensure_all_team_with_users", step="team_created_by")
 
                 permission_edge = {
                     "from_id": user_key,
@@ -10845,7 +10850,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 except SchemaValidationError:
                     raise
                 except Exception as e:
-                    self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="add_user_to_all_team", step="team_created_by")
 
             # 5. Create PERMISSION edge
             permission_edge = {
@@ -11149,7 +11155,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     await self.kh_scope_mark_changed(connector_id)
                 except Exception as e:
-                    self.logger.warning(f"kh scope: could not mark {connector_id} changed after a delete: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_records_and_relations", step="kh_scope_mark_changed",
+                                            connector_id=connector_id)
 
             # Also delete from type-specific collections, including a type node
             # whose IS_OF_TYPE edge is already gone.
@@ -11165,7 +11173,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         txn_id=transaction
                     )
                 except Exception as e:
-                    self.logger.debug(f"Could not delete node from {label} for record {record_key}: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.DEBUG,
+                                            op="delete_records_and_relations", step="type_node_delete", record_id=record_key)
 
             return bool(rows and rows[0].get("deleted"))
 
@@ -11350,7 +11359,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 file_record = await self.get_document(record_id, CollectionNames.FILES.value, transaction)
             except Exception as e:
-                self.logger.debug(f"File record not found for record {record_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.DEBUG,
+                                        op="delete_record", step="file_record_read", record_id=record_id)
 
             # A mail's attachments go with it, as on ArangoDB: left behind, they stay
             # searchable with nothing left to clean up their vectors.
@@ -11382,7 +11392,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "payloads": [payload, *attachment_payloads],
                     }
             except Exception as e:
-                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="delete_record", step="deletion_event_payload")
                 event_data = None
 
             await self._delete_records_with_their_types([*attachment_ids, record_id], transaction)
@@ -11391,7 +11402,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     await self.kh_scope_mark_changed(record["connectorId"])
                 except Exception as e:
-                    self.logger.warning(f"kh scope: could not mark {record['connectorId']} changed after a delete: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_record", step="kh_scope_mark_changed",
+                                            connector_id=record["connectorId"])
 
             return {
                 "success": True,
@@ -12012,7 +12025,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to delete batch {batch_num}/{total_batches} from {collection}: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_delete_nodes_by_keys", step="batch_delete", collection=collection)
                 failed_batches += 1
 
         if failed_batches == 0:
@@ -12100,7 +12114,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 removed += found
             except Exception as e:
                 left = None
-                self.logger.warning(f"Sweep of what indexing wrote during delete of {connector_id} failed: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_sweep_writes_during_delete", step="late_write_sweep", connector_id=connector_id)
             if left == 0:
                 break
             if attempt + 1 < CASCADE_ATTEMPTS:
@@ -12310,7 +12325,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 await self.kh_scope_forget(connector_id)
             except Exception as e:
-                self.logger.warning(f"kh scope: could not drop the scopes of deleted connector {connector_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="delete_connector_instance", step="kh_scope_drop", connector_id=connector_id)
         return result
 
     async def _delete_connector_instance(
@@ -12542,27 +12558,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                     and row["virtualRecordId"]
                                 )
                     except Exception as late_err:
-                        self.logger.warning(
-                            f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", late_err, include_error_text=False,
+                                                op="_delete_connector_instance", step="late_write_removal",
+                                                connector_id=connector_id)
                     leftover = await self._sweep_writes_during_delete(connector_id)
                     try:
                         orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                     except Exception as sweep_err:
-                        self.logger.warning(
-                            f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
-                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", sweep_err, include_error_text=False,
+                                                op="_delete_connector_instance", step="orphan_type_sweep",
+                                                connector_id=connector_id)
                     try:
                         if taxonomy_collect_success:
                             orphan_labels = await self._delete_unlinked_taxonomy_nodes(
                                 org_id, taxonomy_targets
                             )
                     except Exception as sweep_err:
-                        self.logger.warning(
-                            f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
-                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", sweep_err, include_error_text=False,
+                                                op="_delete_connector_instance", step="orphan_taxonomy_sweep",
+                                                connector_id=connector_id)
 
                 self.logger.debug(
                     f"✅ Connector instance {connector_id} deleted successfully. "
@@ -15417,7 +15431,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             raise
                         # Our transaction is committed: rolling it back is impossible, and
                         # the deleted records' events must still go out.
-                        self.logger.error(f"❌ Records deleted but their block cleanup failed: {block_error}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", block_error, include_error_text=False,
+                                                op="delete_records_recursive", step="block_cleanup")
 
                 event_payloads = []
                 try:
@@ -15434,7 +15449,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_records_recursive", step="deletion_event_payload")
                 event_data = {
                     "eventType": "deleteRecord",
                     "topic": "record-events",
@@ -16141,7 +16157,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_single_record", step="deletion_event_payload")
                 event_data = {
                     "eventType": "deleteRecord",
                     "topic": "record-events",
@@ -16714,7 +16731,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except SchemaValidationError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Failed to update records to {status}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
 
     async def reset_indexing_status_for_connector(
         self,
@@ -17469,7 +17486,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             )
                         }
                     except Exception as decode_error:
-                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", decode_error, include_error_text=False,
+                                                op="_create_reindex_event_payload", step="decode_file_content")
 
             # Standard payload for non-MAIL records
             return {
@@ -17967,244 +17985,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
             row = results[0]
             return row.get("result", row)
-        except Exception:
-            raise
-
-    async def list_kb_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: str | None = None,
-        record_types: list[str] | None = None,
-        origins: list[str] | None = None,
-        connectors: list[str] | None = None,
-        indexing_status: list[str] | None = None,
-        date_from: int | None = None,
-        date_to: int | None = None,
-        sort_by: str = "createdAtTimestamp",
-        sort_order: str = "desc",
-        folder_id: str | None = None,
-        transaction: str | None = None
-    ) -> tuple[list[dict], int, dict]:
-        """
-        List all records in a specific KB through folder structure for better folder-based filtering.
-        """
-        try:
-            self.logger.debug(f"🔍 Listing records for KB {kb_id} (folder-based)")
-
-            # Check user permissions first (includes team-based access)
-            user_permission = await self.get_user_kb_permission(kb_id, user_id, transaction)
-            if not user_permission:
-                self.logger.warning(f"⚠️ User {user_id} has no access to KB {kb_id} (neither direct nor via teams)")
-                return [], 0, {
-                    "recordTypes": [],
-                    "origins": [],
-                    "connectors": [],
-                    "indexingStatus": [],
-                    "permissions": [],
-                    "folders": []
-                }
-
-            # Build filter conditions
-            record_conditions = []
-            params = {
-                "folder_mime_types": FOLDER_MIME_TYPES,
-                "kb_id": kb_id,
-                "org_id": org_id,
-                "user_permission": user_permission,
-                # A list slice reads a negative bound from the end; SKIP/LIMIT rejected it.
-                "skip": max(skip, 0),
-                "limit": max(limit, 0),
-            }
-
-            if search:
-                record_conditions.append("(toLower(record.recordName) CONTAINS toLower($search) OR toLower(record.externalRecordId) CONTAINS toLower($search))")
-                params["search"] = search.lower()
-            if record_types:
-                record_conditions.append("record.recordType IN $record_types")
-                params["record_types"] = record_types
-            if origins:
-                record_conditions.append("record.origin IN $origins")
-                params["origins"] = origins
-            if connectors:
-                record_conditions.append("record.connectorName IN $connectors")
-                params["connectors"] = connectors
-            if indexing_status:
-                record_conditions.append("record.indexingStatus IN $indexing_status")
-                params["indexing_status"] = indexing_status
-            if date_from:
-                record_conditions.append("record.createdAtTimestamp >= $date_from")
-                params["date_from"] = date_from
-            if date_to:
-                record_conditions.append("record.createdAtTimestamp <= $date_to")
-                params["date_to"] = date_to
-
-            record_filter = " AND " + " AND ".join(record_conditions) if record_conditions else ""
-
-            folder_match = ""
-            if folder_id:
-                folder_match = " AND folder.id = $folder_id"
-                params["folder_id"] = folder_id
-
-            # A folder filter lists that folder's children only, so the KB-root arm runs without one.
-            root_arm = "" if folder_id else f"""
-            UNION
-
-            // Part 2: Records at KB root (no parent folder)
-            MATCH (kb:App {{id: $kb_id, type: "KB"}})
-            MATCH (record:Record)-[:BELONGS_TO]->(kb)
-            WHERE (record.isDeleted IS NULL OR record.isDeleted <> true)
-            AND record.orgId = $org_id
-            AND NOT record.mimeType IN $folder_mime_types
-            AND NOT EXISTS {{
-                MATCH (parentFolder:Record)-[:NODE_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record)
-            }}
-            {record_filter}
-            RETURN record, null AS folder
-            """
-            records_union = f"""
-            // Part 1: Records in folders
-            MATCH (kb:App {{id: $kb_id, type: "KB"}})
-            MATCH (folder:Record)-[:BELONGS_TO]->(kb)
-            WHERE folder.mimeType IN $folder_mime_types{folder_match}
-            MATCH (folder)-[rel:NODE_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
-            WHERE (record.isDeleted IS NULL OR record.isDeleted <> true)
-            AND record.orgId = $org_id
-            AND NOT record.mimeType IN $folder_mime_types
-            {record_filter}
-            RETURN record, folder
-
-            {root_arm}
-            """
-            # Sort and page bare records, then look up files and build maps for
-            # the page only: projecting every record before ORDER BY, and again
-            # in a separate count query, cost ~5 s a page on a 100k-record KB.
-            main_query = f"""
-            CALL {{
-            {records_union}
-            }}
-            WITH record, folder
-            // Unique tie-breaker: many records share a timestamp (one per upload
-            // batch), and paging over ties repeats some rows and drops others.
-            ORDER BY record.{sort_by} {sort_order.upper()}, record.id
-            WITH collect({{record: record, folder: folder}}) AS rows
-            WITH size(rows) AS total, rows[$skip..($skip + $limit)] AS page
-            CALL {{
-                WITH page
-                UNWIND range(0, size(page) - 1) AS position
-                WITH position, page[position].record AS record, page[position].folder AS folder
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
-                WITH position, record, folder, head(collect(file)) AS file
-                ORDER BY position
-                RETURN collect({{
-                    id: record.id,
-                    externalRecordId: record.externalRecordId,
-                    externalRevisionId: record.externalRevisionId,
-                    recordName: record.recordName,
-                    recordType: record.recordType,
-                    origin: record.origin,
-                    connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
-                    indexingStatus: record.indexingStatus,
-                    createdAtTimestamp: record.createdAtTimestamp,
-                    updatedAtTimestamp: record.updatedAtTimestamp,
-                    sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
-                    sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
-                    orgId: record.orgId,
-                    version: record.version,
-                    isDeleted: record.isDeleted,
-                    deletedByUserId: record.deletedByUserId,
-                    isLatestVersion: COALESCE(record.isLatestVersion, true),
-                    webUrl: record.webUrl,
-                    fileRecord: CASE WHEN file IS NOT NULL THEN {{
-                        id: file.id,
-                        name: file.name,
-                        extension: file.extension,
-                        mimeType: file.mimeType,
-                        sizeInBytes: file.sizeInBytes,
-                        isFile: file.isFile,
-                        webUrl: file.webUrl
-                    }} ELSE null END,
-                    permission: {{role: $user_permission, type: "USER"}},
-                    kb_id: $kb_id,
-                    folder: CASE WHEN folder IS NOT NULL THEN {{id: folder.id, name: folder.recordName}} ELSE null END
-                }}) AS records
-            }}
-            RETURN total, records
-            """
-
-            results = await self.client.execute_query(main_query, parameters=params, txn_id=transaction)
-            records = results[0]["records"] if results else []
-            total_count = results[0]["total"] if results else 0
-
-            # Filters query - get available filter values (includes root-level records)
-            filters_params = {
-                "folder_mime_types": FOLDER_MIME_TYPES,
-                "kb_id": kb_id,
-                "org_id": org_id,
-                "user_permission": user_permission
-            }
-            filters_query = """
-            MATCH (kb:App {id: $kb_id, type: "KB"})
-
-            // Get records from folders
-            OPTIONAL MATCH (folder:Record)-[:BELONGS_TO]->(kb)
-            WHERE folder.mimeType IN $folder_mime_types
-            OPTIONAL MATCH (folder)-[:NODE_RELATION {relationshipType: "PARENT_CHILD"}]->(folderRecord:Record)
-            WHERE (folderRecord.isDeleted IS NULL OR folderRecord.isDeleted <> true)
-            AND folderRecord.orgId = $org_id
-            AND NOT folderRecord.mimeType IN $folder_mime_types
-            // Aggregate before matching root records: in one pipeline the planner
-            // re-expands the KB's BELONGS_TO edges once per root record.
-            WITH kb, collect(DISTINCT folderRecord) AS folderRecords, collect(DISTINCT folder) AS allFolders
-
-            // Get records at KB root
-            OPTIONAL MATCH (rootRecord:Record)-[:BELONGS_TO]->(kb)
-            WHERE (rootRecord.isDeleted IS NULL OR rootRecord.isDeleted <> true)
-            AND rootRecord.orgId = $org_id
-            AND NOT rootRecord.mimeType IN $folder_mime_types
-            AND NOT EXISTS {
-                MATCH (pf:Record)-[:NODE_RELATION {relationshipType: "PARENT_CHILD"}]->(rootRecord)
-            }
-
-            WITH folderRecords, allFolders, collect(DISTINCT rootRecord) AS rootRecords
-            UNWIND folderRecords + rootRecords AS record
-            WITH DISTINCT record, allFolders WHERE record IS NOT NULL
-
-            WITH collect(DISTINCT record.recordType) AS recordTypes,
-                 collect(DISTINCT record.origin) AS origins,
-                 collect(DISTINCT record.connectorName) AS connectors,
-                 collect(DISTINCT record.indexingStatus) AS indexingStatus,
-                 allFolders
-
-            RETURN {
-                recordTypes: [r IN recordTypes WHERE r IS NOT NULL],
-                origins: [o IN origins WHERE o IS NOT NULL],
-                connectors: [c IN connectors WHERE c IS NOT NULL],
-                indexingStatus: [i IN indexingStatus WHERE i IS NOT NULL],
-                permissions: [$user_permission],
-                folders: [f IN allFolders WHERE f IS NOT NULL AND f.id IS NOT NULL | {id: f.id, name: f.recordName}]
-            } AS filters
-            """
-
-            filters_results = await self.client.execute_query(filters_query, parameters=filters_params, txn_id=transaction)
-            available_filters = filters_results[0]["filters"] if filters_results else {}
-
-            # Ensure filter structure
-            if not available_filters:
-                available_filters = {}
-            available_filters.setdefault("recordTypes", [])
-            available_filters.setdefault("origins", [])
-            available_filters.setdefault("connectors", [])
-            available_filters.setdefault("indexingStatus", [])
-            available_filters.setdefault("permissions", [user_permission] if user_permission else [])
-            available_filters.setdefault("folders", [])
-
-            self.logger.debug(f"✅ Listed {len(records)} KB records out of {total_count} total")
-            return records, total_count, available_filters
-
         except Exception:
             raise
 
@@ -23291,7 +23071,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     reason = fb.reason
                 except Exception as e:
                     reason = "an error, logged above"
-                    self.logger.warning(f"kh scope listing unavailable for {app_id}, using the full query: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="get_knowledge_hub_connector_page_v3", step="kh_scope_listing",
+                                            connector_id=app_id)
             if scope_info is None:
                 self.logger.info("kh scope fallback app=%s sort=%s/%s: %s", app_id, sort_field, sort_dir, reason)
             else:
@@ -23318,7 +23100,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     raise
                 # The enrichment is the full query's own tail; should it fail on the scope page, answer from the
                 # full query rather than failing the request.
-                self.logger.warning(f"kh scope page enrichment failed for {app_id}, using the full query: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="get_knowledge_hub_connector_page_v3", step="kh_scope_page_enrichment",
+                                        connector_id=app_id)
                 use_scope = False
         split_memo: dict[str, bool] = {}
         split_access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids},
@@ -23648,7 +23432,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 await self._kh_scope_cache.get(self.client, connector_id, result["stampedAt"])
             except Exception as e:
-                self.logger.warning(f"kh scope cache warm-up failed for {connector_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="kh_scope_stamp", step="kh_scope_cache_warmup", connector_id=connector_id)
         return result
 
     async def kh_scope_reset_syncing(self) -> None:
@@ -23719,7 +23504,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 results.append(await self.kh_scope_stamp(connector_id))
             except Exception as e:
-                self.logger.warning(f"kh scope stamp failed for {connector_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="kh_scope_restamp_stale", step="kh_scope_stamp", connector_id=connector_id)
         return results
 
     async def get_knowledge_hub_breadcrumbs(
@@ -26856,46 +26642,41 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Delete edges to remove team members.
         """
-        try:
-            team_label = collection_to_label(CollectionNames.TEAMS.value)
-            user_label = collection_to_label(CollectionNames.USERS.value)
-            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+        team_label = collection_to_label(CollectionNames.TEAMS.value)
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            delete_query = f"""
-            MATCH (u:{user_label})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
-            WHERE u.id IN $userIds
-            WITH p, properties(p) AS old_props, u.id AS from_id, team.id AS to_id
-            DELETE p
-            RETURN old_props, from_id, to_id
-            """
+        delete_query = f"""
+        MATCH (u:{user_label})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
+        WHERE u.id IN $userIds
+        WITH p, properties(p) AS old_props, u.id AS from_id, team.id AS to_id
+        DELETE p
+        RETURN old_props, from_id, to_id
+        """
 
-            results = await self.client.execute_query(
-                delete_query,
-                parameters={
-                    "userIds": user_ids,
-                    "team_id": team_id
-                },
-                txn_id=transaction
-            )
+        results = await self.client.execute_query(
+            delete_query,
+            parameters={
+                "userIds": user_ids,
+                "team_id": team_id
+            },
+            txn_id=transaction
+        )
 
-            # Convert results to ArangoDB format
-            deleted_list = []
-            for row in results:
-                old_props = row.get("old_props", {})
-                edge_data = {
-                    **old_props,
-                    "from_id": row.get("from_id"),
-                    "to_id": row.get("to_id"),
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_collection": CollectionNames.TEAMS.value
-                }
-                deleted_list.append(self._neo4j_to_arango_edge(edge_data, CollectionNames.PERMISSION.value))
+        # Convert results to ArangoDB format
+        deleted_list = []
+        for row in results:
+            old_props = row.get("old_props", {})
+            edge_data = {
+                **old_props,
+                "from_id": row.get("from_id"),
+                "to_id": row.get("to_id"),
+                "from_collection": CollectionNames.USERS.value,
+                "to_collection": CollectionNames.TEAMS.value
+            }
+            deleted_list.append(self._neo4j_to_arango_edge(edge_data, CollectionNames.PERMISSION.value))
 
-            return deleted_list if deleted_list else []
-
-        except Exception as e:
-            self.logger.error(f"Error in delete_team_member_edges: {str(e)}", exc_info=True)
-            return []
+        return deleted_list if deleted_list else []
 
     async def batch_update_team_member_roles(
         self,
@@ -26907,52 +26688,45 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Batch update user roles in a team.
         """
-        try:
-            for user_role in user_roles:
-                self.validator.validate_edge_update(
-                    CollectionNames.PERMISSION.value, {"role": user_role.get("role"), "updatedAtTimestamp": timestamp}
-                )
-            team_label = collection_to_label(CollectionNames.TEAMS.value)
-            user_label = collection_to_label(CollectionNames.USERS.value)
-            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-
-            batch_update_query = f"""
-            UNWIND $user_roles AS user_role
-            MATCH (u:{user_label} {{id: user_role.userId}})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
-            SET p.role = user_role.role, p.updatedAtTimestamp = $timestamp
-            RETURN properties(p) AS updated_props, u.id AS from_id, team.id AS to_id
-            """
-
-            results = await self.client.execute_query(
-                batch_update_query,
-                parameters={
-                    "team_id": team_id,
-                    "user_roles": user_roles,
-                    "timestamp": timestamp
-                },
-                txn_id=transaction
+        for user_role in user_roles:
+            self.validator.validate_edge_update(
+                CollectionNames.PERMISSION.value, {"role": user_role.get("role"), "updatedAtTimestamp": timestamp}
             )
+        team_label = collection_to_label(CollectionNames.TEAMS.value)
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            # Convert results to ArangoDB format
-            updated_permissions = []
-            for row in results:
-                updated_props = row.get("updated_props", {})
-                edge_data = {
-                    **updated_props,
-                    "from_id": row.get("from_id"),
-                    "to_id": row.get("to_id"),
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_collection": CollectionNames.TEAMS.value
-                }
-                updated_permissions.append(self._neo4j_to_arango_edge(edge_data, CollectionNames.PERMISSION.value))
+        batch_update_query = f"""
+        UNWIND $user_roles AS user_role
+        MATCH (u:{user_label} {{id: user_role.userId}})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
+        SET p.role = user_role.role, p.updatedAtTimestamp = $timestamp
+        RETURN properties(p) AS updated_props, u.id AS from_id, team.id AS to_id
+        """
 
-            return updated_permissions if updated_permissions else []
+        results = await self.client.execute_query(
+            batch_update_query,
+            parameters={
+                "team_id": team_id,
+                "user_roles": user_roles,
+                "timestamp": timestamp
+            },
+            txn_id=transaction
+        )
 
-        except SchemaValidationError:
-            raise
-        except Exception as e:
-            self.logger.error(f"Error in batch_update_team_member_roles: {str(e)}", exc_info=True)
-            return []
+        # Convert results to ArangoDB format
+        updated_permissions = []
+        for row in results:
+            updated_props = row.get("updated_props", {})
+            edge_data = {
+                **updated_props,
+                "from_id": row.get("from_id"),
+                "to_id": row.get("to_id"),
+                "from_collection": CollectionNames.USERS.value,
+                "to_collection": CollectionNames.TEAMS.value
+            }
+            updated_permissions.append(self._neo4j_to_arango_edge(edge_data, CollectionNames.PERMISSION.value))
+
+        return updated_permissions if updated_permissions else []
 
     async def delete_all_team_permissions(
         self,
@@ -27678,7 +27452,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # Mirrors get_all_agents._enrich: an MCP-projection failure must not make
                 # this single-agent lookup indistinguishable from "not found" via the
                 # outer except below — degrade to an empty list instead.
-                self.logger.warning(f"Agent MCP server enrichment failed for {agent_id}; returning agent without mcpServers: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="get_agent", step="mcp_server_enrichment", agent_id=agent_id)
                 mcp_projection = {}
                 # The empty list isn't the agent's: a builder that saved it would detach every server.
                 agent["mcpServersUnavailable"] = True
@@ -28007,13 +27782,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     projection = await self._project_agents_toolsets_and_knowledge(ids, transaction, org_id)
                 except Exception as e:
-                    self.logger.warning(f"Agent list enrichment failed; returning agents without toolsets/knowledge: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="get_all_agents", step="agent_enrichment")
                     projection = {}
                 mcp_unavailable = False
                 try:
                     mcp_projection = await self._project_agents_mcp_servers(ids, transaction)
                 except Exception as e:
-                    self.logger.warning(f"Agent list MCP server enrichment failed; returning agents without mcpServers: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="get_all_agents", step="mcp_server_enrichment")
                     mcp_projection = {}
                     mcp_unavailable = True
                 for ag in agent_list:
@@ -28821,7 +28598,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         )
                         user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
                 except Exception as e:
-                    self.logger.warning(f"Error getting user teams: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="get_template", step="user_teams")
                     # Continue without teams - individual permission check will still work
 
             # Check individual user permissions on the template
