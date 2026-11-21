@@ -209,6 +209,8 @@ class Case:
 
 
 async def _admin(sql: str, *args) -> None:
+    if not os.environ.get("PG_ADMIN_URL"):
+        pytest.skip("PG_ADMIN_URL is not set (an owner DSN: this test plants rows no service role may write)")
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     try:
         await con.execute(sql, *args)
