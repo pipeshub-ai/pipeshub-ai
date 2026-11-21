@@ -40,7 +40,8 @@ export interface AgentActivityPage {
 export const AgentActivityApi = {
   /** GET /api/v1/agent-activity, newest first. */
   async list(filter: AgentActivityFilter): Promise<AgentActivityPage> {
-    const { data } = await apiClient.get<AgentActivityPage>(BASE, { params: filter });
+    // The page shows the failure itself, so the client's toast would say it twice.
+    const { data } = await apiClient.get<AgentActivityPage>(BASE, { params: filter, suppressErrorToast: true });
     return { items: Array.isArray(data?.items) ? data.items : [], nextCursor: data?.nextCursor };
   },
 };

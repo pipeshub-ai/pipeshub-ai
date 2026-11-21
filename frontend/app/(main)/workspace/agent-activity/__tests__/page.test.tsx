@@ -111,6 +111,33 @@ describe('AgentActivityPage', () => {
     expect(await screen.findByText(strings.emptyTitle)).toBeTruthy();
   });
 
+  it("shows the server's sentence from the client's error object", async () => {
+    // apiClient rejects with a plain ProcessedError object, not an Error.
+    list.mockRejectedValueOnce({ type: 'PERMISSION_ERROR', message: 'Only admins can see agent activity', statusCode: 403 });
+
+    renderPage();
+
+    expect(await screen.findByText('Only admins can see agent activity')).toBeTruthy();
+  });
+
+  it('keeps the loaded rows when an older page fails, and retries that page', async () => {
+    list
+      .mockResolvedValueOnce({ items: [call({ id: 'a', count: 7 })], nextCursor: 'c1' })
+      .mockRejectedValueOnce({ type: 'SERVER_ERROR', message: 'The activity store is unavailable', statusCode: 503 })
+      .mockResolvedValueOnce({ items: [call({ id: 'c', route: '/mcp', mcpTool: 'pipeshub_search' })] });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByText(strings.loadMore));
+    expect(await screen.findByText('The activity store is unavailable')).toBeTruthy();
+    expect(screen.getByText('7 calls')).toBeTruthy();
+
+    fireEvent.click(screen.getByText(strings.retry));
+    expect(await screen.findByText('pipeshub_search')).toBeTruthy();
+    expect(list).toHaveBeenLastCalledWith({ cursor: 'c1' });
+    expect(screen.getByText('7 calls')).toBeTruthy();
+  });
+
   it('offers a retry when the list fails to load', async () => {
     list.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce({ items: [] });
 

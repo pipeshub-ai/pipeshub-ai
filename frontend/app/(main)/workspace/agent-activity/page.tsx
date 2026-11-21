@@ -7,6 +7,7 @@ import { Badge, Button, Flex, Heading, Select, Text } from '@radix-ui/themes';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '../components/settings-page-container';
@@ -75,6 +76,8 @@ export default function AgentActivityPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A failed older page keeps the rows already shown; the button then retries the same cursor.
+  const [moreError, setMoreError] = useState<string | null>(null);
   // A page for the previous filter that lands late must not be mixed into the current list.
   const loadSeq = useRef(0);
 
@@ -84,6 +87,7 @@ export default function AgentActivityPage() {
       if (cursor) setIsLoadingMore(true);
       else setIsLoading(true);
       setError(null);
+      setMoreError(null);
       try {
         const page = await AgentActivityApi.list({
           ...(kind !== ALL && { tokenKind: kind }),
@@ -95,7 +99,9 @@ export default function AgentActivityPage() {
         setNextCursor(page.nextCursor);
       } catch (err: unknown) {
         if (seq !== loadSeq.current) return;
-        setError(err instanceof Error ? err.message : t('workspace.agentActivity.loadError'));
+        const message = getUserFacingErrorMessage(err, t('workspace.agentActivity.loadError'));
+        if (cursor) setMoreError(message);
+        else setError(message);
       } finally {
         if (seq === loadSeq.current) {
           setIsLoading(false);
@@ -174,7 +180,7 @@ export default function AgentActivityPage() {
       <Flex direction="column" style={{ flex: 1, minHeight: 0, width: '100%' }}>
         {isLoading && (
           <Flex align="center" justify="center" style={{ flex: 1, padding: 'var(--space-6)' }}>
-            <LottieLoader variant="loader" size={48} showLabel />
+            <LottieLoader variant="loader" size={48} showLabel label={t('common.loading')} />
           </Flex>
         )}
 
@@ -208,7 +214,7 @@ export default function AgentActivityPage() {
           >
             <Flex
               direction="column"
-              style={{ border: '1px solid var(--olive-3)', borderRadius: 'var(--radius-3)', overflow: 'hidden' }}
+              style={{ border: '1px solid var(--olive-3)', borderRadius: 'var(--radius-3)', overflow: 'hidden', flexShrink: 0 }}
             >
               <Flex
                 gap="3"
@@ -294,7 +300,12 @@ export default function AgentActivityPage() {
             </Flex>
 
             {nextCursor && (
-              <Flex justify="center">
+              <Flex direction="column" align="center" gap="2">
+                {moreError && (
+                  <Text size="2" style={{ color: 'var(--red-11)', textAlign: 'center' }}>
+                    {moreError}
+                  </Text>
+                )}
                 <Button
                   size="2"
                   variant="soft"
@@ -303,7 +314,7 @@ export default function AgentActivityPage() {
                   onClick={() => void load(nextCursor)}
                   style={{ cursor: 'pointer' }}
                 >
-                  {t('workspace.agentActivity.loadMore')}
+                  {t(moreError ? 'workspace.agentActivity.retry' : 'workspace.agentActivity.loadMore')}
                 </Button>
               </Flex>
             )}
