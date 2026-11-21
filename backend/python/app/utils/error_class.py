@@ -15,6 +15,7 @@ import concurrent.futures
 import contextlib
 import json
 import logging
+import re
 import socket
 import sys
 import textwrap
@@ -65,6 +66,9 @@ _LOGGED_ATTR = "_pipeshub_logged"
 _HIDDEN_EXCEPTIONS: "weakref.WeakKeyDictionary[logging.LogRecord, BaseException]" = weakref.WeakKeyDictionary()
 _MAX_GROUP_WIDTH = 15  # traceback's own max_group_width and max_group_depth
 _MAX_GROUP_DEPTH = 10
+# A provider's machine code (content_filter, DeploymentNotFound). The server writes it, so digits, dots and hyphens are
+# refused: they are what account ids, keys, tokens and request ids are made of.
+_PROVIDER_CODE = re.compile(r"[A-Za-z][A-Za-z_]{1,63}")
 
 
 def level_for(error_class: str) -> int:
@@ -215,6 +219,40 @@ def classify_error(exc_or_status: BaseException | int) -> str:
     except Exception:
         pass
     return "internal"
+
+
+def provider_code(exc: BaseException) -> str | None:
+    """The provider's machine code for the failure (``content_filter``, ``context_length_exceeded``,
+    ``overloaded_error``): openai's ``code``, else ``type`` (anthropic's error type), from the first link that has
+    one. A value that isn't a plain word is ``"other"``: never an id, a key or message text. Never raises: callers run it
+    on the failure path, so an SDK property that raises is skipped like a missing one."""
+    try:
+        for link in _chain(exc):
+            for attr in ("code", "type"):
+                try:
+                    value = getattr(link, attr, None)
+                except Exception:
+                    continue
+                if isinstance(value, str) and value:
+                    plain = _PROVIDER_CODE.fullmatch(value) is not None and redact_secrets_in_text(value) == value
+                    return value if plain else "other"
+    except Exception:
+        pass
+    return None
+
+
+def failure_reason(exc: BaseException, error_class: str | None = None) -> str:
+    """Why ``exc`` failed, without its text: class, provider code, innermost type and HTTP status, as in
+    ``bad_request: content_filter (BadRequestError, HTTP 400)``. For what leaves a log line's reach (frames, tool
+    results, run results, traces): a provider's or a driver's message can quote the prompt, an email or a key."""
+    try:
+        status = next((s for link in _chain(exc)
+                       if isinstance(s := extract_status_code(link), int) and not isinstance(s, bool)), None)  # type: ignore[arg-type]
+        code = provider_code(exc)
+        head = (error_class or classify_error(exc)) + (f": {code}" if code else "")
+        return f"{head} ({innermost_type(exc)}" + (f", HTTP {status})" if status is not None else ")")
+    except Exception:  # an SDK property read by extract_status_code or provider_code can raise
+        return f"internal ({type(exc).__name__})"
 
 
 def mark_error(exc: BaseException, error_class: str | None = None, *, hide_text: bool = False) -> None:
