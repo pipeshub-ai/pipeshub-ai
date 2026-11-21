@@ -12,10 +12,9 @@ surface to two typed async methods so every call site looks the same.
 
 Thread safety
 -------------
-``_ensure_initialized`` uses an ``asyncio.Lock`` so concurrent callers in the
-same event loop initialise the model exactly once.  Model construction is
-off-loaded to ``asyncio.to_thread`` so the (30–60 s cold-start) load never
-blocks the event loop.
+Concurrent callers in the same event loop share one initialization attempt,
+including its failure. Model construction runs in a worker thread so the
+cold-start load does not block the event loop.
 """
 from __future__ import annotations
 
@@ -46,21 +45,11 @@ class SparseEmbedder:
     def __init__(self, model_name: str = _MODEL_NAME) -> None:
         self._model_name = model_name
         self._model: Optional[object] = None
-        self._lock: Optional[asyncio.Lock] = None
+        self._initialization: asyncio.Task[object] | None = None
 
     # ------------------------------------------------------------------
     # Internal initialisation
     # ------------------------------------------------------------------
-
-    def _get_lock(self) -> asyncio.Lock:
-        """Return (creating if needed) the per-instance lock.
-
-        The lock cannot be created in ``__init__`` when the instance is
-        constructed outside a running event loop.
-        """
-        if self._lock is None:
-            self._lock = asyncio.Lock()
-        return self._lock
 
     def _build_model(self):
         """Synchronous model construction — runs inside a thread pool.
@@ -85,18 +74,34 @@ class SparseEmbedder:
             )
             return SparseTextEmbedding(model_name=self._model_name)
 
+    async def _load_model(self) -> object:
+        model = await asyncio.to_thread(self._build_model)
+        self._model = model
+        logger.info(
+            "Sparse embedder initialised: model='%s', backend=fastembed.SparseTextEmbedding",
+            self._model_name,
+        )
+        return model
+
+    def _finish_initialization(self, task: asyncio.Task[object]) -> None:
+        if self._initialization is task:
+            self._initialization = None
+        # Retrieve a failure even if every waiting request was cancelled.
+        if not task.cancelled():
+            task.exception()
+
     async def _ensure_initialized(self) -> object:
-        """Ensure the model is loaded; return it."""
+        """Return the cached model or join the current initialization attempt."""
         if self._model is not None:
             return self._model
-        async with self._get_lock():
-            if self._model is None:
-                self._model = await asyncio.to_thread(self._build_model)
-                logger.info(
-                    f"Sparse embedder initialised: model='{self._model_name}', "
-                    "backend=fastembed.SparseTextEmbedding"
-                )
-        return self._model
+        task = self._initialization
+        if task is None or task.done():
+            task = asyncio.create_task(self._load_model())
+            self._initialization = task
+            task.add_done_callback(self._finish_initialization)
+        # Cancelling a request cannot stop the worker thread and must not start
+        # a second load while that thread is still running.
+        return await asyncio.shield(task)
 
     # ------------------------------------------------------------------
     # Public API
