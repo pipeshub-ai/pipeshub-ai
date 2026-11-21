@@ -204,6 +204,7 @@ describe('user and group audit lines (HTTP)', function () {
       setRole: async (o: string, id: string, role: string) => { const u = live(o, id); if (u) u.role = role; },
       serviceAccountIdsAmong: async () => [],
       lockOrgAdminChanges: async () => undefined,
+      withAdminLease: async (_o: string, fn: (lease: { confirm(): Promise<boolean> }) => Promise<unknown>) => fn({ confirm: async () => true }),
     }));
     sinon.stub(groupRepo, 'getGroupRepository').returns(fake('group', {
       addToEveryone: async (o: string, id: string) => { if (everyoneWriteFails) throw new Error('group store down'); if (o === orgId && !everyone.users.includes(id)) everyone.users.push(id); },

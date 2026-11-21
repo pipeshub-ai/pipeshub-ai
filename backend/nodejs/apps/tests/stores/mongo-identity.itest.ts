@@ -75,6 +75,7 @@ describe('Identity repositories against a real MongoDB', function () {
     identity: new MongoIdentityPort(),
     uow: new MongoUnitOfWork(rsAvailable),
     transactional: rsAvailable,
+    adminLease: true,
     newOrg: async () => {
       const org = await Org.create({
         registeredName: 'Contract Org',
