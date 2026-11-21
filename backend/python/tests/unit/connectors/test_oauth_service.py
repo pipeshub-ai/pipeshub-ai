@@ -19,7 +19,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     RefreshTokenInvalidError,
 )
 from app.utils.encryption.encryption_service import DecryptionError
-from app.utils.error_class import classify_error
+from app.utils.error_class import classify_error, level_for
 from app.utils.logger import JsonFormatter, TextFormatter, log_record_fields
 from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
 from app.utils.oauth_errors import MAX_TOKEN_LIFETIME_S
@@ -1677,6 +1677,12 @@ class TestHandleCallback:
     def test_state_error_is_still_a_value_error(self) -> None:
         # Callers that catch ValueError, and the user message read from the text, keep working.
         assert issubclass(OAuthStateError, ValueError)
+
+    def test_state_error_is_a_client_failure_logged_at_warning(self) -> None:
+        # A stale or spent state or code is the request's fault; a plain ValueError stays ours.
+        cls = classify_error(OAuthStateError("Invalid or expired state"))
+        assert (cls, level_for(cls)) == ("bad_request", logging.WARNING)
+        assert classify_error(ValueError("Invalid or expired state")) == "internal"
 
     @pytest.mark.asyncio
     async def test_callback_no_stored_state_raises(self, oauth_provider, mock_config_service):

@@ -564,7 +564,8 @@ class DeleteMixin(PgBase):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete record {record_id}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_record", record_id=record_id)
             return {
                 "success": False,
                 "code": 500,
@@ -631,7 +632,8 @@ class DeleteMixin(PgBase):
                                     f"or the grants of the {len(outside)} outside its window from {failed_grants or []}")
             return (unlinked + ungranted, not failed and not failed_grants)
         except Exception as e:
-            self.logger.error(f"Error unlinking nodes missed by the full sync of {connector_id}: {e}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="unlink_nodes_missed_by_full_sync", connector_id=connector_id)
             return (0, False)
 
     async def _collect_connector_entities(self, connector_id: str, transaction: str | None = None, *, include_virtual_record_ids: bool = False) -> dict:
@@ -664,7 +666,8 @@ class DeleteMixin(PgBase):
             n = await self._q(lambda tx: _sweep_edges(tx, org, list(edge_collections), node_ids), transaction or None, write=True)
             return (n, [])
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete relationships: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_delete_all_edges_for_nodes")
             return (0, list(edge_collections))
 
 
@@ -690,7 +693,8 @@ class DeleteMixin(PgBase):
             else:
                 result = await self._q(lambda tx: _delete_connector_atomically(tx, org, connector_id, savepoint=True), transaction, write=True)
         except Exception as e:
-            self.logger.error("Failed to delete connector instance %s: %s", connector_id, e, exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_connector_instance", connector_id=connector_id)
             return {"success": False, "error": f"Failed to delete connector instance: {e}"}
         if result.get("success"):
             try:

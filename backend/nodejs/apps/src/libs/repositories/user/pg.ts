@@ -971,6 +971,16 @@ export class PgUserRepository implements UserRepository, Importable {
     });
   }
 
+  // PostgreSQL units are always transactions, so admin changes take lockOrgAdminChanges
+  // and never reach this; passing `fn` through would look like a lease and be none.
+  withAdminLease<T>(): Promise<T> {
+    return Promise.reject(
+      new Error(
+        'withAdminLease is for a standalone MongoDB; PostgreSQL serialises admin changes with lockOrgAdminChanges',
+      ),
+    );
+  }
+
   async deleteById(id: string): Promise<void> {
     const oid = oidOf(id);
     if (oid === undefined) return;

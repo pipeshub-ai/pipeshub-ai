@@ -33381,6 +33381,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." No account was created. Retry after the
+            `Retry-After` seconds.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the account
+            was saved (writing its credential, its everyone-group membership or its creation event), the account is
+            removed again; if that removal fails too, the account stays.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /users/{id}:
     get:
       tags:
@@ -33744,6 +33761,24 @@ paths:
             Internal server error (DB save or event publish failure, including an `address.country` outside the accepted list, which the database refuses).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." The account was not changed (a
+            requested email change's verification mail may already have been sent). Retry after the `Retry-After`
+            seconds. "This administrator change took too long and was not made. Try again." is a demotion that
+            outlived its turn: the account was not changed either, and this 503 is sent without `Retry-After`.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the account
+            was saved (publishing the update event), the saved fields stay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -34531,6 +34566,24 @@ paths:
             - A `groupIds` entry that is not an ObjectId (the group update fails)
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." No account was restored, created or
+            promoted (the restore activity of removed addresses in the batch may already be recorded). Retry after the
+            `Retry-After` seconds.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the accounts
+            were written (group memberships, creation events, invite mail), the restored, created and promoted
+            accounts stay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -61979,6 +62032,15 @@ paths:
             `tempCode` gets this answer too.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The sync could not be queued (the message broker is unavailable), so nothing was synced.
+            The Google tokens are kept, but the authorization code has been used: the client restarts the
+            Google consent flow and calls this route with the new code, which starts the sync.
           content:
             application/json:
               schema:

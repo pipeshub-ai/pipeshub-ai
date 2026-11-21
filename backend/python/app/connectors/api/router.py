@@ -4284,7 +4284,11 @@ async def _handle_oauth_config_creation(
         logger: Logger instance
 
     Returns:
-        OAuth config ID if created/updated, None otherwise
+        OAuth config ID if created/updated; None when there is nothing to save (not OAUTH, or no
+        credentials and no app ID)
+
+    Raises:
+        HTTPException: 500 when the app could not be saved
     """
     # Only handle OAUTH type (not OAUTH_ADMIN_CONSENT or others)
     if auth_type.upper() != AuthType.OAUTH:
@@ -4305,7 +4309,7 @@ async def _handle_oauth_config_creation(
 
     # Get existing OAuth configs
     oauth_config_path = _get_oauth_config_path(connector_type)
-    existing_oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+    existing_oauth_configs = await config_service.get_config(oauth_config_path, default=[], raise_on_error=True)
 
     if not isinstance(existing_oauth_configs, list):
         existing_oauth_configs = []
@@ -4355,7 +4359,7 @@ async def _handle_oauth_config_creation(
             _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
 
     # Create or update OAuth config
-    return await _create_or_update_oauth_config(
+    app_id = await _create_or_update_oauth_config(
         connector_type=connector_type,
         auth_config=auth_config,
         instance_name=oauth_instance_name,
@@ -4368,6 +4372,13 @@ async def _handle_oauth_config_creation(
         logger=logger,
         connector_scope=connector_scope,
     )
+    if not app_id:
+        # Credentials were given, so None is a failed save (the helper logged why), not "no app wanted".
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to create/update OAuth configuration",
+        )
+    return app_id
 
 
 def _apply_confluence_optional_jira_scope(
@@ -4949,6 +4960,7 @@ async def create_connector_instance(
         # Check for OAuth name conflicts BEFORE creating connector instance
         # This prevents orphaned connector instances if OAuth name validation fails
         if is_admin and config and config.get(OAuthConfigKeys.AUTH) and selected_auth_type and selected_auth_type.upper() == AuthType.OAUTH:
+            # Its app-list read raises before the instance exists, so an outage leaves nothing that blocks a same-name retry.
             await _validate_admin_oauth_config_before_creation(
                 connector_type=connector_type,
                 config=config,
@@ -5070,7 +5082,15 @@ async def create_connector_instance(
                 container=container,
             )
 
-            await config_service.set_config(config_path, prepared_config)
+            if not await config_service.set_config(config_path, prepared_config):
+                # The instance exists by now, so a retry with the same name is refused: say how to finish it.
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=(
+                        "The connector was created, but its settings were not saved. "
+                        "Open it to finish setting it up, or delete it."
+                    ),
+                ) from OAuthStoreUnavailableError("The connector's settings could not be saved")
             logger.info(f"Stored initial config for instance {connector_id}")
             await _store_config_action_items(request, connector_type, connector_id, _auth_section(prepared_config), logger)
 
@@ -5597,9 +5617,7 @@ async def update_connector_instance_auth_config(
         config_path = _get_config_path_for_instance(connector_id)
 
         # Get existing config to merge with new values
-        existing_config = await config_service.get_config(config_path)
-        if not existing_config:
-            existing_config = {}
+        existing_config = await read_oauth_config(config_service, config_path)
 
         # Merge new auth configuration with existing config
         # Filter out OAuth credential fields - only store reference ID
@@ -5638,7 +5656,7 @@ async def update_connector_instance_auth_config(
                 # Step 2: Get existing OAuth configs and determine name
                 # ============================================================
                 oauth_config_path = _get_oauth_config_path(connector_type)
-                existing_oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+                existing_oauth_configs = await config_service.get_config(oauth_config_path, default=[], raise_on_error=True)
 
                 if not isinstance(existing_oauth_configs, list):
                     existing_oauth_configs = []
@@ -5941,9 +5959,7 @@ async def update_connector_instance_filters_sync_config(
         config_path = _get_config_path_for_instance(connector_id)
 
         # Get existing config to merge with new values
-        existing_config = await config_service.get_config(config_path)
-        if not existing_config:
-            existing_config = {}
+        existing_config = await read_oauth_config(config_service, config_path)
 
         # Merge new configuration with existing config
         # Only update sections that are provided in the request
@@ -6116,9 +6132,7 @@ async def update_connector_instance_config(
         config_path = _get_config_path_for_instance(connector_id)
 
         # Get existing config to merge with new values
-        existing_config = await config_service.get_config(config_path)
-        if not existing_config:
-            existing_config = {}
+        existing_config = await read_oauth_config(config_service, config_path)
         # The values saved before this request, for the folder checks below.
         stored_sync_values = _saved_sync_values(existing_config)
 
@@ -7114,9 +7128,9 @@ async def get_oauth_authorization_url(
         # 2. Configuration Retrieval
         # ============================================================
         config_path = _get_config_path_for_instance(connector_id)
-        config = await config_service.get_config(config_path)
+        config = await read_oauth_config(config_service, config_path)
 
-        if not config or not config.get(OAuthConfigKeys.AUTH):
+        if not config.get(OAuthConfigKeys.AUTH):
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="OAuth configuration not found. Please configure first."
@@ -7264,7 +7278,7 @@ async def handle_oauth_callback(
             }
 
         if not code or not state:
-            logger.error("Missing OAuth parameters")
+            mark_request_failure(request, None, error_class="bad_request", reason="missing_parameters")
             return {
                 "success": False,
                 "error": "missing_parameters",
@@ -7290,8 +7304,9 @@ async def handle_oauth_callback(
             state_data = _decode_state_with_instance(state)
             original_state = state_data["state"]
             connector_id = state_data["connector_id"]
-        except ValueError as e:
-            logger.error(f"Invalid state format: {e}")
+        except ValueError:
+            # The client's input, not our failure: a client class, and none of the decoder's text.
+            mark_request_failure(request, None, error_class="bad_request", reason="invalid_state")
             return {
                 "success": False,
                 "error": "invalid_state",
@@ -8156,7 +8171,7 @@ async def save_connector_instance_filters(
         config_path = _get_config_path_for_instance(connector_id)
         # A copy: the config service hands out its cached object, which must change only
         # once the new config is stored.
-        config = copy.deepcopy(await config_service.get_config(config_path))
+        config = copy.deepcopy(await read_oauth_config(config_service, config_path))
 
         if not config:
             logger.error("Configuration not found. Please configure first.")
@@ -9905,7 +9920,7 @@ async def _create_or_update_oauth_config(
 
         # Get OAuth configs for this connector type
         oauth_config_path = _get_oauth_config_path(connector_type)
-        oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+        oauth_configs = await config_service.get_config(oauth_config_path, default=[], raise_on_error=True)
 
         if not isinstance(oauth_configs, list):
             oauth_configs = []
@@ -10024,7 +10039,7 @@ async def _get_oauth_configs_from_etcd(
         List of OAuth configs (empty list if none found)
     """
     config_path = _get_oauth_config_path(connector_type)
-    oauth_configs = await config_service.get_config(config_path, default=[], use_cache=False)
+    oauth_configs = await config_service.get_config(config_path, default=[], use_cache=False, raise_on_error=True)
     return oauth_configs if isinstance(oauth_configs, list) else []
 
 
@@ -10102,6 +10117,7 @@ async def _validate_admin_oauth_config_before_creation(
 
     Raises:
         HTTPException: If OAuth name conflicts are detected
+        Exception: The store's error when the app list cannot be read
     """
     _check_oauth_app_urls(connector_type, config.get(OAuthConfigKeys.AUTH))
 
@@ -10117,7 +10133,7 @@ async def _validate_admin_oauth_config_before_creation(
 
         # Get existing OAuth configs to check for name conflicts
         oauth_config_path = _get_oauth_config_path(connector_type)
-        existing_oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+        existing_oauth_configs = await config_service.get_config(oauth_config_path, default=[], raise_on_error=True)
 
         if not isinstance(existing_oauth_configs, list):
             existing_oauth_configs = []

@@ -1,7 +1,7 @@
 """``get_user_by_user_id`` on each graph provider writes no driver text (docs/logging.md, "Database queries").
 
 With ``raise_on_error`` it writes nothing: the 503 the caller raises is the one line. Without it, the ``None`` it answers is
-one ``graph.get_user_by_user_id.failed`` line, classed, without the text.
+one ``graph.provider.failed op=get_user_by_user_id`` line, classed, without the text.
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ async def test_a_swallowed_lookup_is_one_text_free_line(make, caplog: pytest.Log
 
     (line,) = _lines(caplog)
     fields = log_record_fields(line)
-    assert (line.getMessage(), fields.get("error_type"), "error_message" in fields) == (
-        "graph.get_user_by_user_id.failed", "ConnectionError", False,
+    assert (line.getMessage(), fields.get("op"), fields.get("error_type"), "error_message" in fields) == (
+        "graph.provider.failed", "get_user_by_user_id", "ConnectionError", False,
     )
     assert_not_logged(_lines(caplog), SENTINEL)

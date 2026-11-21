@@ -4,6 +4,7 @@ import { expect } from 'chai';
 import { Decimal128, Long, MongoClient, ObjectId } from 'mongodb';
 import sinon from 'sinon';
 import { Census, judgeCensus } from '../../../src/scripts/docstore-migrate/census';
+import { org as orgMapping } from '../../../src/scripts/docstore-migrate/mapping/identity';
 import { compareDocs } from '../../../src/scripts/docstore-migrate/compare';
 import { decodeDoc } from '../../../src/scripts/docstore-migrate/decode';
 import type { CollectionMapping } from '../../../src/scripts/docstore-migrate/mapping/types';
@@ -153,6 +154,11 @@ describe('docstore-migrate engine', () => {
       const f = judgeCensus(M, c);
       expect(f.filter((x) => x.kind === 'unmapped_path')).to.deep.equal([]);
       expect(f.filter((x) => x.kind === 'null_in_omit_field').map((x) => x.path)).to.deep.equal(['title']);
+    });
+    it('an org left holding an admin-role lease (a crashed holder) is no finding: the lease is a dropped path', () => {
+      const c = new Census();
+      c.add({ _id: 1, registeredName: 'Acme', adminRoleLease: { holder: 'h', until: new Date() } });
+      expect(judgeCensus(orgMapping, c).filter((x) => x.kind === 'unmapped_path')).to.deep.equal([]);
     });
     it('counts documents that hold U+0000 by path', () => {
       const c = new Census();

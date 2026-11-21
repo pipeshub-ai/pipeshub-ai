@@ -20,6 +20,8 @@ import { accessLog } from '../../../src/libs/middlewares/access-log.middleware';
 import { AuthMiddleware } from '../../../src/libs/middlewares/auth.middleware';
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service';
 import { registerUpstreams } from '../../../src/libs/http/upstream-call';
+import * as requestContext from '../../../src/libs/context/request-context';
+import { captureLogRecords, inRequestContext, newRequestId, recordsOf } from '../../helpers/log-capture';
 import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors';
 import { createCrawlingManagerRouter } from '../../../src/modules/crawling_manager/routes/cm_routes';
 import { CrawlingSchedulerService } from '../../../src/modules/crawling_manager/services/crawling_service';
@@ -52,6 +54,8 @@ const query = (value: unknown): any => {
 describe('crawling manager logging', function () {
   this.timeout(20000);
   let records: Row[];
+  // The request or tick under test; a line from any other context is not this test's.
+  let requestId: string;
   const root = () => (Logger.getInstance() as any).logger as winston.Logger;
   const render = (r: Row): string => {
     const fmt = root().transports.find((t) => t instanceof winston.transports.Console)!.format!;
@@ -63,16 +67,13 @@ describe('crawling manager logging', function () {
     const l = String(r.level).toLowerCase();
     return l === 'warning' ? 'warn' : l;
   };
-  const loud = () => records.filter((r) => level(r) !== 'debug');
+  const mine = () => recordsOf(records, requestId);
+  const loud = () => mine().filter((r) => level(r) !== 'debug');
   let orgActive = true;
 
   beforeEach(() => {
-    records = [];
-    root().level = 'debug';
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Row) {
-      records.push(info);
-      return this;
-    } as any);
+    records = captureLogRecords();
+    requestId = newRequestId('crawling-logging');
     sinon.stub(Users, 'findOne').callsFake((() => query(ADMIN)) as any);
     sinon.stub(UserActivities, 'findOne').callsFake((() => query(null)) as any);
     sinon.stub(Org, 'findOne').callsFake((() => query(orgActive ? { _id: ORG } : null)) as any);
@@ -139,18 +140,23 @@ describe('crawling manager logging', function () {
         role: 'admin',
       });
       records.length = 0;
+      requestId = newRequestId('crawling-logging');
       const res = await fetch(`${origin}/api/v1/crawlingManager/Google%20Drive/drive-team${path}`, {
         method,
-        headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-request-id': requestId,
+          ...(body ? { 'content-type': 'application/json' } : {}),
+        },
         body: body ? JSON.stringify(body) : undefined,
       });
       await res.text();
-      for (let i = 0; i < 400 && !records.some((r) => r.message === 'http.request.end'); i += 1) {
+      for (let i = 0; i < 400 && !mine().some((r) => r.message === 'http.request.end'); i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
       return res.status;
     };
-    const named = (m: string) => records.filter((r) => r.message === m);
+    const named = (m: string) => mine().filter((r) => r.message === m);
 
     it('a refused change (nothing paused, a 400): one WARNING failure line and the access line, both naming the connector', async () => {
       expect(await send('POST', '/resume')).to.equal(400);
@@ -207,9 +213,13 @@ describe('crawling manager logging', function () {
         data: { connector: 'Google Drive', connectorId: 'drive-team', orgId: ORG, userId: ADMIN._id, scheduleConfig: daily.scheduleConfig, ...data },
         updateProgress: sinon.stub().resolves(),
       };
+      // The tick takes a fresh system root; make it this test's id so its lines can be told from any other's.
+      if (!(requestContext.newSystemRoot as { restore?: unknown }).restore) {
+        sinon.stub(requestContext, 'newSystemRoot').returns(requestId);
+      }
       return processJob.call(context, job);
     };
-    const ends = () => records.filter((r) => r.message === 'crawling_job.end');
+    const ends = () => mine().filter((r) => r.message === 'crawling_job.end');
 
     it('a run whose publish fails: exactly one crawling_job.end, with the org, the connector and the class', async () => {
       // the real task: its publish fails, and only the worker reports the run
@@ -244,8 +254,10 @@ describe('crawling manager logging', function () {
         worker,
         logger: Logger.getInstance({ service: 'CrawlingWorkerService' }),
       });
-      worker.emit('failed', { id: 'job-7', data: { connectorId: 'drive-team' } }, new Error('publish exploded'));
-      const lines = records.filter((r) => r.message === 'Job failed');
+      inRequestContext(requestId, () =>
+        worker.emit('failed', { id: 'job-7', data: { connectorId: 'drive-team' } }, new Error('publish exploded')),
+      );
+      const lines = mine().filter((r) => r.message === 'Job failed');
       expect(lines.map(level)).to.deep.equal(['debug']);
     });
 
