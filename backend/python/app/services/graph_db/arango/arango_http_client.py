@@ -1068,7 +1068,18 @@ class ArangoHTTPClient:
             return row["insert"]
 
         refound: set[str] = set()
-        by_key = {r["key"]: r for r in rows}
+        by_key: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            # A key given more than once is written once: the later row wins for what it sets, the earlier rows' other fields stay,
+            # and the key is patched first unless every row says it is new.
+            earlier = by_key.get(row["key"])
+            merged = row
+            if earlier is not None:
+                merged = {**earlier, **row, "insert": {**earlier["insert"], **row["insert"]}, "new": bool(earlier.get("new") and row.get("new"))}
+                if "patch" in earlier or "patch" in row:
+                    merged["patch"] = {**earlier.get("patch", {}), **row.get("patch", {})}
+            by_key[row["key"]] = merged
+        rows = list(by_key.values())
         insert_keys = [r["key"] for r in rows if r.get("new")]
         patch_keys = [r["key"] for r in rows if not r.get("new")]
         created = updated = 0

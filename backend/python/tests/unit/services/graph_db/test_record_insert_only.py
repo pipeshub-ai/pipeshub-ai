@@ -123,11 +123,17 @@ def _file(key: str = "k", *, created_at: int = 100, placeholder: bool = False) -
     )
 
 
-def test_a_record_without_an_id_writes_no_key_so_a_null_cannot_remove_the_stored_one() -> None:
+def test_a_record_never_writes_an_incarnation_id_whether_or_not_it_holds_one() -> None:
+    """The store mints it; a copy carried from a stored record could start a new vertex under a deleted one's id."""
     assert "incarnationId" not in _file().to_arango_base_record()
     record = _file()
     record.incarnation_id = "held"
-    assert record.to_arango_base_record()["incarnationId"] == "held"
+    assert "incarnationId" not in record.to_arango_base_record()
+
+
+def test_with_the_kill_switch_off_an_update_still_never_writes_the_incarnation_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", "false")
+    assert record_update_doc({"a": 1, "createdAtTimestamp": 5, "incarnationId": "x"}) == {"a": 1, "createdAtTimestamp": 5}
 
 
 def test_a_legacy_record_loads_with_no_id_whatever_the_loader() -> None:
@@ -193,7 +199,7 @@ async def test_a_rename_under_a_new_external_id_keeps_the_stored_date_and_id_eve
     incoming.external_record_id = "renamed-ext"
     incoming.external_revision_id = "r2"
     tx = _tx(None)
-    tx.get_record_by_key = AsyncMock(return_value=stored.to_arango_base_record() | {"_key": "same-key"})
+    tx.get_record_by_key = AsyncMock(return_value=stored.to_arango_base_record() | {"_key": "same-key", "incarnationId": "inc-1"})
     with patch.object(DataSourceEntitiesProcessor, "_handle_record_group", AsyncMock(return_value=None)):
         processed, _ = await _processor()._process_record(incoming, [], tx)
     assert processed.created_at == 100 and processed.incarnation_id == "inc-1"
@@ -324,6 +330,25 @@ async def _run_drop(client: ArangoHTTPClient, rows: list[dict], *answers: _Resp)
     with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=session):
         result = await client.batch_upsert_documents("records", rows, drop=RECORD_UPDATE_DROPPED_FIELDS)
     return result, [(c.args[0], c.kwargs["json"]) for c in session.request.call_args_list]
+
+
+async def test_a_key_given_twice_is_written_once_with_the_fields_of_both_rows(client) -> None:
+    rows = [
+        {"key": "a", "insert": {"_key": "a", "x": 1, "y": 1}, "new": True},
+        {"key": "a", "insert": {"_key": "a", "y": 2, "z": 3}, "new": True},
+    ]
+    _, calls = await _run(client, rows, _ok())
+    assert [m for m, _ in calls] == ["POST"]
+    assert calls[0][1] == [{"_key": "a", "x": 1, "y": 2, "z": 3}]
+
+
+async def test_a_key_given_twice_is_patched_first_unless_every_row_is_new(client) -> None:
+    rows = [
+        {"key": "a", "insert": {"_key": "a", "x": 1}, "new": True},
+        {"key": "a", "insert": {"_key": "a", "y": 2}, "new": False},
+    ]
+    _, calls = await _run(client, rows, _ok())
+    assert [m for m, _ in calls] == ["PATCH"]
 
 
 async def test_a_known_new_record_is_one_insert_call(client) -> None:

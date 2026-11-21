@@ -541,9 +541,8 @@ class Record(BaseModel):
         }
         # Omitted rather than null: the Neo4j upsert is `SET n +=`, where a null
         # key deletes the stored value, and most writers never set this field.
-        # The id is the store's to mint, and a null would delete it on Neo4j and PostgreSQL: written only when held.
-        if self.incarnation_id is not None:
-            base["incarnationId"] = self.incarnation_id
+        # ``incarnationId`` is never written from a record: the graph store mints it when it inserts the vertex and a restore
+        # replaces it. A copy carried from a stored record could otherwise start a new vertex under the id of a deleted one.
         if self.queued_at is not None:
             base["queuedAtTimestamp"] = self.queued_at
         if self.first_queued_at is not None:

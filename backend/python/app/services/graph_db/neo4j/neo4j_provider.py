@@ -565,7 +565,7 @@ def _record_insert_split(doc: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 
     One pass over the document (it runs for every record of a batch, and two or three passes cost more than the extra clause does)."""
     insert_only = record_created_at_insert_only()
-    dropped = RECORD_UPDATE_DROPPED_FIELDS if insert_only else ()
+    dropped = RECORD_UPDATE_DROPPED_FIELDS if insert_only else ("incarnationId",)
     keep_id = record_incarnation_write()
     mint = insert_only and keep_id
     rest: dict[str, Any] = {}
@@ -2324,7 +2324,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
         RETURN n.id
         """
-            rows = [dict(zip(("rest", "ins"), _record_insert_split(n))) for n in neo4j_nodes]
+            # documents that share an id jointly supply the insert: the later one wins for what an update may merge, the first
+            # supplied value wins for the keys only an insert writes
+            by_id: dict[Any, dict[str, dict[str, Any]]] = {}
+            for node in neo4j_nodes:
+                rest, ins = _record_insert_split(node)
+                row = by_id.setdefault(rest["id"], {"rest": {}, "ins": {}})
+                row["rest"].update(rest)
+                for k, v in ins.items():
+                    row["ins"].setdefault(k, v)
+            rows = list(by_id.values())
             await self.client.execute_query(
                 query, parameters={"nodes": _in_lock_order(rows, lambda r: _by_id(r["rest"]))}, txn_id=transaction
             )

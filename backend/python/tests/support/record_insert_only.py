@@ -285,6 +285,39 @@ async def repeated_ids_keep_the_last_write(store: StoreAdapter, flag: bool) -> N
     assert (await store.doc(key))["recordName"] == "third", store.name
 
 
+async def complementary_documents_for_one_new_id_jointly_make_the_insert(store: StoreAdapter, flag: bool) -> None:
+    """Two dict documents for one new id, the date only in the second, store that date (the first creates the vertex)."""
+    key = new_key()
+    base = {"id": key, "orgId": "g55-org", "recordName": "dup", "externalRecordId": f"ext-{key}", "recordType": "FILE",
+            "origin": "CONNECTOR", "connectorName": "KB", "connectorId": "g55-conn", "version": 0}
+    await store.upsert_nodes([base, {"id": key, "orgId": "g55-org", "createdAtTimestamp": 42, "recordName": "dup2"}])
+    doc = await store.doc(key)
+    assert doc["createdAtTimestamp"] == 42 and doc["recordName"] == "dup2", f"{store.name}: {doc}"
+
+
+async def a_restore_survives_a_same_id_write_with_the_kill_switch_off(store: StoreAdapter, flag: bool) -> None:
+    """With the insert-only switch off (and the incarnation flag on), the write that follows a restore keeps the restored id."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100, known_new=True)])
+    batch = await store.trash(key, "g55-conn")
+    assert await store.restore(key, "g55-conn", batch) == [key]
+    restored = minted(await store.doc(key))
+    assert restored is not None
+    await store.upsert([make_record(key, created_at=200, name="after-restore")])
+    assert minted(await store.doc(key)) == restored, store.name
+
+
+async def a_carried_id_never_starts_a_new_vertex(store: StoreAdapter, flag: bool) -> None:
+    """A record that holds an incarnation id (copied from a stored one) inserted as a new vertex gets one minted by the store."""
+    key = new_key()
+    stale = make_record(key, created_at=100, known_new=True)
+    stale.incarnation_id = "stale-" + key
+    await store.upsert([stale])
+    stored = minted(await store.doc(key))
+    assert stored != "stale-" + key
+    assert (stored is not None) is flag
+
+
 async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None:
     """S6: only the ``records`` document is insert-only; the type document (``files``) is written as before."""
     key = new_key()
@@ -296,6 +329,8 @@ async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None
 
 
 ALL_CASES = (
+    a_carried_id_never_starts_a_new_vertex,
+    complementary_documents_for_one_new_id_jointly_make_the_insert,
     a_partial_node_patch_is_no_promotion, repeated_ids_keep_the_last_write,
     a_null_removes_the_stored_key, a_marked_stub_is_no_promotion,
     a_stale_promotion_hint_is_ignored, the_move_path_keeps_both_fields_and_releases,

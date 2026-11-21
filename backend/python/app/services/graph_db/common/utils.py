@@ -485,7 +485,8 @@ def positive_min(stored: Any, incoming: Any) -> Any:  # noqa: ANN401
 def record_update_doc(doc: dict[str, Any]) -> dict[str, Any]:
     """The part of a record document an upsert may write onto an existing record."""
     if not record_created_at_insert_only():
-        return doc
+        # the older merge-everything write, except that an update never writes the incarnation id: only an insert and a restore do
+        return {k: v for k, v in doc.items() if k != "incarnationId"}
     return {k: v for k, v in doc.items() if k not in RECORD_UPDATE_DROPPED_FIELDS}
 
 

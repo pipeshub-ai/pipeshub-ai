@@ -91,7 +91,8 @@ async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
     # One document per row: the update branch derives what an existing record may take from it in SQL (``x2.doc - dropped keys``), so the
     # payload is not doubled and the batch is looked up once per conflicting row (two lookups and two documents per row cost 20-25 % at 500 records per call).
     rows = [{"id": i, "doc": record_insert_doc(by_id[i])} for i in sorted(by_id)]
-    dropped = list(RECORD_UPDATE_DROPPED_FIELDS) if record_created_at_insert_only() else []
+    insert_only = record_created_at_insert_only()
+    dropped = list(RECORD_UPDATE_DROPPED_FIELDS) if insert_only else ["incarnationId"]
     await tx.execute("""/* pipeshub:graph.records_upsert_record_docs */ WITH x AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb))
         INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
         ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(
@@ -101,7 +102,7 @@ async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
                 THEN jsonb_build_object('createdAtTimestamp', CASE WHEN jsonb_typeof(graph.nodes.doc->'createdAtTimestamp') = 'number' AND (graph.nodes.doc->>'createdAtTimestamp')::numeric > 0
                     THEN LEAST((graph.nodes.doc->>'createdAtTimestamp')::numeric, (x2.doc->>'createdAtTimestamp')::numeric) ELSE (x2.doc->>'createdAtTimestamp')::numeric END)
                 ELSE '{}'::jsonb END FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
-                     org, _RECORDS, _j(rows), dropped, bool(dropped))
+                     org, _RECORDS, _j(rows), dropped, insert_only)
 
 
 _RECORD_BY_EXTERNAL_PAGE = 100       # the function's LIMIT
