@@ -400,3 +400,25 @@ class TestRecordWhoseParseWorkerWasKilled:
         reasons = [final.get("reason"), final.get("parseNowReason")]
         assert PARSE_WORKER_KILLED_RETRYING not in reasons
         assert PARSE_WORKER_OUT_OF_MEMORY in reasons
+
+    async def test_a_failed_status_write_does_not_hide_the_retry_from_the_consumer(self) -> None:
+        from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
+
+        harness = Harness(_record(indexingStatus="IN_PROGRESS"))
+        harness.fail_with = self._killed_first()
+        write_failure = ConnectionError("graph down")
+
+        async def failing_requeue_write(key: str, collection: str, updates: dict[str, Any]) -> bool:
+            if "reason" in updates:
+                raise write_failure
+            return True
+
+        harness.graph.update_node = AsyncMock(side_effect=failing_requeue_write)
+
+        with pytest.raises(DocumentProcessingError) as raised:
+            await harness.run(_payload(is_final_failure=False, parseNow=False))
+
+        # The consumer reads explicit causes: the worker death must still be the cause, with the write as context.
+        assert isinstance(raised.value.__cause__, ParseWorkerError)
+        assert raised.value.__context__ is write_failure
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
