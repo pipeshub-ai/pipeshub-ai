@@ -1290,21 +1290,22 @@ class TestConnectorSignIn:
     _ME = {"type": "bot", "bot": {"workspace_id": "ws-1", "owner": {
         "type": "user", "user": {"id": "n-admin", "person": {"email": "admin@acme.com"}}}}}
 
-    async def _run(self, connections=(), *, auth="OAUTH", me=None, removed=False, authenticator=None) -> tuple:
+    async def _run(self, connections=(), *, auth="OAUTH", me=None, removed=False, authenticator=None,
+                   bot_fails=False, email_owner=None) -> tuple:
         connector = _connector()
         connector.config_service.get_config.return_value = {"auth": {"authType": auth}}
         datasource = MagicMock()
         datasource.retrieve_bot_user = AsyncMock(return_value=SimpleNamespace(
-            success=True, data=SimpleNamespace(json=lambda: me or self._ME)))
+            success=not bot_fails, error="boom" if bot_fails else None,
+            data=None if bot_fails else SimpleNamespace(json=lambda: me or self._ME)))
         dep = connector.data_entities_processor
         dep.get_app_authenticator_user = AsyncMock(
             return_value=authenticator if authenticator is not None else {"userId": "admin", "email": "admin@pipeshub.com"})
         dep.get_user_by_user_id.return_value = SimpleNamespace(id="k-old")
-        with patch.object(connector, "_get_fresh_datasource", new=AsyncMock(return_value=datasource)), \
-                patch(f"{_MOD}.list_connections", new=AsyncMock(return_value=list(connections))), \
-                patch(f"{_MOD}.was_removed", new=AsyncMock(return_value=removed)), \
-                patch(f"{_MOD}.delete_connection", new=AsyncMock(return_value=True)) as delete, \
-                patch(f"{_MOD}.save_connection", new=AsyncMock(return_value=True)) as save:
+        dep.get_user_by_email = AsyncMock(return_value=email_owner)
+        stored = {c.user_id: c for c in connections}
+        with patch.object(connector, "_get_fresh_datasource", new=AsyncMock(return_value=datasource)),                 patch(f"{_MOD}.list_connections", new=AsyncMock(side_effect=lambda *_: list(stored.values()))),                 patch(f"{_MOD}.get_connection", new=AsyncMock(side_effect=lambda _c, _id, uid: stored.get(uid))),                 patch(f"{_MOD}.was_removed", new=AsyncMock(return_value=removed)),                 patch(f"{_MOD}.delete_connection",
+                      new=AsyncMock(side_effect=lambda _c, _id, uid: stored.pop(uid, None) or True)) as delete,                 patch(f"{_MOD}.save_connection", new=AsyncMock(return_value=True)) as save:
             await connector._connect_through_connector_sign_in(now=5)
         return connector, save, delete
 
@@ -1347,6 +1348,27 @@ class TestConnectorSignIn:
         delete.assert_awaited_once()
         save.assert_not_awaited()
 
+    async def test_an_unclear_answer_changes_nothing(self) -> None:
+        old = _connection("admin", token="", method="connector")
+        old.source_user_id = "n-admin"
+        _, save, delete = await self._run([old], bot_fails=True, authenticator={"userId": "u2", "email": "b@acme.com"})
+        delete.assert_not_awaited()
+        save.assert_not_awaited()
+
+    async def test_not_made_when_the_accounts_email_is_another_users(self) -> None:
+        _, save, _ = await self._run(email_owner=SimpleNamespace(id="k-ann", is_active=True))
+        save.assert_not_awaited()
+
+    async def test_a_connection_of_their_own_made_meanwhile_is_not_dropped(self) -> None:
+        old = _connection("admin", token="", method="connector")
+        old.source_user_id = "n-admin"
+        own = _connection("admin", method="oauth", connected_at=9)
+        connector = _connector()
+        connector.config_service.get_config.return_value = {"auth": {"authType": "API_TOKEN"}}
+        with patch(f"{_MOD}.list_connections", new=AsyncMock(return_value=[old])),                 patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=own)),                 patch(f"{_MOD}.delete_connection", new=AsyncMock()) as delete:
+            await connector._connect_through_connector_sign_in(now=5)
+        delete.assert_not_awaited()
+
     async def test_reads_with_the_connectors_own_client_and_refreshes_it(self) -> None:
         connector = _connector()
         connection = _connection("admin", token="", method="connector")
@@ -1359,3 +1381,8 @@ class TestConnectorSignIn:
             # Never revoked for the connector's token: the pass is incomplete instead.
             assert await connector._refresh_user_token(connection) is None
         user_refresh.assert_not_awaited()
+
+    def test_the_api_reports_it_as_an_oauth_sign_in_through_the_connector(self) -> None:
+        public = _connection("admin", token="", method="connector").public()
+        assert (public["method"], public["viaConnector"]) == ("oauth", True)
+        assert "token" not in public and _connection("u1").public()["viaConnector"] is False

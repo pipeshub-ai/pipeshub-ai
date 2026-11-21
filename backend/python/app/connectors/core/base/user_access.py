@@ -142,9 +142,13 @@ class UserConnection:
         }
 
     def public(self) -> dict[str, Any]:
-        """What the API may return: everything but the credential."""
+        """What the API may return: everything but the credential. The connector's sign-in is an OAuth
+        sign-in to the API, flagged by ``viaConnector``, so ``method`` keeps the values clients know."""
         data = self.to_dict()
         del data["token"], data["refreshToken"]
+        data["viaConnector"] = self.method == METHOD_CONNECTOR
+        if data["viaConnector"]:
+            data["method"] = METHOD_OAUTH
         return data
 
     @classmethod

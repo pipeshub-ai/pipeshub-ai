@@ -1080,46 +1080,61 @@ class NotionConnector(BaseConnector):
     async def _connect_through_connector_sign_in(self, now: int) -> None:
         """Whoever signed the connector in to Notion (OAuth) is connected through that sign-in, so they need
         not sign in again: the token is theirs, for the pages they picked. Dropped once it no longer names them
-        (another sign-in, an API token, another workspace); not made again for someone who disconnected."""
+        (another sign-in, an API token, another workspace); not made again for someone who disconnected.
+        Only a clear answer changes anything: a failed read keeps what is there."""
+        config = await self.config_service.get_config(
+            f"/services/connectors/{self.connector_id}/config", use_cache=False, raise_on_error=True
+        )
         owner = None
-        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config", use_cache=False)
         if (((config or {}).get("auth") or {}).get("authType")) == "OAUTH":
             me = await (await self._get_fresh_datasource()).retrieve_bot_user()
-            if me.success and me.data:
-                try:
-                    owner = parse_identity(me.data.json())
-                except NotionAccessError:
-                    owner = None
+            if not me.success or not me.data:
+                self.logger.warning("Notion per-user sync: could not read who signed the connector in: %s", me.error)
+                return
+            try:
+                owner = parse_identity(me.data.json())
+            except NotionAccessError:
+                owner = None  # a workspace-owned integration: nobody's own sign-in
         authenticator = (
             await self.data_entities_processor.get_app_authenticator_user(self.connector_id, self.created_by)
             if owner else {}
         )
         user_id, email = str(authenticator.get("userId") or ""), str(authenticator.get("email") or "")
 
-        connections = await list_connections(self.config_service, self.connector_id)
-        for connection in connections:
-            if connection.method == METHOD_CONNECTOR and (
-                owner is None or connection.user_id != user_id or connection.source_user_id != owner.user_id
-                or connection.workspace_id != self.workspace_id
-            ):
-                async with refresh_lock(self.connector_id, connection.user_id):
-                    await delete_connection(self.config_service, self.connector_id, connection.user_id)
-                user = await self.data_entities_processor.get_user_by_user_id(connection.user_id)
-                if user is not None and user.id:
-                    await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+        def names_them(c: UserConnection) -> bool:
+            return bool(owner) and c.user_id == user_id and c.source_user_id == owner.user_id                 and c.workspace_id == self.workspace_id
+
+        for connection in await list_connections(self.config_service, self.connector_id):
+            if connection.method != METHOD_CONNECTOR or names_them(connection):
+                continue
+            async with refresh_lock(self.connector_id, connection.user_id):
+                # Re-read under the lock: a connection of their own made meanwhile stays.
+                current = await get_connection(self.config_service, self.connector_id, connection.user_id)
+                if current is None or current.method != METHOD_CONNECTOR or current.connected_at != connection.connected_at:
+                    continue
+                await delete_connection(self.config_service, self.connector_id, connection.user_id)
+            user = await self.data_entities_processor.get_user_by_user_id(connection.user_id, raise_on_error=True)
+            if user is not None and user.id:
+                await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+
         if owner is None or not user_id or not email:
             return
-        if any(c.user_id == user_id or c.source_user_id == owner.user_id for c in connections if c.method != METHOD_CONNECTOR):
-            return  # they connected themselves, or someone else holds this Notion account
-        if any(c.user_id == user_id and c.method == METHOD_CONNECTOR and c.source_user_id == owner.user_id
-               and c.workspace_id == self.workspace_id for c in connections):
-            return  # already connected through it
-        if await was_removed(self.config_service, self.connector_id, user_id):
-            return  # they or an admin disconnected it; Connect is theirs to press
-        await save_connection(self.config_service, self.connector_id, UserConnection(
-            user_id=user_id, email=email, token="", source_user_id=owner.user_id, source_email=owner.email or "",
-            workspace_id=self.workspace_id, method=METHOD_CONNECTOR, connected_at=now,
-        ))
+        if owner.email and owner.email.casefold() != email.casefold():
+            # As when connecting: an account under another PipesHub user's email is that user's.
+            other = await self.data_entities_processor.get_user_by_email(owner.email, raise_on_error=True)
+            if other is not None and other.id and other.is_active is not False:
+                return
+        async with refresh_lock(self.connector_id, user_id):
+            if await get_connection(self.config_service, self.connector_id, user_id) is not None:
+                return  # connected already, through it or with their own
+            if await was_removed(self.config_service, self.connector_id, user_id):
+                return  # they or an admin disconnected it; Connect is theirs to press
+            if any(c.source_user_id == owner.user_id for c in await list_connections(self.config_service, self.connector_id)):
+                return  # someone else holds this Notion account
+            await save_connection(self.config_service, self.connector_id, UserConnection(
+                user_id=user_id, email=email, token="", source_user_id=owner.user_id, source_email=owner.email or "",
+                workspace_id=self.workspace_id, method=METHOD_CONNECTOR, connected_at=now,
+            ))
         self.logger.info("Notion per-user sync: user %s is connected through the connector's sign-in", user_id)
 
     async def _still_connected(self, connection: UserConnection) -> bool:
