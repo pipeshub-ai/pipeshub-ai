@@ -10,6 +10,7 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
 import { AGENT_KEY, Flow, ORG, OWNER, RUN, SEEDED_ANSWER, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream, type Run } from './streaming-flows'
+import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'

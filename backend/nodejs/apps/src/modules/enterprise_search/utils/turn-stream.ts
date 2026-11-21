@@ -31,7 +31,7 @@ import {
 } from '../services/conversation/turn/turn-extension';
 import { conversationExtensions } from '../services/conversation/conversation-extensions';
 import { trackRun } from './active-runs';
-import { AGUIEventType, aguiErrorCodeFromPayload, frameAGUI } from './agui';
+import { AGUIEventType, aguiErrorCodeFromPayload, frameAGUI, readRunFrame } from './agui';
 import { AIRequestRefusedError } from './ai-stream';
 import { ChatStreamRun, logBadFrame, type StreamEnd } from './chat-stream-run';
 import {
@@ -956,15 +956,24 @@ export class TurnStreamPump {
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.replace(/^data: ?/, ''))
       .join('\n');
+    // Only the root run's RUN_FINISHED and RUN_ERROR end or fail the user's run (`readRunFrame`). One Node
+    // cannot read, an empty one included, is logged and not passed on: the run ends on Node's no-answer path.
+    const runFrame =
+      eventType === AGUIEventType.RUN_FINISHED || eventType === AGUIEventType.RUN_ERROR
+        ? readRunFrame(eventType, data)
+        : undefined;
+    if (runFrame?.kind === 'bad') {
+      logBadFrame(eventType as 'RUN_FINISHED' | 'RUN_ERROR', data);
+      return '';
+    }
     if (data === '') return '';
     const forward = (): string => this.relay.relay(eventType, data);
 
     if (eventType === AGUIEventType.RUN_FINISHED) {
       // The root RUN_FINISHED's `result` IS `completion_data`; Node re-emits its own enriched
-      // frame after saving. Nested (sub-agent) frames carry no `result` and pass through.
-      const parsed = this.parse(data, 'RUN_FINISHED');
-      if (!parsed?.result) return forward();
-      this.completeData = parsed.result as IAIResponse;
+      // frame after saving. A sub-agent's frame, or a root one without a `result`, passes through.
+      if (runFrame?.kind !== 'answer') return forward();
+      this.completeData = runFrame.result;
       this.o.streamRun?.sawResult(this.completeData);
       return '';
     }
@@ -981,8 +990,9 @@ export class TurnStreamPump {
       });
     }
     if (eventType === AGUIEventType.RUN_ERROR) {
-      const parsed = this.parse(data, 'RUN_ERROR');
-      if (!parsed) return '';
+      // A sub-agent's error is handed back to its parent as a tool result: passed on, and it fails nothing.
+      if (runFrame?.kind !== 'error') return forward();
+      const parsed = runFrame.data as Frame;
       this.o.streamRun?.sawRunError(parsed.code);
       this.upstreamErrorForwarded = true;
       const message =

@@ -4067,35 +4067,38 @@ export const handleRegenerationStreamData = (
       // Feeds what a stopped regeneration saves.
       if (agui) accumulator?.feed(eventType, dataLine);
 
-      if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
-        // Mirrors the legacy `complete` branch below — `result` on
-        // Python's RUN_FINISHED IS the same completion_data shape
-        // `complete.data` carries today (see `AGUIFormatter.answer_final`).
-        try {
-          const parsed = JSON.parse(dataLine);
-          onCompleteData(parsed.result ?? parsed);
-        } catch {
-          // It carries the whole answer as the AI backend built it: a copy Node cannot read is not sent on.
-          logBadFrame('RUN_FINISHED', dataLine);
-        }
-      } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
-        try {
-          const errorData = JSON.parse(dataLine) as UpstreamErrorFrame;
-          onUpstreamError?.(errorData?.code);
-          replaceWithError(
-            firstNonEmpty(errorData.message) ?? CHAT_ERROR_MESSAGES.failed,
-            'streaming_error',
-            errorData.stack,
-            undefined,
-            (errorData as { provenance?: unknown }).provenance,
-          );
+      if (
+        agui &&
+        (eventType === AGUIEventType.RUN_FINISHED ||
+          eventType === AGUIEventType.RUN_ERROR)
+      ) {
+        // Only the root run's frames end or fail the regeneration (`readRunFrame`).
+        const frame = readRunFrame(eventType, dataLine);
+        if (frame.kind === 'answer') {
+          // Not forwarded: Node sends its own RUN_FINISHED once the answer is saved.
+          onCompleteData(frame.result);
+        } else if (frame.kind === 'error') {
+          // A throw here must not escape the stream's 'data' handler.
+          try {
+            const errorData = frame.data as UpstreamErrorFrame;
+            onUpstreamError?.(errorData?.code);
+            replaceWithError(
+              firstNonEmpty(errorData.message) ?? CHAT_ERROR_MESSAGES.failed,
+              'streaming_error',
+              errorData.stack,
+              undefined,
+              (errorData as { provenance?: unknown }).provenance,
+            );
+          } catch {
+            logBadFrame(eventType, dataLine);
+          }
           filteredChunk += relay.relay(eventType, dataLine);
-        } catch {
-          logBadFrame('RUN_ERROR', dataLine);
-          // A null frame still tells the browser the run failed; one that is not JSON is not passed on.
-          filteredChunk +=
-            relay.relay(eventType, dataLine) ||
-            (dataLine.trim() === 'null' ? `${event}\n\n` : '');
+        } else if (frame.kind === 'pass') {
+          // A sub-agent's frame, or a root RUN_FINISHED without a `result`: passed on, it decides nothing.
+          filteredChunk += relay.relay(eventType, dataLine);
+        } else {
+          // A frame Node cannot read is not passed on: the regeneration ends on Node's own no-answer path.
+          logBadFrame(eventType, dataLine);
         }
       } else if (
         agui &&
