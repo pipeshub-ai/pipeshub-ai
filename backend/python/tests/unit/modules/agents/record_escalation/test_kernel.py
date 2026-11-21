@@ -287,6 +287,8 @@ class TestNeedsWholeDocument:
             "read it end-to-end",
             "What are the gaps in this proposal?",
             "any action items in the minutes?",
+            "How many times is harry potter mentioned in the book?",
+            "count the occurrences of GDPR in the document",
         ],
     )
     def test_whole_document_shapes_trigger(self, query):
