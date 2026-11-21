@@ -34,6 +34,7 @@ from app.modules.indexing.record_progress import (
 )
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
+from app.services.messaging.backpressure import BackpressureEpisode
 from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
@@ -106,7 +107,7 @@ from app.utils import error_class
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
 from app.utils.error_class import log_failure, logged_level, quotes_content
-from app.utils.logging_fields import log_fields, log_once
+from app.utils.logging_fields import log_fields
 from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
     context_from_envelope,
@@ -142,8 +143,6 @@ _DELAY_POLL_INTERVAL_SECONDS = 1.0
 _BUSY_BLOCK_MS = 50
 # The longest the read phase waits for a finish while backpressure holds reads.
 _BACKPRESSURE_WAIT_SECONDS = 0.5
-# Waking on every finish makes short backpressure episodes frequent: log at most one a minute.
-_BACKPRESSURE_LOG_INTERVAL_SECONDS = 60.0
 # Pending entries this consumer is not holding are looked for this often
 # while it reads (see __recover_while_reading), and at most this many are
 # taken back per look. The batch matches __recovery_claim_budget's cap.
@@ -426,8 +425,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.admission_backlog.observer = fairness.observer
         self._suspects_waiting = 0
         self._backpressure_active = False
-        # The fair read phase's "engaged" WARN was logged and its "cleared" INFO is still owed (throttled).
-        self._backpressure_logged = False
+        self._backpressure_episode = BackpressureEpisode()
         self._consecutive_empty_polls = 0
         # Set (on the main loop) whenever a dispatched task ends: the only event that frees
         # the capacity buffered work waits for. Made again in start(): an Event binds to its loop.
@@ -810,6 +808,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.message_handler = message_handler
             self.main_loop = asyncio.get_running_loop()
             self._finished = asyncio.Event()
+            # An episode a previous run left open must not hide this run's first WARNING.
+            self._backpressure_episode.reset()
 
             if not self.redis:
                 await self.initialize()
@@ -3365,9 +3365,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         if budget.blocked or saturated or scheduler_full:
             self._backpressure_active = True
-            if not self._backpressure_logged and log_once(
-                f"redis_indexing:backpressure:{self.config.group_id}", _BACKPRESSURE_LOG_INTERVAL_SECONDS
-            ):
+            if self._backpressure_episode.engaged():
                 self.logger.warning(
                     "Backpressure engaged: tasks waiting for indexing "
                     "admission %s (index gates saturated: %s, scheduler "
@@ -3376,13 +3374,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     saturated,
                     scheduler_full,
                 )
-                self._backpressure_logged = True
             await self.__wait_for_finish(_BACKPRESSURE_WAIT_SECONDS)
             return
         self._backpressure_active = False
-        if self._backpressure_logged:
+        if self._backpressure_episode.cleared(time.monotonic()):
             self.logger.info("Backpressure cleared: %s", budget.describe())
-            self._backpressure_logged = False
 
         await self.__reclaim_while_reading()
         if not self.__buffer_has_room():
@@ -3782,21 +3778,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     # grows this consumer's PEL.
                     saturated = concurrency.index_gates_saturated(self)
                     if not self.__fifo_admission_open(budget=budget, saturated=saturated):
-                        if not self._backpressure_active:
+                        self._backpressure_active = True
+                        if self._backpressure_episode.engaged():
                             self.logger.warning(
                                 "Backpressure engaged: tasks waiting for "
                                 "indexing admission %s (index gates saturated: %s)",
                                 budget.describe(),
                                 saturated,
                             )
-                            self._backpressure_active = True
                         await asyncio.sleep(0.5)
                         continue
-                    elif self._backpressure_active:
+                    self._backpressure_active = False
+                    if self._backpressure_episode.cleared(time.monotonic()):
                         self.logger.info(
                             "Backpressure cleared: %s", budget.describe()
                         )
-                        self._backpressure_active = False
 
                     await self.__recover_while_reading()
                     await self.__reclaim_while_reading()
