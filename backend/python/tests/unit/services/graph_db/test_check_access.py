@@ -287,3 +287,41 @@ class TestAFailedCheckIsNotReportedAsAbsence:
     async def test_linked_records(self, backend) -> None:
         with pytest.raises(PermissionVerificationUnavailableError):
             await _failing(backend).get_linked_records("r1", "org-1", "u", ["BLOCKS"])
+
+
+class TestNeo4jWalksStartWhereTheyAreBound:
+    """A walk whose end the statement tests (the App, a seed, a declared group) can be planned from that end: for each target, from
+    every node of the App. A plan chosen while an App is small stays cached for every App until the statistics change several-fold
+    (`dbms.cypher.min_replan_interval`, `dbms.cypher.statistics_divergence_threshold`), so the batch check must leave the planner no
+    such choice: every walk ends in an unlabelled node nothing tests before the walk's ends are collected."""
+
+    @staticmethod
+    async def _statements() -> list[str]:
+        provider = Neo4jProvider.__new__(Neo4jProvider)
+        provider.logger = MagicMock()
+        texts: list[str] = []
+
+        async def kh_query(query, parameters=None, txn_id=None) -> list:
+            texts.append(query)
+            return [{"items": []}]
+
+        provider._kh_query = kh_query
+        access = {"grantee_ids": ["u"], "gated_app_ids": ["a"], "by_connector": {"a": ["g1"]}}
+        for form in (access, {**access, "probe": {"connector_id": "a", "grantees": ["u"]}}):
+            await provider._kh_v3_accessible_rows("u", "o", ["n1"], ["v1"], access=form, transaction=None)
+        return texts
+
+    @pytest.mark.asyncio
+    async def test_every_walk_ends_in_a_node_only_its_collected_ends_test(self) -> None:
+        import re
+
+        for text in await self._statements():
+            walks = list(re.finditer(r"\)\{\d+,\d+\} \(([^)]*)\)", text))
+            assert len(walks) == 7, len(walks)
+            for walk in walks:
+                end = walk.group(1)
+                assert re.fullmatch(r"\w+", end), f"the walk's end carries a label or property: ({end})"
+                rest = text[walk.end():]
+                collected = re.search(rf"WITH collect\((?:DISTINCT )?{end}\) AS \w+", rest)
+                assert collected, f"the ends of the walk to ({end}) are not collected"
+                assert not re.search(rf"\b{end}\b", rest[:collected.start()]), f"({end}) is tested before its walk's ends are collected"
