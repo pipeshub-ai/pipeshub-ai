@@ -1,4 +1,4 @@
-import { constants as fsConstants } from 'fs';
+import { constants as fsConstants, readFileSync, readlinkSync } from 'fs';
 import fs, { FileHandle } from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -11,6 +11,8 @@ import {
   StorageServiceResponse,
   Document,
   ObjectPage,
+  ConditionalCapabilities,
+  ConditionalDeleteResult,
 } from '../types/storage.service.types';
 import {
   StorageError,
@@ -24,6 +26,51 @@ import {
 } from '../../../libs/errors/storage.errors';
 import { LocalStorageConfig } from '../config/storage.config';
 import { localEtagOf, type ObjectStat } from '../utils/storage-fingerprint';
+import { withDeadline } from '../utils/call-deadline';
+
+/**
+ * A key's lock lease. A holder that stalls longer (event-loop stall, SIGSTOP) loses it to a taker, which is why the
+ * holder checks its token just before the unlink or rename that ends its operation.
+ */
+const KEY_LOCK_LEASE_MS = 5 * 60 * 1000;
+const KEY_LOCK_WAIT_MS = 15_000;
+const KEY_LOCK_POLL_MS = 10;
+
+/**
+ * Who a process is, for a lock on a mount other processes share: the boot and the PID namespace its pid belongs to. A
+ * pid means something only inside one PID namespace of one boot, and two containers on a shared mount can have the same
+ * hostname and unrelated pids, so a lock's owner is checked for liveness by pid only when it names the same boot and the
+ * same PID namespace as this process; otherwise the lease alone decides. Unreadable (not Linux): no identity, no pid trust.
+ */
+function readProcessIdentity(): { boot?: string; pidNs?: string } {
+  try {
+    return {
+      boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      pidNs: readlinkSync('/proc/self/ns/pid'),
+    };
+  } catch {
+    return {};
+  }
+}
+const PROCESS_IDENTITY = readProcessIdentity();
+/** A locked section (a conditional delete, a bump, a write of one key) that takes longer fails: it is a few file operations. */
+const KEY_SECTION_DEADLINE_MS = 60_000;
+/** A reclaim guard older than this was left by a contender that stopped. */
+const KEY_LOCK_GUARD_STALE_MS = 10_000;
+
+/**
+ * File-system types (`statfs.type`) on which the lock file, the descriptor `fstat` and the rename-over are coherent
+ * for every process that can reach the mount: ext4, xfs, btrfs, zfs, tmpfs, overlayfs. Anything else (NFS, CIFS,
+ * FUSE, Ceph, Lustre, 9p, virtiofs...) reads as shared and honours no conditional operation.
+ */
+const LOCAL_CAPABILITY_MEMO = new Map<
+  string,
+  Promise<ConditionalCapabilities>
+>();
+
+const LOCAL_FS_TYPES = new Set<number>([
+  0xef53, 0x58465342, 0x9123683e, 0x2fc12fc1, 0x01021994, 0x794c7630,
+]);
 
 // Local filesystems cap one name at 255 bytes; object stores do not, so their
 // keys keep the full name. Names that fit are kept byte for byte.
@@ -63,6 +110,9 @@ export function fitPathSegment(full: string): string {
 
 @injectable()
 class LocalStorageAdapter implements StorageServiceInterface {
+  /** The deadline of one locked section of a key (tests shorten it). */
+  callDeadlineMs = KEY_SECTION_DEADLINE_MS;
+
   private readonly mountPath: string;
   private readonly baseUrl: string;
   private readonly mountName: string;
@@ -573,7 +623,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (located === null) {
         throw new StorageNotFoundError('Local folder not found');
       }
-      await this.writeFileAtomically(located.target, data);
+      await this.withKeyLock(located.target, () =>
+        this.writeFileAtomically(located.target, data),
+      );
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to write object to local storage', {
@@ -600,9 +652,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (located === null) {
         throw new StorageNotFoundError('Local folder not found');
       }
-      return await this.writeFileAtomically(located.target, data, {
-        ifAbsent: true,
-      });
+      return await this.withKeyLock(located.target, () =>
+        this.writeFileAtomically(located.target, data, { ifAbsent: true }),
+      );
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to write object to local storage', {
@@ -641,12 +693,17 @@ class LocalStorageAdapter implements StorageServiceInterface {
       candidates.push({ key, full });
     }
     candidates.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-    const listed: { key: string; size: number; lastModifiedMs: number }[] = [];
+    const listed: {
+      key: string;
+      size: number;
+      lastModifiedMs: number;
+      etag: string;
+    }[] = [];
     for (const { key, full } of candidates) {
       if (listed.length > options.limit) break;
       let stat;
       try {
-        stat = await fs.lstat(full);
+        stat = await fs.lstat(full, { bigint: true });
       } catch (error) {
         // Gone since the directory was read: skip it. Any other failure stops the listing, so a sweep never
         // works from a reference set with a manifest silently missing.
@@ -656,8 +713,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (!stat.isFile()) continue;
       listed.push({
         key,
-        size: stat.size,
-        lastModifiedMs: Math.floor(stat.mtimeMs),
+        size: Number(stat.size),
+        lastModifiedMs: Number(stat.mtimeNs / BigInt(1_000_000)),
+        etag: localEtagOf(stat),
       });
     }
     const objects = listed.slice(0, options.limit);
@@ -674,6 +732,292 @@ class LocalStorageAdapter implements StorageServiceInterface {
         force: true,
       });
       await this.pruneEmptyAncestors(relative);
+    }
+  }
+
+  /**
+   * Takes the key's lock, runs `body`, releases. The lock is a file `.<sha1>.lock` beside the key (a dot name: never
+   * listed), created with `wx` so exactly one creator wins; a lock older than the lease is taken over by renaming
+   * it to a unique name first (only one renamer succeeds), then creating anew. `body` receives `stillHeld()`, which
+   * it calls just before the step that ends the operation: false when the lease was taken over meanwhile.
+   */
+  private async withKeyLock<T>(
+    fullPath: string,
+    body: (stillHeld: () => Promise<boolean>) => Promise<T>,
+  ): Promise<T> {
+    const lockPath = path.join(
+      path.dirname(fullPath),
+      `.${createHash('sha1').update(path.basename(fullPath)).digest('hex')}.lock`,
+    );
+    const token = randomUUID();
+    const owner = JSON.stringify({
+      token,
+      pid: process.pid,
+      host: os.hostname(),
+      ...PROCESS_IDENTITY,
+    });
+    const deadline = Date.now() + KEY_LOCK_WAIT_MS;
+    for (;;) {
+      try {
+        // `wx`: exactly one creator wins. (Not `writeFile`: this provider writes bytes in one place only.)
+        const lock = await fs.open(lockPath, 'wx', 0o600);
+        try {
+          await lock.write(owner);
+        } finally {
+          await lock.close();
+        }
+        break;
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code !== 'EEXIST') throw error;
+        if (Date.now() > deadline) {
+          throw new StorageUploadError(
+            'The object is locked by another writer; try again',
+          );
+        }
+        if (await this.reclaimAbandonedLock(lockPath)) continue;
+        await new Promise((resolve) => setTimeout(resolve, KEY_LOCK_POLL_MS));
+      }
+    }
+    const stillHeld = async (): Promise<boolean> => {
+      try {
+        const held = JSON.parse(await fs.readFile(lockPath, 'utf8')) as {
+          token?: string;
+        };
+        return held.token === token;
+      } catch {
+        return false;
+      }
+    };
+    const state = { timedOut: false };
+    const release = async (): Promise<void> => {
+      if (await stillHeld()) await fs.rm(lockPath, { force: true });
+    };
+    try {
+      // The deadline covers the whole section. A section that does not finish in it fails the call, but its lock is kept
+      // while the work it guards may still be running (a taker must not enter beside it) and is released when that work
+      // settles, so a section that ends just after the deadline does not hold the key for the whole lease.
+      const running = body(stillHeld);
+      return await withDeadline(
+        running,
+        this.callDeadlineMs,
+        'local key section',
+      ).catch((error: unknown) => {
+        if ((error as { name?: string }).name === 'TimeoutError') {
+          void running.then(release, release).catch(() => undefined);
+        }
+        state.timedOut = (error as { name?: string }).name === 'TimeoutError';
+        throw error;
+      });
+    } finally {
+      if (!state.timedOut) await release();
+    }
+  }
+
+  /**
+   * Removes an abandoned lock, through a guard file only one contender can hold: it re-reads the lock under the guard,
+   * so a contender that inspected a dead owner's lock cannot move a successor's fresh one. True when the lock was
+   * removed (the caller tries to take it); false when it is held, or another contender is reclaiming it.
+   */
+  private async reclaimAbandonedLock(lockPath: string): Promise<boolean> {
+    const guardPath = `${lockPath}.reclaim`;
+    let guard: FileHandle;
+    try {
+      guard = await fs.open(guardPath, 'wx', 0o600);
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'EEXIST') {
+        // A guard left by a contender that stopped: older than a few seconds, it is removed.
+        try {
+          const st = await fs.stat(guardPath);
+          if (Date.now() - st.mtimeMs > KEY_LOCK_GUARD_STALE_MS) {
+            await fs.rm(guardPath, { force: true });
+          }
+        } catch {
+          // gone already
+        }
+        return false;
+      }
+      if (code === 'ENOENT') return false;
+      throw error;
+    }
+    try {
+      await guard.close();
+      if (!(await this.lockIsAbandoned(lockPath))) return false;
+      const stale = `${lockPath}.stale-${randomUUID()}`;
+      try {
+        await fs.rename(lockPath, stale);
+      } catch (error) {
+        if ((error as { code?: string }).code === 'ENOENT') return true;
+        throw error;
+      }
+      await fs.rm(stale, { force: true });
+      return true;
+    } finally {
+      await fs.rm(guardPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * A lock is abandoned when its owner is gone: a process on this host that no longer exists (taken at once, so a
+   * crash costs nothing), or, for any other owner (another host, or a file with no readable owner), when it is older
+   * than the lease. A live owner on this host keeps its lock for as long as it runs; the token check before the
+   * final step covers a holder that stalls.
+   */
+  private async lockIsAbandoned(lockPath: string): Promise<boolean> {
+    try {
+      const held = JSON.parse(await fs.readFile(lockPath, 'utf8')) as {
+        pid?: unknown;
+        host?: unknown;
+        boot?: unknown;
+        pidNs?: unknown;
+      };
+      if (
+        typeof held.pid === 'number' &&
+        held.host === os.hostname() &&
+        held.pid !== process.pid &&
+        // Only an owner that provably shares this PID namespace and boot can be judged by its pid.
+        PROCESS_IDENTITY.boot !== undefined &&
+        PROCESS_IDENTITY.pidNs !== undefined &&
+        held.boot === PROCESS_IDENTITY.boot &&
+        held.pidNs === PROCESS_IDENTITY.pidNs
+      ) {
+        try {
+          process.kill(held.pid, 0);
+        } catch (error) {
+          if ((error as { code?: string }).code === 'ESRCH') return true;
+        }
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') return false;
+      // unreadable or half-written: the lease decides
+    }
+    try {
+      const st = await fs.stat(lockPath);
+      return Date.now() - st.mtimeMs > KEY_LOCK_LEASE_MS;
+    } catch (error) {
+      // released between the read and the stat: nothing to reclaim
+      if ((error as { code?: string }).code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  /** The synthetic ETag of the file at `fullPath` through a freshly opened descriptor, or null when absent. */
+  private async etagAtPath(fullPath: string): Promise<string | null> {
+    let handle: FileHandle;
+    try {
+      // O_NONBLOCK: a file replaced by a FIFO must not block the open (and the key's lock) before the type check below.
+      handle = await fs.open(
+        fullPath,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+      );
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'ENOENT') return null;
+      if (code === 'ELOOP') return null;
+      throw error;
+    }
+    try {
+      const st = await handle.stat({ bigint: true });
+      return st.isFile() ? localEtagOf(st) : null;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /** Conditional operations are honoured only on a file system this provider can name as coherent (see above). */
+  conditionalCapabilities(): Promise<ConditionalCapabilities> {
+    // Per mount, per process: the service builds an adapter for each request, and the warning is meant once.
+    const known = LOCAL_CAPABILITY_MEMO.get(this.mountPath);
+    if (known !== undefined) return known;
+    const asked = (async () => {
+      try {
+        await this.ensureReady();
+        const info = await fs.statfs(this.mountPath);
+        const local = LOCAL_FS_TYPES.has(info.type);
+        if (!local) {
+          this.logger.warn(
+            'The storage mount is not a recognised local file system; conditional paid-result operations are off',
+            { fsType: info.type },
+          );
+        }
+        return { conditionalDelete: local, bump: local };
+      } catch {
+        // Not an answer about the file system: asked again on the next call.
+        LOCAL_CAPABILITY_MEMO.delete(this.mountPath);
+        return { conditionalDelete: false, bump: false };
+      }
+    })();
+    LOCAL_CAPABILITY_MEMO.set(this.mountPath, asked);
+    return asked;
+  }
+
+  /** Forgets what was learned about mounts (tests). */
+  static clearCapabilityMemo(): void {
+    LOCAL_CAPABILITY_MEMO.clear();
+  }
+
+  /**
+   * Deletes each file only if its ETag (dev, inode, size, mtime) is still the listed one, under the key's lock so a
+   * bump or a write cannot interleave; the live file never moves, so no reader sees a gap.
+   */
+  async deleteObjectsIfMatch(
+    items: { key: string; etag: string }[],
+  ): Promise<ConditionalDeleteResult> {
+    const changed: string[] = [];
+    for (const { key, etag } of items) {
+      const relative = this.sanitizePath(key);
+      const full = this.assertInsideMount(path.join(this.mountPath, relative));
+      let removed: boolean;
+      try {
+        removed = await this.withKeyLock(full, async (stillHeld) => {
+          const current = await this.etagAtPath(full);
+          if (current === null) return false;
+          if (current !== etag) {
+            changed.push(key);
+            return false;
+          }
+          if (!(await stillHeld())) {
+            changed.push(key);
+            return false;
+          }
+          await fs.rm(full, { force: true });
+          return true;
+        });
+      } catch (error) {
+        if ((error as { code?: string }).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (removed) await this.pruneEmptyAncestors(relative);
+    }
+    return { changed };
+  }
+
+  /** Replaces the file only if its ETag is `etag` (a bump), through a temp file renamed over the key. */
+  async writeObjectIfMatch(
+    storageKey: string,
+    data: Buffer,
+    etag: string,
+  ): Promise<'written' | 'gone' | 'changed'> {
+    try {
+      const fullPath = this.objectPathInMount(storageKey);
+      await this.ensureReady();
+      const located = await this.locateInsideRealMount(fullPath);
+      if (located === null) return 'gone';
+      return await this.withKeyLock(located.target, async (stillHeld) => {
+        const current = await this.etagAtPath(located.target);
+        if (current === null) return 'gone';
+        if (current !== etag) return 'changed';
+        if (!(await stillHeld())) return 'changed';
+        await this.writeFileAtomically(located.target, data);
+        return 'written';
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') return 'gone';
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to write object to local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
     }
   }
 
