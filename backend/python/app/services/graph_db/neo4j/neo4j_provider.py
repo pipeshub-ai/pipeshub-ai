@@ -21948,9 +21948,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL (app, kh_q, appOpensEverything) {{
                 OPTIONAL MATCH (kh_q) ((kh_cs)<-[kh_hs:NODE_RELATION]-(kh_ps) WHERE {open_hop}){{0,49}} (kh_top)
                 WITH app, appOpensEverything, collect(kh_top) AS kh_tops
-                RETURN any(kh_s IN kh_tops WHERE {seed('kh_s')}
+                // An EXISTS over the unwound ends, not a list predicate: the seed's own walks aggregate their ends, which Neo4j refuses
+                // inside an expression over a list.
+                RETURN EXISTS {{ UNWIND kh_tops AS kh_s WITH kh_s WHERE {seed('kh_s')}
                   AND NOT {from_app('kh_s', 'x')}
-                  AND NOT {in_declared_scope('kh_s', 'x')}) AS kh_seeded
+                  AND NOT {in_declared_scope('kh_s', 'x')} RETURN 1 }} AS kh_seeded
             }}
             WITH app, kh_q, kh_kids, appOpensEverything, kh_reached, kh_seeded
             WHERE kh_reached OR kh_seeded
