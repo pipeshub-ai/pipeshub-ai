@@ -281,7 +281,8 @@ class MSGraphClient:
         Returns:
             The users with their details. ``complete`` is False when the list may be cut
             (a next page with no data, fewer users than the
-            directory counts, or no count at all); callers then must not withdraw anyone.
+            directory counts, or no count at all); such a list vouches only for the users it
+            holds, and every other stored account is read by id (``withdraw_unconfirmed_accounts``).
         """
         try:
             users = []
