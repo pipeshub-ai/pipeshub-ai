@@ -17,7 +17,7 @@ import {
   type WebSearchProviderMeta,
 } from '../../../workspace/web-search/types';
 import { SidebarCategoryRow } from './sidebar-category-row';
-import { TapAddButton, usePaletteTapAdd } from './sidebar-draggable-row';
+import { PALETTE_ROW_DISABLED_OPACITY, TapAddButton, usePaletteTapAdd } from './sidebar-draggable-row';
 import type { UseWebSearchConfigResult } from '../hooks/use-web-search-config';
 import type { AgentWebSearchAttachment } from '../types';
 import { filterPaletteGroup } from '../sidebar-utils';
@@ -138,7 +138,7 @@ export function AgentBuilderWebSearchSection({
       <SidebarCategoryRow
         groupLabel={groupLabel}
         groupMaterialIcon="public"
-        groupMaterialIconColor="var(--blue-9)"
+        groupMaterialIconColor="var(--blue-11)"
         itemCount={shownProviders.length}
         isExpanded={expanded}
         onToggle={handleToggle}
@@ -267,7 +267,7 @@ function ProviderRow({
               ? 'default'
               : 'not-allowed'
             : 'grab',
-          opacity: dimmed ? 0.55 : 1,
+          opacity: dimmed ? PALETTE_ROW_DISABLED_OPACITY : 1,
         }}
         className={
           dragBlocked
@@ -332,7 +332,7 @@ function ProviderRow({
               <MaterialIcon
                 name="check_circle"
                 size={16}
-                color="var(--green-9)"
+                color="var(--green-11)"
               />
             </span>
           </Tooltip>
@@ -358,6 +358,7 @@ function ProviderRow({
               }
             >
               <IconButton
+                aria-label={isConfigured ? t('action.edit') : t('agentBuilder.configureShort')}
                 type="button"
                 size="1"
                 variant="ghost"

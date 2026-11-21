@@ -292,7 +292,7 @@ export default function WebSearchPage() {
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.webSearch.heading')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
              {t('workspace.webSearch.subtitle')}
             </Text>
           </Box>
@@ -346,7 +346,7 @@ export default function WebSearchPage() {
               </Text>
               <Text
                 size="1"
-                style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
+                style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, fontWeight: 300 }}
               >
                 Configure any providers you want, then pick one as the default
               </Text>
@@ -358,7 +358,7 @@ export default function WebSearchPage() {
 
           {isLoading ? (
             <Flex align="center" justify="center" style={{ padding: '40px 0' }}>
-              <Text size="2" style={{ color: 'var(--slate-10)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 Loading web search settings…
               </Text>
             </Flex>
@@ -425,7 +425,7 @@ export default function WebSearchPage() {
         message={
           <Flex direction="column" gap="2">
             {isCheckingUsage && (
-              <Text size="2" style={{ color: 'var(--slate-10)', fontStyle: 'italic' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)', fontStyle: 'italic' }}>
                 Checking agent usage…
               </Text>
             )}
@@ -449,7 +449,7 @@ export default function WebSearchPage() {
                     <Text key={agent._key} size="1" style={{ color: 'var(--slate-12)' }}>
                       • <Text weight="medium" size="1">{agent.name}</Text>
                       {agent.creatorName && (
-                        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                        <Text size="1" style={{ color: 'var(--slate-11)' }}>
                           {' '}(created by {agent.creatorName})
                         </Text>
                       )}

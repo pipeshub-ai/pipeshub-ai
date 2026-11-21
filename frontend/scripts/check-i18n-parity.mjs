@@ -13,12 +13,14 @@ function pluralParts(key) {
   return { group: `${match[1]}${match[2] ?? ''}`, type: match[2] ? 'ordinal' : 'cardinal', category: match[3] };
 }
 
+const CLDR_ORDER = ['zero', 'one', 'two', 'few', 'many', 'other'];
 const categoryCache = new Map();
+/** The language's categories in CLDR order: the order `Intl` lists them in differs between ICU versions. */
 function pluralCategories(language, type) {
   const cacheKey = `${language}|${type}`;
   if (!categoryCache.has(cacheKey)) {
-    // Sorted: the order ICU reports differs between Node majors, and it leaks into the error list.
-    categoryCache.set(cacheKey, [...new Intl.PluralRules(language, { type }).resolvedOptions().pluralCategories].sort());
+    const categories = new Intl.PluralRules(language, { type }).resolvedOptions().pluralCategories;
+    categoryCache.set(cacheKey, [...categories].sort((a, b) => CLDR_ORDER.indexOf(a) - CLDR_ORDER.indexOf(b)));
   }
   return categoryCache.get(cacheKey);
 }
@@ -105,16 +107,30 @@ export function checkLocaleParity(source, target, targetLanguage = 'de-DE') {
 
     for (const [group, type] of groups) {
       // The source may not carry the category this language needs, so compare
-      // placeholders against whichever variant it does define.
-      const reference = Object.entries(expected)
-        .find(([key, value]) => typeof value === 'string' && pluralParts(key)?.group === group)?.[1];
+      // placeholders against `_other` (the general form; `_one` may omit the count)
+      // or else whichever variant it does define.
+      const reference = typeof expected[`${group}_other`] === 'string'
+        ? expected[`${group}_other`]
+        : Object.entries(expected)
+          .find(([key, value]) => typeof value === 'string' && pluralParts(key)?.group === group)?.[1];
       const required = pluralCategories(targetLanguage, type);
+      const groupVariables = new Set(Object.entries(expected)
+        .filter(([key, value]) => typeof value === 'string' && pluralParts(key)?.group === group)
+        .flatMap(([, value]) => interpolationVariables(value)));
       for (const category of required) {
         const key = `${group}_${category}`;
         if (typeof actual[key] !== 'string') {
           errors.plurals.push(`${prefix}${key}: missing ${type} string`);
-        } else if (typeof expected[key] === 'string' || reference !== undefined) {
-          visit(expected[key] ?? reference, actual[key], `${prefix}${key}`);
+        } else if (typeof expected[key] === 'string') {
+          // A category covers different numbers per language (Hindi `one` is 0 and 1, English `one` only 1),
+          // so a form may name a variable its group uses, such as the count, that the English form leaves out.
+          const want = interpolationVariables(expected[key]);
+          const got = interpolationVariables(actual[key]);
+          if (want.some((v) => !got.includes(v)) || got.some((v) => !groupVariables.has(v))) {
+            errors.placeholders.push(`${prefix}${key}: ${want.join(', ')} / ${got.join(', ')}`);
+          }
+        } else if (reference !== undefined) {
+          visit(reference, actual[key], `${prefix}${key}`);
         }
       }
 

@@ -67,7 +67,7 @@ function FieldLabel({ label, hint }: FieldLabelProps) {
         {label}
       </Text>
       {hint && (
-        <Text size="1" style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2 }}>
+        <Text size="1" style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2 }}>
           {hint}
         </Text>
       )}
@@ -264,7 +264,7 @@ export function SmtpConfigurePanel({
                 justifyContent: 'center',
               }}
             >
-              <MaterialIcon name="info" size={16} color="var(--accent-9)" />
+              <MaterialIcon name="info" size={16} color="var(--accent-11)" />
             </Box>
             <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '18px' }}>
               {t('workspace.mail.infoBanner')}
@@ -304,7 +304,7 @@ export function SmtpConfigurePanel({
                 color={errors.host ? 'red' : undefined}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="dns" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="dns" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
               </TextField.Root>
               {errors.host && (
@@ -328,7 +328,7 @@ export function SmtpConfigurePanel({
                 color={errors.port ? 'red' : undefined}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="cell_tower" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="cell_tower" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
               </TextField.Root>
               {errors.port && (
@@ -352,7 +352,7 @@ export function SmtpConfigurePanel({
                 color={errors.fromEmail ? 'red' : undefined}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="mail" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="mail" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
               </TextField.Root>
               {errors.fromEmail && (
@@ -374,7 +374,7 @@ export function SmtpConfigurePanel({
                 onChange={handleChange('username')}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="manage_accounts" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="manage_accounts" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
               </TextField.Root>
             </Box>
@@ -392,7 +392,7 @@ export function SmtpConfigurePanel({
                 onChange={handleChange('password')}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="lock" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="lock" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
                 <TextField.Slot side="right">
                   <Box
@@ -402,7 +402,7 @@ export function SmtpConfigurePanel({
                     <MaterialIcon
                       name={showPassword ? 'visibility_off' : 'visibility'}
                       size={16}
-                      color="var(--slate-9)"
+                      color="var(--slate-11)"
                     />
                   </Box>
                 </TextField.Slot>

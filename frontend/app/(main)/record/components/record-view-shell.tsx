@@ -553,7 +553,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
           >
             {hasError ? (
               <Flex direction="column" align="center" justify="center" gap="3" style={{ padding: 'var(--space-6)' }}>
-                <MaterialIcon name="error_outline" size={48} color="var(--red-9)" />
+                <MaterialIcon name="error_outline" size={48} color="var(--red-11)" />
                 <Text size="3" weight="medium" color="red">
                   {error}
                 </Text>
@@ -566,12 +566,12 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                 gap="4"
                 style={{ width: '100%', height: '100%', minHeight: '280px', padding: 'var(--space-6)' }}
               >
-                <MaterialIcon name="error_outline" size={48} color="var(--amber-9)" />
+                <MaterialIcon name="error_outline" size={48} color="var(--amber-11)" />
                 <Flex direction="column" align="center" gap="1" style={{ maxWidth: '360px', textAlign: 'center' }}>
                   <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                     {fileName}
                   </Text>
-                  <Text size="2" style={{ color: 'var(--gray-9)' }}>
+                  <Text size="2" style={{ color: 'var(--gray-11)' }}>
                     {previewError}
                   </Text>
                 </Flex>
@@ -614,7 +614,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                     <MaterialIcon
                       name={recordTypeIcon(recordDetails?.record.recordType ?? '')}
                       size={36}
-                      color="var(--gray-9)"
+                      color="var(--gray-11)"
                     />
                   )}
                 </Box>
@@ -642,7 +642,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                       padding: '2px var(--space-2)',
                     }}
                   >
-                    <Text size="1" weight="medium" style={{ color: 'var(--gray-10)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    <Text size="1" weight="medium" style={{ color: 'var(--gray-11)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                       {recordDetails?.record.recordType ?? ''}
                     </Text>
                   </Box>
@@ -654,7 +654,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                     {t('recordView.openExternal')}
                   </Button>
                 ) : (
-                  <Text size="2" style={{ color: 'var(--gray-9)', textAlign: 'center', maxWidth: '280px' }}>
+                  <Text size="2" style={{ color: 'var(--gray-11)', textAlign: 'center', maxWidth: '280px' }}>
                     {t('recordView.previewUnavailable')}
                   </Text>
                 )}
@@ -746,13 +746,13 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
               ) : null}
 
               <Tooltip content={t('recordView.download')}>
-                <Button variant="outline" color="gray" size="2" onClick={handleDownload}>
+                <Button aria-label={t('recordView.download')} variant="outline" color="gray" size="2" onClick={handleDownload}>
                   <MaterialIcon name="download" size={18} />
                 </Button>
               </Tooltip>
 
               <Tooltip content={isFs ? t('recordView.exitFullscreen') : t('recordView.openFullscreen')}>
-                <Button variant="outline" color="gray" size="2" onClick={handleFullscreenToggle}>
+                <Button aria-label={isFs ? t('recordView.exitFullscreen') : t('recordView.openFullscreen')} variant="outline" color="gray" size="2" onClick={handleFullscreenToggle}>
                   <MaterialIcon name={isFs ? 'close_fullscreen' : 'open_in_full'} size={18} />
                 </Button>
               </Tooltip>

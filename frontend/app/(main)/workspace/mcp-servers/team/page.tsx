@@ -10,6 +10,7 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
+  selectFeatureFlagsKnown,
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 import { ConfirmationDialog } from '../../components';
@@ -36,6 +37,8 @@ function TeamMcpServersPageContent() {
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
+  // A failed read's stand-in never redirects: only an answer that says it is off (UIADOPT1-FU-1).
+  const flagsKnown = useFeatureFlagsStore(selectFeatureFlagsKnown);
   const store = useMcpTeamStore();
   const [isDeleting, setIsDeleting] = useState(false);
   const [busyInstanceId, setBusyInstanceId] = useState<string | null>(null);
@@ -44,6 +47,10 @@ function TeamMcpServersPageContent() {
   const [toolsState, setToolsState] = useState<Record<string, ToolsResult | undefined>>({});
 
   const typeId = searchParams.get('typeId');
+  // A link to one server (the chat's "approve its tools"): `?instance=<id>&tab=hub` opens its panel on that tab, once.
+  const linkedInstance = searchParams.get('instance');
+  const linkedTab = searchParams.get('tab') === 'hub' ? 'hub' : undefined;
+  const openedLink = useRef<string | null>(null);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
@@ -52,10 +59,10 @@ function TeamMcpServersPageContent() {
   }, [isProfileInitialized, isAdmin, router]);
 
   useEffect(() => {
-    if (flagsLoaded && !mcpEnabled) {
+    if (flagsKnown && !mcpEnabled) {
       router.replace('/workspace/general');
     }
-  }, [flagsLoaded, mcpEnabled, router]);
+  }, [flagsKnown, mcpEnabled, router]);
 
   // Loads overlap (a refresh during a delete) and can answer out of order: only the latest applies.
   const loadRequestIdRef = useRef(0);
@@ -87,6 +94,14 @@ function TeamMcpServersPageContent() {
     void loadData();
     return () => useMcpTeamStore.getState().reset();
   }, [isProfileInitialized, isAdmin, flagsLoaded, mcpEnabled, loadData]);
+
+  useEffect(() => {
+    if (!linkedInstance || store.isLoading || openedLink.current === linkedInstance) return;
+    const instance = store.instances.find((i) => i._id === linkedInstance);
+    if (!instance) return;
+    openedLink.current = linkedInstance;
+    store.openEditInstance(instance, linkedTab);
+  }, [linkedInstance, linkedTab, store]);
 
   const handleConfirmDelete = useCallback(async () => {
     const target = store.deleteTarget;

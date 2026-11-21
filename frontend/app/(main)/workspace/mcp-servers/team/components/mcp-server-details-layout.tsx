@@ -105,7 +105,7 @@ export function McpServerDetailsLayout({
             {t('workspace.mcpServers.details.breadcrumbLabel')}
           </Text>
         </button>
-        <MaterialIcon name="chevron_right" size={14} color="var(--gray-9)" />
+        <MaterialIcon name="chevron_right" size={14} color="var(--gray-11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {header?.displayName ?? ''}
         </Text>
@@ -182,7 +182,7 @@ export function McpServerDetailsLayout({
           gap="2"
           style={{ paddingTop: 80 }}
         >
-          <MaterialIcon name="hub" size={48} color="var(--gray-9)" />
+          <MaterialIcon name="hub" size={48} color="var(--gray-11)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.mcpServers.details.noInstances')}
           </Text>
@@ -232,7 +232,7 @@ function HeaderIcon({ header }: { header: McpServerDetailsHeader | null }) {
       {header.icon ? (
         <img src={header.icon} alt="" width={28} height={28} />
       ) : (
-        <MaterialIcon name="hub" size={28} color="var(--gray-10)" />
+        <MaterialIcon name="hub" size={28} color="var(--gray-11)" />
       )}
     </Flex>
   );

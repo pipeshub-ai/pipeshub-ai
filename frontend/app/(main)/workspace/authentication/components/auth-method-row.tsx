@@ -110,7 +110,7 @@ export function AuthMethodRow({
         <Text
           size="1"
           style={{
-            color: 'var(--slate-10)',
+            color: 'var(--slate-11)',
             display: 'block',
             marginTop: 2,
             fontWeight: 300,
@@ -150,7 +150,7 @@ export function AuthMethodRow({
               onClick={() => onConfigure(state.type as ConfigurableMethod)}
               style={{ cursor: 'pointer' }}
             >
-              <MaterialIcon name="settings" size={16} color="var(--slate-10)" />
+              <MaterialIcon name="settings" size={16} color="var(--slate-11)" />
             </IconButton>
           </Tooltip>
         )}

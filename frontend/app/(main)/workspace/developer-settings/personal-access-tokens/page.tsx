@@ -255,7 +255,7 @@ function PersonalAccessTokensPageContent() {
                     <Flex gap="4" wrap="wrap">
                       {tokenDates(token).map(([label, value]) => (
                         <Text key={label} size="1" style={{ color: 'var(--slate-11)' }}>
-                          <span style={{ color: 'var(--slate-10)' }}>{label}</span> {value}
+                          <span style={{ color: 'var(--slate-11)' }}>{label}</span> {value}
                         </Text>
                       ))}
                     </Flex>

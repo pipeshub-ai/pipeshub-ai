@@ -21,6 +21,7 @@ import type {
   McpToolRules,
   McpToolsResponse,
 } from './types';
+import { observeMcpDeployment } from './hub/deployment';
 
 const BASE_URL = '/api/v1/mcp-servers';
 
@@ -162,6 +163,7 @@ export const McpServersApi = {
 
   async getMyMcpServers(includeTools = true): Promise<McpMyServersResponse> {
     const { data } = await apiClient.get(`${BASE_URL}/my-mcp-servers`, { params: { includeTools } });
+    observeMcpDeployment(data);
     return data;
   },
 

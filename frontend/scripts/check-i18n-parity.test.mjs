@@ -98,6 +98,17 @@ test('checks placeholders inside a plural category the source does not define', 
   assert.equal(result.valid, false);
 });
 
+test('a category the source lacks takes its placeholders from _other, not a _one without the count', () => {
+  const source = { thought_one: 'Thought about this', thought_other: 'Thought {{count}} times' };
+  const result = checkLocaleParity(
+    source,
+    { thought_one: 'Lo pensó', thought_many: 'Pensó {{count}} de veces', thought_other: 'Pensó {{count}} veces' },
+    'es-ES',
+  );
+  assert.deepEqual(result.errors.placeholders, []);
+  assert.equal(result.valid, true);
+});
+
 test('judges plural groups inside an absent subtree by the target language, not the source', () => {
   const source = { panel: { title: 'Title', items_one: '{{count}} item', items_other: '{{count}} items' } };
 
@@ -108,10 +119,35 @@ test('judges plural groups inside an absent subtree by the target language, not 
 
   const spanish = checkLocaleParity(source, {}, 'es-ES');
   assert.deepEqual(spanish.errors.plurals, [
-    'panel.items_many: missing cardinal string',
     'panel.items_one: missing cardinal string',
+    'panel.items_many: missing cardinal string',
     'panel.items_other: missing cardinal string',
   ], 'Spanish needs _many even though the English source has no such category');
+});
+
+test('lists a language\'s plural forms in CLDR order, whatever order this ICU gives them in', () => {
+  const source = { n_one: '{{count}}', n_other: '{{count}}' };
+  const PluralRules = Intl.PluralRules;
+  Intl.PluralRules = class extends PluralRules {
+    resolvedOptions() {
+      const options = super.resolvedOptions();
+      return { ...options, pluralCategories: [...options.pluralCategories].reverse() };
+    }
+  };
+  let plurals;
+  try {
+    plurals = checkLocaleParity(source, {}, 'ar-EG').errors.plurals;
+  } finally {
+    Intl.PluralRules = PluralRules;
+  }
+  assert.deepEqual(plurals, [
+    'n_zero: missing cardinal string',
+    'n_one: missing cardinal string',
+    'n_two: missing cardinal string',
+    'n_few: missing cardinal string',
+    'n_many: missing cardinal string',
+    'n_other: missing cardinal string',
+  ]);
 });
 
 test('still reports an absent subtree that holds nothing', () => {
@@ -130,6 +166,20 @@ test('an optional plural override stays optional, but is checked once it is ther
 
   const wrongType = checkLocaleParity(source, { ...base, items_zero: { nested: 'x' } });
   assert.deepEqual(wrongType.errors.types, ['items_zero: string / object']);
+});
+
+test('a plural form may add a variable its group uses, because categories cover different numbers', () => {
+  const source = { pages_one: 'Read a web page', pages_other: 'Read {{count}} web pages' };
+
+  // Hindi `one` is 0 and 1: "एक वेब पेज" would be wrong for 0, so the count belongs in it.
+  const hindi = checkLocaleParity(source, { pages_one: '{{count}} वेब पेज पढ़ें', pages_other: '{{count}} वेब पेज पढ़ें' }, 'hi-IN');
+  assert.equal(hindi.valid, true);
+
+  const invented = checkLocaleParity(source, { pages_one: '{{total}} पेज', pages_other: '{{count}} पेज' }, 'hi-IN');
+  assert.deepEqual(invented.errors.placeholders, ['pages_one:  / total']);
+
+  const dropped = checkLocaleParity({ a_one: '{{name}}: one', a_other: '{{name}}: {{count}}' }, { a_one: 'eins', a_other: '{{name}}: {{count}}' });
+  assert.deepEqual(dropped.errors.placeholders, ['a_one: name / ']);
 });
 
 test('a target-only plural override may drop a variable but not invent one', () => {

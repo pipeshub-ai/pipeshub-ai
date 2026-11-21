@@ -225,7 +225,7 @@ function StageRow({
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {label}
           </Text>
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {hint}
           </Text>
         </Flex>
@@ -239,7 +239,7 @@ function StageRow({
       {applicable > 0 ? (
         <StageMeter label={label} progress={progress} applicable={applicable} valueText={progressText} />
       ) : progress.skipped === 0 ? (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.connectors.overview.enrichment.notStarted')}
         </Text>
       ) : null}
@@ -265,7 +265,7 @@ function StageRow({
               <Text size="1" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {item.value}
               </Text>
-              <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              <Text size="1" style={{ color: 'var(--gray-11)' }}>
                 {item.label}
               </Text>
             </Flex>

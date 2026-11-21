@@ -7,7 +7,7 @@ import { toast } from '@/lib/store/toast-store';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FormField, WorkspaceRightPanel } from '../../components';
+import { FormField, FormFieldTextField, WorkspaceRightPanel } from '../../components';
 import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../../mcp-servers/hooks/use-mcp-oauth-popup';
 import { ApiToolsetsApi } from '../api';
 import {
@@ -21,7 +21,6 @@ import {
 } from '../toolset-form';
 import type { ApiToolset, ApiToolsetTestResult } from '../types';
 import { ApiOperationsChecklist } from './api-operations-checklist';
-import { LabeledTextField } from './labeled-controls';
 import { PanelSection } from './panel-section';
 
 interface ApiActionConnectionPanelProps {
@@ -188,7 +187,7 @@ export function ApiActionConnectionPanel({ toolset, isAdmin, onOpenChange, onCha
           {canSave
             ? fields.map((field, index) => (
                 <FormField key={field} label={t(`workspace.apiToolsets.connect.fields.${field}`)} required>
-                  <LabeledTextField
+                  <FormFieldTextField
                     size="2"
                     type={isSecretField(field) ? 'password' : 'text'}
                     autoComplete="off"
@@ -254,7 +253,7 @@ export function ApiActionConnectionPanel({ toolset, isAdmin, onOpenChange, onCha
               ) : null}
             </Flex>
           ) : (
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {t(status === 'notConnected' ? 'workspace.apiToolsets.connect.testNeedsConnection' : 'workspace.apiToolsets.connect.testIdle')}
             </Text>
           )}

@@ -85,7 +85,7 @@ function SetupRow({
         style={{ padding: 'var(--space-3) 0', cursor: clickable ? 'pointer' : 'default' }}
       >
         <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
-          <MaterialIcon name={icon} size={16} color="var(--slate-10)" />
+          <MaterialIcon name={icon} size={16} color="var(--slate-11)" />
           <Text size="2" style={{ color: 'var(--slate-12)' }}>
             {label}
           </Text>
@@ -97,7 +97,7 @@ function SetupRow({
             <Text
               size="1"
               style={{
-                color: 'var(--slate-9)',
+                color: 'var(--slate-11)',
                 maxWidth: 130,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -113,7 +113,7 @@ function SetupRow({
             <MaterialIcon
               name="chevron_right"
               size={16}
-              color="var(--slate-8)"
+              color="var(--slate-11)"
               style={{
                 transform: expanded ? 'rotate(90deg)' : 'none',
                 transition: expandable ? 'transform 0.15s ease' : undefined,
@@ -135,8 +135,8 @@ function SetupRow({
 function SetStatus({ done, text }: { done: boolean; text: string }) {
   return (
     <Flex align="center" gap="1">
-      {done && <MaterialIcon name="check" size={14} color="var(--jade-9)" />}
-      <Text size="1" style={{ color: done ? 'var(--jade-11)' : 'var(--slate-9)' }}>
+      {done && <MaterialIcon name="check" size={14} color="var(--jade-11)" />}
+      <Text size="1" style={{ color: done ? 'var(--jade-11)' : 'var(--slate-11)' }}>
         {text}
       </Text>
     </Flex>
@@ -315,7 +315,7 @@ export function ProjectSettingsPanel({
             <Text
               size="2"
               style={{
-                color: project.instructions ? 'var(--slate-12)' : 'var(--slate-10)',
+                color: project.instructions ? 'var(--slate-12)' : 'var(--slate-11)',
                 whiteSpace: 'pre-wrap',
               }}
             >

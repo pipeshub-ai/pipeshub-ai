@@ -68,7 +68,7 @@ export function FilePreviewFullscreen({
   const showDocument = !stackCitations || stackedView === 'document';
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
-  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut, isZoomLocked, toggleZoomLock } =
+  const { pdfScale, pdfScaleValue, setPdfScale, handlePdfZoomIn, handlePdfZoomOut, isZoomLocked, toggleZoomLock } =
     usePdfZoom(file.id, file.url, initialPage);
 
   // Calculate pagination visibility
@@ -127,7 +127,7 @@ export function FilePreviewFullscreen({
     totalPages,
     onPageChange: handlePageChange,
     onTotalPagesDetected: handleTotalPagesDetected,
-    scale: pdfScale,
+    scale: pdfScaleValue,
     onScaleChange: setPdfScale,
   };
 
@@ -165,7 +165,7 @@ export function FilePreviewFullscreen({
       >
         <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <FileIcon
-            extension={resolvePreviewIconExtension(_recordDetails, file.type)}
+            extension={resolvePreviewIconExtension(_recordDetails, file.type, file.sourceType)}
             filename={file.name}
             mimeType={file.type}
             size={16}
@@ -194,11 +194,11 @@ export function FilePreviewFullscreen({
                 alignItems: 'center',
                 justifyContent: 'center',
                 flexShrink: 0,
-                color: 'var(--accent-9)',
+                color: 'var(--accent-11)',
                 lineHeight: 0,
               }}
             >
-              <MaterialIcon name="open_in_new" size={ICON_SIZES.HEADER} color="var(--accent-9)" />
+              <MaterialIcon name="open_in_new" size={ICON_SIZES.HEADER} color="var(--accent-11)" />
             </a>
           )}
           {file.version !== undefined && onVersionChange && (
@@ -308,7 +308,7 @@ export function FilePreviewFullscreen({
               gap="3"
               style={{ padding: 'var(--space-6)' }}
             >
-              <MaterialIcon name="error_outline" size={48} color="var(--red-9)" />
+              <MaterialIcon name="error_outline" size={48} color="var(--red-11)" />
               <Text size="3" weight="medium" color="red">
                 {error}
               </Text>
@@ -409,13 +409,14 @@ export function FilePreviewFullscreen({
                 <MaterialIcon
                   name={isZoomLocked ? 'lock' : 'lock_open'}
                   size={ICON_SIZES.SECONDARY}
-                  color={isZoomLocked ? 'var(--accent-9)' : undefined}
+                  color={isZoomLocked ? 'var(--accent-11)' : undefined}
                 />
               </IconButton>
 
               <Box style={PREVIEW_TOOLBAR_DIVIDER} aria-hidden />
 
               <IconButton
+                aria-label={t('common.previousPage')}
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -433,6 +434,7 @@ export function FilePreviewFullscreen({
               </Box>
 
               <IconButton
+                aria-label={t('common.nextPage')}
                 variant="ghost"
                 color="gray"
                 size="1"

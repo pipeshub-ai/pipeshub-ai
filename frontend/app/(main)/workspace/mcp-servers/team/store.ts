@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import type { McpMyServerEntry, McpServerInstance, McpServerTemplate } from '../types';
+import type { PanelTab } from './components/mcp-instance-config-panel';
 
 type DeleteTarget = Pick<McpServerInstance, '_id' | 'name' | 'scope'>;
 
@@ -34,6 +35,8 @@ interface ConfigPanelState {
   editingInstance: McpMyServerEntry | null;
   /** Set when creating from a catalog card. */
   prefillTemplate: McpServerTemplate | null;
+  /** The panel tab an edit opens on; the configuration when unset. */
+  initialTab?: PanelTab;
 }
 
 interface McpTeamState {
@@ -68,7 +71,7 @@ interface McpTeamActions {
 
   openCreateFromTemplate: (template: McpServerTemplate) => void;
   openCreateCustom: () => void;
-  openEditInstance: (instance: McpMyServerEntry) => void;
+  openEditInstance: (instance: McpMyServerEntry, tab?: PanelTab) => void;
   closeConfigPanel: () => void;
 
   openDeleteDialog: (instance: DeleteTarget) => void;
@@ -141,9 +144,15 @@ export const useMcpTeamStore = create<McpTeamState & McpTeamActions>()(
         set((s) => {
           s.configPanel = { open: true, mode: 'create', editingInstance: null, prefillTemplate: null };
         }),
-      openEditInstance: (instance) =>
+      openEditInstance: (instance, tab) =>
         set((s) => {
-          s.configPanel = { open: true, mode: 'edit', editingInstance: instance, prefillTemplate: null };
+          s.configPanel = {
+            open: true,
+            mode: 'edit',
+            editingInstance: instance,
+            prefillTemplate: null,
+            ...(tab ? { initialTab: tab } : {}),
+          };
         }),
       closeConfigPanel: () =>
         set((s) => {

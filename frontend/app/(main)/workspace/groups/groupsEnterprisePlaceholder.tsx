@@ -58,7 +58,7 @@ export default function GroupsEnterprisePlaceholder() {
             backgroundColor: 'var(--slate-3)',
           }}
         >
-          <MaterialIcon name="workspace_premium" size={28} color="var(--slate-9)" />
+          <MaterialIcon name="workspace_premium" size={28} color="var(--slate-11)" />
         </Flex>
 
         <Flex

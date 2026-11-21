@@ -1,5 +1,5 @@
 @import '@radix-ui/themes/styles.css';
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');
+@import './fonts.css';
 
 @font-face {
   font-family: 'ClashGrotesk';
@@ -67,6 +67,8 @@
   --frost-bg-strong: rgba(255, 255, 255, 0.7);
   /* Dim behind a frosted side panel: light, so the page still shows through the frost */
   --frost-scrim: rgba(8, 10, 12, 0.3);
+  --neutral-1: #fcfcfd;
+  --neutral-3: #f0f0f3;
   --neutral-9: #8b8d98;
   --neutral-11: #60646c;
   --neutral-12: #1c2024;
@@ -74,6 +76,8 @@
   --neutral-a5: #00104020;
   --neutral-a8: #00064046;
   --neutral-a10: #00071b7f;
+  --neutral-a11: #0007149f;
+  --neutral-a12: #000509e3;
   --segment-on: #ffffff;
   --tokens-colors-surface: rgba(139, 139, 139, 0.084);
   --accent-surface: rgba(18, 249, 157, 0.04);
@@ -116,6 +120,30 @@
   --mcp-logo-plate-on: 0;
 }
 
+/* Hue text steps, light only (R31UIFU-FU-2). Step 11 is the one text step of every scale, and the neutral's holds
+   4.5:1 on the page and on every neutral surface step 1-5 (subtle, panel, hover, pressed). Radix's light step 11 of
+   these hues does not (amber 3.5:1 on olive-5, jade 4.1:1 on olive-3), so a status word went under AA wherever it sat
+   on a panel. Each value is Radix's step 11 darkened in OKLCH, hue and chroma kept, just to that floor, and to 4.5:1 on
+   its own soft tint (Badge, Callout: a3 over a card). Solid and alpha are the same opaque colour, so Radix's own
+   colour props (`color="amber"` reads --amber-a11) follow. Dark mode keeps Radix's values (7:1 or more).
+   text-step-contrast.test.ts TEXTSTEP-6/7 hold every hue the UI writes text in to this rule. */
+:root:not(.dark, .dark-theme), .light, .light-theme {
+  --jade-11: #007258;
+  --jade-a11: #007258;
+  --amber-11: #985300;
+  --amber-a11: #985300;
+  --green-11: #02734a;
+  --green-a11: #02734a;
+  --blue-11: #0064bd;
+  --blue-a11: #0064bd;
+  --orange-11: #b53800;
+  --orange-a11: #b53800;
+  --red-11: #c31e28;
+  --red-a11: #c31e28;
+  --sky-11: #006b95;
+  --sky-a11: #006b95;
+}
+
 /* Dark Mode */
 .dark, .dark-theme,
 [data-is-root-theme="true"].dark,
@@ -123,6 +151,8 @@
   --effects-translucent: rgba(29, 29, 33, 0.70);
   --frost-bg: rgba(29, 29, 33, 0.58);
   --frost-bg-strong: rgba(29, 29, 33, 0.6);
+  --neutral-1: #111113;
+  --neutral-3: #212225;
   --neutral-9: #696e77;
   --neutral-11: #b0b4ba;
   --neutral-12: #edeef0;
@@ -130,6 +160,8 @@
   --neutral-a5: #d9edfe25;
   --neutral-a8: #d9edff5d;
   --neutral-a10: #e5edfd7b;
+  --neutral-a11: #f1f7feb5;
+  --neutral-a12: #fcfdffef;
   --segment-on: #111113;
   --tokens-colors-surface: rgba(0, 0, 0, 0.25);
   --accent-surface: rgba(18, 249, 157, 0.04);
@@ -236,7 +268,7 @@
   /* Image Creation Mode (blue) */
   --mode-image-bg: var(--blue-3);
   --mode-image-fg: var(--blue-11);
-  --mode-image-icon: var(--blue-9);
+  --mode-image-icon: var(--blue-11);
   --mode-image-active-bg: var(--blue-3);
   --mode-image-toggle: var(--blue-9);
 
@@ -413,17 +445,28 @@ body {
   outline: 2px solid var(--focus-8);
   outline-offset: -2px;
 }
+/* A background job's card and its steps fold (chat job-card.tsx): plain buttons keep a visible focus ring. */
+.job-card-control:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: -2px;
+}
 
-/* Every Radix Dialog / AlertDialog (confirmations, forms, side panels) is frosted, over the
-   light frost scrim instead of Radix's heavy overlay so the frost has something to show.
-   Doubled class: the portaled content carries .radix-themes itself. */
+/* Every Radix Dialog / AlertDialog sits over the light frost scrim instead of Radix's heavy
+   overlay. Its surface is opaque: frost over the scrim composited to grey in light, which
+   dimmed every line and edge in it (WCAG 1.4.11, QAFINAL-FU-AXE-2). Side panels that set
+   their own frost inline keep it. Doubled class: the portaled content carries .radix-themes itself. */
 .rt-BaseDialogContent.rt-BaseDialogContent {
-  background-color: var(--frost-bg-strong);
-  -webkit-backdrop-filter: var(--frost-filter);
-  backdrop-filter: var(--frost-filter);
+  background-color: var(--color-panel-solid);
 }
 .rt-BaseDialogOverlay::before {
   background-color: var(--frost-scrim);
+}
+
+/* An enabled switch that is off: Radix's surface track is gray-a3 with a gray-a5 edge, 1.3:1
+   against a white surface, and its white thumb vanishes into it in light. A gray-a9 edge is
+   over 3:1 on white and on gray-2 cards (WCAG 1.4.11). */
+:is(.light, .light-theme) .rt-SwitchRoot.rt-variant-surface[data-state='unchecked']:not([data-disabled])::before {
+  box-shadow: inset 0 0 0 1px var(--gray-a9);
 }
 
 /* A disabled switch that is on: Radix greys the track whatever the state, so in dark mode
@@ -548,9 +591,9 @@ body {
    Custom Dialog Styling
    ======================== */
 .radix-themes .rt-DialogContent {
-  box-shadow: 0 16px 36px -20px var(--Colors-Neutral-Neutral-Alpha-7, rgba(217, 237, 255, 0.25)),
-    0 16px 64px 0 var(--Colors-Neutral-Neutral-Alpha-2, rgba(216, 244, 246, 0.04)),
-    0 12px 60px 0 var(--Overlays-Black-Alpha-3, rgba(0, 0, 0, 0.15)) !important;
+  box-shadow: 0 16px 36px -20px rgba(217, 237, 255, 0.25),
+    0 16px 64px 0 rgba(216, 244, 246, 0.04),
+    0 12px 60px 0 rgba(0, 0, 0, 0.15) !important;
 }
 
 /* Service account dialog: Radix wraps content in .rt-DialogScroll (overflow auto) — we scroll inside
@@ -816,11 +859,11 @@ summary {
 }
 
 .kb-search-input::placeholder {
-  color: var(--gray-10);
+  color: var(--gray-11);
 }
 
 .collections-search-input::placeholder {
-  color: var(--slate-a9);
+  color: var(--slate-a11);
 }
 
 /* ========================
@@ -1029,6 +1072,18 @@ li > blockquote {
   to { opacity: 1; transform: none; }
 }
 
+/* Until its font has loaded (icon-font-script.tsx), an icon is an empty box of its size, never its ligature's letters. */
+html:not(.icons-outlined-ready) .material-icons-outlined,
+html:not(.icons-filled-ready) .material-icons {
+  color: transparent !important;
+}
+
+/* An icon's ligature name is never text a person selects: copied, the brief read "expand_more" and "payments". */
+.material-icons-outlined,
+.material-icons {
+  user-select: none;
+}
+
 /* Same box as the old outlined set, with a lighter stroke. */
 .material-icons-outlined {
   font-family: 'Material Symbols Outlined' !important;
@@ -1095,6 +1150,21 @@ li > blockquote {
 .agent-builder-flow .flow-node-card,
 .agent-builder-flow .flow-node-surface {
   color: var(--agent-flow-text);
+}
+
+/* Soft badges and buttons in light, every hue but gray: Radix's accent-11 text on its accent-a3 fill is 3.99-4.25:1
+   for orange, jade, green, amber and blue, and red falls to 4.42:1 over a tinted card, under WCAG AA's 4.5:1 for their
+   12-14 px text (axe on the UX captures, QA-FINAL). accent-12 passes in every hue; in dark accent-11 already does. */
+:is(.light, .light-theme) :is(.rt-Badge, .rt-Button).rt-variant-soft:not([data-accent-color='gray']):not([data-disabled]):not(:disabled) {
+  color: var(--accent-12);
+}
+
+/* Field placeholders: Radix draws surface and classic ones in gray-a10, 3.9:1 on white, under WCAG AA's 4.5:1 for
+   the 14 px hint a placeholder carries (QAFINAL-FU-AXE-2). gray-a11 passes in both themes and still reads lighter
+   than a typed value's gray-12. Soft variants keep Radix's accent-12; disabled and read-only fields keep theirs. */
+:is(.rt-TextFieldRoot, .rt-TextAreaRoot):not(.rt-variant-soft) :is(.rt-TextFieldInput, .rt-TextAreaInput):not(:disabled):not(:read-only)::placeholder,
+.rt-SelectTrigger:not(.rt-variant-soft):not(.rt-variant-ghost)[data-placeholder] .rt-SelectTriggerInner {
+  color: var(--gray-a11);
 }
 
 /* Gray soft badges: bump to accent-12 for contrast on accent-a3 fill */
@@ -1286,6 +1356,14 @@ li > blockquote {
   cursor: not-allowed;
 }
 
+/* Workspace pages' side padding at phone width; unset on desktop, so each page keeps its own fallback
+   (`var(--workspace-gutter, 100px)`). Same breakpoint as `useIsMobile`. */
+@media (max-width: 768px) {
+  :root {
+    --workspace-gutter: 16px;
+  }
+}
+
 /* Same breakpoint as `useIsMobile`. */
 @media (max-width: 768px) {
   .agent-builder-draggable-row {
@@ -1332,6 +1410,11 @@ li > blockquote {
 }
 
 .agent-builder-section-header {
+  /* A <button>: the browser's own face goes, the row's stays. */
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  background: none;
   min-height: 40px;
   padding: 6px 6px 6px 10px;
   margin-left: -4px;
@@ -1450,7 +1533,7 @@ th code {
 
 .ph-skill-markdown-editor .tiptap p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
-  color: var(--gray-8);
+  color: var(--gray-11);
   pointer-events: none;
   float: left;
   height: 0;
@@ -1485,7 +1568,7 @@ th code {
 }
 
 .ph-skill-markdown-editor .tiptap code {
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: ui-monospace, monospace;
   font-size: 0.88em;
   padding: 2px 5px;
   border-radius: 3px;
@@ -1494,7 +1577,7 @@ th code {
 }
 
 .ph-skill-markdown-editor .tiptap pre {
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: ui-monospace, monospace;
   font-size: 0.88em;
   background: var(--gray-a2);
   border: 1px solid var(--olive-3);
@@ -1630,11 +1713,11 @@ th code {
   white-space: nowrap;
   background-image: linear-gradient(
     100deg,
-    var(--neutral-a10) 0%,
-    var(--neutral-a10) 38%,
+    var(--neutral-a11) 0%,
+    var(--neutral-a11) 38%,
     var(--neutral-12) 50%,
-    var(--neutral-a10) 62%,
-    var(--neutral-a10) 100%
+    var(--neutral-a11) 62%,
+    var(--neutral-a11) 100%
   );
   background-size: 220% 100%;
   background-repeat: no-repeat;
@@ -1654,7 +1737,7 @@ th code {
   }
   .chat-placeholder-shimmer {
     animation: none;
-    color: var(--neutral-a10);
+    color: var(--neutral-a11);
     background: none;
   }
 }

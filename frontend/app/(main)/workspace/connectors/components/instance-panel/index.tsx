@@ -202,8 +202,8 @@ export function InstanceManagementPanel() {
 
   const headerActions = lastSyncedLabel ? (
     <Flex align="center" gap="1">
-      <MaterialIcon name="sync" size={14} color="var(--gray-9)" />
-      <Text size="1" style={{ color: 'var(--gray-9)' }}>
+      <MaterialIcon name="sync" size={14} color="var(--gray-11)" />
+      <Text size="1" style={{ color: 'var(--gray-11)' }}>
         {lastSyncedLabel}
       </Text>
     </Flex>

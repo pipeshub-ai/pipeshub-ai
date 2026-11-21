@@ -178,7 +178,7 @@ function AgentFilterTablist({
 const OLIVE_ROW = {
   backgroundColor: 'var(--olive-2)',
   border: '1px solid var(--olive-3)',
-  borderRadius: 'var(--radius-1-max, 3px)',
+  borderRadius: '3px',
 } as const;
 
 /** Centers Radix checkbox with row icons/text (checkbox defaults sit high on the line box). */
@@ -761,7 +761,7 @@ export function AgentScopedResourcesPanel({
   }) => {
     if (groups.length === 0) {
       return (
-        <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+        <Text size="2" style={{ color: 'var(--slate-11)', padding: 'var(--space-3)' }}>
           {emptyText}
         </Text>
       );
@@ -812,10 +812,10 @@ export function AgentScopedResourcesPanel({
                     </Text>
                     {subtitle ? (
                       <>
-                        <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }}>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }}>
                           ·
                         </Text>
-                        <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }} truncate>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
                           {subtitle}
                         </Text>
                       </>
@@ -886,7 +886,7 @@ export function AgentScopedResourcesPanel({
                         <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
                           {short}
                         </Text>
-                        <Text size="1" style={{ color: 'var(--gray-9)' }} truncate>
+                        <Text size="1" style={{ color: 'var(--gray-11)' }} truncate>
                           {fn}
                         </Text>
                       </Flex>
@@ -945,6 +945,7 @@ export function AgentScopedResourcesPanel({
           hiddenTabs={hiddenTabs}
         />
         <IconButton
+          aria-label={viewMode === 'overlay' ? t('recordView.exitFullscreen') : t('recordView.openFullscreen')}
           variant="ghost"
           color="gray"
           size="1"
@@ -962,7 +963,7 @@ export function AgentScopedResourcesPanel({
           <MaterialIcon
             name={viewMode === 'overlay' ? 'close_fullscreen' : 'open_in_full'}
             size={16}
-            color="var(--slate-9)"
+            color="var(--slate-11)"
           />
         </IconButton>
       </Flex>
@@ -976,7 +977,7 @@ export function AgentScopedResourcesPanel({
           style={{ flex: 1, minWidth: 0 }}
         >
           <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+            <MaterialIcon name="search" size={16} color="var(--gray-11)" />
           </TextField.Slot>
         </TextField.Root>
       </Flex>
@@ -1000,11 +1001,11 @@ export function AgentScopedResourcesPanel({
         {tab === 'connectors' && (
           <>
             {connectors.length === 0 ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)', padding: 'var(--space-3)' }}>
                 {copy.noConnectors}
               </Text>
             ) : filteredConnectors.length === 0 && !searchingServer ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)', padding: 'var(--space-3)' }}>
                 {search.trim().length < KB_MIN_SEARCH_QUERY_LENGTH
                   ? t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })
                   : t('chat.noConnectorsFound')}
@@ -1025,11 +1026,11 @@ export function AgentScopedResourcesPanel({
         {tab === 'collections' && (
           <>
             {collectionRows.length === 0 ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)', padding: 'var(--space-3)' }}>
                 {copy.noCollections}
               </Text>
             ) : filteredCollections.length === 0 && !searchingServer ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)', padding: 'var(--space-3)' }}>
                 {search.trim().length < KB_MIN_SEARCH_QUERY_LENGTH
                   ? t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })
                   : t('chat.agentResources.noCollectionMatches', {
@@ -1115,7 +1116,7 @@ export function AgentScopedResourcesPanel({
               <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={18} />
             ),
             renderToolIcon: (_fullName, group) => (
-              <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={16} color="var(--gray-9)" />
+              <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={16} color="var(--gray-11)" />
             ),
           })}
       </Flex>

@@ -13,7 +13,7 @@
  */
 
 import { useEffect } from 'react';
-import { useInitializeUserProfile } from '@/lib/hooks/use-initialize-user-profile';
+import { useInitializeUserProfile } from '@/config';
 import { getUserIdFromToken } from '@/lib/utils/jwt';
 
 const LOG = '[user-initializer]';

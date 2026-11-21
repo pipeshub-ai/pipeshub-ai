@@ -1,14 +1,14 @@
 'use client';
 
 import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { Callout, Flex, Text, Select, Spinner, TextField } from '@radix-ui/themes';
+import { Callout, Flex, Text, Select, Spinner } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { SERVICE_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useTranslation } from 'react-i18next';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { FormField, FormFieldTextField } from '@/app/(main)/workspace/components/form-field';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { ConnectorsApi } from '../../api';
 import { useConnectorsStore, type ConnectorOAuthAppListRow } from '../../store';
@@ -403,7 +403,7 @@ export function OAuthAppSelector() {
           OAuth app
         </Text>
         {oauthAppAuxiliaryDescription ? (
-          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55, maxWidth: '100%' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55, maxWidth: '100%' }}>
             {oauthAppAuxiliaryDescription}
           </Text>
         ) : null}
@@ -491,7 +491,7 @@ export function OAuthAppSelector() {
             required
             error={oauthInstanceNameError ?? undefined}
           >
-            <TextField.Root
+            <FormFieldTextField
               size="2"
               type="text"
               value={oauthInstanceName ?? ''}
@@ -504,7 +504,7 @@ export function OAuthAppSelector() {
               style={{ width: '100%' }}
             />
           </FormField>
-          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+          <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
             {t('workspace.connectors.authTab.oauthAppNameHelper')}
           </Text>
         </Flex>

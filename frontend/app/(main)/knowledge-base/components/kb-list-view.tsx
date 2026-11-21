@@ -156,18 +156,18 @@ export function getKbItemStatusIcon(item: TableItem, isFolder: boolean): ReactNo
       case 'COMPLETED':
         return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
       case 'IN_PROGRESS':
-        return <LapTimerIcon size={20} color="var(--amber-9)" />;
+        return <LapTimerIcon size={20} color="var(--amber-11)" />;
       case 'FAILED':
-        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-11)" />;
       case 'FILE_TYPE_NOT_SUPPORTED':
-        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-11)" />;
       case 'NOT_STARTED':
         return (
           <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={16} color="var(--slate-11)" />
         );
       case 'QUEUED':
         return (
-          <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-9)" />
+          <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-11)" />
         );
       case 'AUTO_INDEX_OFF':
         return (
@@ -194,15 +194,15 @@ export function getKbItemStatusIcon(item: TableItem, isFolder: boolean): ReactNo
   // For KnowledgeBaseItem, use status
   switch (item.status) {
     case 'indexed':
-      return <MaterialIcon name="check" size={16} color="var(--accent-9)" />;
+      return <MaterialIcon name="check" size={16} color="var(--accent-11)" />;
     case 'processing':
-      return <MaterialIcon name="sync" size={16} color="var(--amber-9)" />;
+      return <MaterialIcon name="sync" size={16} color="var(--amber-11)" />;
     case 'pending':
-      return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+      return <MaterialIcon name="schedule" size={16} color="var(--blue-11)" />;
     case 'failed':
-      return <MaterialIcon name="error" size={16} color="var(--red-9)" />;
+      return <MaterialIcon name="error" size={16} color="var(--red-11)" />;
     default:
-      return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+      return <MaterialIcon name="schedule" size={16} color="var(--blue-11)" />;
   }
 }
 
@@ -344,7 +344,7 @@ export function TableHeaderCell({
             backgroundColor: 'transparent',
           }}
         >
-          <Text size="1" style={{ color: 'var(--neutral-9)', fontWeight: 400 }}>
+          <Text size="1" style={{ color: 'var(--neutral-11)', fontWeight: 400 }}>
             {label}
           </Text>
           {/* The ligature name is text; hidden, the button's name is the column label alone */}
@@ -358,7 +358,7 @@ export function TableHeaderCell({
                   : 'arrow_drop_down'
               }
               size={16}
-              color={'var(--neutral-9)'}
+              color={'var(--neutral-11)'}
             />
           </span>
         </Button>
@@ -382,7 +382,7 @@ export function TableHeaderCell({
         padding: '0 var(--space-2)',
       }}
     >
-      <Text size="1" style={{ color: 'var(--neutral-9)', fontWeight: 400 }}>
+      <Text size="1" style={{ color: 'var(--neutral-11)', fontWeight: 400, ...ONE_LINE }}>
         {label}
       </Text>
     </Flex>
@@ -717,7 +717,7 @@ function TableRow({
           </Tooltip>
           {/* Phones drop the Status and Source columns; their text moves under the name. */}
           {isMobile && mobileSubtitle && (
-            <Text size="1" style={{ color: 'var(--neutral-9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <Text size="1" style={{ color: 'var(--neutral-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {mobileSubtitle}
             </Text>
           )}
@@ -735,7 +735,7 @@ function TableRow({
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 —
               </Text>
             );
@@ -760,7 +760,7 @@ function TableRow({
           <Tooltip content={item.sourceName} side="top" delayDuration={200}>
             <Box style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
               {item.sourceType === 'collection' ? (
-                <FolderIcon variant="default" size={20} color="var(--accent-9)" />
+                <FolderIcon variant="default" size={20} color="var(--accent-11)" />
               ) : (
                 <ConnectorIcon type={item.sourceType} size={16} />
               )}
@@ -772,7 +772,7 @@ function TableRow({
       {/* Size — hidden on mobile to keep the row readable */}
       {!belowDesktop && (
         <Flex role="cell" align="center" justify="center" style={{ width: kbCol('size'), minWidth: kbColMin('size'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? formatSize(item.sizeInBytes ?? undefined)
               : formatSize(item.size)
@@ -784,7 +784,7 @@ function TableRow({
       {/* Created — hidden on mobile. Skip when timestamp is 0 (source has no real value). */}
       {!belowDesktop && (
         <Flex role="cell" align="center" justify="center" style={{ width: kbCol('created'), minWidth: kbColMin('created'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.createdAt ? formatDate(item.createdAt) : '-')
               : (item.createdAt ? formatDate(item.createdAt) : '-')
@@ -796,7 +796,7 @@ function TableRow({
       {/* Updated — hidden on mobile. Skip when timestamp is 0. */}
       {!isMobile && (
         <Flex role="cell" align="center" justify="center" style={{ width: kbCol('updated'), minWidth: kbColMin('updated'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.updatedAt ? formatDate(item.updatedAt) : '-')
               : (item.updatedAt ? formatDate(item.updatedAt) : '-')

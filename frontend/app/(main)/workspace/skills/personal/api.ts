@@ -1,5 +1,7 @@
 import { apiClient } from '@/lib/api';
 import type {
+  CommandShare,
+  CommandShareTargets,
   ImportPreview,
   Skill,
   SkillCandidate,
@@ -108,6 +110,20 @@ export const SkillsApi = {
     return data;
   },
 
+  // ── Sharing a /command (SLASH1 S4) ──
+
+  async getCommandShareTargets(): Promise<CommandShareTargets> {
+    const { data } = await apiClient.get(`${BASE_URL}/commands/share-targets`);
+    return { org: data?.org === true, teams: Array.isArray(data?.teams) ? data.teams : [] };
+  },
+
+  async publishCommand(name: string, share: CommandShare): Promise<void> {
+    await apiClient.post(`${BASE_URL}/${encodeURIComponent(name)}/publish`, {
+      scope: share.scope,
+      ...(share.scope === 'team' ? { teamId: share.teamId } : {}),
+    });
+  },
+
   async rollback(name: string, version: string): Promise<SkillMetadata> {
     const { data } = await apiClient.post(`${BASE_URL}/${encodeURIComponent(name)}/rollback`, { version });
     return data;
@@ -138,8 +154,25 @@ export const SkillsApi = {
     return data?.candidates ?? [];
   },
 
-  async approveCandidate(candidateId: string): Promise<SkillMetadata> {
-    const { data } = await apiClient.post(`${BASE_URL}/candidates/${encodeURIComponent(candidateId)}/approve`);
+  /** `edits` (UI-B4) approve the proposal as the reviewer changed it, in one version. */
+  async approveCandidate(candidateId: string, edits?: object): Promise<SkillMetadata> {
+    const url = `${BASE_URL}/candidates/${encodeURIComponent(candidateId)}/approve`;
+    const { data } = edits ? await apiClient.post(url, edits) : await apiClient.post(url);
+    return data;
+  },
+
+  /** UI-B4: the name people see (null: the id); the id never changes. Sends If-Match when the last save is known. */
+  async renameSkill(
+    name: string,
+    displayName: string | null,
+    expectedUpdatedAt?: string | number | null,
+  ): Promise<{ name: string; displayName: string | null; changeNote: string | null }> {
+    const token = expectedUpdatedAt === null || expectedUpdatedAt === undefined ? '' : String(expectedUpdatedAt);
+    const { data } = await apiClient.post(
+      `${BASE_URL}/${encodeURIComponent(name)}/rename`,
+      { displayName },
+      token ? { headers: { 'If-Match': token } } : undefined,
+    );
     return data;
   },
 

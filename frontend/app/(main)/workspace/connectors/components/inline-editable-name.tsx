@@ -122,7 +122,7 @@ export function InlineEditableName({
           <MaterialIcon
             name="edit"
             size={iconSize}
-            color="var(--gray-9)"
+            color="var(--gray-11)"
             style={{ flexShrink: 0 }}
           />
         </Flex>

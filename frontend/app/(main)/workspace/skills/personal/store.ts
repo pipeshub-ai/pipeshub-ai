@@ -17,6 +17,8 @@ export interface EditorPrefill {
   prefillSubcategory?: string;
   prefillTags?: string[];
   candidateId?: string;
+  /** "Save as command" from a chat message (SLASH1): the new skill starts as a /command. */
+  prefillCommand?: boolean;
 }
 
 interface SkillsState {

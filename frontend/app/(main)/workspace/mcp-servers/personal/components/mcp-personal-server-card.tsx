@@ -87,7 +87,10 @@ export function McpPersonalServerCard({
   }
 
   return (
+    // Named by its server, so each card's Connect or Tool approvals says whose it is to assistive tech.
     <Flex
+      role="group"
+      aria-label={instance.name}
       direction="column"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
@@ -116,7 +119,7 @@ export function McpPersonalServerCard({
             flexShrink: 0,
           }}
         >
-          {logo ? <McpLogoImage src={logo} size={16} /> : <ConnectorIcon type={connectorType} size={16} color="var(--gray-10)" />}
+          {logo ? <McpLogoImage src={logo} size={16} /> : <ConnectorIcon type={connectorType} size={16} color="var(--gray-11)" />}
         </Flex>
         <Flex align="center" gap="1" flexShrink="0">
           {isMcpInstanceDisabled(instance) ? (
@@ -156,7 +159,7 @@ export function McpPersonalServerCard({
         {instance.isAuthenticated && asArray(instance.tools).length > 0 && (
           <Text
             size="1"
-            style={{ color: 'var(--gray-9)' }}
+            style={{ color: 'var(--gray-11)' }}
             title={
               instance.toolsCachedAt
                 ? t('workspace.mcpServers.toolsCachedAt', { time: new Date(instance.toolsCachedAt).toLocaleString() })
@@ -172,7 +175,7 @@ export function McpPersonalServerCard({
             title={instance.toolsError}
             style={{
               // A slow server still works in chat, so it isn't shown as a failure.
-              color: state === 'slow' ? 'var(--gray-10)' : 'var(--red-11)',
+              color: state === 'slow' ? 'var(--gray-11)' : 'var(--red-11)',
               overflow: 'hidden',
               display: '-webkit-box',
               WebkitLineClamp: 2,

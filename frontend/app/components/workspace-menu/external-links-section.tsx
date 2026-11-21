@@ -71,7 +71,7 @@ export function ExternalLinksSection() {
             </span>
             {stars && (
               <>
-                <Text size="2" style={{ color: 'var(--slate-8)' }}>•</Text>
+                <Text size="2" style={{ color: 'var(--slate-11)' }}>•</Text>
                 <span
                   style={{
                     display: 'inline-flex',
@@ -80,7 +80,7 @@ export function ExternalLinksSection() {
                     fontSize: 14,
                     fontWeight: 500,
                     lineHeight: '20px',
-                    color: 'var(--slate-10)',
+                    color: 'var(--slate-11)',
                     whiteSpace: 'nowrap',
                   }}
                 >
@@ -88,7 +88,7 @@ export function ExternalLinksSection() {
                   <MaterialIcon
                     name="star"
                     size={12}
-                    color="var(--slate-10)"
+                    color="var(--slate-11)"
                   />
                 </span>
               </>

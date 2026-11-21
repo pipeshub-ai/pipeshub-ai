@@ -97,7 +97,7 @@ export function McpServerCard({
           {iconUrl ? (
             <img src={iconUrl} alt="" width={16} height={16} />
           ) : (
-            <MaterialIcon name="hub" size={16} color="var(--gray-10)" />
+            <MaterialIcon name="hub" size={16} color="var(--gray-11)" />
           )}
         </Flex>
 

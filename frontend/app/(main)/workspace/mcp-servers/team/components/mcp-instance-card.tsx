@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Badge, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
+import { isMcpInstanceReadOnly, McpInstanceBadges } from '@/config';
 import type { McpMyServerEntry } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
 import { isMcpInstanceDisabled, McpDisabledBadge, McpLogoImage } from '../../components';
@@ -56,7 +56,7 @@ export function McpInstanceCard({ instance, onEdit, onDelete }: McpInstanceCardP
           {logo ? (
             <McpLogoImage src={logo} size={16} />
           ) : (
-            <MaterialIcon name={instance.isCustom ? 'dns' : 'hub'} size={16} color="var(--gray-10)" />
+            <MaterialIcon name={instance.isCustom ? 'dns' : 'hub'} size={16} color="var(--gray-11)" />
           )}
         </Flex>
         <Flex gap="1">
@@ -65,7 +65,7 @@ export function McpInstanceCard({ instance, onEdit, onDelete }: McpInstanceCardP
               {t('workspace.mcpServers.custom')}
             </Badge>
           )}
-          <McpInheritedBadge instance={instance} />
+          <McpInstanceBadges instance={instance} />
           {isMcpInstanceDisabled(instance) ? (
             <McpDisabledBadge instance={instance} />
           ) : (
@@ -93,10 +93,10 @@ export function McpInstanceCard({ instance, onEdit, onDelete }: McpInstanceCardP
           {instance.description || MCP_TRANSPORT_LABELS[instance.transport]}
         </Text>
         <Flex align="center" gap="2" wrap="wrap" style={{ marginTop: 4 }}>
-          <Text size="1" style={{ color: 'var(--gray-9)' }}>{MCP_TRANSPORT_LABELS[instance.transport]}</Text>
-          <Text size="1" style={{ color: 'var(--gray-9)' }}>· {MCP_AUTH_MODE_LABELS[instance.authMode]}</Text>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>{MCP_TRANSPORT_LABELS[instance.transport]}</Text>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>· {MCP_AUTH_MODE_LABELS[instance.authMode]}</Text>
           {instance.useAdminAuth && (
-            <Text size="1" style={{ color: 'var(--gray-9)' }}>· {t('workspace.mcpServers.sharedAuth')}</Text>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>· {t('workspace.mcpServers.sharedAuth')}</Text>
           )}
         </Flex>
       </Flex>

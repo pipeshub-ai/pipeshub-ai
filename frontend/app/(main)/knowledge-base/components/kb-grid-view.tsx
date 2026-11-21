@@ -404,7 +404,7 @@ function GridCard({
         {isFolder ? (
           !item.hasChildren && <EmptyBadge />
         ) : hideStatus ? (
-          <Text size="1" style={{ color: 'var(--slate-9)' }}>—</Text>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>—</Text>
         ) : statusIcon ? (
           <Tooltip content={statusLabel} side="top" delayDuration={200}>
             <Flex align="center" gap="1" style={{ minWidth: 0 }}>
@@ -417,7 +417,7 @@ function GridCard({
         ) : null}
       </Flex>
 
-      <Text size="1" truncate title={meta} style={{ color: 'var(--neutral-9)', minHeight: 16 }}>
+      <Text size="1" truncate title={meta} style={{ color: 'var(--neutral-11)', minHeight: 16 }}>
         {meta}
       </Text>
     </Flex>

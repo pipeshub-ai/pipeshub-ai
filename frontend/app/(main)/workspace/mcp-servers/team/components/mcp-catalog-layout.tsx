@@ -202,7 +202,7 @@ export function McpCatalogLayout({
               style={{ width: '100%' }}
             >
               <TextField.Slot>
-                <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+                <MaterialIcon name="search" size={16} color="var(--gray-11)" />
               </TextField.Slot>
             </TextField.Root>
           </Box>
@@ -236,7 +236,7 @@ export function McpCatalogLayout({
         <EmptyState onAdd={onAddCustom} />
       ) : !hasResults ? (
         <Flex align="center" justify="center" style={{ width: '100%', flex: 1 }}>
-          <Text size="2" style={{ color: 'var(--gray-10)' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {searchQuery.trim() ? t('workspace.mcpServers.noResults') : t('workspace.mcpServers.personal.noneInTab')}
           </Text>
         </Flex>
@@ -305,7 +305,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
   const { t } = useTranslation();
   return (
     <Flex direction="column" align="center" justify="center" gap="3" style={{ width: '100%', flex: 1, paddingTop: 80 }}>
-      <MaterialIcon name="hub" size={48} color="var(--gray-9)" />
+      <MaterialIcon name="hub" size={48} color="var(--gray-11)" />
       <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
         {t('workspace.mcpServers.team.emptyTitle')}
       </Text>

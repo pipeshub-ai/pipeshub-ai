@@ -102,15 +102,15 @@ export function SkillCandidatesPanel() {
       hideFooter
     >
       {loading ? (
-        <Text size="2" style={{ color: 'var(--gray-10)' }}>{t('workspace.skills.loading')}</Text>
+        <Text size="2" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.loading')}</Text>
       ) : candidates.length === 0 ? (
         <Flex direction="column" align="center" justify="center" gap="2" style={{ paddingTop: 60 }}>
-          <MaterialIcon name="check_circle" size={32} color="var(--gray-8)" />
-          <Text size="2" style={{ color: 'var(--gray-10)' }}>{t('workspace.skills.candidates.empty')}</Text>
+          <MaterialIcon name="check_circle" size={32} color="var(--gray-11)" />
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.candidates.empty')}</Text>
         </Flex>
       ) : (
         <Flex direction="column" gap="3">
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>{t('workspace.skills.candidates.subtitle')}</Text>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.candidates.subtitle')}</Text>
           {candidates.map((candidate) => {
             const isExpanded = expandedId === candidate.candidate_id;
             return (
@@ -126,7 +126,7 @@ export function SkillCandidatesPanel() {
                 }}
               >
                 <Flex align="center" gap="2">
-                  <MaterialIcon name="auto_awesome" size={16} color="var(--amber-9)" />
+                  <MaterialIcon name="auto_awesome" size={16} color="var(--amber-11)" />
                   <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', flex: 1 }}>{candidate.name}</Text>
                   {candidate.category && (
                     <Badge size="1" variant="soft" color="gray">{candidate.category}</Badge>
@@ -152,7 +152,7 @@ export function SkillCandidatesPanel() {
                       as="div"
                       size="1"
                       style={{
-                        fontFamily: 'var(--font-mono, monospace)',
+                        fontFamily: 'monospace',
                         whiteSpace: 'pre-wrap',
                         wordBreak: 'break-word',
                         color: 'var(--slate-11)',
@@ -166,10 +166,10 @@ export function SkillCandidatesPanel() {
                 {/* Source trajectory summary if present */}
                 {isExpanded && candidate.source_trajectory_summary && (
                   <Flex direction="column" gap="1" style={{ marginTop: 4 }}>
-                    <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
+                    <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
                       How it was learned:
                     </Text>
-                    <Text size="1" style={{ color: 'var(--gray-9)', fontStyle: 'italic' }}>
+                    <Text size="1" style={{ color: 'var(--gray-11)', fontStyle: 'italic' }}>
                       {candidate.source_trajectory_summary}
                     </Text>
                   </Flex>

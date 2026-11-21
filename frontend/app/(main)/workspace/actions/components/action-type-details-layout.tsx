@@ -146,7 +146,7 @@ export function ActionTypeDetailsLayout({
             {scopeBackLabel}
           </Text>
         </button>
-        <MaterialIcon name="chevron_right" size={14} color="var(--gray-9)" />
+        <MaterialIcon name="chevron_right" size={14} color="var(--gray-11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {title}
         </Text>
@@ -276,7 +276,7 @@ export function ActionTypeDetailsLayout({
             style={{ minWidth: 220, maxWidth: 360, flex: '0 1 360px' }}
           >
             <TextField.Slot side="right">
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Flex>
@@ -285,13 +285,13 @@ export function ActionTypeDetailsLayout({
       {isLoading && instances.length === 0 ? (
         <Flex align="center" justify="center" gap="3" style={{ paddingTop: 80 }}>
           <Spinner size="2" style={{ color: 'var(--gray-11)' }} />
-          <Text size="2" style={{ color: 'var(--gray-9)' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.actions.loading')}
           </Text>
         </Flex>
       ) : !isLoading && instances.length === 0 ? (
         <Flex direction="column" align="center" justify="center" gap="2" style={{ paddingTop: 80 }}>
-          <MaterialIcon name="extension" size={48} color="var(--gray-9)" />
+          <MaterialIcon name="extension" size={48} color="var(--gray-11)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.actions.typeDetail.empty')}
           </Text>
@@ -300,8 +300,8 @@ export function ActionTypeDetailsLayout({
         <Box style={{ width: '100%' }}>
           {listRefreshing ? (
             <Flex align="center" gap="2" mb="3" role="status" aria-live="polite">
-              <Spinner size="1" style={{ color: 'var(--gray-10)' }} />
-              <Text size="1" style={{ color: 'var(--gray-10)', letterSpacing: '0.02em' }}>
+              <Spinner size="1" style={{ color: 'var(--gray-11)' }} />
+              <Text size="1" style={{ color: 'var(--gray-11)', letterSpacing: '0.02em' }}>
                 {t('workspace.actions.typeDetail.refreshingList')}
               </Text>
             </Flex>

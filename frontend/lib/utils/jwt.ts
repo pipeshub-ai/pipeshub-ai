@@ -24,6 +24,13 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   }
 }
 
+/** The user id a token names, or null; pure, for callers that already hold the token. */
+export function userIdFromToken(token: string | null | undefined): string | null {
+  if (!token) return null;
+  const id = decodeJwtPayload(token)?.userId;
+  return typeof id === 'string' && id ? id : null;
+}
+
 export function getUserIdFromToken(): string | null {
   const token = useAuthStore.getState().accessToken;
   if (!token) return null;

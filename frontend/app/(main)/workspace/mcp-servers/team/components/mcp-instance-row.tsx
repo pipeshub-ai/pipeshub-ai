@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Avatar, Badge, Flex, IconButton, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
-import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
+import { isMcpInstanceReadOnly, McpInstanceBadges } from '@/config';
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
 import { McpStatusBadge, mcpConnectionState, usesSharedCredential } from '../../connection-state';
@@ -83,7 +83,7 @@ export function McpInstanceRow({
               flexShrink: 0,
             }}
           >
-            <MaterialIcon name={instance.isCustom ? 'dns' : 'hub'} size={16} color="var(--gray-10)" />
+            <MaterialIcon name={instance.isCustom ? 'dns' : 'hub'} size={16} color="var(--gray-11)" />
           </Flex>
 
           <Text size="2" weight="medium" style={{ flex: 1, minWidth: 0, color: 'var(--gray-12)' }}>
@@ -96,7 +96,7 @@ export function McpInstanceRow({
             </Badge>
           )}
 
-          <McpInheritedBadge instance={instance} />
+          <McpInstanceBadges instance={instance} />
 
           <IconButton className="touch-hit"
             variant="outline"
@@ -167,11 +167,11 @@ export function McpInstanceRow({
         {/* TOOLS */}
         <InfoRow label={t('workspace.mcpServers.details.tools')}>
           {!isReady ? (
-            <Text size="2" style={{ color: 'var(--gray-9)' }}>
+            <Text size="2" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.mcpServers.details.discoveryNeedsAuth')}
             </Text>
           ) : toolsResult?.loading ? (
-            <Text size="2" style={{ color: 'var(--gray-10)' }}>
+            <Text size="2" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.mcpServers.details.discovering')}
             </Text>
           ) : toolsResult?.error ? (
@@ -231,7 +231,7 @@ export function McpInstanceRow({
                   {tool.name}
                 </Text>
                 {tool.description && (
-                  <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                  <Text size="1" style={{ color: 'var(--gray-11)' }}>
                     {tool.description}
                   </Text>
                 )}
@@ -315,7 +315,7 @@ function InfoRow({ label, children }: { label: string; children: ReactNode }) {
         size="1"
         weight="medium"
         style={{
-          color: 'var(--gray-10)',
+          color: 'var(--gray-11)',
           width: isMobile ? 'auto' : 164,
           flexShrink: 0,
           textTransform: 'uppercase',

@@ -54,7 +54,7 @@ function SuggestionPill({ icon, label, onClick }: { icon: string; label: string;
       style={{ border: '1px solid var(--olive-3)', borderRadius: 'var(--radius-2)', background: 'var(--olive-2)' }}
     >
       <Flex align="center" gap="2">
-        <MaterialIcon name={icon} size={14} color="var(--slate-10)" />
+        <MaterialIcon name={icon} size={14} color="var(--slate-11)" />
         <Text size="1" weight="medium" style={{ color: 'var(--slate-11)' }}>
           {label}
         </Text>
@@ -447,12 +447,12 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
             href="/projects/"
             style={{ display: 'flex', alignItems: 'center', gap: 4, textDecoration: 'none', flexShrink: 0 }}
           >
-            <MaterialIcon name="chevron_left" size={18} color="var(--slate-10)" />
-            <Text size="2" style={{ color: 'var(--slate-10)' }}>
+            <MaterialIcon name="chevron_left" size={18} color="var(--slate-11)" />
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {t('projects.pageTitle')}
             </Text>
           </Link>
-          <Text size="2" style={{ color: 'var(--slate-7)' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)' }}>
             /
           </Text>
           <Text
@@ -626,7 +626,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               <Text size="6" weight="bold" style={{ color: 'var(--slate-12)' }}>
                 {t('chat.projects.workspace.heroTitle', { defaultValue: 'What should we work on?' })}
               </Text>
-              <Text size="2" style={{ color: 'var(--slate-10)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {t('chat.projects.workspace.heroSubtitle', {
                   defaultValue: "Every chat you start here inherits this project's instructions, files and tools.",
                 })}

@@ -38,3 +38,4 @@ export type { LoadingButtonProps } from './loading-button';
 export { InlineLoader } from './inline-loader';
 export type { InlineLoaderProps } from './inline-loader';
 export { EnterpriseBadge, EnterpriseFeatureNotice } from './enterprise-badge';
+export { EstimatedCharge } from './estimated-charge';

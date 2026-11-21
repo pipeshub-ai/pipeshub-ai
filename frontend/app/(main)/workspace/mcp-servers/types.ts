@@ -75,6 +75,8 @@ export interface McpServerInstancePayload {
   args?: string[];
   /** Custom STDIO only — env var names the process expects (e.g. API_KEY). Catalog templates supply this. */
   requiredEnv?: string[];
+  /** Custom STDIO only — the hosts its program calls (`host` or `host:port`), which its MCP runner may reach. */
+  egressHosts?: string[];
 
   // SSE / Streamable HTTP
   url?: string | null;
@@ -108,6 +110,8 @@ export interface McpServerInstance {
   args?: string[];
   requiredEnv: string[];
   optionalEnv: string[];
+  /** Custom STDIO only, administrators only: the hosts it listed at setup. */
+  declaredEgressHosts?: string[];
 
   url?: string | null;
   headerName?: string | null;
@@ -129,14 +133,23 @@ export interface McpServerInstance {
   hasOAuthClientConfig?: boolean;
   /** Set on list/get responses only: why this instance won't run on this deployment. */
   disabledReason?: McpInstanceDisabledReason | null;
+  /** SEC-B-02-FU-1: the admin says the server runs inside the organization (set only by its own route). */
+  insideOrganization?: boolean;
 }
 
 /** A single tool discovered from a connected MCP server. */
+/** A tool's standing against what an admin approved (MCP hub on); absent with the hub off. */
+export interface McpToolApproval {
+  status: 'approved' | 'unapproved' | 'changed' | 'unknown';
+  reasonCode: string | null;
+}
+
 export interface McpToolInfo {
   name: string;
   namespacedName: string;
   description?: string | null;
   inputSchema: Record<string, unknown>;
+  approval?: McpToolApproval;
   /** The server's own hints (`readOnlyHint`, `destructiveHint`, …), as it sent them. */
   annotations?: Record<string, unknown> | null;
   /** What the tool does to data, which sets its starting approval rule (worked out by the backend). */
@@ -188,6 +201,12 @@ export interface McpInstancesResponse {
 
 export interface McpMyServersResponse {
   instances: McpMyServerEntry[];
+  /** `MCP_HUB` is on (absent from older servers: off). */
+  mcpHub?: boolean;
+  /** `MCP_STDIO_RUNNERS` is on (absent from older servers: off). */
+  mcpStdioRunners?: boolean;
+  /** D-MCP-5: harness runs use only the tools an admin approved (an edition's setting; absent from older servers). */
+  mcpToolApproval?: boolean;
 }
 
 /** `GET /logos`: the uploaded logos of the custom servers the caller can see, by instance id. */

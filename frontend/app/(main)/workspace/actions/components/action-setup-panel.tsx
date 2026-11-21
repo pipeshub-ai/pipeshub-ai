@@ -13,7 +13,6 @@ import {
   Select,
   Separator,
   Text,
-  TextField,
   Tooltip,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -24,7 +23,7 @@ import { DocumentationSection } from '@/app/(main)/workspace/connectors/componen
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { AuthSchemaField, DocumentationLink, SchemaField } from '@/app/(main)/workspace/connectors/types';
 import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { FormField, FormFieldSelectTrigger, FormFieldTextField } from '@/app/(main)/workspace/components/form-field';
 import {
   useWorkspaceDrawerNestedModalHost,
   WorkspaceRightPanel,
@@ -661,7 +660,7 @@ export function ActionSetupPanel({
     authOptions.length > 1 && !editing ? (
       <FormField label={t('workspace.actions.authType')}>
         <Select.Root value={authType} onValueChange={setAuthType} size="2">
-          <Select.Trigger style={{ width: '100%' }} />
+          <FormFieldSelectTrigger style={{ width: '100%' }} />
           <Select.Content
             position="popper"
             container={panelBodyPortal ?? undefined}
@@ -737,7 +736,7 @@ export function ActionSetupPanel({
                   <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
                     {t('workspace.actions.redirectUri')}
                   </Text>
-                  <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+                  <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
                     {t('workspace.actions.redirectUriHint')}
                   </Text>
                 </Flex>
@@ -791,7 +790,7 @@ export function ActionSetupPanel({
 
           <div data-ph-action-instance-name>
             <FormField label={t('workspace.actions.instanceName')} required error={fieldErrors.instanceName}>
-              <TextField.Root
+              <FormFieldTextField
                 value={instanceName}
                 onChange={(e) => {
                   setInstanceName(e.target.value);
@@ -813,7 +812,7 @@ export function ActionSetupPanel({
           {showOAuthAppPicker ? (
             <FormField label={t('workspace.actions.oauthAppLabel')}>
               <Select.Root value={oauthAppValue} onValueChange={handleOauthAppChange} size="2">
-                <Select.Trigger style={{ width: '100%' }} />
+                <FormFieldSelectTrigger style={{ width: '100%' }} />
                 <Select.Content
                   position="popper"
                   container={panelBodyPortal ?? undefined}
@@ -837,7 +836,7 @@ export function ActionSetupPanel({
                 required
                 error={fieldErrors.oauthAppName}
               >
-                <TextField.Root
+                <FormFieldTextField
                   size="2"
                   value={oauthAppName}
                   onChange={(e) => {
@@ -855,7 +854,7 @@ export function ActionSetupPanel({
                   style={{ width: '100%' }}
                 />
               </FormField>
-              <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+              <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
                 {t('workspace.actions.oauthAppNameHelper')}
               </Text>
             </Flex>
@@ -888,7 +887,7 @@ export function ActionSetupPanel({
                   required
                   error={fieldErrors.clientId}
                 >
-                  <TextField.Root
+                  <FormFieldTextField
                     value={clientId}
                     onChange={(e) => {
                       setClientId(e.target.value);
@@ -909,7 +908,7 @@ export function ActionSetupPanel({
                   required={!storedSecrets.includes('clientSecret')}
                   error={fieldErrors.clientSecret}
                 >
-                  <TextField.Root
+                  <FormFieldTextField
                     type="password"
                     placeholder={
                       storedSecrets.includes('clientSecret') ? t('workspace.actions.manage.secretPlaceholder') : undefined

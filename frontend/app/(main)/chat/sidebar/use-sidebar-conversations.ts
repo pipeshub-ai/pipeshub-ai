@@ -11,6 +11,7 @@ import {
   selectProjectsEnabled,
 } from '@/lib/store/feature-flags-store';
 import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
+import { anyWorking, useJobListsRefresh } from '@/lib/harness-jobs/swr-keys';
 import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from '../constants';
 
 type SidebarConversationsKey = readonly [
@@ -35,6 +36,9 @@ async function fetchSidebarConversations([, , { limit, excludeProjectChats }]: S
  * only a fresh response replaces it (`onSuccess`). Cached data seen on a remount
  * is older than the store and is not written back, except when it belongs to the
  * other Projects filter than the one the store holds.
+ *
+ * Run dots come from each chat's `harnessState`, so while one listed chat is working the lists are read again on a
+ * bounded clock (classic jobs plan §6); pushes and a job's end read them in between.
  */
 export function useSidebarConversations(): void {
   const setSidebarLists = useChatStore((s) => s.setSidebarLists);
@@ -44,6 +48,8 @@ export function useSidebarConversations(): void {
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
   // With Projects off a project chat has nowhere else to show, so list it here.
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  const working = useChatStore((s) => anyWorking([s.conversations, s.sharedConversations, s.agentConversations]));
+  useJobListsRefresh(working);
 
   const key: SidebarConversationsKey | null = flagsLoaded
     ? [

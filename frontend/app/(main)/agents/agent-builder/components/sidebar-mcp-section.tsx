@@ -10,12 +10,15 @@ import {
   buildMcpToolDragPayload,
   collectActiveMcpTypeIdsFromNodes,
   getMcpSidebarStatus,
-  isMcpTypeIdConflict,
+  isAttachableMcpTool,
+  isMcpAttachConflict,
 } from '../sidebar-mcp-utils';
+import { selectInstanceToolIds, useToolIdentityStore } from '@/app/(main)/toolsets/api/tool-identity';
 import type { McpInstanceIdFlowNode } from '../sidebar-mcp-utils';
 import { filterMcpServerTools } from '../sidebar-utils';
 import { useSearchAwareExpanded } from '../sidebar-expand-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
+import { CapabilityBadge, type Grantable } from './capability-badge';
 import { SidebarToolDragRow } from './sidebar-draggable-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 import { McpCredentialsDialog } from './agent-mcp-credentials-dialog';
@@ -36,6 +39,8 @@ export function AgentBuilderMcpSection(props: {
   /** Viewer without edit: block MCP drags onto the canvas. */
   structureLocked?: boolean;
   onPaletteStructureDragBlocked?: () => void;
+  /** What a run of this (saved) agent could use, by installation id; null: no badges. */
+  grantable?: Grantable | null;
 }) {
   const {
     mcpServers,
@@ -49,9 +54,11 @@ export function AgentBuilderMcpSection(props: {
     onNotify,
     structureLocked = false,
     onPaletteStructureDragBlocked,
+    grantable = null,
   } = props;
 
   const { t } = useTranslation();
+  const instanceScoped = useToolIdentityStore(selectInstanceToolIds);
   const { isOpen, toggle } = useSearchAwareExpanded(search.trim() !== '');
   const [credentialsDialogInstance, setCredentialsDialogInstance] = useState<McpMyServerEntry | null>(
     null
@@ -123,8 +130,8 @@ export function AgentBuilderMcpSection(props: {
         const isPersonal = isPersonalMcpInstance(entry);
         const personalBlocked = isPersonal && agentShared;
         // Dropping the same instance again merges into its node; only another instance of
-        // the same type is refused.
-        const isTypeConflict = isMcpTypeIdConflict(activeTypeIds, entry._id, entry.typeId);
+        // the same type is refused (none, once tool ids are instance-scoped).
+        const isTypeConflict = isMcpAttachConflict(activeTypeIds, entry._id, entry.typeId, instanceScoped);
         const dragBlocked = structureLocked || !entry.isAuthenticated || isTypeConflict || personalBlocked;
         const dragPayload = buildMcpServerDragPayload(entry);
         const dragType = dragBlocked ? undefined : dragPayload['application/reactflow'];
@@ -168,6 +175,7 @@ export function AgentBuilderMcpSection(props: {
             configureUseKeyIcon={isServiceAccount}
             configureIconColor="var(--slate-11)"
             toolsetStatus={status}
+            badge={grantable === null ? null : <CapabilityBadge item={grantable.get(entry._id)} />}
           >
             {shownTools.length === 0 ? (
               <Text size="1" style={{ color: 'var(--slate-11)', fontStyle: 'italic', padding: '4px 8px' }}>
@@ -180,8 +188,16 @@ export function AgentBuilderMcpSection(props: {
                   name={tool.name}
                   description={tool.description}
                   data={buildMcpToolDragPayload(entry, tool)}
-                  disabled={dragBlocked}
-                  onBlocked={onDragAttempt}
+                  disabled={dragBlocked || !isAttachableMcpTool(tool)}
+                  onBlocked={dragBlocked ? onDragAttempt : undefined}
+                  attrs={{ 'data-mcp-tool': tool.name }}
+                  note={
+                    tool.approval && tool.approval.status !== 'approved' ? (
+                      <Text as="span" size="1" style={{ display: 'block', color: 'var(--amber-11)' }}>
+                        {t(`agentBuilder.mcpToolApproval.${tool.approval.status}`)}
+                      </Text>
+                    ) : null
+                  }
                 />
               ))
             )}
