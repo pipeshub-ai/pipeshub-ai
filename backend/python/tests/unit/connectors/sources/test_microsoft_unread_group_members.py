@@ -101,16 +101,22 @@ class Outlook:
         self.c._transform_group_to_record_group = MagicMock(return_value=None)
         self.c.external_users_client = MagicMock()
         self.answer: object = [_member("ann@x.com")]
-        page = MagicMock()
-        page.odata_next_link = None
+        self.answers: dict[str, object] = {}  # per group, over ``answer``
 
-        async def get(*_a: object, **_k: object) -> MagicMock:
-            if isinstance(self.answer, BaseException):
-                raise self.answer
-            page.value = self.answer
-            return page
+        def builder(gid: str) -> MagicMock:
+            async def get(*_a: object, **_k: object) -> MagicMock:
+                answer = self.answers.get(gid, self.answer)
+                if isinstance(answer, BaseException):
+                    raise answer
+                page = MagicMock()
+                page.value, page.odata_next_link = answer, None
+                return page
 
-        self.c.external_users_client.client.groups.by_group_id.return_value.transitive_members.get = get
+            b = MagicMock()
+            b.transitive_members.get = get
+            return b
+
+        self.c.external_users_client.client.groups.by_group_id.side_effect = builder
 
     async def sync(self) -> None:
         await self.c._sync_user_groups()
@@ -129,11 +135,13 @@ class SharePoint:
             return_value={"groups": [_group("g1")], "delta_link": "https://graph/next-delta"})
         self.c._containing_groups = AsyncMock(return_value=[])
         self.answer: object = [{"id": "u-ann", "email": "ann@x.com", "name": "Ann"}]
+        self.answers: dict[str, object] = {}  # per group, over ``answer``
 
         async def members(group_id: str, is_owner: bool = False) -> list[dict]:
-            if isinstance(self.answer, BaseException):
-                raise self.answer
-            return self.answer
+            answer = self.answers.get(group_id, self.answer)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
 
         self.c._fetch_graph_group_members = members
         self.applied: list[bool] = []
@@ -322,25 +330,10 @@ async def test_an_undelivered_notice_is_sent_again_until_it_is_delivered(world: 
 async def test_two_closes_give_two_notices() -> None:
     w = Outlook()
     w.c._get_all_microsoft_365_groups = AsyncMock(return_value=[_group("g1"), _group("g2")])
-    refused: set[str] = {"g1"}
-    by_group = w.c.external_users_client.client.groups.by_group_id
-    plain = by_group.return_value.transitive_members.get
-
-    def builder(gid: str) -> MagicMock:
-        b = MagicMock()
-
-        async def get(*a: object, **k: object) -> MagicMock:
-            if gid in refused:
-                raise _odata(403)
-            return await plain(*a, **k)
-
-        b.transitive_members.get = get
-        return b
-
-    by_group.side_effect = builder
+    w.answers["g1"] = _odata(403)
     for _ in range(N):
         await w.sync()
-    refused.add("g2")
+    w.answers["g2"] = _odata(403)
     for _ in range(N):
         await w.sync()
     assert len(_notices(w)) == 2, "the second close is not suppressed as a repeat of the first"
@@ -348,15 +341,28 @@ async def test_two_closes_give_two_notices() -> None:
 
 @pytest.mark.asyncio
 async def test_a_close_waits_while_its_notice_cannot_be_saved(world: Outlook | SharePoint) -> None:
-    world.answer = _odata(403)
+    groups = [_group("g1"), _group("g2")]
+    if isinstance(world, Outlook):
+        world.c._get_all_microsoft_365_groups = AsyncMock(return_value=groups)
+        world.answer = [_member("ann@x.com"), _member("bob@x.com")]
+        world.c._user_cache["bob@x.com"] = "u-bob"
+        without_ann = [_member("bob@x.com")]
+    else:
+        world.c.msgraph_client.get_all_user_groups = AsyncMock(return_value=groups)
+        world.c.msgraph_client.get_groups_delta_response = AsyncMock(return_value={"groups": groups, "delta_link": "https://graph/next-delta"})
+        world.answer = [{"id": "u-ann", "email": "ann@x.com", "name": "Ann"}, {"id": "u-bob", "email": "bob@x.com", "name": "Bob"}]
+        without_ann = [{"id": "u-bob", "email": "bob@x.com", "name": "Bob"}]
+    world.answers["g1"] = _odata(403)
     for _ in range(N - 1):
         await world.sync()
     sp = world.c.user_sync_point
     saved = sp.update_sync_point
     sp.update_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
     world.c.notify_and_wait.return_value = NotificationOutcome.FAILED
+    world.answers["g2"] = without_ann  # ann leaves g2 in the very sync whose save fails
     await world.sync()
     assert [] not in _written(world.proc, "g1"), "no group is closed while its notice cannot be owed"
+    assert _written(world.proc, "g2")[-1] == ["bob@x.com"], "a member removal read in that sync is still applied"
     assert not _notices(world)
     sp.update_sync_point = saved
     await world.sync()
