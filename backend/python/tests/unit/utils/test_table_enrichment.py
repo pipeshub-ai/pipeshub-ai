@@ -284,3 +284,40 @@ async def test_enrich_table_grid_stores_unique_headers() -> None:
     result = await enrich_table_grid(None, grid, logger=logging.getLogger("t"), known_header_row_count=1)
     assert result.headers == ["Item", "At", "At (2)"]
     assert "372,168" in result.descriptions[0] and "377,325" in result.descriptions[0]
+
+
+def test_a_literal_suffix_header_keeps_its_name() -> None:
+    from app.utils.indexing_helpers import unique_column_keys
+
+    keys = unique_column_keys(["X", "X", "X (2)"])
+    assert keys[0] == "X" and keys[2] == "X (2)"
+    assert len(set(keys)) == 3
+    assert unique_column_keys(keys) == keys
+
+
+def test_a_generated_name_never_takes_a_literal_header() -> None:
+    from app.utils.indexing_helpers import unique_column_keys
+
+    keys = unique_column_keys(["", "Column_1", "Column_1", "Column_1 (2)"])
+    assert len(set(keys)) == 4
+    assert keys[1] == "Column_1" and keys[3] == "Column_1 (2)"
+    assert unique_column_keys(keys) == keys
+
+
+def test_unique_column_keys_property() -> None:
+    import random
+
+    from app.utils.indexing_helpers import unique_column_keys
+
+    rnd = random.Random(7351)
+    pool = ["", "A", "A (2)", "A (3)", "Column_2", "B", " "]
+    for _ in range(500):
+        hs = [rnd.choice(pool) for _ in range(rnd.randint(0, 8))]
+        width = len(hs) + rnd.randint(0, 3)
+        keys = unique_column_keys(hs, width)
+        assert len(keys) == width and len(set(keys)) == width
+        # a header that is unique and non-empty keeps its own name
+        for i, h in enumerate(hs):
+            if h and hs.count(h) == 1:
+                assert keys[i] == h
+        assert unique_column_keys(keys) == keys

@@ -123,18 +123,22 @@ def unique_column_keys(headers: Sequence[Any], width: Optional[int] = None, *, f
     come back unchanged, and a result passed in again is returned unchanged.
     """
     n = max(len(headers), width or 0)
+    texts = ["" if h is None else str(h) for h in headers]
+    # Every literal header is reserved first, so a generated name (``At (2)``, ``Column_3``)
+    # never takes the name of a column that really has it.
+    reserved = {t for t in texts if t}
     keys: list[str] = []
     used: set[str] = set()
     for i in range(n):
-        raw = headers[i] if i < len(headers) else ""
-        base = "" if raw is None else str(raw)
+        base = texts[i] if i < len(texts) else ""
+        if not base and not fill_empty and i < len(texts):
+            keys.append("")
+            continue
+        literal = bool(base)
         if not base:
-            if not fill_empty and i < len(headers):
-                keys.append("")
-                continue
             base = f"Column_{i + 1}"
         key, n_dup = base, 1
-        while key in used:
+        while key in used or (key in reserved and not (literal and key == base and n_dup == 1)):
             n_dup += 1
             key = f"{base} ({n_dup})"
         used.add(key)
