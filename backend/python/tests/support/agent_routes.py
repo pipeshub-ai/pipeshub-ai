@@ -40,6 +40,7 @@ _SHARE_ROLES = {"OWNER", "ORGANIZER"}
 USERS: dict[str, dict[str, Any]] = {
     "alice": {"userId": "u-alice", "orgId": "org-1", "email": "alice@acme.test"},
     "bob": {"userId": "u-bob", "orgId": "org-1", "email": "bob@acme.test"},
+    "carol": {"userId": "u-carol", "orgId": "org-1", "email": "carol@acme.test"},
     "mallory": {"userId": "u-mallory", "orgId": "org-2", "email": "mallory@evil.test"},
 }
 
