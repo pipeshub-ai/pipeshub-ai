@@ -112,6 +112,7 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
     is_searchable_record,
 )
+from app.services.graph_db.common.utils import record_incarnation_write
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
@@ -1986,7 +1987,9 @@ class RecordEventHandler(BaseEventService):
             doc = await graph.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
             if doc is None:
                 return ProbeResult(found=False)
-            return ProbeResult(found=True, live=is_live_record(doc), created=doc.get("createdAtTimestamp"))
+            return ProbeResult(
+                found=True, live=is_live_record(doc), created=doc.get("createdAtTimestamp"), incarnation=doc.get("incarnationId"),
+            )
 
         guard = DeliveryGuard(
             org_id=org_id, record_id=record_id,
@@ -1994,6 +1997,9 @@ class RecordEventHandler(BaseEventService):
             # The stamp tells a delete plus a re-upload apart for an uploaded record only: a connector that sets
             # ``created_at`` to now rewrites it on every re-sync of a live record (D-186).
             created=record.get("createdAtTimestamp") if record.get("origin") == OriginTypes.UPLOAD.value else None,
+            # the record's own incarnation id, for every origin (read from the graph, never from an event payload).
+            incarnation=record.get("incarnationId") if record_incarnation_write() else None,
+            created_at_start=record.get("createdAtTimestamp"),
             probe=probe,
             confirm_first=bool(markers and (markers[0] or markers[1])),
             backend_of=getattr(cache, "_backend", None),

@@ -144,6 +144,10 @@ class CoreMixin(PgBase):
         org = current_org_id()
         docs = list({d["id"]: d for d in (_node(n, collection) for n in nodes)}.values())     # a repeated id: the last one wins
         await self._validate_upserts(collection, docs, transaction)      # what is checked is what is written
+        if collection == CollectionNames.RECORDS.value:
+            # insert-only fields: the merge below must neither overwrite them nor, through the clears step, remove them
+            await self._upsert_record_nodes(docs, transaction)
+            return True
         # a field set to None is removed (``SET n += {x: null}``), so the nulls are cleared before the merge
         payload = _j([{"id": d["id"], "doc": d} for d in docs])
         clears = _j([{"id": d["id"], "nulls": nulls} for d in docs if (nulls := [k for k, v in d.items() if v is None])])
@@ -157,6 +161,26 @@ class CoreMixin(PgBase):
                 ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(graph.nodes.doc || EXCLUDED.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)""", org, collection, payload)
         await self._q(go, transaction, write=True)
         return True
+
+    async def _upsert_record_nodes(self, docs: list[dict], transaction: str | None) -> None:
+        """``batch_upsert_nodes`` for ``records``: the nulls of the other fields clear as before, but the insert-only
+        fields and the trash state are left alone on an existing record (their nulls clear nothing)."""
+        from app.services.graph_db.common.utils import (
+            RECORD_UPDATE_DROPPED_FIELDS,
+            record_created_at_insert_only,
+        )
+        from app.services.graph_db.postgres.records import _upsert_record_docs
+
+        org = current_org_id()
+        kept = set(RECORD_UPDATE_DROPPED_FIELDS) if record_created_at_insert_only() else set()
+        clears = _j([{"id": d["id"], "nulls": nulls} for d in docs if (nulls := [k for k, v in d.items() if v is None and k not in kept])])
+
+        async def go(tx: Tx) -> None:
+            if clears != "[]":
+                await tx.execute("""/* pipeshub:graph.batch_upsert_nodes_clear */ UPDATE graph.nodes n SET doc = n.doc - x.nulls
+                    FROM jsonb_to_recordset($3::jsonb) AS x(id text, nulls text[]) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id""", org, CollectionNames.RECORDS.value, clears)
+            await _upsert_record_docs(tx, org, docs)
+        await self._q(go, transaction, write=True)
 
     async def create_node_if_absent(self, key: str, collection: str, node: dict[str, Any], transaction: str | None = None) -> bool:
         """One insert that leaves an existing node alone; True iff this call created it (a racing creator that commits first makes this False)."""

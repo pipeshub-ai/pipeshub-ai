@@ -15,7 +15,7 @@ import random
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from logging import Logger
 from typing import Any, Dict, List, Optional, TypeVar, Union, cast
 
@@ -27,6 +27,10 @@ from app.exceptions.graph_db_exceptions import GraphQueryError, RecordSchemaNarr
 from app.services.graph_db.arango.record_schema_guard import (
     RecordSchemaGuard,
     is_record_schema_error,
+)
+from app.services.graph_db.common.utils import (
+    new_incarnation_id,
+    record_incarnation_write,
 )
 from app.utils import error_class
 from app.utils.db_query_log import query_ended, query_logged
@@ -985,6 +989,125 @@ class ArangoHTTPClient:
             "result": result
         }
 
+
+    @_record_schema_guarded
+    @_sends_per_item
+    @_logged("batch_upsert_documents")
+    async def batch_upsert_documents(
+        self,
+        collection: str,
+        rows: list[dict[str, Any]],
+        txn_id: Optional[str] = None,
+        drop: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """Upsert documents whose update must not carry some keys (a record's insert-only fields).
+
+        Each row is ``{"key", "insert", "new"}`` and optionally ``"patch"``: ``insert`` is the whole document, written when the key does
+        not exist; the patch is what an existing document may be changed by, ``insert`` without the ``drop`` keys unless the row gives
+        one (built only for a row that is patched, so a first ingest does not copy every document); ``new`` says the caller knows the
+        key is not stored.
+
+        The order of calls follows what the caller knows. A row that is known to be new is inserted first
+        (``overwriteMode=conflict``) and is patched only when the insert finds the key stored. Any other row is patched first
+        (``PATCH``, update only, one bulk call) and is inserted only when the patch answers 1202 (not found). So a re-sync is one
+        call and a first ingest is one call. AQL ``UPSERT`` is not used: it ran a re-sync at 0.39 of this shape.
+
+        Only the answers each call is meant to give are acted on: 1202 from a patch, and 1210 from an insert. Everything else
+        raises (``_check_response_for_errors``), a write conflict (1200) inside a stream transaction included: the winner's
+        uncommitted insert is invisible to the loser, so sending it through the patch would return 1202 and the insert 1200 again,
+        and the write would loop or be lost while the transaction commits. The owner of the transaction runs it again. Outside a
+        transaction 1200 is sent again by ``_send_until_landed``, a bounded number of times.
+        """
+        if not rows:
+            return {"created": 0, "updated": 0, "errors": 0}
+        base = f"{self.base_url}/_db/{self.database}/_api/document/{collection}"
+        headers = {"x-arango-trx-id": txn_id} if txn_id else {}
+
+        def sender(method: str, params: dict[str, str]) -> Callable[[list[dict[str, Any]]], Awaitable[_Reply]]:
+            async def send(batch: list[dict[str, Any]]) -> _Reply:
+                session = await self._get_session()
+                async with session.request(method, base, json=batch, params=params, headers=headers) as resp:
+                    if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
+                        return await resp.json()
+                    error = await resp.text()
+                    raise Exception(f"Batch {method} failed (status={resp.status}): {error}")
+            return send
+
+        send_insert = sender("POST", {"overwriteMode": "conflict"})
+        send_patch = sender("PATCH", {"keepNull": "false", "mergeObjects": "true", "ignoreRevs": "true"})
+
+        async def run(docs: list[dict[str, Any]], send: Callable[[list[dict[str, Any]]], Awaitable[_Reply]]) -> list[Any]:
+            answers = await _send_until_landed(docs, txn_id, send)
+            if not isinstance(answers, list):
+                raise Exception(f"Batch upsert: an unexpected reply: {answers}")
+            guard = self.record_guard
+            if guard is not None and not txn_id:
+                refused = [i for i, a in enumerate(answers) if isinstance(a, dict) and a.get("error") and is_record_schema_error(str(a))]
+                if refused:
+                    guard.note_narrow()
+                    await guard.ensure_wide("1620")
+                    again = await _send_until_landed([docs[i] for i in refused], txn_id, send)
+                    if isinstance(again, list) and len(again) == len(refused):
+                        for i, a in zip(refused, again):
+                            answers[i] = a
+            return answers
+
+        def unexpected(answers: list[Any], expected: int | None) -> list[Any]:
+            return [a for a in answers if not (isinstance(a, dict) and a.get("error") and a.get("errorNum") == expected)]
+
+        def patch_of(row: dict[str, Any]) -> dict[str, Any]:
+            if "patch" in row:
+                return row["patch"]
+            return {k: v for k, v in row["insert"].items() if k not in drop and k != "_key"}
+
+        def insert_of(row: dict[str, Any], *, after_miss: bool) -> dict[str, Any]:
+            # A document inserted because its patch found nothing was deleted since the record was read: it is a new life of the
+            # key, so it must not carry the id its earlier life held.
+            if after_miss and "incarnationId" in drop and record_incarnation_write():
+                return {**row["insert"], "incarnationId": new_incarnation_id()}
+            return row["insert"]
+
+        refound: set[str] = set()
+        by_key: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            # A key given more than once is written once: the later row wins for what it sets, the earlier rows' other fields stay,
+            # and the key is patched first unless every row says it is new.
+            earlier = by_key.get(row["key"])
+            merged = row
+            if earlier is not None:
+                merged = {**earlier, **row, "insert": {**earlier["insert"], **row["insert"]}, "new": bool(earlier.get("new") and row.get("new"))}
+                if "patch" in earlier or "patch" in row:
+                    merged["patch"] = {**earlier.get("patch", {}), **row.get("patch", {})}
+            by_key[row["key"]] = merged
+        rows = list(by_key.values())
+        insert_keys = [r["key"] for r in rows if r.get("new")]
+        patch_keys = [r["key"] for r in rows if not r.get("new")]
+        created = updated = 0
+        for _round in range(3):
+            lost: list[str] = []          # inserts that found the key stored
+            missed: list[str] = []        # patches that found nothing
+            if insert_keys:
+                answers = await run([insert_of(by_key[k], after_miss=k in refound) for k in insert_keys], send_insert)
+                self._check_response_for_errors(unexpected(answers, ARANGO_UNIQUE_CONSTRAINT_VIOLATED), "Batch upsert")
+                for k, a in zip(insert_keys, answers):
+                    if isinstance(a, dict) and a.get("error"):
+                        lost.append(k)
+                    else:
+                        created += 1
+            to_patch = patch_keys + lost
+            if to_patch:
+                answers = await run([{"_key": k, **patch_of(by_key[k])} for k in to_patch], send_patch)
+                self._check_response_for_errors(unexpected(answers, ARANGO_ERROR_DOCUMENT_NOT_FOUND), "Batch upsert")
+                for k, a in zip(to_patch, answers):
+                    if isinstance(a, dict) and a.get("error"):
+                        missed.append(k)
+                    else:
+                        updated += 1
+            if not missed:
+                return {"created": created, "updated": updated, "errors": 0}
+            insert_keys, patch_keys = missed, []
+            refound.update(missed)
+        raise Exception(f"Batch upsert did not settle after 3 rounds for keys {insert_keys[:5]}")
 
     @_logged("batch_delete_documents")
     async def batch_delete_documents(

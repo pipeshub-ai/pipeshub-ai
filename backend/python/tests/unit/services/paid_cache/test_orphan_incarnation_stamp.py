@@ -114,7 +114,8 @@ def _clean() -> Any:  # noqa: ANN401
 @pytest.mark.parametrize("path", ["metadata_update", "resync_unchanged", "resync_new_revision"])
 async def test_a_connector_resync_of_a_live_record_does_not_stop_its_run(monkeypatch: pytest.MonkeyPatch, path: str) -> None:
     doc = await _written_doc(OriginTypes.CONNECTOR.value, path)
-    assert doc["createdAtTimestamp"] != STORED_CREATED, "the premise: this connector rewrites the stamp on every re-sync"
+    # The store and the processor keep the stored stamp on a re-sync.
+    assert doc["createdAtTimestamp"] == STORED_CREATED, "a re-sync keeps the stored stamp"
     guard = await _guard(monkeypatch, OriginTypes.CONNECTOR.value, {**doc, "_key": REC})
     _Clock.t += RECHECK_S + 1                                  # the run's next check, 30 s later, no marker at all
     assert await guard.check(None) is False
@@ -150,3 +151,63 @@ async def test_a_connector_record_really_deleted_is_still_stopped(monkeypatch: p
     _Clock.t += RECHECK_S + 1
     assert await guard.check(None) is True
     assert current_guard(ORG, REC) is guard
+
+
+# ---- the incarnation id decides for every origin ------------------------------------------------------------------
+
+async def _guard_with_id(monkeypatch: pytest.MonkeyPatch, started_id: str | None, live: dict[str, Any] | None, *, flag: bool = True,
+                         origin: str = OriginTypes.CONNECTOR.value) -> Any:  # noqa: ANN401
+    monkeypatch.setenv("RECORD_INCARNATION_WRITE", "true" if flag else "false")
+    cache = PaidResultCache(MemoryResultStore(), InProcessLocks())
+    monkeypatch.setattr(access, "paid_cache_for", lambda *_a, **_k: cache)
+    handler = make_record_handler(logger=logging.getLogger("test.orphan.incarnation"), event_processor=MagicMock())
+    handler.event_processor.graph_provider.get_document = AsyncMock(side_effect=lambda *_a, **_k: live)
+    started = {"_key": REC, "origin": origin, "createdAtTimestamp": STORED_CREATED, "recordType": "FILE"}
+    if started_id is not None:
+        started["incarnationId"] = started_id
+    with bind(OrgContext(ORG, None, "service", "envelope", "req-1")):
+        guard = await handler._begin_orphan_guard(REC, started)
+    guard.clock = lambda: _Clock.t
+    guard.mark_read()
+    _Clock.t += RECHECK_S + 1
+    return guard
+
+
+def _live(**kw: Any) -> dict[str, Any]:  # noqa: ANN401
+    return {"_key": REC, "createdAtTimestamp": STORED_CREATED, "isDeleted": False, **kw}
+
+
+@pytest.mark.parametrize("origin", [OriginTypes.CONNECTOR.value, OriginTypes.UPLOAD.value])
+async def test_a_different_incarnation_stops_the_old_run_even_with_the_same_stamp(monkeypatch: pytest.MonkeyPatch, origin: str) -> None:
+    """S16: a source that reuses its ids (Jira) re-creates a record with the same ``createdAtTimestamp``; the id tells them apart."""
+    guard = await _guard_with_id(monkeypatch, "inc-A", _live(incarnationId="inc-B"), origin=origin)
+    assert await guard.check(None) is True
+
+
+async def test_the_same_incarnation_goes_on_whatever_the_stamp(monkeypatch: pytest.MonkeyPatch) -> None:
+    guard = await _guard_with_id(monkeypatch, "inc-A", _live(incarnationId="inc-A", createdAtTimestamp=STORED_CREATED + 9))
+    assert await guard.check(None) is False
+
+
+async def test_a_run_that_started_without_an_id_goes_on_when_the_record_gets_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S17: the backfill gives a legacy record an id mid-run: live."""
+    guard = await _guard_with_id(monkeypatch, None, _live(incarnationId="inc-new"))
+    assert await guard.check(None) is False
+
+
+async def test_a_run_that_started_with_an_id_and_finds_none_compares_the_stamp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A re-create by a writer that leaves the key out is a new incarnation: a different stamp stops the run, the same does not."""
+    assert await (await _guard_with_id(monkeypatch, "inc-A", _live(createdAtTimestamp=STORED_CREATED + 5000))).check(None) is True
+    assert await (await _guard_with_id(monkeypatch, "inc-A", _live())).check(None) is False
+
+
+async def test_with_the_flag_off_the_id_is_not_read_and_the_older_rule_holds(monkeypatch: pytest.MonkeyPatch) -> None:
+    guard = await _guard_with_id(monkeypatch, "inc-A", _live(incarnationId="inc-B"), flag=False)
+    assert guard.incarnation is None
+    assert await guard.check(None) is False
+
+
+async def test_the_start_id_comes_from_the_graph_read_not_the_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard takes its start values from the record dict it is given (the graph read); nothing else carries an id."""
+    guard = await _guard_with_id(monkeypatch, "inc-A", _live(incarnationId="inc-A"))
+    assert guard.incarnation == "inc-A" and guard.created_at_start == STORED_CREATED

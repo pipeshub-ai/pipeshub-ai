@@ -439,6 +439,8 @@ record_schema = {
             "entityExtractorVersion": {"type": ["string", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
+            # Names the life of the vertex: minted at insert, changed only by a restore from the trash.
+            "incarnationId": {"type": ["string", "null"]},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
             "isShared": {"type": ["boolean", "null"], "default": False},
             "isDependentNode": {"type": "boolean", "default": False},
@@ -515,7 +517,7 @@ record_schema = {
 # Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
 # collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
 # tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
-RECORD_SCHEMA_GENERATION = 3
+RECORD_SCHEMA_GENERATION = 4
 record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
 
 
