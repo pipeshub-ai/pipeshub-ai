@@ -38,6 +38,7 @@ from app.web.search.duckduckgo_html import (
 from app.web.search.exa import ExaSearch
 from app.web.search.keenable import KeenableSearch
 from app.web.search.serper import SerperSearch
+from app.web.search.sofya import SofyaSearch
 from app.web.search.tavily import TavilySearch
 
 if TYPE_CHECKING:
@@ -238,7 +239,7 @@ class TestApiProviders:
         assert "summary" not in seen[0]["contents"]
         assert [(r.snippet, r.published) for r in results] == [("h1 h2", "2026-01-02"), ("body", None)]
 
-    @pytest.mark.parametrize("provider", [SerperSearch, TavilySearch, ExaSearch])
+    @pytest.mark.parametrize("provider", [SerperSearch, TavilySearch, ExaSearch, SofyaSearch])
     async def test_missing_key_never_sends_a_request(self, provider: type) -> None:
         handler = AsyncMock()
         with pytest.raises(NotConfigured):
@@ -265,6 +266,10 @@ class TestApiProviders:
     async def test_keenable_reply_without_results_is_upstream_error(self) -> None:
         with pytest.raises(UpstreamError):
             await KeenableSearch({}, client(respond(200, {}))).search("q", deadline())
+
+    async def test_sofya_reply_without_results_is_upstream_error(self) -> None:
+        with pytest.raises(UpstreamError):
+            await SofyaSearch({"apiKey": "k"}, client(respond(200, {}))).search("q", deadline())
 
     async def test_non_json_body(self) -> None:
         with pytest.raises(UpstreamError):

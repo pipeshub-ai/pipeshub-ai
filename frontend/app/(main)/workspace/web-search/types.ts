@@ -11,7 +11,8 @@ export type WebSearchProviderType =
   | 'searxng'
   | 'firecrawl'
   | 'crawl4ai'
-  | 'keenable';
+  | 'keenable'
+  | 'sofya';
 
 export const DUCKDUCKGO_PROVIDER_ID: WebSearchProviderType = 'duckduckgo';
 
@@ -203,6 +204,17 @@ export const WEB_SEARCH_PROVIDER_META: WebSearchProviderMeta[] = [
     docUrl: 'https://keenable.ai',
     searches: true,
     fields: [apiKeyField('Keenable', 'https://keenable.ai', false)],
+  },
+  {
+    type: 'sofya',
+    label: 'Sofya',
+    description: 'Web search API built for AI agents',
+    icon: 'travel_explore',
+    iconType: 'material',
+    configurable: true,
+    docUrl: 'https://sofya.co/docs',
+    searches: true,
+    fields: [apiKeyField('Sofya', 'https://sofya.co/dashboard')],
   },
   {
     type: 'crawl4ai',
