@@ -23,6 +23,8 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('fathom')).toBe('fathom');
     expect(resolveConnectorType('instantly')).toBe('instantly');
     expect(resolveConnectorType('Instantly')).toBe('instantly');
+    expect(resolveConnectorType('mixpanel')).toBe('mixpanel');
+    expect(resolveConnectorType('Mixpanel')).toBe('mixpanel');
   });
 
   it('matches Intercom, Granola, Fireflies, Fathom and Instantly as whole words only', () => {

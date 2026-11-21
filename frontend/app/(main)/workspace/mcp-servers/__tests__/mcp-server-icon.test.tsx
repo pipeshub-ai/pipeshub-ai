@@ -128,6 +128,13 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId={null} name="Unfathomable Drive" />)).toBe('google-drive icon');
   });
 
+  it("shows Mixpanel's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="mixpanel" name="Mixpanel" />)).toBe('mixpanel icon');
+    expect(logo(<McpServerIcon typeId={null} name="Mixpanel MCP" />)).toBe('mixpanel icon');
+    expect(logoPath(<McpServerIcon typeId="mixpanel" name="Mixpanel" />)).toBe('/icons/connectors/mixpanel.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Mixpanel MCP" />)).toBe('/icons/connectors/mixpanel.svg');
+  });
+
   it("shows Hugging Face's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="huggingface" name="Hugging Face" />)).toBe('huggingface icon');
     expect(logo(<McpServerIcon typeId={null} name="Hugging Face" />)).toBe('huggingface icon');
