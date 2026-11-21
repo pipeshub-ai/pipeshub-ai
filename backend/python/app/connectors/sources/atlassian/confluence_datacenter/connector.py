@@ -3356,20 +3356,27 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     )
                     return []
 
+                grants: list[tuple[dict[str, Any], str, Optional[str]]] = []
+                for entry in perm_entries:
+                    subjects = self._space_permission_subjects(entry)
+                    if subjects is None:
+                        # Neither shape: it grants nothing, and a full sync unlinks nothing for this run.
+                        self.logger.error("A space permission of %s came back in an unknown shape; it grants nothing", space_name)
+                        self._sync_read_incomplete = True
+                        continue
+                    grants.extend(subjects)
                 # "View gives you permission to access the content in this space"
                 # (https://confluence.atlassian.com/doc/space-permissions-overview-139521.html): another space
                 # permission held without View opens nothing.
                 viewers = {
-                    self._space_subject_key(e.get("subject")) for e in perm_entries
-                    if isinstance(e, dict) and (e.get("operation") or {}).get("operationKey") == "read"
-                    and (e.get("operation") or {}).get("targetType") == "space"
+                    self._space_subject_key(subject) for subject, operation_key, target_type in grants
+                    if operation_key == "read" and target_type == "space"
                 }
-                for entry in perm_entries:
-                    if isinstance(entry, dict) and isinstance(entry.get("subject"), dict) and \
-                            self._space_subject_key(entry["subject"]) not in viewers:
-                        continue
-                    entry_permissions = await self._transform_v1_space_permission_entry(entry)
-                    permissions.extend(entry_permissions)
+                for subject, operation_key, target_type in grants:
+                    if self._space_subject_key(subject) in viewers:
+                        permissions.extend(
+                            await self._transform_v1_space_permission_entry(subject, operation_key, target_type)
+                        )
                 # confluence-administrators "access all spaces", whatever the space's own permissions say.
                 permissions.extend(await self._group_permissions((SUPER_GROUP,)))
 
@@ -3469,13 +3476,46 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             return None
 
     @staticmethod
+    def _space_permission_subjects(entry: object) -> Optional[list[tuple[dict[str, Any], str, Optional[str]]]]:
+        """Each (subject, operation key, target type) one space permission entry grants; None for an entry of
+        neither shape.
+
+        Every published Data Center spec (9.1.0 to 11.1.0) documents ``SpacePermission`` as one ``subject`` and
+        ``operation: {targetType, operationKey}``
+        (https://developer.atlassian.com/server/confluence/11.1.0.swagger.v3.json). Confluence Cloud's v1 shape,
+        bundled ``subjects.user/group.results`` with ``operation.operation`` and ``anonymousAccess``, is read the
+        same way, so neither shape can grant past the View check.
+        """
+        if not isinstance(entry, dict) or not isinstance(entry.get("operation"), dict):
+            return None
+        operation = entry["operation"]
+        operation_key = operation.get("operationKey") or operation.get("operation")
+        if not isinstance(operation_key, str) or not operation_key:
+            return None
+        target_type = operation.get("targetType")
+        if isinstance(entry.get("subject"), dict):
+            subjects = [entry["subject"]]
+        elif isinstance(entry.get("subjects"), dict) or entry.get("anonymousAccess") is True:
+            bundled = entry.get("subjects") or {}
+            subjects = [{**u, "type": "user"} for u in ((bundled.get("user") or {}).get("results") or [])
+                        if isinstance(u, dict)]
+            subjects += [{**g, "type": "group"} for g in ((bundled.get("group") or {}).get("results") or [])
+                         if isinstance(g, dict)]
+            if entry.get("anonymousAccess") is True:
+                subjects.append({"type": "anonymous"})
+        else:
+            return None
+        return [(subject, operation_key, target_type) for subject in subjects]
+
+    @staticmethod
     def _space_subject_key(subject: object) -> Optional[tuple[str, str]]:
-        """Who a Data Center space permission names: (type, user key or group name)."""
+        """Who a space permission names: (type, user key or group name)."""
         if not isinstance(subject, dict):
             return None
         kind = subject.get("type")
         if kind == "user":
-            return kind, str(subject.get("userKey") or subject.get("key") or subject.get("username") or "")
+            return kind, str(subject.get("userKey") or subject.get("key") or subject.get("accountId")
+                             or subject.get("username") or "")
         if kind == "group":
             return kind, str(subject.get("name") or subject.get("id") or "")
         return str(kind), ""
@@ -3687,116 +3727,33 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             return None
 
     async def _transform_v1_space_permission_entry(
-        self, entry: dict[str, Any]
+        self, subject: dict[str, Any], operation_key: str, target_type: Optional[str]
     ) -> list[Permission]:
-        """Transform a single v1 space-permission entry into Permission objects.
+        """The Permissions one subject of a space permission gets (see ``_space_permission_subjects``).
 
-        The v1 ``GET /wiki/rest/api/space/{key}/permissions`` response is a flat
-        array of entries.  Each entry covers one operation and lists all users and
-        groups that hold that operation — so one entry can produce many Permissions.
-
-        v1 entry shape:
-          {
-            "subjects": {
-              "user":  { "results": [{ "accountId": "...", ... }] },   # Cloud
-              # DC:     { "results": [{ "userKey": "...", "username": "...", ... }] }
-              "group": { "results": [{ "id": "...", "name": "...", "type": "group" }] }
-            },
-            "operation": {
-              "operation":  "read",   # key is "operation" (v1), NOT "key" (v2)
-              "targetType": "space"
-            },
-            "anonymousAccess": false
-          }
-
-        Differences from the old v2 ``_transform_space_permission``:
-          v2 had { "principal": { "type": "user"|"group", "id": "..." },
-                   "operation": { "key": "read", "targetType": "space" } }
-          — one Permission per entry.
-          v1 has subjects.user / subjects.group lists — one entry → many Permissions.
-
-        **anonymousAccess handling:**
-          When ``anonymousAccess: true`` for a read operation, the space is public
-          and accessible without authentication. We skip creating explicit permissions
-          since the space-level public flag means records inherit public access.
+        Anonymous View reaches the logged-in users (``_logged_in_user_permissions``); a user is named by
+        ``userKey`` (Data Center) or ``accountId``; a group by ``name`` or ``id``.
         """
-        permissions: list[Permission] = []
         try:
-            operation = entry.get("operation", {})
-            # Cloud v1: operation.operation; DC: operation.operationKey
-            operation_key = operation.get("operation") or operation.get("operationKey")
-            target_type = operation.get("targetType")
-
-            if not operation_key:
-                return permissions
-
-            # Anonymous View: Cloud's bundled format flags it, Data Center names an anonymous subject.
-            subject = entry.get("subject")
-            is_anonymous = entry.get("anonymousAccess", False) or (
-                isinstance(subject, dict) and subject.get("type") == "anonymous"
-            )
-            if is_anonymous:
+            subject_type = subject.get("type")
+            if subject_type == "anonymous":
                 if operation_key == "read" and target_type in (None, "space"):
                     return await self._logged_in_user_permissions()
-                return permissions
-
+                return []
             permission_type = self._map_confluence_permission(operation_key, target_type)
-
-            # DC flat format: one subject per array item
-            if isinstance(subject, dict):
-                subject_type = subject.get("type")
-                if subject_type == "user":
-                    user_id = (
-                        subject.get("userKey")
-                        or subject.get("accountId")
-                        or subject.get("key")
-                    )
-                    if user_id:
-                        perm = await self._create_permission_from_principal(
-                            "user", user_id, permission_type
-                        )
-                        if perm:
-                            permissions.append(perm)
-                elif subject_type == "group":
-                    group_id = subject.get("name") or subject.get("id")
-                    if group_id:
-                        perm = await self._create_permission_from_principal(
-                            "group", group_id, permission_type
-                        )
-                        if perm:
-                            permissions.append(perm)
-                return permissions
-
-            subjects = entry.get("subjects", {})
-
-            # Process users (Cloud bundled format)
-            for user_data in subjects.get("user", {}).get("results", []):
-                # Cloud:  accountId field
-                # DC v1:  userKey field (userKey is the stable identifier)
-                # Fallback to "key" which some DC versions also expose
-                user_id = (
-                    user_data.get("accountId")      # Cloud v1
-                    or user_data.get("userKey")     # DC v1
-                    or user_data.get("key")         # older DC fallback
-                )
-                if user_id:
-                    perm = await self._create_permission_from_principal("user", user_id, permission_type)
-                    if perm:
-                        permissions.append(perm)
-
-            # Process groups
-            for group_data in subjects.get("group", {}).get("results", []):
-                # Both Cloud and DC v1 include "id" for groups; DC may only have "name"
-                group_id = group_data.get("id") or group_data.get("name")
-                if group_id:
-                    perm = await self._create_permission_from_principal("group", group_id, permission_type)
-                    if perm:
-                        permissions.append(perm)
-
+            if subject_type == "user":
+                principal = subject.get("userKey") or subject.get("accountId") or subject.get("key")
+            elif subject_type == "group":
+                principal = subject.get("name") or subject.get("id")
+            else:
+                return []
+            if not principal:
+                return []
+            permission = await self._create_permission_from_principal(subject_type, principal, permission_type)
+            return [permission] if permission else []
         except Exception as e:
             self.logger.error(f"❌ Failed to transform v1 space permission entry: {e}")
-
-        return permissions
+            return []
 
     async def _transform_v2_space_permission(self, perm_data: dict[str, Any]) -> Optional[Permission]:
         """Transform Confluence Cloud v2 space permission to Permission object.

@@ -804,7 +804,7 @@ class TestFullSyncCoverage:
 class TestSpacePermissions:
     async def test_space_grants_map_to_known_users_and_groups(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
-        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": []})
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": [], "ops": []})
         atlassian_api.on(
             "GET",
             f"{API}/space/ENG/permissions",
@@ -815,7 +815,8 @@ class TestSpacePermissions:
                     {"operation": {"operationKey": "administer", "targetType": "space"}, "subject": {"type": "user", "userKey": "alice"}},
                     {"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "anonymous"}},
                     {"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "user", "userKey": "stranger"}},
-                    {"operation": {"operation": "create", "targetType": "page"}, "subjects": {"group": {"results": [{"name": "eng"}]}}},
+                    # The bundled shape: ops can add pages but holds no View, so it reads nothing.
+                    {"operation": {"operation": "create", "targetType": "page"}, "subjects": {"group": {"results": [{"name": "ops"}]}}},
                 ]
             ),
         )
@@ -827,8 +828,37 @@ class TestSpacePermissions:
             (EntityType.USER, "alice@example.com", PermissionType.READ),
             (EntityType.GROUP, "eng", PermissionType.READ),
             (EntityType.USER, "alice@example.com", PermissionType.OWNER),
-            (EntityType.GROUP, "eng", PermissionType.WRITE),
         }, "unknown users grant nothing; anonymous View reaches only the log-in groups, none of them synced here"
+
+    async def test_view_counts_from_either_shape_and_other_grants_need_it(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": [], "ops": []})
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response([
+            {"operation": {"operation": "read", "targetType": "space"}, "subjects": {"group": {"results": [{"name": "eng"}]}}},
+            {"operation": {"operationKey": "create", "targetType": "page"}, "subject": {"type": "group", "name": "eng"}},
+            {"operation": {"operationKey": "create", "targetType": "page"}, "subject": {"type": "group", "name": "ops"}},
+        ]))
+
+        await connector.run_sync()
+
+        grants = {(p.external_id, p.type) for p in db.record_group_permissions["10"]}
+        assert grants == {("eng", PermissionType.READ), ("eng", PermissionType.WRITE)}
+
+    @pytest.mark.parametrize("entry", [
+        {"operation": {"operationKey": "read", "targetType": "space"}},
+        {"operation": {"targetType": "space"}, "subject": {"type": "group", "name": "eng"}},
+        {"subject": {"type": "group", "name": "eng"}},
+        "read",
+    ], ids=["no-subject", "no-operation-key", "no-operation", "not-an-object"])
+    async def test_a_space_permission_of_neither_shape_grants_nothing(self, atlassian_api, db, store, search, entry) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": []})
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response([entry]))
+
+        await connector.run_sync()
+
+        assert db.record_group_permissions["10"] == []
+        assert connector.full_sync_coverage().complete is False
 
     async def test_anonymous_view_reaches_logged_in_users_and_administrators_see_every_space(
         self, atlassian_api, db, store, search
