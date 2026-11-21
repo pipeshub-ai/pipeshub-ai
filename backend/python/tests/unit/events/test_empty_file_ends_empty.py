@@ -18,11 +18,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import EventTypes
+from app.config.constants.arangodb import EventTypes, ProgressStatus
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
 from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.parsing.interface import ParseError, ParseErrorCode
 from tests.unit.attempt_start import attempt_start_via
 from tests.unit.events.test_orchestrator_flow import _make_event_processor
@@ -191,6 +192,25 @@ async def test_vectors_another_record_still_holds_are_kept() -> None:
 
     proc.indexing_pipeline.delete_points_for_virtual_record.assert_not_awaited()
     assert _statuses(graph)[-1] == "EMPTY"
+
+
+@pytest.mark.asyncio
+async def test_vectors_a_trashed_record_still_holds_are_kept() -> None:
+    async def holders(_vrid: str, *, raise_on_error: bool = False,
+                      visibility: RecordVisibility = RecordVisibility.LIVE, **_kw: object) -> list[str]:
+        return ["rec-1", "rec-trashed"] if visibility == RecordVisibility.ALL else ["rec-1"]
+
+    graph = _graph("a.txt", "txt", "text/plain")
+    graph.get_records_by_virtual_record_id = AsyncMock(side_effect=holders)
+    proc = _processor(graph)
+
+    await proc._mark_record(
+        "rec-1", ProgressStatus.EMPTY, event_type=EventTypes.UPDATE_RECORD.value, prev_virtual_record_id="vr-1",
+    )
+
+    # A restore of the trashed record reads these vectors.
+    proc.indexing_pipeline.delete_points_for_virtual_record.assert_not_awaited()
+    assert _statuses(graph) == ["EMPTY"]
 
 
 @pytest.mark.asyncio

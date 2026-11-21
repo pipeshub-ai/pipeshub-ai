@@ -5,6 +5,7 @@ from typing import Any
 from app.config.constants.arangodb import EventTypes
 from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.reconciliation.service import ReconciliationMetadata
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.vector_db.strategy import RecordContext
 
 
@@ -31,10 +32,11 @@ async def drop_previous_vectors_of_emptied_record(
     record_id = doc.get("_key") or doc.get("id")
     details = {"record_id": record_id, "virtual_record_id": virtual_record_id}
     # An unreadable graph also answers []; raising lets the event retry rather
-    # than reading the failure as "nobody else holds this content".
+    # than reading the failure as "nobody else holds this content". A trashed
+    # holder counts: a restore reads this content.
     try:
         holders = await graph_provider.get_records_by_virtual_record_id(
-            virtual_record_id, raise_on_error=True
+            virtual_record_id, raise_on_error=True, visibility=RecordVisibility.ALL
         )
     except Exception as e:
         raise IndexingError("Could not tell whether another record shares this content", details=details) from e
