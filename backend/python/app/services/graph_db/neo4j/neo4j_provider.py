@@ -21813,28 +21813,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The arms are the listing's, cheapest first; every rule-bearing walk
         # stops at the first hop that fails. Fragments nest, and a name reused
         # inside EXISTS binds to the outer one, so each takes its own tag.
+        # Each walk is matched from its bound start and its ends are collected before they are tested: a test on the end (the App, a
+        # seed, a declared group) lets the planner start the walk there instead, from every node of the App for each target, and a plan
+        # chosen while an App is small stays cached for every App until the statistics change several-fold. A test on the collected
+        # list cannot be moved into the walk.
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
 
         def from_app(v: str, tag: str) -> str:
             c, p, h = f"kh_c{tag}", f"kh_p{tag}", f"kh_h{tag}"
             hop = self._kh_v3_check_hop(c, p, h, grant_once=bool(access.get("probe")))
-            return f"EXISTS {{ MATCH ({v}) (({c})<-[{h}:NODE_RELATION]-({p}) WHERE {hop}){{1,50}} (app) }}"
+            e, es = f"kh_ae{tag}", f"kh_aes{tag}"
+            return (f"EXISTS {{ MATCH ({v}) (({c})<-[{h}:NODE_RELATION]-({p}) WHERE {hop}){{1,50}} ({e})"
+                    f" WITH collect({e}) AS {es} WHERE app IN {es} RETURN 1 }}")
 
         def in_declared_scope(v: str, tag: str) -> str:
             """A group under an admitted RECORD_GROUP_LEVEL declaration, or a
             record belonging to one, as the listing's declared arms admit."""
-            mg, bg, cb, pb, dg, h = (f"kh_{x}{tag}" for x in ("mg", "bg", "cb", "pb", "dg", "h"))
+            mg, bg, cb, pb, dg, h, de, des = (f"kh_{x}{tag}" for x in ("mg", "bg", "cb", "pb", "dg", "h", "de", "des"))
             return f"""EXISTS {{
                 UNWIND CASE WHEN {v}:RecordGroup THEN [{v}]
                             ELSE [({v})-[:BELONGS_TO]->({bg}:RecordGroup) | {bg}] END AS {mg}
                 MATCH ({mg}) (({cb}:RecordGroup)<-[{h}:NODE_RELATION]-({pb}:RecordGroup)
                                WHERE {h}.relationshipType {hierarchy}
-                                 AND NOT coalesce({cb}.isDeleted, false)){{0,50}} ({dg}:RecordGroup)
+                                 AND NOT coalesce({cb}.isDeleted, false)){{0,50}} ({de})
                 WHERE NOT coalesce({mg}.isDeleted, false)
+                WITH collect(DISTINCT {de}) AS {des}
+                UNWIND {des} AS {dg}
+                WITH {dg} WHERE {dg}:RecordGroup
                   AND {dg}.connectorId = app.id
                   AND {dg}.permissionModel = 'RECORD_GROUP_LEVEL'
                   AND NOT coalesce({dg}.isDeleted, false)
-                  AND ({dg}.id IN $grantedIds OR {from_app(dg, tag + "d")}) }}"""
+                  AND ({dg}.id IN $grantedIds OR {from_app(dg, tag + "d")})
+                RETURN 1 }}"""
 
         def seed(v: str) -> str:
             return (
@@ -21849,10 +21859,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # admits is not a seed, so its hierarchy-only children stay out.
         open_hop = f"kh_hs.relationshipType {hierarchy} AND {self._kh_v3_seed_hop('kh_cs', 'kh_ps', state=False)}"
         below_seed = f"""EXISTS {{
-                MATCH (t) ((kh_cs)<-[kh_hs:NODE_RELATION]-(kh_ps) WHERE {open_hop}){{1,50}} (kh_s)
-                WHERE {seed('kh_s')}
+                MATCH (t) ((kh_cs)<-[kh_hs:NODE_RELATION]-(kh_ps) WHERE {open_hop}){{1,50}} (kh_se)
+                WITH collect(DISTINCT kh_se) AS kh_ses
+                UNWIND kh_ses AS kh_s
+                WITH kh_s WHERE {seed('kh_s')}
                   AND NOT {from_app('kh_s', 'x')}
-                  AND NOT {in_declared_scope('kh_s', 'x')} }}"""
+                  AND NOT {in_declared_scope('kh_s', 'x')}
+                RETURN 1 }}"""
 
         items = """RETURN collect({id: ok.id, vrid: ok.virtualRecordId,
                         connectorId: ok.connectorId, indexingStatus: ok.indexingStatus,
@@ -22302,7 +22315,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WITH app, (coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB') AS appOpensEverything
         MATCH (start:App|Record|RecordGroup {{id: $start_id}})
         WHERE start = app
-           OR EXISTS {{ MATCH (start) ((kh_c)<-[kh_h:NODE_RELATION]-(kh_p) WHERE {self._kh_v3_check_hop("kh_c", "kh_p", "kh_h", grant_once=probe)}){{1,49}} (app) }}
+           // The walk's ends are collected before they are tested, so its plan starts at the start (as the check's walks do).
+           OR EXISTS {{ MATCH (start) ((kh_c)<-[kh_h:NODE_RELATION]-(kh_p) WHERE {self._kh_v3_check_hop("kh_c", "kh_p", "kh_h", grant_once=probe)}){{1,49}} (kh_top)
+                        WITH collect(kh_top) AS kh_tops WHERE app IN kh_tops RETURN 1 }}
         // Collected, so the walk above the start is read once, not once for each child the planner might start from.
         WITH app, appOpensEverything, collect(start) AS reached
         UNWIND reached AS start
