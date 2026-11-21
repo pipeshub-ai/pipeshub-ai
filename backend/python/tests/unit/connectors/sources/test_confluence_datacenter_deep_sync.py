@@ -1002,6 +1002,7 @@ class TestFetchPagePermissions:
             Permission(entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ)
         ])
 
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         perms = await connector._fetch_page_permissions("pg1")
         assert len(perms) == 1
 

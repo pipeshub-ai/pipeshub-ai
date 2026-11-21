@@ -1120,6 +1120,7 @@ class TestFetchSpacePermissions:
             ]
         )
 
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         permissions = await connector._fetch_space_permissions("ENG", "Engineering", space_id="1")
         assert len(permissions) == 1
 
@@ -1155,6 +1156,7 @@ class TestFetchPagePermissions:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_page_restriction_to_permissions = AsyncMock(return_value=[])
 
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         permissions = await connector._fetch_page_permissions("page-1")
         assert permissions == []
         connector._transform_page_restriction_to_permissions.assert_awaited_once()
@@ -2154,6 +2156,7 @@ class TestCreatePermissionFromPrincipal:
     async def test_group_not_found(self):
         c = _conn()
         c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+        _no_group_named(c)
 
         perm = await c._create_permission_from_principal("group", "grp-x", PermissionType.READ)
         assert perm is None
@@ -2165,11 +2168,11 @@ class TestCreatePermissionFromPrincipal:
         assert perm is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_a_failed_lookup_raises_instead_of_reading_as_missing(self):
         c = _conn()
         c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=Exception("DB error"))
-        perm = await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
-        assert perm is None
+        with pytest.raises(Exception, match="DB error"):
+            await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
 
 
 # ===========================================================================
@@ -3974,6 +3977,8 @@ class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_group_not_found(self):
         c = _c()
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+        _no_group_named(c)
         perm = await c._create_permission_from_principal("group", "g1", PermissionType.READ)
         assert perm is None
 
@@ -4485,3 +4490,17 @@ class TestSyncSpacesIncludeFilter:
         mock_ds.get_spaces_v1.assert_awaited_once()
         call_kwargs = mock_ds.get_spaces_v1.call_args
         assert call_kwargs[1].get("keys") == ["ENG"]
+
+
+def _no_group_named(c: MagicMock) -> None:
+    """The name fallback finds no group (a successful, empty lookup)."""
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+    tx = MagicMock()
+    tx.get_nodes_by_filters = AsyncMock(return_value=[])
+
+    @asynccontextmanager
+    async def transaction() -> AsyncIterator[MagicMock]:
+        yield tx
+
+    c.data_store_provider.transaction = transaction

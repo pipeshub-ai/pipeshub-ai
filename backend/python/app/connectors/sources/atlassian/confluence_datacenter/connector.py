@@ -745,6 +745,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     break
 
                 if not users_data:
+                    # An empty page that still links onward leaves users unread: withdraw nobody.
+                    if ((response_data.get("_links") or {}) if isinstance(response_data, dict) else {}).get("next"):
+                        self.logger.error("Failed to fetch users: an empty page of the user listing links to a next one")
+                        self._sync_read_incomplete = True
+                        read_complete = False
                     break
 
                 # Transform users (skip users without email)
@@ -1673,7 +1678,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 listing = await self._sync_content(space.short_name, record_type, defer_checkpoint=True)
                 self._id_sync_failed_items = []
                 settled = await self._reconcile_space_content(space, record_type, listing)
-                if not listing.complete or not settled:
+                # A listing read from a checkpoint (left over when a full sync could not forget it) did not list the
+                # unchanged pages before its window, so a full sync must not unlink what it did not see.
+                if not listing.complete or not settled or not listing.full:
                     self._sync_read_incomplete = True
                 if not listing.complete:
                     continue
@@ -2292,8 +2299,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 full_page = new = False
                 step = self._RESTRICTION_PAGE
                 for kind, out in (("user", users), ("group", groups)):
-                    listing = restrictions.get(kind) or {}
-                    entries = listing.get("results") or []
+                    listing = restrictions.get(kind)
+                    entries = listing.get("results") if isinstance(listing, dict) else None
+                    count = listing.get("size") if isinstance(listing, dict) else None
+                    if not isinstance(entries, list) or (isinstance(count, int) and count > len(entries)):
+                        # A listing that is missing, or says it holds more than it returned, is unread, not empty.
+                        self.logger.error(f"View permissions of page {page_id} came back without their {kind} list")
+                        return None
                     for entry in entries:
                         key = (kind, str(entry.get("userKey") or entry.get("username") or entry.get("name")
                                          or entry.get("id") or entry))
@@ -3610,6 +3622,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 user = await self.data_entities_processor.get_user_by_source_id(
                     source_user_id=principal_id,
                     connector_id=self.connector_id,
+                    raise_on_error=True,
                 )
                 if user:
                     return Permission(
@@ -3624,6 +3637,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     pseudo_group = await self.data_entities_processor.get_user_group_by_external_id(
                         connector_id=self.connector_id,
                         external_id=principal_id,
+                        raise_on_error=True,
                     )
 
                     if not pseudo_group:
@@ -3649,6 +3663,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 group = await self.data_entities_processor.get_user_group_by_external_id(
                     connector_id=self.connector_id,
                     external_id=principal_id,
+                    raise_on_error=True,
                 )
                 if group:
                     return Permission(
@@ -3691,8 +3706,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             return None
 
         except Exception as e:
+            # A failed lookup is not a missing principal: the caller keeps the stored access instead of writing an
+            # ACL without this grant.
             self.logger.error(f"❌ Failed to create permission from principal: {e}")
-            return None
+            raise
 
     async def _create_pseudo_group(self, account_id: str) -> Optional[AppUserGroup]:
         """
@@ -3752,8 +3769,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             permission = await self._create_permission_from_principal(subject_type, principal, permission_type)
             return [permission] if permission else []
         except Exception as e:
+            # Raised on: the space keeps its stored grants rather than losing this one (_fetch_space_permissions).
             self.logger.error(f"❌ Failed to transform v1 space permission entry: {e}")
-            return []
+            raise
 
     async def _transform_v2_space_permission(self, perm_data: dict[str, Any]) -> Optional[Permission]:
         """Transform Confluence Cloud v2 space permission to Permission object.

@@ -57,11 +57,16 @@ class TeamDb(RemovalRecordsDb):
         super().__init__()
         self.migrations: list[dict[str, Any]] = []
         self.creator_link: Optional[SimpleNamespace] = None
+        self.failing_lookups: set[str] = set()  # principals whose lookup fails, as a store error would
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> object:
+    async def get_user_by_source_id(self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False) -> object:
+        if source_user_id in self.failing_lookups:
+            raise RuntimeError("store unavailable")
         return next((u for u in reversed(self.app_users) if u.source_user_id == source_user_id), None)
 
-    async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> object:
+    async def get_user_group_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> object:
+        if external_id in self.failing_lookups:
+            raise RuntimeError("store unavailable")
         return next((g for g, _ in reversed(self.user_groups) if g.source_user_group_id == external_id), None)
 
     async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
@@ -70,8 +75,15 @@ class TeamDb(RemovalRecordsDb):
     async def migrate_group_to_user_by_external_id(self, **kwargs: str) -> None:
         self.migrations.append(kwargs)
 
+    async def on_new_app_users(self, users: list[Any]) -> None:
+        await super().on_new_app_users(users)
+        listed = {u.source_user_id for u in users}
+        self.withdrawn_users = [u for u in self.withdrawn_users if u.source_user_id not in listed]  # linked again
+
     async def get_app_user_links(self, connector_id: str) -> list[SimpleNamespace]:
-        linked = {u.source_user_id: u for u in self.app_users}
+        """The live links: users saved and not withdrawn since."""
+        withdrawn = {u.source_user_id for u in self.withdrawn_users}
+        linked = {u.source_user_id: u for u in self.app_users if u.source_user_id not in withdrawn}
         links = [SimpleNamespace(id=u.id, source_user_id=sid, email=u.email) for sid, u in linked.items()]
         return links + ([self.creator_link] if self.creator_link else [])
 
@@ -494,10 +506,26 @@ class TestUsersAndGroups:
         await connector._sync_users()
 
         assert [u.source_user_id for u in db.withdrawn_users] == ["bob"]
+        assert "bob" not in {link.source_user_id for link in await db.get_app_user_links(CONNECTOR_ID)}
 
         atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, bob]})   # and enabled again
         await connector._sync_users()
-        assert db.app_users[-1].source_user_id == "bob"
+        assert "bob" in {link.source_user_id for link in await db.get_app_user_links(CONNECTOR_ID)}
+        assert db.withdrawn_users == []
+
+    async def test_an_empty_page_that_links_onward_withdraws_nobody(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        ana, bob = user("ana", "ana@example.com"), user("bob", "bob@example.com")
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, bob]})
+        await connector._sync_users()
+
+        pages = {"0": {"results": [ana], "size": 1, "_links": {"base": BASE, "next": f"{ACTIVE_USERS}?start=1"}},
+                 "1": {"results": [], "size": 0, "_links": {"base": BASE, "next": f"{ACTIVE_USERS}?start=2"}}}
+        atlassian_api.on("GET", ACTIVE_USERS, lambda r: json_response(pages[AtlassianApiStub.query(r).get("start", "0")]))
+        await connector._sync_users()
+
+        assert db.withdrawn_users == [], "bob is on a page that was never read"
+        assert connector.full_sync_coverage().complete is False
 
     @pytest.mark.parametrize("second_page", [
         json_response({"message": "busy"}, status=503),
@@ -792,11 +820,23 @@ class TestFullSyncCoverage:
 
         assert "p1" in db.records and connector.full_sync_coverage().complete is False
 
+    async def test_a_listing_read_from_a_checkpoint_is_not_a_full_listing(self, atlassian_api, db, store, search) -> None:
+        # A full sync forgets the checkpoints first; one it could not forget lists only what changed since.
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")]))
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+        assert store.values_for("confluence_pages/ENG"), "the checkpoint the next listing starts from"
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is False
+
     async def test_the_next_clean_sync_is_complete_again(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
-        atlassian_api.on("GET", f"{API}/user/list", json_response({"message": "busy"}, status=503))
+        atlassian_api.on("GET", ACTIVE_USERS, json_response({"message": "busy"}, status=503))
         await connector.run_sync()
-        atlassian_api.on("GET", f"{API}/user/list", {"results": []})
+        assert connector.full_sync_coverage().complete is False
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": []})
+        store.sync_points.clear()  # a full sync starts by forgetting the checkpoints
         await connector.run_sync()
         assert connector.full_sync_coverage().complete is True
 
@@ -1097,6 +1137,39 @@ class TestPageRestrictions:
         grants = {p.email or p.external_id for p in db.record_permissions["p1"]}
         assert grants == {"alice@example.com", "confluence-administrators"}
         assert db.record_permissions["open"] == [], "an unrestricted page needs no grant of its own"
+
+    @pytest.mark.parametrize("user_list", [
+        {"size": 1, "start": 0, "limit": 200},
+        {"results": [], "size": 1, "start": 0, "limit": 200},
+    ], ids=["no-results", "fewer-results-than-size"])
+    async def test_a_restriction_list_that_says_it_holds_more_than_it_returned_is_unread(
+        self, atlassian_api, db, store, search, user_list
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", {
+            "operation": "read", "restrictions": {"user": user_list, "group": {"results": [], "size": 0}}})
+
+        await connector.run_sync()
+
+        assert "p1" not in db.records, "an unread restriction is not an absent one"
+
+    async def test_a_failed_group_lookup_keeps_the_stored_access(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": [], "confluence-administrators": []})
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response(
+            [{"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "group", "name": "eng"}}]))
+        search.add("page", 0, listing([content("p1")]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
+        await connector.run_sync()
+        before = {p.external_id for p in db.record_group_permissions["10"]}
+        assert before == {"eng", "confluence-administrators"}
+
+        db.failing_lookups = {"confluence-administrators"}
+        await connector.run_sync()
+
+        assert {p.external_id for p in db.record_group_permissions["10"]} == before, "the stored space grants stay"
+        assert connector.full_sync_coverage().complete is False
 
     async def test_a_restriction_body_of_an_unknown_shape_does_not_open_up_the_page(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)

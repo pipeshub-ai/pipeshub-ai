@@ -458,6 +458,8 @@ class TestCreatePermissionFromPrincipal:
     @pytest.mark.asyncio
     async def test_group_not_found(self):
         c = _c()
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+        _no_group_named(c)
         perm = await c._create_permission_from_principal("group", "g1", PermissionType.READ)
         assert perm is None
 
@@ -966,3 +968,17 @@ class TestSyncSpacesIncludeFilter:
         mock_ds.get_spaces_v1.assert_awaited_once()
         call_kwargs = mock_ds.get_spaces_v1.call_args
         assert call_kwargs[1].get("keys") == ["ENG"]
+
+
+def _no_group_named(c: MagicMock) -> None:
+    """The name fallback finds no group (a successful, empty lookup)."""
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+    tx = MagicMock()
+    tx.get_nodes_by_filters = AsyncMock(return_value=[])
+
+    @asynccontextmanager
+    async def transaction() -> AsyncIterator[MagicMock]:
+        yield tx
+
+    c.data_store_provider.transaction = transaction
