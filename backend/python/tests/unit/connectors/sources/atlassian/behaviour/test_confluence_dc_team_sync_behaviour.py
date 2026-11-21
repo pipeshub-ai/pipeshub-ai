@@ -1035,6 +1035,17 @@ class TestAuditLogRestrictionChanges:
         assert db.records["p2"].access_rule == AccessRule.STRICT, "space-level 'Permissions' events are not page restrictions"
         assert audit_key(store)["last_sync_time_ms"] > first_clock
 
+    async def test_each_audit_window_ends_where_the_next_begins_to_the_millisecond(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        await connector.run_sync()
+        await connector.run_sync()
+        clock = audit_key(store)["last_sync_time_ms"]
+        await connector.run_sync()
+
+        first, second = (AtlassianApiStub.query(r) for r in atlassian_api.calls("GET", AUDIT)[-2:])
+        assert first["to"] == second["from"], "an event in the last second of a window is in the next one"
+        assert second["from"].endswith(f".{clock % 1000:03d}Z")
+
     @pytest.mark.parametrize("kind", ["Page", "Blog post"])
     async def test_the_documented_cursor_object_pages_the_audit_log_and_every_content_type_counts(
         self, atlassian_api, db, store, search, kind

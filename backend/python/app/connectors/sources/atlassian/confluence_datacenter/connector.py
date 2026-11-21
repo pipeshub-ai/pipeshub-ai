@@ -1726,8 +1726,12 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         page_cursor: Optional[str] = None
 
         # Convert millisecond timestamps to ISO-8601 UTC format
-        from_date = datetime.fromtimestamp(start_date_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-        to_date = datetime.fromtimestamp(end_date_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        # To the millisecond: a "to" cut to the second left a change made in the window's last second (a sync that
+        # starts right after it) to the next sync, an interval late.
+        def iso_ms(ms: int) -> str:
+            return datetime.fromtimestamp(ms // 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.') + f"{ms % 1000:03d}Z"
+
+        from_date, to_date = iso_ms(start_date_ms), iso_ms(end_date_ms)
 
         while True:
             datasource = await self._get_fresh_datasource()
@@ -2206,7 +2210,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     # A body that isn't the documented OperationRestriction is not "unrestricted".
                     self.logger.error(f"View permissions of page {page_id} came back in an unknown shape")
                     return None
-                full_page = False
+                full_page = new = False
                 step = self._RESTRICTION_PAGE
                 for kind, out in (("user", users), ("group", groups)):
                     listing = restrictions.get(kind) or {}
@@ -2216,13 +2220,15 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                          or entry.get("id") or entry))
                         if key not in seen:
                             seen.add(key)
+                            new = True
                             out.append(entry)
                     # The page size Confluence used, which a system limit may set below ours.
                     size = listing.get("limit") if isinstance(listing.get("limit"), int) else self._RESTRICTION_PAGE
                     if size > 0 and len(entries) >= size:
                         full_page = True
                         step = min(step, size)
-                if not full_page:
+                # A full page may be followed by more; one that adds nothing new (a server ignoring start) ends it.
+                if not full_page or not new:
                     break
                 start += step
             else:
