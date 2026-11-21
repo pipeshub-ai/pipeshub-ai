@@ -1238,6 +1238,30 @@ def held_downstream(host: ConcurrencyHost, message: "StreamMessage", pools: froz
     return dispatch is not None and dispatch.route is file_types.Route.PDF
 
 
+async def wait_out_held_service(
+    host: ConcurrencyHost, tier: ParseTier | None, message: "StreamMessage", wait: "AdmissionWait", *, scoped: bool,
+) -> None:
+    """A record the dispatch could not judge calls a held service: wait that service's pause out before the parse permit.
+
+    The dispatch judged the event's labels; a stored PDF sent with light ones is known only at START_PARSING, by its
+    raised *tier*. The wait runs inside START_PARSING's own parse wait (*wait*), so the budget is paused once and the
+    bound is that wait's. A pause that outlasts it hands the record back: returning would not, since a gate with room
+    admits whatever the timeout.
+    """
+    if not scoped:  # a broker-order consumer already stops for every pause
+        return
+    pools = held_pools(host)
+    pool = index_pool(effective_index_tier(host, tier))
+    if pool not in pools or held_downstream(host, message, pools):
+        return
+    coordinator = host.backpressure_coordinator  # type: ignore[attr-defined]
+    holding = {name for name, owner in SERVICE_POOL.items() if owner is pool}
+    while (left := coordinator.pause_remaining(ignoring=coordinator.paused_services - holding)) > 0:
+        if wait.remaining() <= 0:
+            raise wait.timed_out("docling")
+        await asyncio.sleep(min(left, wait.remaining()))
+
+
 def get_gate_waiter_count(
     host: ConcurrencyHost, tier: ParseTier | None = None
 ) -> int:

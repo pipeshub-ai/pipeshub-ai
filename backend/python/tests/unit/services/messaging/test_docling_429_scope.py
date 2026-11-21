@@ -37,7 +37,7 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from app.services.resource_governor import DownstreamFeedback
 from app.services.resource_governor.feedback import set_default_downstream_feedback
-from app.services.resource_governor.models import Pool
+from app.services.resource_governor.models import ParseTier, Pool
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -273,13 +273,23 @@ class TestHeldDownstream:
 
     @pytest.mark.parametrize("mime", [None, "", "unknown"])
     @pytest.mark.parametrize("extension", ["txt", "md", "html", "htm"])
-    def test_a_light_event_with_no_mime_is_not_held(self, extension: str, mime: str | None) -> None:
-        """Known limit: the hold reads the event's own labels. The record handler (#6233) routes such an event by the
-        record's stored mime, so a stored PDF sent this way still reaches Docling inside its 429 window (its client waits
-        the 429 out; nothing is lost). Holding every mime-less light record would hold connector records that never call
-        Docling. Follow-up F23g makes admission follow the resolved mime."""
+    async def test_a_light_event_with_no_mime_is_passed_at_dispatch_and_held_at_start_parsing(
+        self, extension: str, mime: str | None, coordinator, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Was test_a_light_event_with_no_mime_is_not_held (a known limit): the dispatch reads the event's own labels, so
+        it passes such an event (holding every mime-less light record would hold connector records that never call
+        Docling). The record handler resolves the stored PDF and raises the parse tier to heavy, and START_PARSING holds
+        it then (F23g): with the parse wait's bound spent, it is handed back instead of reaching Docling."""
         payload = {"extension": extension} if mime is None else {"extension": extension, "mimeType": mime}
-        assert not concurrency.held_downstream(_host(), _message(**payload), frozenset({Pool.INDEX_HEAVY}))
+        coordinator.signal(DOCLING, RETRY_AFTER)
+        host = _host(coordinator)
+        host.logger = logging.getLogger("test_docling_429_scope")
+        message = _message(**payload)
+        assert not concurrency.held_downstream(host, message, concurrency.held_pools(host))
+        monkeypatch.setattr(concurrency, "parse_admission_wait_seconds", lambda: 0.0)
+        with pytest.raises(concurrency.ParseAdmissionTimeout):
+            async with concurrency.parse_admission_wait(host, None, "m-1") as wait:
+                await concurrency.wait_out_held_service(host, ParseTier.HEAVY, message, wait, scoped=True)
 
     def test_nothing_is_held_without_a_held_pool(self) -> None:
         assert not concurrency.held_downstream(_host(), _message(extension="pdf", mimeType="application/pdf"), frozenset())
