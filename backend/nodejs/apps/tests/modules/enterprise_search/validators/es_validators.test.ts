@@ -2791,6 +2791,27 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('truncates MCP tool descriptions longer than 10000 chars instead of rejecting the save', () => {
+      const longDescription = 'd'.repeat(12_000)
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [{
+            instanceId: 'inst-1',
+            name: 'Amplitude',
+            typeId: 'amplitude',
+            allTools: true,
+            tools: [{ name: 'query_amplitude_data', description: longDescription }],
+          }],
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.mcpServers?.[0]?.tools?.[0]?.description).to.have.lengthOf(10_000)
+      }
+    })
+
     it('should reject mcpServers entries missing instanceId', () => {
       const result = createAgentSchema.safeParse({
         body: {

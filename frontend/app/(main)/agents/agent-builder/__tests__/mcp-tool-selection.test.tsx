@@ -316,6 +316,16 @@ describe('saving', () => {
     ]);
   });
 
+  it('truncates MCP tool descriptions that exceed the gateway bound so Save still works', () => {
+    const longDescription = 'd'.repeat(12_000);
+    const node = mcpNode({
+      allTools: false,
+      tools: [{ name: 'list_issues', fullName: 'mcp_github_list_issues', description: longDescription }],
+    });
+    const payload = extractAgentConfigFromFlow('A', [core, node], [edge]);
+    expect(payload.mcpServers?.[0]?.tools?.[0]?.description).toHaveLength(10_000);
+  });
+
   it("leaves the MCP servers out when the server couldn't read them, so the save keeps them", () => {
     const loaded = { mcpServersUnavailable: true } as unknown as Parameters<typeof extractAgentConfigFromFlow>[3];
     const payload = extractAgentConfigFromFlow('A', [core], [], loaded);

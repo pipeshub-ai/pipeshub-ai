@@ -11,6 +11,14 @@ import type {
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 import { changedAttachments, isApiToolsetNode } from './api-toolset-attachments';
 
+/**
+ * Match the Node agent-save gateway bound. Python then caps MCP tool
+ * descriptions at 2000 when storing. Vendors such as Amplitude publish tool
+ * docs longer than 10k; sending them raw made Save fail before the agent
+ * could be used.
+ */
+const MCP_TOOL_DESCRIPTION_MAX = 10_000;
+
 interface ToolsetDataInternal {
   name: string;
   displayName: string;
@@ -352,7 +360,7 @@ export function extractAgentConfigFromFlow(
             name: tool.name!,
             // Empty when unknown: the server fills in the name discovery gives the tool.
             fullName: tool.fullName || '',
-            description: tool.description || '',
+            description: (tool.description || '').slice(0, MCP_TOOL_DESCRIPTION_MAX),
           })),
       });
     });
