@@ -1051,6 +1051,11 @@ class Judge {
   private readonly writers = new Map<string, Array<{ id: string; ver: string }>>();
   private readonly sessionIds: Set<string>;
   private readonly sharesRead: ReadonlySet<string> | undefined;
+  /**
+   * The chats whose uploads a member reads without a check of that chat: those this read happens in. A fork deciding
+   * what to copy names the fork (`chatsRead`), so an upload of the room is checked there as the fork's own reads check it.
+   */
+  private readonly uploadChats: ReadonlySet<string>;
   /** Answers from before labels named as `text` parents of someone else's asking, by id: how each fares for the reader. */
   private readonly legacyText = new Map<string, Outcome>();
   /** Files written before the rules, named with no run, by `legacyFileKey`: how each fares for the reader. */
@@ -1080,6 +1085,8 @@ class Judge {
         : idOf(s?._id) === undefined
           ? undefined
           : this.sessionIds;
+    this.uploadChats =
+      opts.chatsRead !== undefined ? new Set(opts.chatsRead) : this.sessionIds;
   }
 
   get validUntil(): number {
@@ -1398,7 +1405,7 @@ class Judge {
         for (const id of part.ids) ids.add(id);
       for (const key of fold.agents) agents.add(key);
       for (const cid of fold.uploads)
-        if (cid !== '' && !this.sessionIds.has(cid)) chats.add(cid);
+        if (cid !== '' && !this.uploadChats.has(cid)) chats.add(cid);
       for (const pid of fold.projects) projects.add(pid);
       for (const id of fold.legacy) legacy.add(id);
     }
@@ -1420,7 +1427,7 @@ class Judge {
           isPlain(c) && typeof c.conversationId === 'string'
             ? c.conversationId
             : '';
-        if (cid !== '' && !this.sessionIds.has(cid)) chats.add(cid);
+        if (cid !== '' && !this.uploadChats.has(cid)) chats.add(cid);
       }
       for (const p of listOf<string>(direct.projects))
         if (typeof p === 'string') projects.add(p);
@@ -1805,7 +1812,7 @@ class Judge {
         isPlain(upload) && typeof upload.conversationId === 'string'
           ? upload.conversationId
           : '';
-      if (cid !== '' && this.sessionIds.has(cid) && reader.member === true)
+      if (cid !== '' && this.uploadChats.has(cid) && reader.member === true)
         continue;
       const read = this.chats.get(cid);
       outcomes.push(
@@ -1968,7 +1975,7 @@ class Judge {
         return 'parent';
     }
     for (const cid of fold.uploads) {
-      if (cid !== '' && this.sessionIds.has(cid) && reader.member === true)
+      if (cid !== '' && this.uploadChats.has(cid) && reader.member === true)
         continue;
       const read = this.chats.get(cid);
       if (
@@ -2840,7 +2847,7 @@ class Judge {
         if (!this.readable.readable.has(id)) return false;
     }
     for (const cid of fold.uploads) {
-      if (cid !== '' && this.sessionIds.has(cid) && reader.member === true)
+      if (cid !== '' && this.uploadChats.has(cid) && reader.member === true)
         continue;
       if (this.chats.get(cid) !== true) return false;
     }
@@ -2963,7 +2970,8 @@ export interface VisibleRowsOptions {
   usableAgents?: readonly string[];
   /**
    * The chats this read happens in, when they are not the session's own: a share given in any other chat covers no
-   * one here (`consentCovers`). A fork deciding what to copy reads the room's rows as the fork will read them.
+   * one here (`consentCovers`), and an upload to any other chat counts only if the reader may read that chat. A fork
+   * deciding what to copy reads the room's rows as the fork will read them.
    */
   chatsRead?: readonly string[];
   deps?: Partial<VisibilityDeps>;

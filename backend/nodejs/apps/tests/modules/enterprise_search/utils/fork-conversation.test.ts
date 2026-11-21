@@ -23,7 +23,7 @@ import {
 } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
 import { InMemoryChatStore, oid } from '../controller/chat-test-harness'
 import { labelContentHash, labelStateOf } from '../../../../src/modules/enterprise_search/services/conversation/privacy/label'
-import { configureVisibility, rememberAnswerClosures, resetVisibility, type ReaderRow } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
+import { configureVisibility, rememberAnswerClosures, resetVisibility, visibleRows, type ReaderRow } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
 import { memoryClosureStore, type Row } from '../services/conversation/privacy/closure-world'
 import type { ChatSessionDto } from '../../../../src/libs/repositories/conversation/types'
 import { MongoTx } from '../../../../src/libs/repositories/mongo'
@@ -237,6 +237,77 @@ describe('copySessionUpToMessage', () => {
       expect(store.messagesOf(result.conversation._id).map((m) => m.messageType)).to.deep.equal(['user_query', 'user_query'])
       expect(kept.counts.gets, 'the fork read the kept closures').to.be.greaterThan(gets)
       expect(kept.counts.kept, 'and made none again').to.equal(2)
+    })
+  })
+
+  describe('an answer about a file uploaded to the chat is copied only if the fork can show it to the forker', () => {
+    afterEach(() => resetVisibility())
+
+    // Bob's answer read the file he uploaded to the room, so its label names the room. In a fork the room is
+    // another chat: the fork shows the answer only to someone who may read the room.
+    const world = (mayRead: (userId: string, chatId: string) => boolean | undefined) => {
+      const asked: string[] = []
+      configureVisibility({
+        labelRule: async () => true,
+        readable: async (_who, ids) => ({ readable: new Set<string>(ids), asked: new Set(ids), deleted: new Set<string>(), failed: false, validUntil: Date.now() + 30_000 }),
+        canReadConversation: async (who, chatId) => {
+          asked.push(`${who.userId}:${chatId}`)
+          return mayRead(who.userId, chatId)
+        },
+      })
+      const store = new InMemoryChatStore()
+      store.install()
+      const orgId = oid()
+      const dana = oid()
+      const bob = oid()
+      const room = store.addSession({ orgId, userId: dana, initiator: dana, title: 'Room', sessionType: 'chat', isShared: true, sharedWith: [{ userId: bob, accessLevel: 'write' }] })
+      store.addMessage(room, { messageType: 'user_query', content: 'What does my file say?', authorUserId: bob })
+      const content = 'The file says the launch is in May.'
+      const parts = [{ type: 'text', content }]
+      const ver = String(oid())
+      const direct = { records: [], vrids: [], nodes: [], saVrids: [], personal: [], agents: [], chat: [{ conversationId: String(room._id), recordId: 'rec-upload' }], projects: [], marks: [] }
+      const answer = store.addMessage(room, {
+        messageType: 'bot_response',
+        requestedBy: bob,
+        content,
+        parts,
+        labelVer: ver,
+        provenance: { v: 5, ver, contentHash: labelContentHash(content, parts), direct, parents: [], complete: true, tagset: 1, pub: false },
+      } as never)
+      const fork = async () => {
+        const result = await copySessionUpToMessage(room, String(answer._id), String(dana), String(orgId), { sessionType: 'chat' })
+        const rows = store.messagesOf(result.conversation._id) as unknown as ReaderRow[]
+        const verdicts = await visibleRows({ userId: String(dana), orgId: String(orgId), member: true }, store.session(result.conversation._id) as never, rows, { member: true })
+        return { rows, shown: rows.map((r) => verdicts.get(String(r._id))?.verdict) }
+      }
+      return { fork, asked, dana: String(dana), room: String(room._id) }
+    }
+
+    it('is copied, and shown in the fork, when the forker may read the chat the file was uploaded to', async () => {
+      const w = world((userId, chatId) => userId === w.dana && chatId === w.room)
+
+      const { rows, shown } = await w.fork()
+
+      expect(rows.map((r) => r.messageType)).to.deep.equal(['user_query', 'bot_response'])
+      expect(shown).to.deep.equal(['visible', 'visible'])
+      expect(w.asked, 'the fork asked as the fork reads it').to.include(`${w.dana}:${w.room}`)
+    })
+
+    it('stays behind when whether the forker may read that chat cannot be said: the fork would only hide it', async () => {
+      const w = world(() => undefined)
+
+      const { rows, shown } = await w.fork()
+
+      expect(rows.map((r) => r.messageType)).to.deep.equal(['user_query'])
+      expect(shown).to.deep.equal(['visible'])
+    })
+
+    it('stays behind when the forker may not read that chat', async () => {
+      const w = world(() => false)
+
+      const { rows } = await w.fork()
+
+      expect(rows.map((r) => r.messageType)).to.deep.equal(['user_query'])
     })
   })
 
