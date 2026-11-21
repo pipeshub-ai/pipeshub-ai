@@ -78,6 +78,7 @@ class TestMCPRegistry:
         assert "microsoft_learn" in type_ids
         assert "atlassian_rovo" in type_ids
         assert "linear" in type_ids
+        assert "clay" in type_ids
         assert "notion" in type_ids
         assert "monday" in type_ids
         assert "airtable" in type_ids
@@ -454,6 +455,19 @@ class TestMCPRegistry:
             assert template is not None and template.client_secret_prefix == "GOCSPX-"
             assert template.model_dump(by_alias=True)["clientSecretPrefix"] == "GOCSPX-"
         assert registry.get_template("linear").client_secret_prefix is None
+
+    def test_clay_points_at_the_official_hosted_server(self) -> None:
+        """Clay is Streamable HTTP + OAuth with DCR, at Clay's own endpoint."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        template = registry.get_template("clay")
+        assert template is not None
+        assert template.default_url == "https://api.clay.com/v3/mcp"
+        assert template.transport == MCPTransport.STREAMABLE_HTTP
+        assert template.default_auth_mode == MCPAuthMode.OAUTH
+        assert template.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert template.supports_dcr is True
+        assert template.icon == "/icons/connectors/clay.svg"
 
     def test_auto_discover_is_idempotent(self) -> None:
         registry = MCPRegistry()
