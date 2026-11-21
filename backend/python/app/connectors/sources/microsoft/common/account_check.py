@@ -155,8 +155,12 @@ async def withdraw_unconfirmed_accounts(
         # or confirmed again is linked by the next listing and has its access back at once.
         await processor.withdraw_app_user_access(connector.connector_id, lost)
     if closed:
-        log.error(f"The user listing is unverified past the grace: {len(closed) + len(gone)} of {len(asked)} linked "
+        asked_ids = {u.source_user_id for u in asked}
+        read_gone = sum(u.source_user_id in asked_ids for u in gone)
+        log.error(f"The user listing is unverified past the grace: {len(closed) + read_gone} of {len(asked)} linked "
                   f"people asked about this run were gone or not confirmed active and lose the app link ({len(stored)} linked)")
+        if len(gone) > read_gone:
+            log.info(f"{len(gone) - read_gone} more linked account(s) the listing showed disabled lose the app link")
     if state is not None and pending:
         # Not suppressed as a repeat: each close is sent once, through ``pending_notice``.
         outcome = await connector.notify_and_wait(
