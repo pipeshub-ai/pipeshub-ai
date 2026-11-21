@@ -167,6 +167,10 @@ class EntityAccessMixin(PgBase):
                     found, capped = await self._scan(tx, org, org_id, typ, ref, record_types, scopes, max(0, offset), max(1, window))
                     hits = []
                     roles: dict[str, Any] = {}
+                    # Python enumerate yields (0, x0), (1, x1), … in insertion
+                    # order, and `break` stops the walk immediately, so the
+                    # walk selects the first `limit` permitted rows by
+                    # construction — no post-hoc sort needed.
                     for pos, (rid, doc) in enumerate(found):
                         if doc.get("connectorId") not in apps and rid not in roles:      # the roles of the next candidates, as many as hits are still wanted (at most a batch): none is read past the limit
                             # every candidate may be a hit, an app-level one too: only the next ``limit - len(hits)`` of them can be read before the limit

@@ -24256,6 +24256,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH win
                 UNWIND range(0, size(win) - 1) AS pos
                 WITH win[pos] AS rec, pos
+                ORDER BY pos
                 LIMIT $limit
                 RETURN collect({{pos: pos, row: {projection}}}) AS hits
               }}"""
@@ -24265,6 +24266,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH win, u
                 UNWIND range(0, size(win) - 1) AS pos
                 WITH win[pos] AS rec, pos, u
+                ORDER BY pos
                 CALL {{
                   WITH rec, u
                   WITH rec WHERE rec.connectorId IN $app_level_connector_ids

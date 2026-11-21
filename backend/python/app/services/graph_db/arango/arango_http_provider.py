@@ -22686,6 +22686,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR ref IN @refs
                 {window}
                 LET hits = (
+                    // AQL's FOR over a range (0..N) is a deterministic generator
+                    // that always yields values in ascending order; LIMIT on a FOR
+                    // loop is a stream cutoff, so the walk order is guaranteed by
+                    // the AQL specification without an explicit SORT.
                     FOR pos IN (LENGTH(win) > 0 ? 0..(LENGTH(win) - 1) : [])
                         LET rec = win[pos]
                         LET app_granted = rec.connectorId IN @app_level_connector_ids
