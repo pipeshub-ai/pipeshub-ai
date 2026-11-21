@@ -179,7 +179,7 @@ def _live(**kw: Any) -> dict[str, Any]:  # noqa: ANN401
 
 @pytest.mark.parametrize("origin", [OriginTypes.CONNECTOR.value, OriginTypes.UPLOAD.value])
 async def test_a_different_incarnation_stops_the_old_run_even_with_the_same_stamp(monkeypatch: pytest.MonkeyPatch, origin: str) -> None:
-    """S16: a source that reuses its ids (Jira) re-creates a record with the same ``createdAtTimestamp``; the id tells them apart."""
+    """A source that reuses its ids (Jira) re-creates a record with the same ``createdAtTimestamp``; the id tells them apart."""
     guard = await _guard_with_id(monkeypatch, "inc-A", _live(incarnationId="inc-B"), origin=origin)
     assert await guard.check(None) is True
 
@@ -190,7 +190,7 @@ async def test_the_same_incarnation_goes_on_whatever_the_stamp(monkeypatch: pyte
 
 
 async def test_a_run_that_started_without_an_id_goes_on_when_the_record_gets_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    """S17: the backfill gives a legacy record an id mid-run: live."""
+    """The backfill gives a legacy record an id mid-run: live."""
     guard = await _guard_with_id(monkeypatch, None, _live(incarnationId="inc-new"))
     assert await guard.check(None) is False
 
