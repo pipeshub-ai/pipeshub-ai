@@ -250,7 +250,6 @@ class TestApplyBackpressureDownstreamCoordinator:
         consumer.consumer.paused.return_value = set()
 
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = True
         coordinator.paused_services = frozenset({"ParsingService"})
         coordinator.pause_remaining.return_value = 4.0
         consumer.backpressure_coordinator = coordinator
@@ -271,8 +270,7 @@ class TestApplyBackpressureDownstreamCoordinator:
         consumer._backpressure_episode.engaged()
 
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = True
-        coordinator.paused_services = frozenset({"DoclingService"})
+        coordinator.paused_services = frozenset({"ParsingService"})
         coordinator.pause_remaining.return_value = 2.0
         consumer.backpressure_coordinator = coordinator
 
@@ -288,7 +286,7 @@ class TestApplyBackpressureDownstreamCoordinator:
         consumer._backpressure_episode.engaged()
 
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = False
+        coordinator.pause_remaining.return_value = 0.0
         consumer.backpressure_coordinator = coordinator
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
