@@ -3951,7 +3951,8 @@
           "shared": "Una credencial compartida para todos",
           "sharedHint": "La añades una vez, abajo. Todos actúan con su acceso."
         },
-        "advanced": "Avanzado"
+        "advanced": "Avanzado",
+        "nameTaken": "Otro servidor ya tiene este nombre. Elige uno distinto."
       },
       "configPanel": {
         "editTitle": "Editar servidor MCP",

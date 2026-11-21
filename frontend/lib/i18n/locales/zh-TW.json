@@ -4049,7 +4049,8 @@
           "shared": "所有人共用一個憑證",
           "sharedHint": "你在下方新增一次。所有人都以它的權限操作。"
         },
-        "advanced": "進階"
+        "advanced": "進階",
+        "nameTaken": "已有其他伺服器使用這個名稱。請換一個。"
       },
       "configPanel": {
         "editTitle": "編輯 MCP 伺服器",
