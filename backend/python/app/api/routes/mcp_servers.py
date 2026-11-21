@@ -54,6 +54,7 @@ from app.agents.mcp.failure import (
 from app.agents.mcp.models import (
     DiscoveredOAuthMetadata,
     MCPAuthMode,
+    MCPCategory,
     MCPServerInstanceConfig,
     MCPServerLogoPayload,
     MCPTransport,
@@ -537,18 +538,23 @@ async def list_catalog(
     request: Request,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
-    search: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None, max_length=200),
+    category: Optional[MCPCategory] = Query(default=None),
 ) -> dict[str, Any]:
     _get_user_context(request)
     registry = _get_mcp_registry(request)
 
-    from app.agents.mcp.catalog import paginate, search_templates
+    from app.agents.mcp.catalog import paginate, rank_templates
 
-    templates = search_templates(registry.list_templates(), search)
-    page_items, total = paginate(templates, page, limit)
+    matches = rank_templates(registry.list_templates(), search, category.value if category else None)
+    page_items, total = paginate(matches, page, limit)
 
     return {
-        "templates": [t.model_dump(by_alias=True) for t in page_items],
+        # `matchedCapability` says which job a search matched, so the UI can show why.
+        "templates": [
+            {**m.template.model_dump(by_alias=True), **({"matchedCapability": m.capability} if m.capability else {})}
+            for m in page_items
+        ],
         "total": total,
         "page": page,
         "limit": limit,

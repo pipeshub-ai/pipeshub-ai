@@ -4,7 +4,13 @@ This is the account-data server. Fireflies also runs a docs-search server at
 https://docs.fireflies.ai/mcp, which is not part of this entry.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -36,6 +42,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Fireflies account.",
         ),
         tags=["meetings", "transcripts", "notes"],
+        category=MCPCategory.MEETINGS,
+        capabilities=[
+            "Search meeting transcripts",
+            "Get action items from calls",
+            "Summarize a meeting",
+        ],
+        read_only=True,
     )
 )
 class FirefliesMCPServer:

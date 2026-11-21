@@ -299,10 +299,10 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
   // Query-string forwarding (handlers with non-trivial query params)
   // -------------------------------------------------------------------------
   describe('listMcpCatalog query params', () => {
-    it('should forward page, limit, and search', async () => {
+    it('should forward page, limit, search and category', async () => {
       executeStub.resolves({ statusCode: 200, data: { templates: [] } })
       const handler = listMcpCatalog(createMockAppConfig())
-      const req = createMockRequest({ query: { page: '2', limit: '10', search: 'jira' } })
+      const req = createMockRequest({ query: { page: '2', limit: '10', search: 'jira', category: 'projects' } })
       const res = createMockResponse()
       const next = sinon.stub()
 
@@ -312,6 +312,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
       expect(url).to.include('page=2')
       expect(url).to.include('limit=10')
       expect(url).to.include('search=jira')
+      expect(url).to.include('category=projects')
     })
 
     it('should omit empty/undefined query params', async () => {

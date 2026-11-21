@@ -1,6 +1,12 @@
 """Granola MCP server template — official remote server (Streamable HTTP), OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -37,6 +43,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["meetings", "notes", "transcripts"],
+        category=MCPCategory.MEETINGS,
+        capabilities=[
+            "Read meeting notes",
+            "Get meeting summaries",
+            "Search past meetings",
+        ],
+        read_only=True,
     )
 )
 class GranolaMCPServer:

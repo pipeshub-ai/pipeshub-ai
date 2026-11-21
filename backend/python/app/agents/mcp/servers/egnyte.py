@@ -3,7 +3,13 @@
 One URL for every customer: Egnyte's sign-in page asks for the user's Egnyte domain.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -35,6 +41,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["storage", "docs"],
+        category=MCPCategory.DOCS,
+        capabilities=[
+            "Search files and folders",
+            "Ask questions about a file",
+            "Read a document",
+        ],
+        read_only=True,
     )
 )
 class EgnyteMCPServer:

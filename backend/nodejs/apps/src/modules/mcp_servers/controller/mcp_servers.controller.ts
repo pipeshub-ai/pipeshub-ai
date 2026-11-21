@@ -156,7 +156,7 @@ function proxyMcp(
 
 export const listMcpCatalog = proxyMcp(
   HttpMethod.GET,
-  (req) => `/catalog${queryString(req.query as Record<string, unknown>, ['page', 'limit', 'search'])}`,
+  (req) => `/catalog${queryString(req.query as Record<string, unknown>, ['page', 'limit', 'search', 'category'])}`,
   'List MCP catalog',
 );
 
