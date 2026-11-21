@@ -45,9 +45,9 @@ class _Graph(FakeGraphProvider):
     async def get_edge(self, *, raise_on_error: bool = False, transaction: str | None = None, **kwargs: str) -> dict | None:
         return await super().get_edge(**kwargs)
 
-    async def get_user_by_user_id(self, user_id: str, org_id: str | None = None, *,
-                                  raise_on_error: bool = False) -> dict | None:
-        user = await super().get_user_by_user_id(user_id, org_id)
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False, **scope: str) -> dict | None:
+        # An edition may bind the lookup to the asking org; the base fake takes that binding unchanged.
+        user = await super().get_user_by_user_id(user_id, **scope)
         return {**user, "orgId": ORG} if user else None
 
 
