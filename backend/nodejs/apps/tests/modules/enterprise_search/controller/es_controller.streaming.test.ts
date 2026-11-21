@@ -10,12 +10,32 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
 import { AGENT_KEY, Flow, ORG, OWNER, RUN, SEEDED_ANSWER, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream, type Run } from './streaming-flows'
-import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 import { turnDeps } from '../helpers/turn-deps'
 import { withOwnerGrant } from '../helpers/conversation-grant'
+
+/**
+ * Records the status each chat-session write sets, and holds a Failed one until `release`. A run saves its state
+ * with `patchTurnSession`, an update of the session on the store `startStream` installed, so this wraps that.
+ */
+function holdFailedSessionWrites(): { statuses: unknown[]; release: () => void } {
+  const stub = ChatSession.updateOne as unknown as sinon.SinonStub & { defaultBehavior?: { fakeFn?: (...args: unknown[]) => unknown } }
+  const inner = stub.defaultBehavior?.fakeFn
+  if (!inner) throw new Error('startStream installs the store first')
+  let release: () => void = () => undefined
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const statuses: unknown[] = []
+  stub.callsFake((filter: unknown, update: { $set?: { status?: unknown } } | undefined, options?: unknown) => {
+    const status = update?.$set?.status
+    if (status !== undefined) statuses.push(status)
+    return status === 'Failed' ? gate.then(() => inner(filter, update, options)) : inner(filter, update, options)
+  })
+  return { statuses, release }
+}
 
 /** A regenerate whose run never started: its answer row is as it was, and the chat is not marked failed. */
 function expectStoredAnswerKept(run: Run): void {
@@ -409,18 +429,8 @@ describe('es_controller streaming answers', () => {
 
       it('never writes a failure for a sub-agent error, however slow the store is', async () => {
         // Holds any Failed write until the final save is done: the order that left the conversation Failed.
-        const real = MongoConversationRepository.prototype.recordRunState
-        let release: () => void = () => undefined
-        const gate = new Promise<void>((resolve) => {
-          release = resolve
-        })
-        const statuses: unknown[] = []
-        sinon.stub(MongoConversationRepository.prototype, 'recordRunState').callsFake(async function (this: MongoConversationRepository, ...args: Parameters<typeof real>) {
-          statuses.push(args[1]?.status)
-          if (args[1]?.status === 'Failed') await gate
-          return real.apply(this, args)
-        })
         const run = await startStream(flow)
+        const { statuses, release } = holdFailedSessionWrites()
 
         run.ai.send('RUN_ERROR', subAgentError)
         run.ai.send('RUN_FINISHED', finalAnswer('Recovered answer.'))
@@ -453,16 +463,8 @@ describe('es_controller streaming answers', () => {
       })
 
       it('ends a run whose RUN_ERROR has no data as interrupted: the failure is saved before the stream closes, and the browser gets its text', async () => {
-        const real = MongoConversationRepository.prototype.recordRunState
-        let release: () => void = () => undefined
-        const gate = new Promise<void>((resolve) => {
-          release = resolve
-        })
-        sinon.stub(MongoConversationRepository.prototype, 'recordRunState').callsFake(async function (this: MongoConversationRepository, ...args: Parameters<typeof real>) {
-          if (args[1]?.status === 'Failed') await gate
-          return real.apply(this, args)
-        })
         const run = await startStream(flow)
+        const { release } = holdFailedSessionWrites()
 
         run.ai.sendRaw('event: RUN_ERROR\ndata: null\n\n')
         run.ai.finish()
@@ -668,16 +670,8 @@ describe('es_controller streaming answers', () => {
       if (flow.regenerate) {
         it('holds the conversation until a run that ended with an unreadable RUN_ERROR has saved its failure', async () => {
           const clock = fakeClock()
-          const real = MongoConversationRepository.prototype.recordRunState
-          let release: () => void = () => undefined
-          const gate = new Promise<void>((resolve) => {
-            release = resolve
-          })
-          sinon.stub(MongoConversationRepository.prototype, 'recordRunState').callsFake(async function (this: MongoConversationRepository, ...args: Parameters<typeof real>) {
-            if (args[1]?.status === 'Failed') await gate
-            return real.apply(this, args)
-          })
           const run = await startStream(flow)
+          const { release } = holdFailedSessionWrites()
           run.ai.sendRaw('event: RUN_ERROR\ndata: null\n\n')
           run.ai.finish()
           await settle(20)

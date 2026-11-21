@@ -3754,7 +3754,8 @@ describe('AG-UI Protocol', () => {
       handleRegenerationStreamData(Buffer.from(text), '', null, null, null, res, onComplete)
 
       expect(onComplete.called).to.be.false
-      expect(res.write.calledOnceWithExactly(text)).to.be.true
+      // Passed on through the relay, which keeps only a RUN_FINISHED's base fields.
+      expect(res.write.calledOnceWithExactly(`event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED' })}\n\n`)).to.be.true
     })
 
     it("should forward, not capture, a sub-agent's RUN_FINISHED even when it carries a result", () => {
@@ -3765,7 +3766,8 @@ describe('AG-UI Protocol', () => {
       handleRegenerationStreamData(Buffer.from(text), '', null, null, null, res, onComplete)
 
       expect(onComplete.called).to.be.false
-      expect(res.write.calledOnceWithExactly(text)).to.be.true
+      // Passed on through the relay: the sub-agent's run ids stay, its result does not.
+      expect(res.write.calledOnceWithExactly(`event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', runId: 'child', parentRunId: 'root' })}\n\n`)).to.be.true
     })
 
     it('should neither capture nor forward a RUN_FINISHED whose data fails to parse', () => {
