@@ -356,7 +356,8 @@ class TestNeo4jWalksStartWhereTheyAreBound:
     every node of the App. A plan chosen while an App is small stays cached for every App until the statistics change several-fold
     (`dbms.cypher.min_replan_interval`, `dbms.cypher.statistics_divergence_threshold`), so the batch check must leave the planner no
     such choice: every walk ends in an unlabelled node nothing tests before the walk's ends are collected. The same holds for the
-    split browse's hop admission, which reads the check's walk from the App above the start."""
+    split browse's hop admission, which reads the check's walk from the App above the start, and for the check's by-parent
+    statement."""
 
     @staticmethod
     async def _statements() -> list[tuple[str, int]]:
@@ -376,6 +377,9 @@ class TestNeo4jWalksStartWhereTheyAreBound:
             out.append((texts[-1], 7))
             await provider._kh_split_admitted_by_hop("s", ["n1"], app_id="a", org_id="o", access=form, transaction=None)
             out.append((texts[-1], 1))
+            texts.clear()
+            await provider._kh_v3_accessible_rows("u", "o", ["n1", "n2"], [], access=form, transaction=None)
+            out.append((next(t for t in texts if "kh_kids" in t), 5))      # the by-parent statement
         return out
 
     @pytest.mark.asyncio
@@ -389,6 +393,6 @@ class TestNeo4jWalksStartWhereTheyAreBound:
                 end = walk.group(1)
                 assert re.fullmatch(r"\w+", end), f"the walk's end carries a label or property: ({end})"
                 rest = text[walk.end():]
-                collected = re.search(rf"WITH collect\((?:DISTINCT )?{end}\) AS \w+", rest)
+                collected = re.search(rf"WITH (?:\w+, )*collect\((?:DISTINCT )?{end}\) AS \w+", rest)
                 assert collected, f"the ends of the walk to ({end}) are not collected"
                 assert not re.search(rf"\b{end}\b", rest[:collected.start()]), f"({end}) is tested before its walk's ends are collected"
