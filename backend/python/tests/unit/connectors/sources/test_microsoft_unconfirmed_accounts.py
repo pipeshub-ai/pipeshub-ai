@@ -29,6 +29,7 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
 from app.models.entities import AppUser
+from app.services.notification.types import NotificationOutcome
 
 CONNECTORS = ("outlook", "onedrive", "sharepoint")
 
@@ -86,6 +87,7 @@ class World:
         self.c = cls(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator")
         self.c.user_sync_point = _SyncPoint()
         self.c.notify = AsyncMock()
+        self.c.notify_and_wait = AsyncMock(return_value=NotificationOutcome.SENT)
         if name == "outlook":
             self.c.external_users_client = MagicMock()
             self.c.external_users_client.client.users.by_user_id.side_effect = self._outlook_read
@@ -145,7 +147,7 @@ class World:
 
 
 def _closing_notices(w: World) -> list[object]:
-    return [c for c in w.c.notify.await_args_list if "could not confirm" in c.kwargs.get("title", "")]
+    return [c for c in w.c.notify_and_wait.await_args_list if "could not confirm" in c.kwargs.get("title", "")]
 
 
 @pytest.fixture(params=CONNECTORS)
@@ -251,17 +253,63 @@ async def test_reads_are_capped_per_sync_and_every_account_is_reached(world: Cal
 
 
 @pytest.mark.asyncio
-async def test_an_account_counting_towards_the_bound_is_read_before_the_others(world: Callable[[list[str]], World],
-                                                                             monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(LOOKUPS_ENV, "1")
+async def test_an_account_counting_towards_the_bound_is_read_every_sync_beside_the_others(world: Callable[[list[str]], World],
+                                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(LOOKUPS_ENV, "2")
     w = world(["a", "b", "c", "x"])
     w.status["x"] = _odata(500)
     w.c.user_sync_point.data[ACCOUNT_CHECK_KEY] = {"streaks": '{"x": 1}', "cursor": ""}
     w.list(["a"], complete=False)
     for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE - 1):
         await w.sync()
-    assert w.reads == ["x"] * (UNCONFIRMED_SYNCS_BEFORE_CLOSE - 1)
+    assert w.reads.count("x") == UNCONFIRMED_SYNCS_BEFORE_CLOSE - 1     # half the reads: closed at the bound
+    assert set(w.reads) - {"x"} == {"b", "c"}                          # the other half: the rest in turn
     assert "x" not in w.stored
+
+
+@pytest.mark.asyncio
+async def test_accounts_whose_reads_keep_failing_do_not_starve_the_others(world: Callable[[list[str]], World],
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(LOOKUPS_ENV, "2")
+    w = world(["a", "x", "y", "gone"])
+    w.status.update(x=RuntimeError("connection reset"), y=RuntimeError("connection reset"), gone="gone")
+    w.c.user_sync_point.data[ACCOUNT_CHECK_KEY] = {"streaks": '{"x": 1, "y": 1}', "cursor": ""}
+    w.list(["a"], complete=False)
+    await w.sync()
+    assert "gone" not in w.stored and {"x", "y"} <= set(w.stored)      # transport failures are not counted
+
+
+@pytest.mark.asyncio
+async def test_two_syncs_that_close_different_accounts_each_tell_the_owner(world: Callable[[list[str]], World]) -> None:
+    w = world(["a", "x", "y"])
+    w.status["x"] = _odata(500)
+    w.list(["a", "y"], complete=True)
+    for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE):
+        await w.sync()
+    w.status["y"] = _odata(500)
+    w.list(["a"], complete=True)
+    for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE):
+        await w.sync()
+    notices = _closing_notices(w)
+    assert set(w.stored) == {"a"} and len(notices) == 2
+    assert all(n.kwargs["suppress_repeats"] is False for n in notices)
+
+
+@pytest.mark.asyncio
+async def test_a_notice_that_was_not_delivered_is_sent_by_the_next_sync(world: Callable[[list[str]], World]) -> None:
+    w = world(["a", "x"])
+    w.status["x"] = _odata(500)
+    w.list(["a"], complete=True)
+    w.c.notify_and_wait.return_value = NotificationOutcome.FAILED
+    for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE):
+        await w.sync()
+    assert "x" not in w.stored and len(_closing_notices(w)) == 1
+    assert w.c.user_sync_point.data[ACCOUNT_CHECK_KEY]["pending_notice"] == '["x"]'   # saved before the withdrawal
+    w.c.notify_and_wait.return_value = NotificationOutcome.SENT
+    await w.sync()
+    await w.sync()
+    assert len(_closing_notices(w)) == 2                              # sent once more, then no longer owed
+    assert w.c.user_sync_point.data[ACCOUNT_CHECK_KEY]["pending_notice"] == "[]"
 
 
 @pytest.mark.asyncio
@@ -285,7 +333,7 @@ async def test_a_read_that_never_reached_microsoft_is_not_counted(world: Callabl
     assert set(w.stored) == {"a", "x"}
 
 
-@pytest.mark.parametrize("raw", ["0", "-1", "many"])
+@pytest.mark.parametrize("raw", ["1", "0", "-1", "many"])
 def test_the_read_cap_must_be_a_positive_whole_number(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
     monkeypatch.setenv(LOOKUPS_ENV, raw)
     with pytest.raises(ValueError, match=LOOKUPS_ENV):
