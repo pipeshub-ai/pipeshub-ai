@@ -130,6 +130,14 @@ run shell "release tooling tests" \
   'exists deployment/docker-compose/tests/release_tooling_test.sh' \
   bash deployment/docker-compose/tests/release_tooling_test.sh
 
+run shell "document-store move script tests" \
+  'exists deployment/docker-compose/tests/docstore_move_scripts_test.sh' \
+  bash deployment/docker-compose/tests/docstore_move_scripts_test.sh
+
+run shell "document-store move script tests (bash 3.2, as on macOS)" \
+  '[[ -n "${BASH32:-}" && -x "${BASH32:-}" ]] || { echo "set BASH32 to a bash 3.2 binary to run"; false; }' \
+  env BASH_UNDER_TEST="${BASH32:-}" bash deployment/docker-compose/tests/docstore_move_scripts_test.sh
+
 run shell "native launcher tests" \
   'have node && node -e "const [a,b]=process.versions.node.split(\".\").map(Number); process.exit(a>24||(a===24&&b>=12)?0:1)" || { echo "needs Node 24.12 or later"; false; }' \
   bash -c "cd deployment/native/launcher && npm test --silent"

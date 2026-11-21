@@ -1,0 +1,16 @@
+# Runs MongoDB as a one-member replica set, for the online move of the document store, which follows MongoDB's change stream
+# (scripts/migrate-to-postgres.sh --online). The members authenticate with a key file that the script makes in MongoDB's
+# volume (/data/db/rs.key, mode 0400, owned by mongod) before MongoDB starts with this file; mongod does not start without it.
+# The script also starts the replica set (rs.initiate) once. The application's MONGO_URI needs no change.
+services:
+  mongodb:
+    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}", "--replSet", "rs0", "--keyFile", "/data/db/rs.key"]
+    # The script restarts MongoDB with this file and waits for it to be healthy (`up --wait`) before rs.initiate; opening a large
+    # volume can take longer than the base check's 5 x 5 s, and `--wait` stops at the first `unhealthy`. An override's healthcheck
+    # replaces the base one, so the test is repeated; the grace period is the postgres service's.
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 300s
