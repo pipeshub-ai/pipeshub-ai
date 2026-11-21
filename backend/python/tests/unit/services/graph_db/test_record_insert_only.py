@@ -99,6 +99,14 @@ def test_the_neo4j_one_pass_split_equals_the_two_document_helpers(monkeypatch: p
     assert ("incarnationId" in ins2) == (insert_only == "true" and flag == "true")
 
 
+def test_two_rows_for_one_id_merge_by_one_rule() -> None:
+    from app.services.graph_db.common.utils import merge_same_id_record_docs
+
+    assert merge_same_id_record_docs({"a": 1, "b": 1, "createdAtTimestamp": 200}, {"b": 2, "createdAtTimestamp": 100}) == {"a": 1, "b": 2, "createdAtTimestamp": 100}
+    assert merge_same_id_record_docs({"createdAtTimestamp": 0}, {"createdAtTimestamp": 100})["createdAtTimestamp"] == 100
+    assert merge_same_id_record_docs({"x": 1}, {"createdAtTimestamp": 7}) == {"x": 1, "createdAtTimestamp": 7}
+
+
 # ---- restore -------------------------------------------------------------------------------------------------------
 
 def test_every_restore_item_gets_its_own_new_id_with_the_flag(incarnation_on: None) -> None:

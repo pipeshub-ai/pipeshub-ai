@@ -142,7 +142,16 @@ class CoreMixin(PgBase):
         if not nodes:
             return True
         org = current_org_id()
-        docs = list({d["id"]: d for d in (_node(n, collection) for n in nodes)}.values())     # a repeated id: the last one wins
+        if collection == CollectionNames.RECORDS.value:
+            from app.services.graph_db.common.utils import merge_same_id_record_docs
+
+            merged: dict[str, dict] = {}
+            for n in nodes:
+                d = _node(n, collection)
+                merged[d["id"]] = merge_same_id_record_docs(merged[d["id"]], d) if d["id"] in merged else d
+            docs = list(merged.values())      # a repeated id: one document, by the rule every store applies
+        else:
+            docs = list({d["id"]: d for d in (_node(n, collection) for n in nodes)}.values())     # a repeated id: the last one wins
         await self._validate_upserts(collection, docs, transaction)      # what is checked is what is written
         if collection == CollectionNames.RECORDS.value:
             # insert-only fields: the merge below must neither overwrite them nor, through the clears step, remove them

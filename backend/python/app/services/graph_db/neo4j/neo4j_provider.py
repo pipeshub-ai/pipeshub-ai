@@ -189,6 +189,7 @@ from app.services.graph_db.common.utils import (
     empty_soft_delete_result,
     is_full_address,
     jira_issue_browse_url_regex,
+    merge_same_id_record_docs,
     new_incarnation_id,
     person_query_ref,
     record_created_at_insert_only,
@@ -2324,16 +2325,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
         RETURN n.id
         """
-            # documents that share an id jointly supply the insert: the later one wins for what an update may merge, the first
-            # supplied value wins for the keys only an insert writes
-            by_id: dict[Any, dict[str, dict[str, Any]]] = {}
+            # documents that share an id are merged first (one rule on every store: ``merge_same_id_record_docs``)
+            merged: dict[Any, dict[str, Any]] = {}
             for node in neo4j_nodes:
-                rest, ins = _record_insert_split(node)
-                row = by_id.setdefault(rest["id"], {"rest": {}, "ins": {}})
-                row["rest"].update(rest)
-                for k, v in ins.items():
-                    row["ins"].setdefault(k, v)
-            rows = list(by_id.values())
+                merged[node["id"]] = merge_same_id_record_docs(merged[node["id"]], node) if node["id"] in merged else node
+            rows = [dict(zip(("rest", "ins"), _record_insert_split(node))) for node in merged.values()]
             await self.client.execute_query(
                 query, parameters={"nodes": _in_lock_order(rows, lambda r: _by_id(r["rest"]))}, txn_id=transaction
             )

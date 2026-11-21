@@ -29,6 +29,7 @@ from app.services.graph_db.arango.record_schema_guard import (
     is_record_schema_error,
 )
 from app.services.graph_db.common.utils import (
+    merge_same_id_record_docs,
     new_incarnation_id,
     record_incarnation_write,
 )
@@ -1075,7 +1076,7 @@ class ArangoHTTPClient:
             earlier = by_key.get(row["key"])
             merged = row
             if earlier is not None:
-                merged = {**earlier, **row, "insert": {**earlier["insert"], **row["insert"]}, "new": bool(earlier.get("new") and row.get("new"))}
+                merged = {**earlier, **row, "insert": merge_same_id_record_docs(earlier["insert"], row["insert"]), "new": bool(earlier.get("new") and row.get("new"))}
                 if "patch" in earlier or "patch" in row:
                     merged["patch"] = {**earlier.get("patch", {}), **row.get("patch", {})}
             by_key[row["key"]] = merged

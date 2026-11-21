@@ -318,6 +318,22 @@ async def a_carried_id_never_starts_a_new_vertex(store: StoreAdapter, flag: bool
     assert (stored is not None) is flag
 
 
+async def one_id_twice_in_a_batch_is_merged_by_one_rule(store: StoreAdapter, flag: bool) -> None:
+    """Two rows for one new id in one call: ``createdAtTimestamp`` is the earliest positive value whichever row carries it, and the later
+    row wins for every other key; keys only the earlier row sets stay. The same result on every store."""
+    for first_date, second_date in ((100, 200), (200, 100)):
+        key = new_key()
+        base = {"id": key, "orgId": "g55-org", "externalRecordId": f"ext-{key}", "recordType": "FILE", "origin": "CONNECTOR",
+                "connectorName": "KB", "connectorId": "g55-conn", "version": 0}
+        await store.upsert_nodes([
+            {**base, "recordName": "first", "createdAtTimestamp": first_date, "sizeInBytes": 5},
+            {**base, "recordName": "second", "createdAtTimestamp": second_date},
+        ])
+        doc = await store.doc(key)
+        assert doc["createdAtTimestamp"] == 100, f"{store.name}: {doc['createdAtTimestamp']} for dates {first_date}, {second_date}"
+        assert doc["recordName"] == "second" and doc["sizeInBytes"] == 5, f"{store.name}: {doc}"
+
+
 async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None:
     """S6: only the ``records`` document is insert-only; the type document (``files``) is written as before."""
     key = new_key()
@@ -329,6 +345,7 @@ async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None
 
 
 ALL_CASES = (
+    one_id_twice_in_a_batch_is_merged_by_one_rule,
     a_carried_id_never_starts_a_new_vertex,
     complementary_documents_for_one_new_id_jointly_make_the_insert,
     a_partial_node_patch_is_no_promotion, repeated_ids_keep_the_last_write,

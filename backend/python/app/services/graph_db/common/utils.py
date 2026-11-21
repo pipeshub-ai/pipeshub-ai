@@ -490,11 +490,20 @@ def record_update_doc(doc: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in doc.items() if k not in RECORD_UPDATE_DROPPED_FIELDS}
 
 
+def merge_same_id_record_docs(earlier: dict[str, Any], later: dict[str, Any]) -> dict[str, Any]:
+    """Two documents written for one new record in one batch, as one: the later row wins for every key, except
+    ``createdAtTimestamp``, which is the earliest positive value given (the rule a placeholder's promotion uses). The same on every store."""
+    merged = {**earlier, **later}
+    if "createdAtTimestamp" in earlier and "createdAtTimestamp" in later:
+        merged["createdAtTimestamp"] = positive_min(earlier["createdAtTimestamp"], later["createdAtTimestamp"])
+    return merged
+
+
 def record_insert_doc(doc: dict[str, Any]) -> dict[str, Any]:
     """The document written when the vertex does not exist: the caller's, with an incarnation id minted when the flag is on.
 
-    With ``RECORD_CREATED_AT_INSERT_ONLY`` off nothing is minted on any store: that switch restores the older merge-everything write,
-    which would overwrite a minted id on every update."""
+    With ``RECORD_CREATED_AT_INSERT_ONLY`` off nothing is minted on any store: that switch restores the older write, which knew no
+    incarnation id, so the older and the newer behaviour never both stand for a record."""
     if record_incarnation_write() and record_created_at_insert_only():
         return doc if doc.get("incarnationId") else {**doc, "incarnationId": new_incarnation_id()}
     if "incarnationId" in doc and not record_incarnation_write():
