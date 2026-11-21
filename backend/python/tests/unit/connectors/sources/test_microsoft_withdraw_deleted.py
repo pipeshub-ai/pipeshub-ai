@@ -1,4 +1,4 @@
-"""SharePoint and Outlook: a deleted account loses the connector; an uncertain listing withdraws nobody."""
+"""SharePoint and Outlook: a deleted account loses the connector; an uncertain listing alone withdraws nobody."""
 
 import logging
 from types import SimpleNamespace
@@ -139,26 +139,35 @@ async def test_outlook_restored_account_gets_access_back() -> None:
     [_page([_graph_user("a")], count=3)],  # the directory counts more users than the list holds (next link dropped)
     [_page([_graph_user("a")], count=None)],  # no count at all
 ])
-async def test_outlook_uncertain_listing_syncs_but_withdraws_nobody(pages: list) -> None:
-    c, stored = _outlook(["a", "b", "c"], pages)
+async def test_outlook_uncertain_listing_syncs_and_withdraws_only_whom_a_read_finds_gone(pages: list) -> None:
+    c, stored = _outlook(["a", "b", "c"], pages, status="present")
     await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
     c.data_entities_processor.on_new_app_users.assert_awaited_once()
     assert set(stored) == {"a", "b", "c"}
+    c, stored = _outlook(["a", "b", "c"], pages, status="gone")
+    listed = {u.id for p in pages if p.data for u in p.data.value}
+    await c._sync_users()
+    assert set(stored) == listed & {"a", "b", "c"}
 
 
 @pytest.mark.asyncio
-async def test_outlook_failed_page_still_raises_and_withdraws_nobody() -> None:
-    c, stored = _outlook(["a", "b"], [_page([_graph_user("a")], "https://next", count=2), _page([], success=False)])
+async def test_outlook_failed_page_still_raises_and_withdraws_only_whom_a_read_finds_gone() -> None:
+    pages = [_page([_graph_user("a")], "https://next", count=2), _page([], success=False)]
+    c, stored = _outlook(["a", "b"], pages, status="present")
     with pytest.raises(Exception, match="Failed to fetch users"):
         await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
     assert set(stored) == {"a", "b"}
+    c, stored = _outlook(["a", "b"], list(pages), status="gone")
+    with pytest.raises(Exception, match="Failed to fetch users"):
+        await c._sync_users()
+    assert set(stored) == set()
 
 
 @pytest.mark.asyncio
-async def test_outlook_empty_listing_withdraws_nobody() -> None:
-    c, stored = _outlook(["a", "b"], [_page([])])
+async def test_outlook_empty_listing_withdraws_nobody_a_read_finds() -> None:
+    c, stored = _outlook(["a", "b"], [_page([])], status="present")
     await c._sync_users()
     assert set(stored) == {"a", "b"}
 
@@ -190,19 +199,20 @@ async def test_outlook_withdrawal_uses_the_syncs_own_listing_not_an_overlapping_
     refresh that finishes before the withdrawal runs must not change what the sync withdraws."""
     c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")]), _page([_graph_user("a")], count=5)])
     syncs_listing = await c._get_all_users_external()
-    refresh = await c._get_all_users_external()  # incomplete: no user loses access on this one
-    assert refresh.complete is False and not refresh.listed_ids
+    refresh = await c._get_all_users_external()  # incomplete
+    assert refresh.complete is False
     await c._withdraw_disabled_app_users(syncs_listing)
     assert set(stored) == {"a"}
 
 
 @pytest.mark.asyncio
-async def test_outlook_an_incomplete_listing_hands_the_withdrawal_no_ids() -> None:
+async def test_outlook_an_incomplete_listing_vouches_for_its_ids_and_the_others_are_read() -> None:
     c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")], count=5)])
     listing = await c._get_all_users_external()
-    assert not listing.listed_ids and not listing.disabled_ids
-    await c._withdraw_disabled_app_users(listing)
-    assert set(stored) == {"a", "gone"}
+    assert listing.listed_ids == {"a"} and listing.complete is False
+    assert await c._withdraw_disabled_app_users(listing) is False
+    assert set(stored) == {"a"}
+    assert [call.args[0] for call in c.external_users_client.client.users.by_user_id.call_args_list] == ["gone"] * 3
 
 
 @pytest.mark.asyncio
@@ -299,8 +309,8 @@ async def test_sharepoint_restored_account_gets_access_back() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sharepoint_incomplete_listing_syncs_but_withdraws_nobody() -> None:
-    c, stored = _sharepoint(["a", "b"], [_app_user("a")], complete=False)
+async def test_sharepoint_incomplete_listing_syncs_and_withdraws_nobody_a_read_finds() -> None:
+    c, stored = _sharepoint(["a", "b"], [_app_user("a")], complete=False, status="present")
     await c._sync_users()
     c.data_entities_processor.on_new_app_users.assert_awaited_once()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
@@ -308,17 +318,21 @@ async def test_sharepoint_incomplete_listing_syncs_but_withdraws_nobody() -> Non
 
 
 @pytest.mark.asyncio
-async def test_sharepoint_failed_listing_withdraws_nobody() -> None:
-    c, stored = _sharepoint(["a", "b"], RuntimeError("throttled"))
+async def test_sharepoint_failed_listing_withdraws_only_whom_a_read_finds_gone() -> None:
+    c, stored = _sharepoint(["a", "b"], RuntimeError("throttled"), status="present")
     with pytest.raises(RuntimeError):
         await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
     assert set(stored) == {"a", "b"}
+    c, stored = _sharepoint(["a", "b"], RuntimeError("throttled"), status="gone")
+    with pytest.raises(RuntimeError):
+        await c._sync_users()
+    assert set(stored) == set()
 
 
 @pytest.mark.asyncio
-async def test_sharepoint_empty_listing_withdraws_nobody() -> None:
-    c, stored = _sharepoint(["a", "b"], [])
+async def test_sharepoint_empty_listing_withdraws_nobody_a_read_finds() -> None:
+    c, stored = _sharepoint(["a", "b"], [], status="present")
     await c._sync_users()
     assert set(stored) == {"a", "b"}
 
@@ -708,7 +722,7 @@ async def test_outlook_empty_page_then_users_with_a_matching_count_is_complete_a
 async def test_outlook_empty_page_with_lost_users_is_untrusted_through_the_count() -> None:
     c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")], "https://next", count=3), _page([], "https://next2"), _page([_graph_user("b")])])
     await c._sync_users()
-    assert set(stored) == {"a", "gone"} and c._users_trusted is False
+    assert set(stored) == {"a"} and c._users_trusted is False  # the read confirmed "gone"; the listing stays untrusted
 
 
 @pytest.mark.asyncio

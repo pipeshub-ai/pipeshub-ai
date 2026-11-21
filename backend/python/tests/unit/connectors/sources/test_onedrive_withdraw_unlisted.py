@@ -1,4 +1,4 @@
-"""OneDrive: a disabled or deleted account loses the connector; an uncertain listing withdraws nobody."""
+"""OneDrive: a disabled or deleted account loses the connector; an uncertain listing alone withdraws nobody."""
 
 import logging
 from unittest.mock import AsyncMock, MagicMock
@@ -80,17 +80,21 @@ async def test_reenabled_or_restored_account_gets_access_back() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_listing_withdraws_nobody() -> None:
-    c, stored = _connector(["a", "b"], RuntimeError("throttled"))
+async def test_failed_listing_withdraws_only_whom_a_read_finds_gone() -> None:
+    c, stored = _connector(["a", "b"], RuntimeError("throttled"), status="present")
     with pytest.raises(RuntimeError):
         await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
     assert set(stored) == {"a", "b"}
+    c, stored = _connector(["a", "b"], RuntimeError("throttled"), status="gone")
+    with pytest.raises(RuntimeError):
+        await c._sync_users()
+    assert set(stored) == set()
 
 
 @pytest.mark.asyncio
-async def test_empty_listing_withdraws_nobody() -> None:
-    c, stored = _connector(["a", "b"], [])
+async def test_empty_listing_withdraws_nobody_a_read_finds() -> None:
+    c, stored = _connector(["a", "b"], [], status="present")
     await c._sync_users()
     assert set(stored) == {"a", "b"}
 
@@ -125,8 +129,8 @@ def _client(first: MagicMock, *next_pages: MagicMock | None) -> tuple[MSGraphCli
 
 
 @pytest.mark.asyncio
-async def test_incomplete_listing_syncs_but_withdraws_nobody() -> None:
-    c, stored = _connector(["a", "b"], [_user("a")], complete=False)
+async def test_incomplete_listing_syncs_and_withdraws_nobody_a_read_finds() -> None:
+    c, stored = _connector(["a", "b"], [_user("a")], complete=False, status="present")
     await c._sync_users()
     c.data_entities_processor.on_new_app_users.assert_awaited_once()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
