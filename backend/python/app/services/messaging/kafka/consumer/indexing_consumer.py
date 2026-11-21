@@ -275,6 +275,12 @@ class _SchedulerRebalanceListener(ConsumerRebalanceListener):
         await self._consumer._on_partitions_assigned(assigned)
 
 
+# aiokafka keeps one fetch per broker in flight, and a partition paused for its record is left out of it: once resumed it
+# waits for the idle partitions' long-poll to come back. aiokafka's 500 ms default capped a busy partition beside an idle
+# one at 2 records/s (FIFO) or one batch per 500 ms (fair).
+_FETCH_MAX_WAIT_MS = 50
+
+
 class IndexingKafkaConsumer(IMessagingConsumer):
     """Kafka consumer with nested concurrency control for indexing.
 
@@ -514,6 +520,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             'heartbeat_interval_ms': kafka_config.heartbeat_interval_ms,
             'max_poll_interval_ms': kafka_config.max_poll_interval_ms,
             'rebalance_timeout_ms': kafka_config.rebalance_timeout_ms,
+            'fetch_max_wait_ms': _FETCH_MAX_WAIT_MS,
         }
 
         config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
