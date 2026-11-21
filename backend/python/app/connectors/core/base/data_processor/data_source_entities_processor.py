@@ -32,6 +32,8 @@ from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
 from app.connectors.core.base.data_processor.record_people import link_record_people
+from app.connectors.core.base.data_processor.permission_sync_gate import gated as _gated
+from app.connectors.core.base.data_processor.permission_sync_gate import permission_sync_licensed
 from app.connectors.core.base.data_processor.pr_links import Linked, write_modifies
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
@@ -42,6 +44,7 @@ from app.connectors.core.base.data_store.data_store import (
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.data_store.graph_data_store import (
     ends_explicit_transaction,
+    ensure_written,
     is_transient_conflict,
     is_write_conflict,
     retry_on_deadlock,
@@ -918,6 +921,8 @@ class DataSourceEntitiesProcessor:
             await producer.cleanup()
 
     async def initialize(self, org_id: Optional[str] = None, *, org_agnostic: bool = False) -> None:
+        # From here on the licence gate reads the licence (``skips_permission_writes``).
+        self._reads_licence = True
         config = await MessagingUtils.create_producer_config_from_service(
             self.config_service, "connectors"
         )
@@ -1720,6 +1725,92 @@ class DataSourceEntitiesProcessor:
             finally:
                 await self.data_store_provider.graph_provider.kh_scope_mark_changed(connector_id)
 
+    # ==================== The licence gate (permission_sync_gate) ====================
+
+    async def apply_licence_gate(self, connector_id: str, *, full_sync: bool) -> bool:
+        """At the start of a sync of this connector, before it reads the source.
+
+        Unlicensed (``permission_sync_gate.gated``): limit it to its creator, or keep the limit it has. Written on
+        every start, whether or not it is stored, so a limit whose refresh failed after the write committed is made
+        good by the next attempt. Licensed while still limited: it owes a full sync, and only that one may lift the
+        limit (``lift_access_limit``); content that changed while it was limited has no fresh permissions until then.
+
+        Returns whether this run is that full sync. Raises when the licence, the app or a write cannot be read or
+        written, so the sync does not start. A processor not yet initialized has no licence to read and changes
+        nothing, as in ``_unlicensed``."""
+        self.__dict__.setdefault("_permissions_skipped", set()).discard(connector_id)
+        if not self.__dict__.get("_reads_licence"):
+            return False
+        graph = self.data_store_provider.graph_provider
+        app = await graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+        if not _gated(app):
+            return False
+        limit = app.get("accessLimit")
+        if not await permission_sync_licensed(self.config_service):
+            await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
+            return False
+        if limit is None:
+            return False
+        if not full_sync:
+            ensure_written(
+                await graph.update_node(
+                    connector_id, CollectionNames.APPS.value, {ConnectorStateKeys.PENDING_FULL_SYNC: True}
+                ),
+                f"the full sync owed by limited connector {connector_id}",
+            )
+        return full_sync
+
+    async def lift_access_limit(self, connector_id: str, permission_model: PermissionModel) -> bool:
+        """After the full sync ``apply_licence_gate`` allowed ran to the end: clear the limit and put
+        ``permission_model`` back, unless this run skipped a permission write or the install is unlicensed now.
+        Returns whether it was lifted; raises like ``clear_access_limit``."""
+        if connector_id in self.__dict__.get("_permissions_skipped", ()):
+            return False
+        if not await permission_sync_licensed(self.config_service):
+            return False
+        await self.clear_access_limit(connector_id, permission_model)
+        return True
+
+    async def _unlicensed(self, connector_id: str | None) -> bool:
+        """True when this connector may not copy access from its source: the install has no licence for it, the
+        connector is company-wide, and it is not a storage or database connector (``permission_sync_gate``). A failed
+        read of the licence or the app raises. A processor not yet initialized has no licence to read and changes
+        nothing."""
+        if not connector_id or not self.__dict__.get("_reads_licence"):
+            return False
+        if await permission_sync_licensed(self.config_service):
+            return False
+        apps = self.__dict__.setdefault("_gated_apps", {})
+        if connector_id not in apps:
+            # Scope and type never change, so one read per connector.
+            apps[connector_id] = _gated(await self.data_store_provider.graph_provider.get_document(
+                connector_id, CollectionNames.APPS.value, raise_on_error=True,
+            ))
+        return apps[connector_id]
+
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        """Whether a write of this connector's access is skipped: while it is unlicensed (``_unlicensed``), every
+        grant, source group and role, membership, user-app link, and withdrawal of one, leaves what is stored as it
+        is. That is "not read this time", not "the source has none". Content still syncs, and the limit set at sync
+        start (``apply_licence_gate``) decides who reads it. A skip is noted for the sync in progress, which then
+        does not lift the limit and keeps the groups and roles it did not write (``keep_skipped_groups``)."""
+        if not await self._unlicensed(connector_id):
+            return False
+        self.__dict__.setdefault("_permissions_skipped", set()).add(connector_id)
+        return True
+
+    async def keep_skipped_groups(self, connector_id: str) -> None:
+        """Before the unlink after a full sync that skipped permission writes: every stored user group and role of the
+        connector counts as seen, so their members and grants stay as they were. A failed read raises."""
+        if connector_id not in self.__dict__.get("_permissions_skipped", ()):
+            return
+        async with self.data_store_provider.transaction() as tx_store:
+            for collection in (CollectionNames.GROUPS.value, CollectionNames.ROLES.value):
+                for doc in await tx_store.get_nodes_by_filters(
+                    collection, {"connectorId": connector_id}, raise_on_error=True
+                ) or []:
+                    self._note_full_sync_seen(connector_id, collection, doc.get("_key") or doc.get("id"))
+
     async def _publish_membership_sync(
         self, membership_refreshes: Iterable[tuple[str, str | None]]
     ) -> None:
@@ -2521,6 +2612,8 @@ class DataSourceEntitiesProcessor:
         *,
         replace: bool = False,
     ) -> None:
+        if await self.skips_permission_writes(record.connector_id):
+            return
         # A failure is raised, not logged: caught here, the surrounding write went on
         # to commit the record with no permissions and nothing ever retried it.
         record_permissions = await self._record_permission_edges(record, permissions, tx_store)
@@ -2685,6 +2778,8 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         membership_moved = False
         unlisted_group_ids: set[str] = set()
+        # Unlicensed: where the record is filed still changes; its grants, inherit edges and rule stay as stored.
+        skip = await self.skips_permission_writes(record.connector_id)
         try:
             async with self._sync_transaction() as tx_store:
                 # Every write below goes to record.id, whoever stored it.
@@ -2766,7 +2861,7 @@ class DataSourceEntitiesProcessor:
                 # the new ones and the inherit edge go in one write: on Neo4j each
                 # statement commits on its own, so a failure partway left the new
                 # permissions beside an inherit edge the record should have lost.
-                edges = await self._record_permission_edges(record, permissions, tx_store) if permissions else []
+                edges = await self._record_permission_edges(record, permissions, tx_store) if permissions and not skip else []
                 record_group = await tx_store.get_record_group_by_external_id(
                     connector_id=record.connector_id,
                     external_id=record.external_record_group_id,
@@ -2805,13 +2900,14 @@ class DataSourceEntitiesProcessor:
                 inherits_group = bool(record.inherit_permissions) and (
                     not record.parent_external_record_id or parent_in_other_group
                 )
-                self.logger.debug("Replacing permissions of record %s with %d edge(s)", record.id, len(edges))
-                await tx_store.replace_record_permissions(
-                    record.id,
-                    edges,
-                    record_group.id if record_group else None,
-                    inherit=inherits_group,
-                )
+                if not skip:
+                    self.logger.debug("Replacing permissions of record %s with %d edge(s)", record.id, len(edges))
+                    await tx_store.replace_record_permissions(
+                        record.id,
+                        edges,
+                        record_group.id if record_group else None,
+                        inherit=inherits_group,
+                    )
                 # Permissions may come from the group while browse stays on the
                 # parent record. A group hierarchy edge would list the record twice.
                 if record_group and record.parent_external_record_id and not parent_outside_group:
@@ -2822,7 +2918,7 @@ class DataSourceEntitiesProcessor:
                     )
                 # An item that stops inheriting must stop reaching its parent
                 # record's grants.
-                if parent_record is not None:
+                if parent_record is not None and not skip:
                     if record.inherit_permissions and not parent_in_other_group:
                         await tx_store.create_inherit_permissions_relation_record(
                             record.id, parent_record.id
@@ -2832,7 +2928,7 @@ class DataSourceEntitiesProcessor:
                             record.id, parent_record.id
                         )
                 # The access rule arrives with the permissions.
-                if not record.is_placeholder:
+                if not record.is_placeholder and not skip:
                     await tx_store.batch_update_nodes(
                         [{"_key": record.id, "accessRule": record.access_rule.value}],
                         CollectionNames.RECORDS.value,
@@ -2912,6 +3008,9 @@ class DataSourceEntitiesProcessor:
             publishes_event=publishes_event, pre_old_path=pre_old_path, narrowed_connectors=narrowed_connectors,
             permissions_fetched=permissions_fetched, replace_permissions=replace_permissions, title_changes=title_changes,
         )
+        if await self.skips_permission_writes(record.connector_id):
+            # Its access group is its grant: left as stored, like its other grants.
+            return await body()
         if record.access_group_external_id is None and record.connector_name in ACCESS_GROUP_CONNECTORS \
                 and isinstance(record, TicketRecord):
             await self._keep_access_group(record, tx_store)
@@ -5340,6 +5439,11 @@ class DataSourceEntitiesProcessor:
             if not record_groups:
                 self.logger.warning("on_new_record_groups received an empty list; skipping processing.")
                 return
+            # Unlicensed: None, the connector's own "could not read them", keeps the stored grants.
+            record_groups = [
+                (rg, None if await self.skips_permission_writes(rg.connector_id) else permissions)
+                for rg, permissions in record_groups
+            ]
 
             async with self._sync_transaction() as tx_store:
                 # Snapshot old hierarchical prefixes for renamed groups
@@ -5807,6 +5911,9 @@ class DataSourceEntitiesProcessor:
             if not users:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
                 return
+            users = [u for u in users if not await self.skips_permission_writes(u.connector_id)]
+            if not users:
+                return
 
             async with self.data_store_provider.transaction() as tx_store:
                 await tx_store.batch_upsert_app_users(users, self.org_id)
@@ -5824,6 +5931,8 @@ class DataSourceEntitiesProcessor:
         passed another way (the org's All team), so ``drop_grants`` also removes the user's own grants
         on the connector's records, record groups, user groups and roles in the same transaction.
         The connector then writes them again for a user it lists again."""
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
                 # Grants first: where each statement commits alone (Neo4j without explicit transactions), a
@@ -5845,6 +5954,8 @@ class DataSourceEntitiesProcessor:
         """Keep the link from the user who authenticated this connector to the source account it
         is authenticated as: linked when that email differs from the user's own, removed when
         it matches. Instances written before ``authenticatedBy`` existed fall back to the creator."""
+        if await self.skips_permission_writes(connector_id):
+            return
         link_changed = False
         async with self.data_store_provider.transaction() as tx_store:
             authenticated_by, authenticator = await self._authenticator(tx_store, connector_id, created_by)
@@ -5898,6 +6009,8 @@ class DataSourceEntitiesProcessor:
     async def unlink_authenticator(self, connector_id: str) -> None:
         """Remove the link from the user who authenticated this connector to a source account,
         for a connector whose credentials no longer name one (a bot token, say)."""
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self.data_store_provider.transaction() as tx_store:
             link_changed = await tx_store.remove_authenticated_as(connector_id)
         if link_changed:
@@ -5924,7 +6037,7 @@ class DataSourceEntitiesProcessor:
         Membership creation is create-only, so a collaborator who is also a real app user
         keeps their unflagged edge.
         """
-        if not emails:
+        if not emails or await self.skips_permission_writes(connector_id):
             return
 
         try:
@@ -5969,6 +6082,8 @@ class DataSourceEntitiesProcessor:
         is committed - judging an edge against half-written permissions would reap
         someone whose share is merely still being processed.
         """
+        if await self.skips_permission_writes(connector_id):
+            return 0
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 reaped = await tx_store.reap_stale_external_app_relations(connector_id)
@@ -6002,6 +6117,9 @@ class DataSourceEntitiesProcessor:
         try:
             if not user_groups:
                 self.logger.warning("on_new_user_groups received an empty list; skipping processing.")
+                return
+            user_groups = [(g, m) for g, m in user_groups if not await self.skips_permission_writes(g.connector_id)]
+            if not user_groups:
                 return
 
             refused = False
@@ -6160,6 +6278,9 @@ class DataSourceEntitiesProcessor:
             if not roles:
                 self.logger.warning("on_new_app_roles received an empty list; skipping processing.")
                 return
+            roles = [(r, m) for r, m in roles if not await self.skips_permission_writes(r.connector_id)]
+            if not roles:
+                return
 
             async with self._sync_transaction() as tx_store:
                 for role, members in roles:
@@ -6317,6 +6438,8 @@ class DataSourceEntitiesProcessor:
     async def delete_principal_permission_from_record(self, record_id: str, email: str, connector_id: str) -> None:
         """Delete the permission edges into a record of the user and of the Person (an external collaborator) with an
         email. A failed read raises, so nothing is left unremoved."""
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self.data_store_provider.transaction() as tx_store:
             user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
             person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
@@ -6426,8 +6549,11 @@ class DataSourceEntitiesProcessor:
         otherwise every sync would add a copy of the group, and its members and
         the permissions naming it would be split across the copies.
         """
+        user_groups = [ug for ug in user_groups if not await self.skips_permission_writes(ug.connector_id)]
         for ug in user_groups:
             ug.org_id = self.org_id
+        if not user_groups:
+            return
         async with self.data_store_provider.transaction() as tx_store:
             ids: dict[tuple[str, str], str] = {}
             for ug in user_groups:
@@ -6460,6 +6586,8 @@ class DataSourceEntitiesProcessor:
         connector_id: str | None = None,
     ) -> None:
         """``connector_id`` names the connector whose access the deleted edges granted."""
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_edges_between_collections(
                 from_id, from_collection, edge_collection, to_collection
@@ -6488,13 +6616,20 @@ class DataSourceEntitiesProcessor:
         to_collection: str,
         permission: Permission,
         upgrade_only: bool = False,
+        *,
+        connector_id: str,
     ) -> dict | None:
         """Atomically create or replace a permission edge. Returns the old edge if one existed.
 
         When *upgrade_only* is True the existing permission is kept whenever its
         hierarchy level is equal to or higher than the requested one (i.e. never
         downgrade).  When False (default) the edge is replaced on any difference.
+
+        ``connector_id`` is the connector the grant comes from; while it is unlicensed nothing is
+        written (``skips_permission_writes``) and None is returned.
         """
+        if await self.skips_permission_writes(connector_id):
+            return None
         async with self.data_store_provider.transaction() as tx_store:
             existing_edge = await tx_store.get_edge(
                 from_id=from_id,
@@ -6691,6 +6826,8 @@ class DataSourceEntitiesProcessor:
             Exception: if a lookup or the delete fails. The user is then still in the
             group and keeps its access, so the caller must try the removal again.
         """
+        if await self.skips_permission_writes(connector_id):
+            return False
         async with self.data_store_provider.transaction() as tx_store:
             # A user or group that could not be read is not one that is not there:
             # returning False on a failed read would leave the user in the group.
@@ -6748,6 +6885,8 @@ class DataSourceEntitiesProcessor:
         permission_type: PermissionType,
         connector_id: str
     ) -> bool:
+        if await self.skips_permission_writes(connector_id):
+            return False
         try:
             # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
             async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
@@ -6837,6 +6976,8 @@ class DataSourceEntitiesProcessor:
         members ahead of the list would take access away from everyone not yet
         re-added if the sync stopped part-way.
         """
+        if await self.skips_permission_writes(connector_id):
+            return False
         tracking = self._full_sync_run(connector_id) is not None
         try:
             async with self._sync_transaction() as tx_store:
@@ -6888,6 +7029,8 @@ class DataSourceEntitiesProcessor:
         handled here counts as seen, so the unlink after this does not touch it.
         Raises on failure: the caller then owes another full sync.
         """
+        if await self.skips_permission_writes(connector_id):
+            return
         groups = CollectionNames.GROUPS.value
         external_ids = (
             set(run.group_memberships) | run.groups_members_unsure | run.groups_written_without_members
@@ -6972,6 +7115,8 @@ class DataSourceEntitiesProcessor:
         new_name: str,
         connector_id: str,
     ) -> bool:
+        if await self.skips_permission_writes(connector_id):
+            return False
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 existing_group = await tx_store.get_user_group_by_external_id(
@@ -7023,6 +7168,8 @@ class DataSourceEntitiesProcessor:
             Exception: if the lookup or the delete fails. The group then still gives
             its members access, so the caller must try the deletion again.
         """
+        if await self.skips_permission_writes(connector_id):
+            return False
         async with self.data_store_provider.transaction() as tx_store:
             # Raising: a group that could not be read would otherwise be reported
             # as already deleted, and stay.
@@ -7100,6 +7247,8 @@ class DataSourceEntitiesProcessor:
             True when every grant of the group is now the user's (or it had none); False when the
             user is not found in this org or a grant could not be moved, so the group must be kept.
         """
+        if await self.skips_permission_writes(connector_id):
+            return False
         # If no transaction provided, create one and recursively call with it
         if tx_store is None:
             async with self.data_store_provider.transaction() as new_tx_store:
@@ -7260,6 +7409,8 @@ class DataSourceEntitiesProcessor:
             user_email: Email of the user to migrate permissions to
             connector_id: Connector ID
         """
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self.data_store_provider.transaction() as tx_store:
             # Find the group by external ID
             group = await tx_store.get_user_group_by_external_id(
@@ -7316,6 +7467,8 @@ class DataSourceEntitiesProcessor:
             Exception: if the lookup or the delete fails. The role then still gives
             its members access, so the caller must try the deletion again.
         """
+        if await self.skips_permission_writes(connector_id):
+            return False
         async with self.data_store_provider.transaction() as tx_store:
             # Raising: a role that could not be read is not a role that is not there.
             app_role = await tx_store.get_app_role_by_external_id(
@@ -7514,6 +7667,8 @@ class DataSourceEntitiesProcessor:
     async def stop_inheriting_permissions(self, record_id: str, connector_id: str) -> None:
         """Remove the record's edges to the records it inherits permissions from. Its own grants stay. A failed read
         of the edges raises, so nothing is left unremoved."""
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self.data_store_provider.transaction() as tx_store:
             edges = await tx_store.get_edges_from_node(
                 f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.INHERIT_PERMISSIONS.value,
@@ -7556,6 +7711,8 @@ class DataSourceEntitiesProcessor:
     ) -> None:
         """Undo stop_inheriting_permissions: inherit again from the parent record, or from the group when
         the record hangs off it."""
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self.data_store_provider.transaction() as tx_store:
             if parent_record_id:
                 await tx_store.create_inherit_permissions_relation_record(record_id, parent_record_id)
@@ -7569,6 +7726,8 @@ class DataSourceEntitiesProcessor:
     async def delete_group_permission_from_record(self, record_id: str, group_external_id: str, connector_id: str) -> None:
         """Delete a group's (by its id at the source) permission edge to a record. A group the store does not hold
         has no edge; a failed read of it raises, so nothing is left unremoved."""
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self.data_store_provider.transaction() as tx_store:
             group = await tx_store.get_user_group_by_external_id(connector_id, group_external_id, raise_on_error=True)
             if group is None:
@@ -7603,6 +7762,8 @@ class DataSourceEntitiesProcessor:
             if connector_id is None:
                 stored = await tx_store.get_record_by_key(record_id, raise_on_error=True)
                 connector_id = (stored or {}).get("connectorId")
+            if await self.skips_permission_writes(connector_id):
+                return
 
             # Not delete_edge: ArangoDB's answers False when the delete fails, which
             # read here as "nothing to delete" and left the user with the permission.
@@ -7630,6 +7791,8 @@ class DataSourceEntitiesProcessor:
         anything a record inherits), a batch of records at a time: each record's incoming edges are read, and the
         users' edges among them deleted in one write. Returns how many went. A failed read raises, so nothing is
         left unremoved unreported."""
+        if await self.skips_permission_writes(connector_id):
+            return 0
         if not record_ids or not user_emails:
             return 0
         users = CollectionNames.USERS.value
@@ -7673,6 +7836,8 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def ensure_team_app_edge(self, connector_id: str) -> None:
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
 
@@ -7684,6 +7849,8 @@ class DataSourceEntitiesProcessor:
         so those grants go first, in one statement that checks the link (``remove_unlinked_user_access_to_connector``):
         deactivated users and guests are included, and a user linked meanwhile keeps theirs. Every call removes them
         again, gate open or not, so a pass that missed some is made good."""
+        if await self.skips_permission_writes(connector_id):
+            return False
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             await tx_store.remove_unlinked_user_access_to_connector(connector_id)
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
@@ -7699,6 +7866,8 @@ class DataSourceEntitiesProcessor:
 
     async def withdraw_team_app_edge(self, connector_id: str) -> None:
         """Undo ``open_app_to_org_team``: the org's members pass the gate again only through their own links."""
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_edge(
                 f"all_{self.org_id}", CollectionNames.TEAMS.value,
@@ -7774,6 +7943,8 @@ class DataSourceEntitiesProcessor:
     async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
         """Take away everything the user was granted directly on this connector's content and groups, for a
         person the source no longer lets in. Returns how many grants were removed (0 for an unknown user)."""
+        if await self.skips_permission_writes(connector_id):
+            return 0
         async with self.data_store_provider.transaction() as tx_store:
             user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
             if not user:
@@ -7791,6 +7962,8 @@ class DataSourceEntitiesProcessor:
     @retry_on_deadlock()
     async def remove_user_grants(self, connector_id: str, user_node_id: str, record_ids: list[str]) -> None:
         """Delete the user's own direct grants on these records; everyone else's stay."""
+        if await self.skips_permission_writes(connector_id):
+            return
         if not record_ids:
             return
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
@@ -7808,6 +7981,8 @@ class DataSourceEntitiesProcessor:
     async def withdraw_user_from_connector(self, connector_id: str, user_node_id: str) -> int:
         """Take away everything the user holds on the connector directly: their grants and their link to it.
         For a per-user connection that was revoked, went stale or was disconnected."""
+        if await self.skips_permission_writes(connector_id):
+            return 0
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             removed = await tx_store.remove_user_access_to_connector(connector_id, user_node_id)
             await tx_store.delete_edge(
@@ -7821,6 +7996,8 @@ class DataSourceEntitiesProcessor:
     async def remove_user_access_to_record(
         self, connector_id: str, external_id: str, user_id: str
     ) -> None:
+        if await self.skips_permission_writes(connector_id):
+            return
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.remove_user_access_to_record(
                 connector_id, external_id, user_id

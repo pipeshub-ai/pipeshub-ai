@@ -2430,6 +2430,7 @@ class DropboxConnector(BaseConnector):
                 entity_type=EntityType.USER,
             )
             await self.data_entities_processor.upsert_permission_edge(
+                connector_id=self.connector_id,
                 from_id=user.id,
                 from_collection=CollectionNames.USERS.value,
                 to_id=user_group.id,

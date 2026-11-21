@@ -18,7 +18,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.config.constants.arangodb import AppStatus, CollectionNames, PermissionModel
 from app.services.permissions.structure_generation import note_structure_change
 from app.connectors.core.base.connector.connector_service import (
     ConnectorSyncSkippedError,
@@ -27,6 +27,9 @@ from app.connectors.core.base.connector.connector_service import (
     connector_sync_lock,
     dispose_connector,
     note_sync_started,
+)
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import ensure_written
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
@@ -751,6 +754,10 @@ async def _unlink_what_full_sync_missed(
     if not await _finish_full_sync_memberships(connector, connector_id, graph_provider, logger, seen):
         return False
     try:
+        processor = getattr(connector, "data_entities_processor", None)
+        if isinstance(processor, DataSourceEntitiesProcessor):
+            # Groups and roles it skipped writing while unlicensed keep their members and grants.
+            await processor.keep_skipped_groups(connector_id)
         deleted, ok = await graph_provider.unlink_nodes_missed_by_full_sync(
             connector_id,
             seen.by_collection,
@@ -767,6 +774,26 @@ async def _unlink_what_full_sync_missed(
     if ok:
         logger.info("Full sync removed the edges of nodes it did not see", extra={"removed_edges": deleted})
     return bool(ok)
+
+
+async def _lift_access_limit(
+    connector: "BaseConnector", processor: DataSourceEntitiesProcessor, connector_id: str, logger: logging.Logger
+) -> None:
+    """After a full sync with a licence that read the whole source: it rewrote the access of everything it holds, so
+    the limit set while the connector was unlicensed goes, and its type's permission model comes back. A failure is
+    logged: the limit stays, and the next sync owes another full sync (``apply_licence_gate``)."""
+    coverage = getattr(connector, "full_sync_coverage", None)
+    coverage = coverage() if callable(coverage) else None
+    if isinstance(coverage, FullSyncCoverage) and not coverage.complete:
+        return
+    from app.connectors.core.registry.connector_registry import ConnectorRegistry
+
+    metadata = getattr(type(connector), "_connector_metadata", None) or {}
+    try:
+        if await processor.lift_access_limit(connector_id, PermissionModel(ConnectorRegistry._permission_model_for(metadata))):
+            logger.info("Full sync with a licence finished: the connector's access limit is lifted")
+    except Exception as e:
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="lift_access_limit")
 
 
 def _run_outcome(*, stopped: bool, failed: bool, skipped: bool, finished: bool, lost: bool) -> SyncRunOutcome:
@@ -887,6 +914,11 @@ async def run_sync_task(
                 )
         except Exception as e:
             error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="clear_pending_resync")
+        # The licence gate, before the source is read: raises (the run does not start) when it cannot be applied.
+        gate = getattr(connector, "data_entities_processor", None)
+        if not isinstance(gate, DataSourceEntitiesProcessor):
+            gate = None
+        lifts_limit = gate is not None and await gate.apply_licence_gate(connector_id, full_sync=full_sync)
         incomplete: IncompleteSyncError | None = None
         try:
             if lease is None:
@@ -906,6 +938,9 @@ async def run_sync_task(
             unlink_failed = not await _unlink_what_full_sync_missed(
                 connector, connector_id, graph_provider, logger, seen
             )
+            # Not after one that wrote nothing: that most likely failed without saying so.
+            if lifts_limit and not unlink_failed and incomplete is None and seen.count():
+                await _lift_access_limit(connector, gate, connector_id, logger)
         if incomplete is not None:
             raise incomplete
     except asyncio.CancelledError:

@@ -6457,6 +6457,9 @@ class SalesforceConnector(BaseConnector):
         Products are not shared record by record: the product group's readers are the
         users whose permission sets grant Read on Product2 (``_sync_product_readers``).
         """
+        # These edges are written straight to the store, so the processor's licence gate is asked here.
+        if await self.data_entities_processor.skips_permission_writes(self.connector_id):
+            return
         # 1. Users who can sign in: active and not frozen.
         soql_query = "SELECT Id, Email FROM User WHERE IsActive = true"
         sf_users: List[Dict[str, str]] = []
@@ -6820,6 +6823,7 @@ class SalesforceConnector(BaseConnector):
                 entity_type=EntityType.USER,
             )
             await self.data_entities_processor.upsert_permission_edge(
+                connector_id=self.connector_id,
                 from_id=user.id,
                 from_collection=CollectionNames.USERS.value,
                 to_id=record_group.id,
@@ -6862,6 +6866,7 @@ class SalesforceConnector(BaseConnector):
                 entity_type=EntityType.USER,
             )
             await self.data_entities_processor.upsert_permission_edge(
+                connector_id=self.connector_id,
                 from_id=user.id,
                 from_collection=CollectionNames.USERS.value,
                 to_id=record.id,

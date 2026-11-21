@@ -954,3 +954,64 @@ async def test_a_web_full_sync_restores_access_to_an_unchanged_page_an_earlier_f
     assert await _can_search(sync, sync.alice, page.external_record_id)
     assert await _browse(sync, sync.alice, page.external_record_id) == (True, {parent_id})
     assert not await _can_search(sync, sync.bob, page.external_record_id), "no wider than before"
+
+
+# --- the licence gate (permission_sync_gate): an unlicensed full sync, then a licensed one ----------------------------
+
+async def _licence(sync: _Sync, allowed: bool) -> None:
+    """The value the Node backend publishes for the licence; the processor reads it on every write."""
+    sync.processor._reads_licence = True
+    sync.processor.config_service = MagicMock()
+    sync.processor.config_service.get_config = AsyncMock(return_value={"allowed": allowed})
+
+
+async def _app_doc(sync: _Sync) -> dict:
+    return await sync.graph.get_document(sync.connector_id, CollectionNames.APPS.value) or {}
+
+
+async def test_an_unlicensed_full_sync_limits_the_connector_and_leaves_its_access_until_a_licensed_one(
+    sync: _Sync,
+) -> None:
+    """Unlicensed: the connector is limited to its creator (alice), and the full sync writes content but leaves every
+    grant, membership and group as stored, even those the source no longer lists. Licensed again: the next full sync
+    rewrites access and only then lifts the limit."""
+    await sync.graph.update_node(sync.connector_id, CollectionNames.APPS.value, {"createdBy": sync.alice})
+    department, members = await _department(sync)
+    await sync.processor.on_new_record_groups([_channel_shared_with_department(sync)])
+    await sync.processor.on_new_records(
+        [sync.message(name, readers=(sync.alice, sync.bob), inherit=False) for name in ("m1", "m2")]
+    )
+    assert await sync.can_read(sync.bob, "m1")
+
+    async def source_without_bob(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([department()])
+        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
+        await s.processor.on_new_record_groups([_channel_shared_with_department(s)])
+        await s.processor.on_new_records([
+            s.message(name, readers=(s.alice,), inherit=False) for name in ("m1", "m2", "m3")
+        ])
+
+    await _licence(sync, allowed=False)
+    task, _lease = await sync.full_sync(source_without_bob)
+    await asyncio.wait_for(task, timeout=60)
+
+    app = await _app_doc(sync)
+    assert app.get("accessLimit") == "CREATOR" and app.get("permissionModel") == "APP_LEVEL", app
+    assert await members() == {sync.alice, sync.bob}, "memberships left as stored"
+    group = await sync.graph.get_user_group_by_external_id(sync.connector_id, "dept-1")
+    assert group.id in await _department_grant(sync), "the group and its grant are kept"
+    assert (await sync.links(RECORDS, await sync.record_id("m1")))["grants"] == 2, "grants left as stored"
+    assert await sync.record_id("m3"), "content still syncs"
+    assert await sync.can_read(sync.alice, "m3"), "the creator reads all of it"
+    assert not await sync.can_read(sync.bob, "m1"), "nobody else does, whatever is stored"
+
+    await _licence(sync, allowed=True)
+    task, _lease = await sync.full_sync(source_without_bob)
+    await asyncio.wait_for(task, timeout=60)
+
+    app = await _app_doc(sync)
+    assert app.get("accessLimit") is None, app
+    assert app.get("permissionModel") == "RECORD_LEVEL", app
+    assert await members() == {sync.alice}
+    assert await sync.can_read(sync.alice, "m1")
+    assert not await sync.can_read(sync.bob, "m1"), "the licensed sync took bob's grant away first"

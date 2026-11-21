@@ -2025,7 +2025,7 @@ class TestUpsertPermissionEdge:
         proc, tx_store = self._proc_with({"role": "READER"})
         perm = Permission(type=PermissionType.WRITE, entity_type=EntityType.USER.value)
 
-        old = await proc.upsert_permission_edge("user-1", "users", "rec-1", "records", perm)
+        old = await proc.upsert_permission_edge("user-1", "users", "rec-1", "records", perm, connector_id="c1")
 
         assert old == {"role": "READER"}
         tx_store.delete_edge.assert_not_awaited()
@@ -2038,7 +2038,7 @@ class TestUpsertPermissionEdge:
         proc, tx_store = self._proc_with({"role": "OWNER"})
         perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value)
 
-        old = await proc.upsert_permission_edge("user-1", "users", "rec-1", "records", perm, upgrade_only=True)
+        old = await proc.upsert_permission_edge("user-1", "users", "rec-1", "records", perm, upgrade_only=True, connector_id="c1")
 
         assert old == {"role": "OWNER"}
         tx_store.batch_create_edges.assert_not_awaited()
