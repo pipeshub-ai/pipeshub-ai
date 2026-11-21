@@ -673,6 +673,16 @@ describe('Storage adapters against a real storage server', function () {
       expect(await exists(key(11))).to.equal(true);
     });
 
+    it('a bump that read its version before a newer write landed never replaces that write (the store refuses it)', async () => {
+      await put(key(61), '{"v":1,"value":"old"}');
+      const readByBump = (await etagOf(key(61)))!; // the bump read this version, then stalled
+      await put(key(61), '{"v":1,"value":"newer refresh result"}'); // another writer commits meanwhile
+      expect(await putIfMatch(key(61), '{"v":1,"value":"old","touchedMs":1}', readByBump)).to.equal(412);
+      const signed = await target.adapter.signObjectUrl!(key(61), { method: 'GET', expiresInSeconds: 60 });
+      const res = await fetch(signed.url);
+      expect(await res.text()).to.equal('{"v":1,"value":"newer refresh result"}');
+    });
+
     it('a PUT If-Match replaces the named version and changes the etag; a stale etag is refused with 412', async () => {
       await put(key(20), '{"v":1,"value":"x"}');
       const before = (await etagOf(key(20)))!;

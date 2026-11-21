@@ -33,6 +33,8 @@ import { withDeadline } from '../utils/call-deadline';
  * holder checks its token just before the unlink or rename that ends its operation.
  */
 const KEY_LOCK_LEASE_MS = 5 * 60 * 1000;
+/** The file a lock holder stages its bytes in before the rename; a taker of an expired lock removes it (see writeFileAtomically). */
+const stagedFileName = (token: string): string => `.${token}.tmp`;
 const KEY_LOCK_WAIT_MS = 15_000;
 const KEY_LOCK_POLL_MS = 10;
 
@@ -220,17 +222,53 @@ class LocalStorageAdapter implements StorageServiceInterface {
    * With `ifAbsent`, the finished file is linked into place instead: a second
    * writer's link fails with EEXIST rather than replacing the first one's file,
    * and the call answers false.
+   *
+   * With `fence`, the writer holds a key lock whose token names the staged file
+   * (`.<token>.tmp`). A taker of an expired lock removes that file, so a holder
+   * that stalled after its last token check finds nothing to rename: its rename
+   * fails with ENOENT and the call answers false, the newer write untouched. The
+   * token check before the rename stays as the fast path.
    */
   private async writeFileAtomically(
     fullPath: string,
     data: Buffer,
-    options: { ifAbsent?: boolean } = {},
+    options: {
+      ifAbsent?: boolean;
+      fence?: { token: string; stillHeld: () => Promise<boolean> };
+    } = {},
   ): Promise<boolean> {
     // Named independently of the target: a long but valid filename plus a suffix
     // can pass the filesystem's limit for one name component.
-    const tempPath = path.join(path.dirname(fullPath), `.${randomUUID()}.tmp`);
+    const tempPath = path.join(
+      path.dirname(fullPath),
+      options.fence !== undefined
+        ? stagedFileName(options.fence.token)
+        : `.${randomUUID()}.tmp`,
+    );
     try {
       await fs.writeFile(tempPath, data, { mode: 0o600 });
+      if (options.fence !== undefined) {
+        if (!(await options.fence.stillHeld())) {
+          await fs.rm(tempPath, { force: true }).catch(() => undefined);
+          return false;
+        }
+        try {
+          await fs.rename(tempPath, fullPath);
+        } catch (error) {
+          // The taker of an expired lock removed the staged file: this holder lost the key and writes nothing.
+          if (
+            (error as { code?: string }).code === 'ENOENT' &&
+            !(await fs.stat(tempPath).then(
+              () => true,
+              () => false,
+            ))
+          ) {
+            return false;
+          }
+          throw error;
+        }
+        return true;
+      }
       if (options.ifAbsent) {
         try {
           await fs.link(tempPath, fullPath);
@@ -623,9 +661,18 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (located === null) {
         throw new StorageNotFoundError('Local folder not found');
       }
-      await this.withKeyLock(located.target, () =>
-        this.writeFileAtomically(located.target, data),
+      const landed = await this.withKeyLock(
+        located.target,
+        (stillHeld, token) =>
+          this.writeFileAtomically(located.target, data, {
+            fence: { token, stillHeld },
+          }),
       );
+      if (!landed) {
+        throw new StorageUploadError(
+          'The object was taken over by another writer; try again',
+        );
+      }
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to write object to local storage', {
@@ -739,11 +786,12 @@ class LocalStorageAdapter implements StorageServiceInterface {
    * Takes the key's lock, runs `body`, releases. The lock is a file `.<sha1>.lock` beside the key (a dot name: never
    * listed), created with `wx` so exactly one creator wins; a lock older than the lease is taken over by renaming
    * it to a unique name first (only one renamer succeeds), then creating anew. `body` receives `stillHeld()`, which
-   * it calls just before the step that ends the operation: false when the lease was taken over meanwhile.
+   * it calls just before the step that ends the operation: false when the lease was taken over meanwhile. A step that
+   * replaces the file stages its bytes under the token's name (see writeFileAtomically), which fences it past that check.
    */
   private async withKeyLock<T>(
     fullPath: string,
-    body: (stillHeld: () => Promise<boolean>) => Promise<T>,
+    body: (stillHeld: () => Promise<boolean>, token: string) => Promise<T>,
   ): Promise<T> {
     const lockPath = path.join(
       path.dirname(fullPath),
@@ -797,7 +845,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       // The deadline covers the whole section. A section that does not finish in it fails the call, but its lock is kept
       // while the work it guards may still be running (a taker must not enter beside it) and is released when that work
       // settles, so a section that ends just after the deadline does not hold the key for the whole lease.
-      const running = body(stillHeld);
+      const running = body(stillHeld, token);
       return await withDeadline(
         running,
         this.callDeadlineMs,
@@ -850,6 +898,24 @@ class LocalStorageAdapter implements StorageServiceInterface {
       } catch (error) {
         if ((error as { code?: string }).code === 'ENOENT') return true;
         throw error;
+      }
+      // The removed lock names its holder's staged file: removing it is what stops a holder that is only stalled from
+      // renaming its older bytes over the next writer's. (Read from the file moved aside, so it is the owner removed.)
+      try {
+        const gone = JSON.parse(await fs.readFile(stale, 'utf8')) as {
+          token?: unknown;
+        };
+        if (
+          typeof gone.token === 'string' &&
+          /^[0-9a-f-]{36}$/.test(gone.token)
+        ) {
+          await fs.rm(
+            path.join(path.dirname(lockPath), stagedFileName(gone.token)),
+            { force: true },
+          );
+        }
+      } catch {
+        // no readable owner: that holder never passed a token check, so it has nothing staged to protect
       }
       await fs.rm(stale, { force: true });
       return true;
@@ -977,6 +1043,8 @@ class LocalStorageAdapter implements StorageServiceInterface {
             changed.push(key);
             return false;
           }
+          // Residual: unlike a write, this step cannot be fenced by a staged file. A holder that stalls past the lease
+          // after this check can still remove a newer file; the cost is one recomputation, never wrong bytes served.
           if (!(await stillHeld())) {
             changed.push(key);
             return false;
@@ -1004,14 +1072,18 @@ class LocalStorageAdapter implements StorageServiceInterface {
       await this.ensureReady();
       const located = await this.locateInsideRealMount(fullPath);
       if (located === null) return 'gone';
-      return await this.withKeyLock(located.target, async (stillHeld) => {
-        const current = await this.etagAtPath(located.target);
-        if (current === null) return 'gone';
-        if (current !== etag) return 'changed';
-        if (!(await stillHeld())) return 'changed';
-        await this.writeFileAtomically(located.target, data);
-        return 'written';
-      });
+      return await this.withKeyLock(
+        located.target,
+        async (stillHeld, token) => {
+          const current = await this.etagAtPath(located.target);
+          if (current === null) return 'gone';
+          if (current !== etag) return 'changed';
+          const landed = await this.writeFileAtomically(located.target, data, {
+            fence: { token, stillHeld },
+          });
+          return landed ? 'written' : 'changed';
+        },
+      );
     } catch (error) {
       if ((error as { code?: string }).code === 'ENOENT') return 'gone';
       if (error instanceof StorageError) throw error;

@@ -228,6 +228,86 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       await opened!.handle.close()
     })
 
+    describe('a holder stalled between its token check and its rename (past the lease)', () => {
+      /**
+       * Pauses the first rename of a staged file onto the key (that is, after the holder's token check), lets `second`
+       * take the expired lock and commit, then lets the first one go. Resolves with what the first call answered.
+       */
+      const stalledHolder = async (
+        a: LocalStorageAdapter,
+        first: () => Promise<unknown>,
+        second: () => Promise<unknown>,
+      ): Promise<unknown> => {
+        const realRename = fsp.rename.bind(fsp)
+        let reached!: () => void
+        const atRename = new Promise<void>((r) => (reached = r))
+        let release!: () => void
+        const gate = new Promise<void>((r) => (release = r))
+        let paused = false
+        sinon.stub(fsp, 'rename').callsFake(async (from: any, to: any) => {
+          if (!paused && String(from).endsWith('.tmp') && String(to).endsWith('.json')) {
+            paused = true
+            reached()
+            await gate
+          }
+          return realRename(from, to)
+        })
+        const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+        const firstDone = first().then((v) => v, (e: Error) => e.name)
+        await atRename
+        // the lease passed while the first writer was stalled
+        const lock = fs.readdirSync(dir).find((f) => f.endsWith('.lock'))!
+        const old = new Date(Date.now() - 6 * 60 * 1000)
+        fs.utimesSync(path.join(dir, lock), old, old)
+        await second()
+        release()
+        return firstDone
+      }
+      const read = async (a: LocalStorageAdapter): Promise<string> => {
+        const o = await a.openObject(key(1))
+        const text = (await o!.handle.readFile()).toString()
+        await o!.handle.close()
+        return text
+      }
+
+      it('a bump never replaces the newer write of the writer that took its lock', async () => {
+        const a = adapter()
+        const b = adapter()
+        await a.writeObject(key(1), Buffer.from('{"value":"old"}'))
+        const e = await etagOf(a, key(1))
+        const answer = await stalledHolder(
+          a,
+          () => a.writeObjectIfMatch(key(1), Buffer.from('{"value":"old","touchedMs":1}'), e),
+          () => b.writeObject(key(1), Buffer.from('{"value":"newer refresh result"}')),
+        )
+        expect(answer).to.equal('changed')
+        expect(await read(a)).to.equal('{"value":"newer refresh result"}')
+        const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+        expect(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp')), 'a staged file was left behind').to.deep.equal([])
+      })
+
+      it('a plain write never replaces the newer write of the writer that took its lock', async () => {
+        const a = adapter()
+        const b = adapter()
+        await a.writeObject(key(1), Buffer.from('old'))
+        const answer = await stalledHolder(
+          a,
+          () => a.writeObject(key(1), Buffer.from('stalled')),
+          () => b.writeObject(key(1), Buffer.from('newer')),
+        )
+        expect(answer).to.equal('StorageUploadError')
+        expect(await read(a)).to.equal('newer')
+      })
+
+      it('a holder inside its lease still lands its write', async () => {
+        const a = adapter()
+        await a.writeObject(key(1), Buffer.from('old'))
+        const e = await etagOf(a, key(1))
+        expect(await a.writeObjectIfMatch(key(1), Buffer.from('bumped'), e)).to.equal('written')
+        expect(await read(a)).to.equal('bumped')
+      })
+    })
+
     it('a lock whose owner is in another PID namespace or boot is never judged by its pid: only the lease decides', async function () {
       if (identity().pidNs === undefined) this.skip()
       const a = adapter()
