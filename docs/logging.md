@@ -345,6 +345,41 @@ although some of it stayed; batch writes still run in a real transaction. Record
 the processor are not counted. A rename or move that the connector sends through `on_records_moved` rewrites the
 stored record in place and is not counted either, unless the old record is missing and the move falls back to a plain add.
 
+## Crawling jobs (Node)
+
+The crawling manager (`backend/nodejs/apps/src/modules/crawling_manager`) schedules each connector's sync and starts it on each
+tick.
+
+- **A schedule request** (`/api/v1/crawlingManager/:connector/:connectorId/...`) binds `connector_id` and `connector_type` once
+  access is decided, so the request's lines, the access line included, carry them. A change writes one INFO line from the
+  scheduler (`Crawling job scheduled successfully`, `Successfully removed crawling job`, `Job paused successfully`,
+  `Job resumed successfully`, `All jobs removed successfully`) and the access line; its steps are DEBUG. A failure is logged once,
+  by the error middleware; the scheduler and the controller only throw.
+- **A tick** writes one `crawling_job.end`, with `connector_id`, `connector_type` and the job's `org_id` bound for the run. Every
+  failure of the run is that line, a failed org lookup before the crawl included; a job whose org is gone or not an id writes a
+  WARNING `Skipping crawling job: …` instead:
+
+| Field | Value |
+| --- | --- |
+| `outcome` | `success`, `skipped` (`reason=desktop_offline`: a Local FS connector with no desktop connected), or `failure` |
+| `error_class`, `error` | on failure; the level is `levelFor(error_class)`, so a broker outage is WARNING and our bug ERROR with the stack |
+| `attempt` | BullMQ's attempt for this run, 1-based; each retry is its own run with its own line |
+| `duration_ms`, `job_id` | the run's time; the queue's job id |
+
+  A success or skip is INFO. BullMQ's own `failed` event is DEBUG: it repeats the end line, or follows a stall, which the
+  `Job stalled` WARNING reports.
+- **A reconcile** (a connector's saved sync settings applied to its schedule) writes one `connector schedule reconcile` line with
+  `connector_id`, `connector_type`, `duration_ms` and `outcome` `success` or `failure`; the case is `reason`:
+
+| `reason` | `outcome` | Level |
+| --- | --- | --- |
+| `scheduled`, `unchanged`, `removed`, `noop` | `success` | INFO |
+| `invalid_input`, `invalid_config` (also a schedule the scheduler refuses) | `failure` | WARNING |
+| `queue_failed` (after its retries; with `error_class` and the error) | `failure` | `levelFor(error_class)` |
+
+  Each retry before that is a WARNING `connector schedule reconcile: retrying after error` with `attempt`. `is_active`,
+  `selected_strategy` and `interval_minutes` are metadata.
+
 ## Messaging consumers
 
 The Redis Streams and Kafka consumers handle each delivery inside `message_log.delivery`
