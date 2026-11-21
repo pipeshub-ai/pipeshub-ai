@@ -619,7 +619,12 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   shared exception (a shared MCP listing, a memoised lookup) each keep their line at their own level, and the stack prints once:
   when `error_class.logged_level(exc)` says it was already written at that level, the line is a `log_event` with the error fields.
 - Tool, MCP, OpenAPI and OAuth failures never log the error's text (`include_error_text=False`): a server's answer can quote the
-  arguments. A refused redirect logs only the target's host, and an ended MCP session only the cause's type. Nor a STDIO server's stderr: it can echo earlier calls' arguments and its environment. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field.
+  arguments. A refused redirect logs only the target's host, and an ended MCP session only the cause's type. Nor a STDIO server's stderr: it can echo earlier calls' arguments and its environment. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field. That text keeps the API's own words, which the model needs to correct its call. Before the model, the tool card, the
+  transcript and the trace get a failed output, `ToolExecutor` masks what it can recognise as a credential, on a best-effort
+  basis: known token shapes and `name: value` pairs in its text (`redact_secrets_in_text`), and the value under a
+  credential-named key in its data (`password`, `apiKey`: the same name rule). A credential with no known shape, outside
+  such a name, is not caught. A tool that answers a soft failure as a success builds its payload with `error_data(exc)`, which
+  masks its text the same way.
 - `mcp.connect.end` (like `llm_call.end`) is an operation record: it stays at INFO when it failed, and the layer that retries or
   gives up (`mcp.retry`, `mcp.discover.end`, `tool_call.end`) logs the severity.
 - `app.agents.mcp.failure.mcp_error_class` maps an MCP failure: `classify_error` first, then what its `MCPFailureReason` means; a
