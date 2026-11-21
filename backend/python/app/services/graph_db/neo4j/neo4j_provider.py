@@ -35,6 +35,7 @@ from app.config.constants.arangodb import (
     HIERARCHY_RELATION_TYPES,
     PERSON_CRM_EDGES,
     RECORD_TYPE_COLLECTION_MAPPING,
+    AccessLimit,
     AppGroups,
     CollectionNames,
     Connectors,
@@ -447,6 +448,14 @@ _KH_CROSS_FALLBACKS = METRICS_BACKEND.counter(
 )
 
 _CYPHER_APP_OPENS = "(coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB')"
+
+
+def _cypher_limit_admits(app: str, user: str) -> str:
+    """Whether a limited App (``accessLimit`` set) lets ``user`` through, whatever edges exist: CREATOR only the user
+    whose ``userId`` is the App's ``createdBy``, ORG every member of the org (the user belongs to an Organization). Any
+    other value, or a missing ``createdBy``, lets nobody through (a null comparison filters the row out)."""
+    return (f"(({app}.accessLimit = '{AccessLimit.CREATOR.value}' AND {app}.createdBy = {user}.userId)"
+            f" OR ({app}.accessLimit = '{AccessLimit.ORG.value}' AND EXISTS {{ MATCH ({user})-[:BELONGS_TO]->(:Organization) }}))")
 
 
 def _cypher_read_by_app(v: str) -> str:
@@ -8848,13 +8857,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UNWIND principals AS principal
                 MATCH (app:App {id: principal.connectorId})
                 RETURN app
+                UNION
+                // A limited connector is reached by whom its limit admits, whatever edges exist (the gate, _kh_gate_cypher).
+                WITH u
+                MATCH (app:App)
+                WHERE app.orgId = $org_id AND app.accessLimit IS NOT NULL
+                RETURN app
             }
-            WITH app
+            WITH u, app
             // A hidden KB (a project's linked collection) is reachable only
             // when the caller names it, as in get_accessible_containers.
             WHERE ((size($source_ids) = 0 AND coalesce(app.isHidden, false) = false)
                    OR app.id IN $source_ids)
               AND NOT app.id IN $exclude_app_ids
+              AND (app.accessLimit IS NULL OR __LIMIT_ADMITS__)
             RETURN collect(app {.id, .name, .type, .permissionModel}) AS apps
         }
 
@@ -8944,7 +8960,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         RETURN u.id AS user_key, apps, record_group_ids
         """.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH)).replace(
-            "__KB_EDGE_OK__", _kb_edge_role_ok("kbp"))
+            "__KB_EDGE_OK__", _kb_edge_role_ok("kbp")).replace("__LIMIT_ADMITS__", _cypher_limit_admits("app", "u"))
         rows = await self.client.execute_query(
             query,
             parameters={
@@ -19435,13 +19451,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # Match by userId (MongoDB ID) — not by id (the graph-internal key).
         # Intermediate WITH after the first OPTIONAL MATCH avoids an M×N
         # Cartesian product when both paths return multiple rows.
-        query = """
-        MATCH (u:User {userId: $user_id})
-        OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(a1:App {scope: $team_scope})
+        # A limited connector is listed for whom its limit admits, whatever edges exist (the gate, _kh_gate_cypher).
+        query = f"""
+        MATCH (u:User {{userId: $user_id}})
+        OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(a1:App {{scope: $team_scope}})
+        WHERE a1.accessLimit IS NULL
         WITH u, collect(DISTINCT a1.id) AS direct_ids
-        OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(t:Teams)-[:USER_APP_RELATION]->(a2:App {scope: $team_scope})
-        WITH direct_ids, collect(DISTINCT a2.id) AS team_ids
-        WITH direct_ids + team_ids AS all_ids
+        OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(t:Teams)-[:USER_APP_RELATION]->(a2:App {{scope: $team_scope}})
+        WHERE a2.accessLimit IS NULL
+        WITH u, direct_ids, collect(DISTINCT a2.id) AS team_ids
+        OPTIONAL MATCH (a3:App {{scope: $team_scope}})
+        WHERE a3.orgId = u.orgId AND a3.accessLimit IS NOT NULL AND {_cypher_limit_admits("a3", "u")}
+        WITH direct_ids, team_ids, collect(DISTINCT a3.id) AS limited_ids
+        WITH direct_ids + team_ids + limited_ids AS all_ids
         UNWIND all_ids AS app_id
         WITH app_id WHERE app_id IS NOT NULL
         RETURN DISTINCT app_id
@@ -20538,7 +20560,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ORG_APP_RELATION is left out on purpose: the Organization holds one to
         every app on the tenant, so honouring it gates everyone into everything.
         A connector the user authenticated as another source account
-        (AUTHENTICATED_AS) is gated too: the link is its grant.
+        (AUTHENTICATED_AS) is gated too: the link is its grant. An App whose
+        ``accessLimit`` is set ignores all of these and is gated for whom the
+        limit admits (``_cypher_limit_admits``).
 
         Yields ``granteeIds`` and ``gatedApps``; ``u`` and ``carry`` stay bound.
         The one definition of the gate: every "which Apps can this user reach"
@@ -20554,15 +20578,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         UNWIND granteeIds AS granteeId
         MATCH (grantee:User|Group|Role|Teams|Organization {{id: granteeId}})
         OPTIONAL MATCH (grantee)-[gateRel:PERMISSION|USER_APP_RELATION]->(gatedApp:App)
-        WHERE gatedApp.orgId = {org}
+        WHERE gatedApp.orgId = {org} AND gatedApp.accessLimit IS NULL
           AND (NOT (grantee:User AND type(gateRel) = 'PERMISSION' AND gatedApp.type = 'KB')
                OR {_kb_edge_role_ok('gateRel')})
         WITH {keep}, granteeIds, collect(DISTINCT gatedApp.id) AS gatedApps
         OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(:User)
         OPTIONAL MATCH (kh_linkedApp:App {{id: kh_link.connectorId}})
-        WHERE kh_linkedApp.orgId = {org}
+        WHERE kh_linkedApp.orgId = {org} AND kh_linkedApp.accessLimit IS NULL
         WITH {keep}, granteeIds, gatedApps, collect(DISTINCT kh_linkedApp.id) AS kh_linkedApps
         WITH {keep}, granteeIds, gatedApps + [a IN kh_linkedApps WHERE NOT a IN gatedApps] AS gatedApps
+        OPTIONAL MATCH (kh_limitedApp:App)
+        WHERE kh_limitedApp.orgId = {org} AND kh_limitedApp.accessLimit IS NOT NULL
+          AND {_cypher_limit_admits("kh_limitedApp", "u")}
+        WITH {keep}, granteeIds, gatedApps, collect(DISTINCT kh_limitedApp.id) AS kh_limitedApps
+        WITH {keep}, granteeIds, gatedApps + kh_limitedApps AS gatedApps
         """
 
     async def get_gated_apps(

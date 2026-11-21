@@ -17,7 +17,8 @@ from tests.integration.graph_permissions.loaders import EDGE_TARGETS, NODE_TARGE
 from tests.permissions import gen
 from tests.permissions.graph import Graph, Namespace, compile_world
 from tests.permissions.runner import ConformanceRunner, Report
-from tests.permissions.scenario import Scenario, load_all
+
+from .pg_support import corpus
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
@@ -114,7 +115,7 @@ def _describe(report: Report) -> str:
 
 @pytest.mark.parametrize("tier", ["rules", "golden"])
 async def test_layer_equals_oracle(layer: PgLayer, tier: str) -> None:
-    scenarios: list[Scenario] = [s for s in load_all() if ("rules" in s.tags) == (tier == "rules")]
+    scenarios = [s for s in corpus() if ("rules" in s.tags) == (tier == "rules")]
     await layer.preload(s.final_world() for s in scenarios)
     runner = ConformanceRunner(layer)
     total = Report()

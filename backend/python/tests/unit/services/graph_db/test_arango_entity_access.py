@@ -116,7 +116,7 @@ class TestGetEntityAccessContext:
         query = _queries(provider)[0]
         assert "FOR linked IN authenticatedAs" in query
         assert "LET principals = APPEND([{ from: user_from, connectorId: null }], links, true)" in query
-        assert "UNION(direct_apps, team_apps, kb_apps_direct, kb_apps_team, linked_apps)" in query
+        assert "UNION(direct_apps, team_apps, kb_apps_direct, kb_apps_team, linked_apps, limited_apps)" in query
         # USER, group/role and team seeds run per principal, pinned to its connector.
         assert query.count("FOR p IN principals") == 3
         assert query.count("FILTER p.connectorId == null OR rg.connectorId == p.connectorId") == 3

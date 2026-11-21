@@ -7,7 +7,7 @@ reason code naming the rule or hop that decided it.
 
 Rules: R1 principals, R2 access rule (absent reads OPEN, unknown fails closed; PARENT_AND_GRANT hops as
 RESTRICTED and passes below a seed as OPEN does, with its own grant required),
-R3 grant edges, R4 gate, R5 granted set, R6 hop, R7 walk up the hierarchy,
+R3 grant edges, R4 gate (an app's accessLimit overrides its edges), R5 granted set, R6 hop, R7 walk up the hierarchy,
 R8 declared record-group-level arm, R9 seed, R10 below a seed, R11 target
 guards, R12 open apps (APP_LEVEL / KB), R13 unattached uploads. Inheritance
 along a walk is an intersection: every hop passes on its own.
@@ -91,9 +91,23 @@ def principals(s: Store, user: str) -> set[str]:
     return ps
 
 
+def _limit_admits(s: Store, user: str, ps: set[str], app: str) -> bool:
+    """R4, a limited app (accessLimit set): CREATOR admits the user whose userId is the app's createdBy, ORG every member
+    of the org (a user with the organization among their principals). Any other value admits nobody."""
+    limit = s.p(app).get("accessLimit")
+    if limit == "CREATOR":
+        creator = s.p(app).get("createdBy")
+        return creator is not None and s.kind(user) == "User" and creator == s.p(user).get("userId")
+    if limit == "ORG":
+        return any(s.kind(p) == "Organization" for p in ps)
+    return False
+
+
 def gate(s: Store, user: str, org: str, ps: set[str]) -> set[str]:
     """R4: apps of the org reached by PERMISSION or USER_APP_RELATION from a principal,
-    plus apps the user authenticated as a source account in. ORG_APP_RELATION never."""
+    plus apps the user authenticated as a source account in. ORG_APP_RELATION never.
+    An app whose accessLimit is set (not null) ignores all of these and admits whom the
+    limit admits (``_limit_admits``)."""
     apps: set[str] = set()
     for p in ps:
         for t in ("PERMISSION", "USER_APP_RELATION"):
@@ -104,7 +118,9 @@ def gate(s: Store, user: str, org: str, ps: set[str]) -> set[str]:
         a = e["props"].get("connectorId")
         if isinstance(a, str) and s.kind(a) == "App" and s.p(a).get("orgId") == org:
             apps.add(a)
-    return apps
+    limited = {n["id"] for n in s.nodes if n["kind"] == "App" and n["props"].get("orgId") == org
+               and n["props"].get("accessLimit") is not None}
+    return (apps - limited) | {a for a in limited if _limit_admits(s, user, ps, a)}
 
 
 def _grant_edge(s: Store, grantee: str, e: EdgeDict) -> bool:

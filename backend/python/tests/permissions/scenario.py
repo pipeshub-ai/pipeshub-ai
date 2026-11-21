@@ -199,7 +199,7 @@ def validate_world(w: World, where: str) -> None:
     known = nodes | principals | {ORG_ID}
     refs: list[str] = []
     for n in w.nodes:
-        refs += [p.id for p in n.parents] + list(n.inherits) + list(n.belongs)
+        refs += [p.id for p in n.parents] + list(n.inherits) + list(n.belongs) + ([n.created_by] if n.created_by else [])
     refs += [x for g in w.grants for x in (g.grantee, g.node)]
     refs += [x for m in w.memberships for x in (m.member, m.group)]
     refs += [x for g in w.gates for x in (g.who, g.app)]

@@ -58,6 +58,9 @@ class Node:
     hide_children: bool = False  # groups only: hideChildren; a display flag, not read for access
     access_only: bool = False  # groups only: accessOnly; never a listing row, its children are listed under their other parents
     model: str | None = None  # permissionModel: APP_LEVEL, RECORD_GROUP_LEVEL
+    access_limit: str | None = None  # apps only: accessLimit (CREATOR, ORG); None means absent
+    access_limit_null: bool = False  # apps only: accessLimit stored as null, as ArangoDB stores a cleared limit
+    created_by: str | None = None  # apps only: the creator, a user of this world; stored as its userId
     app_type: str = "DRIVE"  # apps only; KB opens everything
     origin: str | None = "CONNECTOR"  # records only; None means absent
     vrid: str | None = None  # virtual record id (records)
