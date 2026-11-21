@@ -34,6 +34,7 @@ from app.modules.indexing.record_progress import (
 )
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
+from app.services.messaging import record_budget
 from app.services.messaging.backpressure import BackpressureEpisode
 from app.services.messaging.config import (
     IndexingEvent,
@@ -4546,14 +4547,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 progress = new_progress()
                 begin_progress(progress)
 
-                processing_budget: asyncio.Timeout | None = None
+                processing_budget: record_budget.RecordBudget | None = None
 
                 async def consume_handler_events() -> None:
                     nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool, class_ctx, processing_budget
                     event_gen = self.message_handler(parsed_message)
                     try:
-                        async with asyncio.timeout(processing_timeout) as budget:
-                            processing_budget = budget
+                        async with (
+                            asyncio.timeout(processing_timeout) as budget,
+                            record_budget.armed(budget, processing_timeout) as armed,
+                        ):
+                            processing_budget = armed
                             progress.attach(budget)
                             async for event in event_gen:
                                 if (
@@ -4733,8 +4737,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             raise concurrency.lease_guard_error(lease_handle)
                     await handler_task
                 except TimeoutError:
-                    if processing_budget is not None and processing_budget.expired():
-                        timing.note(timeout_s=processing_timeout)
+                    if processing_budget is not None and processing_budget.timeout.expired():
+                        timing.note(timeout_s=processing_budget.seconds)
                     elif indexing_complete:  # the bookkeeping after INDEXING_COMPLETE ran out of its own time, not the record's budget
                         timing.note(phase="after_indexing_complete")
                     await concurrency.requeue_after_productive_cut(

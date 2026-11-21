@@ -5,6 +5,7 @@ answer to the dispatch on the payload, so the gate's verdict, the off switch and
 """
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +14,7 @@ import pytest
 from app.config import file_types
 from app.config.constants.arangodb import EventTypes
 from app.events.events import DedupDecision, EventProcessor
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -242,15 +244,51 @@ async def test_a_stored_mime_without_a_reader_ends_as_when_the_event_carries_it(
     assert {k: without[k] for k in ("error", "reader", "status")} == {k: carried[k] for k in ("error", "reader", "status")}
 
 
-# MED-2: the parsing service is told the stored mime. Its budget is then the PDF one, while the consumer sized the
-# record's own budget from the event's labels before the handler ran (known limitation, follow-up F23g).
+# F23g (rewrites the MED-2 pin, which sized the consumer's side from the event's labels and so pinned the drift): the
+# parsing service is told the stored mime, and the consumer's armed budget is grown to the same figure.
 async def test_the_parsing_service_is_sent_the_stored_mime() -> None:
-    out = await _read(name="Report", ext="unknown", event_mime=ABSENT, stored=PDF, service=True)
+    general = messaging_env.record_processing_timeout
+    async with asyncio.timeout(general) as timeout, record_budget.armed(timeout, general) as budget:
+        out = await _read(name="Report", ext="unknown", event_mime=ABSENT, stored=PDF, service=True)
     assert out["service"] is not None and out["service"]["mime_type"] == PDF, out
-    service_budget = messaging_env.record_processing_timeout_for("unknown", out["service"]["mime_type"])
-    consumer_budget = messaging_env.record_processing_timeout_for("unknown", None)
-    assert service_budget == messaging_env.record_processing_timeout_for("pdf", PDF)
-    assert consumer_budget == messaging_env.record_processing_timeout_for("unknown", "unknown")
+    sent = messaging_env.record_processing_timeout_for(out["service"]["extension"], out["service"]["mime_type"])
+    assert sent == messaging_env.pdf_record_processing_timeout
+    assert budget.seconds == sent
+
+
+async def _completes() -> AsyncIterator[PipelineEvent]:
+    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+
+async def _budget_after(payload: dict[str, Any], stored: object, event_type: str = "newRecord") -> float:
+    """The seconds the consumer's budget holds once the handler has run, armed at the general figure."""
+    general = messaging_env.record_processing_timeout
+    handler = _handler(_record(payload["recordName"], stored))
+    handler.event_processor.on_event = MagicMock(side_effect=lambda _envelope: _completes())
+    signed, jwt, stream = _downloads(handler)
+    async with asyncio.timeout(general) as timeout, record_budget.armed(timeout, general) as budget:
+        with signed, jwt, stream, patch.object(handler, "_index_from_blob", side_effect=lambda **_k: _completes()):
+            async for _ in handler.process_event(event_type, payload):
+                pass
+    return budget.seconds
+
+
+@pytest.mark.parametrize(("event_mime", "stored", "pdf"), [
+    pytest.param(ABSENT, PDF, True, id="no-mime-stored-pdf"),
+    pytest.param("unknown", PDF, True, id="placeholder-stored-pdf"),
+    pytest.param(DOCX, PDF, False, id="the-event-mime-wins"),
+    pytest.param(ABSENT, DOCX, False, id="stored-docx"),
+    pytest.param(ABSENT, ABSENT, False, id="nothing-stored"),
+])
+async def test_the_handler_grows_the_budget_to_the_resolved_labels(event_mime: object, stored: object, pdf: bool) -> None:
+    seconds = await _budget_after(_payload("Report", "unknown", event_mime), stored)
+    assert seconds == (messaging_env.pdf_record_processing_timeout if pdf else messaging_env.record_processing_timeout)
+
+
+async def test_a_vector_only_reindex_of_a_stored_pdf_gets_the_pdf_budget() -> None:
+    payload = {**_payload("Report", "unknown", ABSENT), "vectorDbOnly": True}
+    assert await _budget_after(payload, PDF, EventTypes.REINDEX_RECORD.value) == messaging_env.pdf_record_processing_timeout
 
 
 # Known limitation (follow-up F23g): the parse tier is decided by the extension first, the reader by the mime, so an

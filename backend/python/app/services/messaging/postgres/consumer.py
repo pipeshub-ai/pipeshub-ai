@@ -37,6 +37,7 @@ from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
 from app.modules.indexing.embed_resume import stamp_delivery_id
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     MessageHandler,
@@ -862,7 +863,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                 return complete
 
             try:
-                async with asyncio.timeout(timeout):
+                # On the claim loop, beside the lease renewal: the handler on the worker loop grows it by posting the move here.
+                async with asyncio.timeout(timeout) as budget, record_budget.armed(budget, timeout):
                     complete = await self._on_worker(drain)
             except asyncio.CancelledError:
                 if record_slot is not None and record_slot in self._lost_leases:
