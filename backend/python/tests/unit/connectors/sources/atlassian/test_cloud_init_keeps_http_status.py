@@ -184,6 +184,7 @@ def _cloud_connector(kind: str, logger: logging.Logger, base_url: str = SITE) ->
     cls, _ = CONNECTORS[kind]
     processor = MagicMock()
     processor.org_id = ORG_ID
+    processor.withdraw_team_app_edge = AsyncMock()  # the graph-only step Jira Cloud's init takes first
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={
         "auth": {"authType": "OAUTH", "baseUrl": base_url},

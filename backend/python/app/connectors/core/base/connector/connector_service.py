@@ -822,16 +822,31 @@ class BaseConnector(ABC):
         authenticated it resolves that account's permissions for this connector instance.
         Connectors call this at the start of ``run_sync`` with the email and id of the
         source "me" account; the id must be the one their user sync stores as sourceUserId.
-        Never aborts the sync."""
+        The id says whether this sync identified the account. Without one (the identity read failed
+        or gave nothing) the link is left as it is. With one but no email (the account hides it), the
+        account is identified but cannot be linked by email, so the link to whatever account came
+        before is removed: it alone passes the connector gate with that account's grants. A write
+        that fails rolls back in its transaction and leaves the previous link. Never aborts the sync."""
         if not self.created_by:
             return
-        if not email or not source_user_id:
+        if not source_user_id:
             self.logger.warning(
-                "Connector %s: the authenticated source account's email or id could not be read "
-                "(email=%s, id=%s); the user who authenticated it will only see what their own "
-                "email is granted",
-                self.connector_id, email, source_user_id,
+                "Connector %s: could not read which source account it is authenticated as; the link from the "
+                "user who authenticated it is left as it is", self.connector_id,
             )
+            return
+        if not email:
+            self.logger.warning(
+                "Connector %s: the source account %s it is authenticated as shows no email; the user who "
+                "authenticated it will only see what their own email is granted",
+                self.connector_id, source_user_id,
+            )
+            try:
+                await self.data_entities_processor.unlink_authenticator(self.connector_id)
+            except Exception as e:
+                self.logger.warning(
+                    "Could not remove the link from the user who authenticated connector %s: %s", self.connector_id, e,
+                )
             return
         try:
             app_name = (

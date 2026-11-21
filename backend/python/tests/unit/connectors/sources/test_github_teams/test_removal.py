@@ -504,6 +504,29 @@ class TestConnectorGuards:
         c.users.resolved_email.assert_called_once_with(77)
         c.register_authenticated_source_user.assert_awaited_once_with(linked, "77")
 
+    @pytest.mark.parametrize(("linked", "unlinked"), [("55", True), ("77", False), (None, False),
+                                                      (RuntimeError("graph down"), False)],
+                             ids=["linked_to_another_account", "linked_to_this_account", "no_link", "link_unread"])
+    async def test_an_account_this_run_did_not_bind_is_not_registered(self, linked, unlinked) -> None:
+        """GET /user answers account 77 with no public email and this run's user sync bound none (a lookup that
+        failed is retried next sync): the email is unknown, not hidden, so 77 is not registered. A link to another
+        account (55) means the credentials moved, so it goes; a link to 77, none, or one that cannot be read stays."""
+        c = self._connector(None)
+        c.data_source = MagicMock()
+        c.runtime = MagicMock()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response(SimpleNamespace(email=None, id=77)))
+        c.users = MagicMock()
+        c.users.resolved_email = MagicMock(return_value=None)
+        c.register_authenticated_source_user = AsyncMock()
+        c.connector_id, c.created_by, c.logger = "gh-1", "user-1", MagicMock()
+        c.data_entities_processor = MagicMock()
+        c.data_entities_processor.get_linked_source_user_id = (
+            AsyncMock(side_effect=linked) if isinstance(linked, Exception) else AsyncMock(return_value=linked))
+        c.data_entities_processor.unlink_authenticator = AsyncMock()
+        await GitHubTeamsConnector._register_authenticated_identity(c)
+        c.register_authenticated_source_user.assert_not_awaited()
+        assert c.data_entities_processor.unlink_authenticator.await_count == (1 if unlinked else 0)
+
 
 async def test_a_code_prune_that_fails_holds_the_checkpoint_back() -> None:
     from app.connectors.sources.github_teams.repos import ReposSync

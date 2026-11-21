@@ -555,9 +555,9 @@ class World:
         return self._readable(viewer, repo)
 
     def _readable(self, viewer: User | None, repo: Repo) -> bool:
-        # Public repositories are mirrored as readable by the whole PipesHub org (the
-        # connector's documented intent: anyone could open them on github.com).
-        return repo.visibility == "public" or self.gh.can_read(viewer, repo)
+        # A public repository is readable by anyone with a GitHub account; a PipesHub user
+        # without one (no viewer) reads nothing, as for any content open to anyone.
+        return (repo.visibility == "public" and viewer is not None) or self.gh.can_read(viewer, repo)
 
     async def diff(self, emails: list[str] | None = None, *, check_missing: bool = True) -> Diff:
         gh, out = self.gh, Diff()

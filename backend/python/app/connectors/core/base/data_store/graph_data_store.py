@@ -632,9 +632,6 @@ class GraphTransactionStore(TransactionStore):
     async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
         return await self.graph_provider.remove_user_access_to_connector(connector_id, user_id, transaction=self.txn)
 
-    async def remove_unlinked_user_access_to_connector(self, connector_id: str) -> int:
-        return await self.graph_provider.remove_unlinked_user_access_to_connector(connector_id, transaction=self.txn)
-
     async def get_user_granted_records(self, connector_id: str, user_id: str) -> list[dict[str, Any]]:
         return await self.graph_provider.get_user_granted_records(connector_id, user_id, transaction=self.txn)
 
@@ -1930,7 +1927,6 @@ _CONNECTOR_WRITERS: dict[str, Callable[[dict], str | None]] = {
     "remove_user_access_to_record": lambda b: b["connector_id"],
     # the same for every grant the user holds on the connector: any of them may be the last on its record or group
     "remove_user_access_to_connector": lambda b: b["connector_id"],
-    "remove_unlinked_user_access_to_connector": lambda b: b["connector_id"],
 }
 for _name, _of in _CONNECTOR_WRITERS.items():
     _wrap_connector_writer(_name, _of)

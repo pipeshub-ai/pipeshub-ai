@@ -31,8 +31,8 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 12 TC-GH-CODE-HIER-001    — folder PARENT_CHILD chain + folder inventory
   order 13 TC-GH-CODE-TS-001      — code/folder source timestamps (polled)
   order 14 TC-GH-PERM-001         — private repo ACL, role mapping, 2-hop inheritance
-  order 15 TC-GH-PERM-002         — public repo ORG grant + one team→app gate edge (its own connector)
-  order 15 TC-GH-PERM-003         — a colleague with no GitHub account: private refused + unlisted, public opens + listed
+  order 15 TC-GH-PERM-002         — public repo ORG grant, no team→app gate edge (its own connector)
+  order 15 TC-GH-PERM-003         — a colleague with no GitHub account: private and public refused, neither listed
   order 16 TC-GH-IDX-001          — indexing reaches COMPLETED / AUTO_INDEX_OFF
   order 17 TC-GH-CKPT-001         — issue / PR / code checkpoints at their exact values
   order 18 TC-INCR-ISSUE-001      — new issues (one pre-closed → DONE), then edit + not_planned close
@@ -200,8 +200,8 @@ async def _group_edge_count(
 async def _team_gate_edges(
     graph_provider: GraphProviderProtocol, org_id: str, connector_id: str,
 ) -> list[Any]:
-    """(Teams all_{org})-[USER_APP_RELATION]->(App): written only for a public repo,
-    whose ORG grant is otherwise unreachable for users with no AppUser."""
+    """(Teams all_{org})-[USER_APP_RELATION]->(App): never written by this connector, which
+    withdraws one an earlier release left; it would let people with no GitHub account in."""
     return await graph_provider.find_edges_between(
         CollectionNames.TEAMS.value, f"all_{org_id}",
         CollectionNames.APPS.value, connector_id,
@@ -499,13 +499,13 @@ class TestGitHubTeamsConnector:
             ) is None, f"bot account {bot_id} was synced as an AppUser"
 
         # The fixture connector holds only the private primary repo. Its users reach
-        # the App through their own USER_APP_RELATION above; the org-wide gate edge
-        # exists only for a public repo (asserted in TC-GH-PERM-002) and would list
-        # this connector for every org member.
+        # the App through their own USER_APP_RELATION above; an org-wide gate edge
+        # (never written, also not for a public repo: TC-GH-PERM-002) would list this
+        # connector for every org member.
         gate_edges = await _team_gate_edges(graph_provider, pipeshub_client.org_id, connector_id)
         assert not gate_edges, (
             "private-repo connector carries the (Teams all_{org})→(App) USER_APP_RELATION "
-            "gate edge; ensure_team_app_edge must run only for a public repo"
+            "gate edge; the connector must never let the org's All team through"
         )
         logger.info("TC-GH-USER-001 passed: %d identities, no gate edge", len(emails))
 
@@ -1343,8 +1343,8 @@ class TestGitHubTeamsPermissions:
     ) -> None:
         """TC-GH-PERM-002: public repo — the visibility-derived ORG grant.
 
-        A public repo is readable by anyone with a GitHub account, so mirroring it as
-        readable by the whole PipesHub org matches reality.
+        A public repo is readable by anyone with a GitHub account, so the ORG grant
+        reaches the PipesHub users linked to a GitHub account, and no one else.
 
         The org group *does* legitimately carry an ORG edge — it accumulates the union
         of every repo's grants. What keeps that union from leaking is that nothing
@@ -1411,13 +1411,12 @@ class TestGitHubTeamsPermissions:
                 connector_id, str(public["id"]),
             )
 
-            # Without the gate edge the ORG grant above is unreachable for any org
-            # member whose GitHub account never resolved to an AppUser. Exactly one:
-            # the edge is ensured per public repo and must stay idempotent.
+            # The ORG grant reaches only users linked to a GitHub account: people without
+            # an account in GitHub read nothing, so the org's All team never passes the gate.
             gate_edges = await _team_gate_edges(graph_provider, pipeshub_client.org_id, connector_id)
-            assert len(gate_edges) == 1, (
+            assert not gate_edges, (
                 f"public-repo connector has {len(gate_edges)} (Teams all_{{org}})→(App) "
-                "USER_APP_RELATION gate edge(s); expected exactly 1"
+                "USER_APP_RELATION gate edge(s); expected none"
             )
 
             # The org group legitimately carries the union of every repo's grants, which
@@ -1450,9 +1449,10 @@ class TestGitHubTeamsPermissions:
         """TC-GH-PERM-003: what a colleague with no GitHub account can open.
 
         PERM-001 and PERM-002 check the edges; this asks the product, as a fresh org
-        member who is no collaborator on either repo. The private repo's issue must be
-        refused and the public repo's content must open. Each half keeps the other
-        honest: a user who is refused everything, or allowed everything, fails one.
+        member with no GitHub account. Neither the private repo's issue nor the public
+        repo's content opens, whatever signed-out visitors see on github.com, and neither
+        connector is listed. The public half waits for the record to be synced first, so
+        it cannot pass on a record that is simply missing.
         """
         primary = github_connector["primary_repo"]
         issue = github_connector["reference_issue"]
@@ -1484,21 +1484,22 @@ class TestGitHubTeamsPermissions:
                 description=f"{public_path} from public repo {public['full_name']}",
             )
             wait_for_record_access(
-                second_user, public_record.id, expect_access=True,
+                second_user, public_record.id, expect_access=False,
                 description=f"{public_path} in public repo {public['full_name']}",
             )
 
-            # The gate edge is also what lists a team connector for a non-admin, so
-            # the colleague sees the public-repo connector and not the private one.
+            # The gate also decides which team connectors a non-admin is listed: the
+            # colleague has no GitHub account, so neither connector is listed.
             listed = _team_connector_ids(second_user)
-            assert connector_id in listed, (
-                f"public-repo connector {connector_id} is not listed for {second_user.email}"
+            assert connector_id not in listed, (
+                f"public-repo connector {connector_id} is listed for {second_user.email}, "
+                "who has no GitHub account"
             )
             assert github_connector["connector_id"] not in listed, (
                 f"private-repo connector {github_connector['connector_id']} is listed for "
                 f"{second_user.email}, who is no collaborator on {primary['full_name']}"
             )
-        logger.info("TC-GH-PERM-003 passed: private refused and unlisted, public opened and listed")
+        logger.info("TC-GH-PERM-003 passed: private and public refused, neither connector listed")
 
 
 # =============================================================================

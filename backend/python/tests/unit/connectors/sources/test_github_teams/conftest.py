@@ -59,6 +59,7 @@ def make_mock_connector() -> MagicMock:
     dep.migrate_group_to_user_by_external_id = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.ensure_team_app_edge = AsyncMock()
+    dep.withdraw_team_app_edge = AsyncMock()
     dep.get_user_by_source_id = AsyncMock(return_value=None)
     dep.get_records_in_record_group = AsyncMock(return_value=[])
     dep.get_nodes_by_filters = AsyncMock(return_value=[])
