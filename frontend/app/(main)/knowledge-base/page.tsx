@@ -302,6 +302,8 @@ function KnowledgeBasePageContent() {
       ? Infinity
       : Math.max(maxFolderDepth - folderDepthOf(tableData?.breadcrumbs, selectedKbId), 0);
   const canAddFolderHere = remainingFolderLevels > 0;
+  // At the root this creates a collection; inside one it creates a folder, which is an edit of that collection.
+  const canCreateHere = tableData?.currentNode ? canEditCollection : canCreateCollection;
 
   // Get table items directly from API response (no client-side filtering)
   const tableItems = useMemo(() => {
@@ -1561,7 +1563,7 @@ function KnowledgeBasePageContent() {
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
-    if (!canCreateCollection) return;
+    if (!canCreateHere) return;
     const currentNode = tableData?.currentNode;
 
     if (currentNode?.nodeType === 'app') {
@@ -1596,7 +1598,7 @@ function KnowledgeBasePageContent() {
         description: `A folder cannot be created inside "${currentNode.name}" (${currentNode.nodeType}).`,
       });
     }
-  }, [tableData, canCreateCollection]);
+  }, [tableData, canCreateHere]);
 
   const validateCreateName = useCallback(
     (name: string) =>
@@ -3226,8 +3228,9 @@ function KnowledgeBasePageContent() {
               onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
               onUpload={isAllRecordsMode || !selectedKbId ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
-              createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
-              folderPermissionDenied={!isAllRecordsMode && !canCreateCollection}
+              // Locked only when nothing it offers is allowed: no create here, and no upload (which needs an open collection).
+              createPermissionDenied={!isAllRecordsMode && !canCreateHere && (!selectedKbId || !canEditCollection)}
+              folderPermissionDenied={!isAllRecordsMode && !canCreateHere}
               uploadPermissionDenied={!isAllRecordsMode && !canEditCollection}
               sharePermissionDenied={Boolean(shareAdapter && isSelectedKbOwner && !canShareCollection)}
               sharedMembers={sharedMembers}
@@ -3333,7 +3336,7 @@ function KnowledgeBasePageContent() {
           onMove={!isAllRecordsMode ? handleMoveClick : undefined}
           onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
-          onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
+          onCreateFolder={!isAllRecordsMode && canCreateHere && canAddFolderHere ? handleCreateFolder : undefined}
           onUpload={!isAllRecordsMode && canEditCollection && selectedKbId ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}

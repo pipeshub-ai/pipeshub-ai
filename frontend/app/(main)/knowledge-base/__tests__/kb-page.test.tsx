@@ -111,6 +111,16 @@ vi.mock('../api', async () => {
 });
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
+// @/config imports the collection views itself, so views loaded while the partial mock below
+// resolves bind to the real permission hook; mock the collection hook they read it through.
+vi.mock('../hooks/use-collection-group-permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/use-collection-group-permissions')>()),
+  useCollectionGroupPermissions: () => ({
+    canEdit: !permissions.denied.has('editCollection'),
+    canDelete: !permissions.denied.has('deleteCollection'),
+    canManageSync: !permissions.denied.has('manageConnectorSync'),
+  }),
+}));
 vi.mock('@/config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/config')>();
   return {

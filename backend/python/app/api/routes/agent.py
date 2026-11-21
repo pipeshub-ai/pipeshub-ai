@@ -3318,7 +3318,12 @@ async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
         raise _route_failure(request, e, "check where this model is used") from e
 
 
-@router.get("/{agent_id}", dependencies=[_AGENT_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_READ))])
+# agent:write is admitted too: the gateway may read the agent, as the caller, to decide which
+# permission an update or delete needs, and a token allowed to change an agent may read it.
+@router.get(
+    "/{agent_id}",
+    dependencies=[_AGENT_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_READ, OAuthScopes.AGENT_WRITE))],
+)
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""
     try:
