@@ -27,6 +27,7 @@ from app.core.org_jobs import for_each_org, of_org
 from app.api.middlewares.request_log import install_request_logging, mark_request_failure
 from app.api.validation_errors import input_free_422
 from app.modules.demo_data.router import demo_data_router
+from app.utils import error_class
 from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
@@ -919,12 +920,14 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
         try:
             # Counted in the database: a tenant can have thousands of collection
             # Apps, and reading every App here stalled the event loop for seconds.
-            counts = await graph_provider.count_active_apps_by_type()
+            # A count of every org's Apps; PostgreSQL counts them org by org only under a system context.
+            with system("connector_metrics"):
+                counts = await graph_provider.count_active_apps_by_type()
             set_connector_active(counts)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning(f"Failed to refresh connector_active gauge: {e}")
+            error_class.log_failure(logger, "connector_metrics.refresh_failed", e, level=logging.WARNING, include_error_text=False)
         await asyncio.sleep(interval_s)
 
 
