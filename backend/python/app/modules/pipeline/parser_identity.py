@@ -5,7 +5,7 @@ built by the parser the record would use today. A file renamed from ``.txt`` to 
 parser, and an update that carries the new name would be skipped against a copy built as plain text.
 
 The identity is ``"<pipeline>:<route>@<rev>"`` (``inproc:txt@1``). Its **key** is the part after the pipeline, ``<route>@<rev>``:
-two copies are the same when their keys are equal. ``<route>`` is the dispatch route of ``file_types.legacy_route``;
+two copies are the same when their keys are equal. ``<route>`` is the route of the dispatch that runs (``file_types.legacy_route`` in process, ``file_types.parse_format`` in the service);
 ``<rev>`` is ``PARSER_ROUTE_REV[route]`` (default 1), bumped by hand when a change to that parser makes a re-run of
 unchanged bytes worth its cost. The pipeline (``inproc`` or ``svc``) is stored but never compared, so a fleet that is
 mixed on ``USE_PARSING_SERVICE`` does not re-run the same bytes back and forth. A change inside the parsing service is
@@ -62,7 +62,7 @@ PIPELINE_IN_PROCESS: Final = "inproc"
 PIPELINE_SERVICE: Final = "svc"
 
 #: Bumped by hand: a bump makes every same-bytes update of that route run in full once, which is a spend decision.
-PARSER_ROUTE_REV: Final[dict[Route, int]] = {}
+PARSER_ROUTE_REV: Final[dict[str, int]] = {}
 
 _UNTRACKED_ROUTES: Final = frozenset({Route.CODE, Route.SQL_TABLE, Route.SQL_VIEW})
 
@@ -101,14 +101,26 @@ def _known(value: object) -> str | None:
     return value if isinstance(value, str) and value not in ("", "unknown") else None
 
 
+def service_pipeline_configured() -> bool:
+    """Whether this process parses through the parsing service (``USE_PARSING_SERVICE``), as the store-side comparisons assume."""
+    return os.environ.get("USE_PARSING_SERVICE", "false").lower() == "true"
+
+
 def parser_key(
     mime_type: str | None, extension: str | None, record_name: str | None, record_type: str | None,
+    *, service: bool | None = None,
 ) -> str | None:
     """``"<route>@<rev>"`` for the parser a record with these labels is read by, or None when it is not tracked.
 
     The four inputs are all a graph record and a file's ``files`` document hold, and all an event payload carries, so a
     payload and the graph give the same answer for the same record. The file path is not an input for that reason.
+    ``service`` says which dispatch reads the file: the in-process one (``file_types.legacy_route``) or the parsing
+    service's (``file_types.parse_format``). The two name different parsers for some labels (``application/json`` with a
+    ``csv`` extension is a CSV in process and JSON in the service), so the key is the route of the dispatch that runs.
+    None takes the process's own setting.
     """
+    if service is None:
+        service = service_pipeline_configured()
     mime, ext, name = _known(mime_type), _known(extension), record_name or ""
     code_ext = file_types.code_extension(ext, None, name)
     as_code = reads_as_code_file(record_type, mime or "", code_ext, name)
@@ -124,6 +136,9 @@ def parser_key(
         return None
     if mime in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value):
         return None
+    if service:
+        fmt = file_types.parse_format(mime, ext)
+        return None if not fmt or fmt == "code" else f"{fmt}@{PARSER_ROUTE_REV.get(fmt, 1)}"
     return f"{dispatch.route.value}@{PARSER_ROUTE_REV.get(dispatch.route, 1)}"
 
 
@@ -131,7 +146,7 @@ def parser_identity(
     mime_type: str | None, extension: str | None, record_name: str | None, record_type: str | None, *, pipeline: str,
 ) -> str | None:
     """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or None when not tracked."""
-    key = parser_key(mime_type, extension, record_name, record_type)
+    key = parser_key(mime_type, extension, record_name, record_type, service=pipeline == PIPELINE_SERVICE)
     return None if key is None else f"{pipeline}:{key}"
 
 
@@ -143,10 +158,13 @@ def key_of(identity: object) -> str | None:
     return key if "@" in key else None
 
 
-def graph_parser_key(record: Mapping[str, Any], file_doc: Mapping[str, Any] | None) -> str | None:
+def graph_parser_key(
+    record: Mapping[str, Any], file_doc: Mapping[str, Any] | None, *, service: bool | None = None,
+) -> str | None:
     """The key of a record as the graph holds it: its ``records`` node and the ``files`` document with the same key."""
     return parser_key(
         record.get("mimeType"), (file_doc or {}).get("extension"), record.get("recordName"), record.get("recordType"),
+        service=service,
     )
 
 
@@ -230,6 +248,9 @@ def promotion_fields(
     """
     if not identity_write_enabled():
         return {}
+    if source.get("virtualRecordId") != vrid:
+        # The source moved to another copy since the caller read its own: its identity describes a copy the duplicate is not given.
+        return None
     queued_key = graph_parser_key(queued, queued_file)
     source_known = known_identity(source)
     if queued_key is None:

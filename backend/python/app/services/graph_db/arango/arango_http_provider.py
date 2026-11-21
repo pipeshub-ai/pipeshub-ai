@@ -10768,7 +10768,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # stranded-record sweep, releases it).
             parser_plan = await parser_identity.promotion_plan(
                 ref_record, queued_records, new_indexing_status, virtual_record_id, current_timestamp,
-                lambda key: self.get_document(key, CollectionNames.FILES.value, transaction),
+                lambda key: self.get_document(
+                    key, CollectionNames.FILES.value, transaction, raise_on_error=True,
+                ),
             )
 
             for queued_record in queued_records:

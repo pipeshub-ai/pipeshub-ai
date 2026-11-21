@@ -67,3 +67,15 @@ async def test_only_a_completed_promotion_is_planned() -> None:
 
     assert await pi.promotion_plan(source(), [MD], "FAILED", "v", 1, fetch) is None
     assert await pi.promotion_plan(source(), [MD], "COMPLETED", "v", 1, fetch) == {}
+
+
+def test_a_source_that_moved_to_another_copy_leaves_the_duplicate_queued(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The caller writes its own vrid; the source read has since moved to another copy, whose identity the duplicate is not given."""
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "true")
+    source = {
+        "virtualRecordId": "v-moved", "lastIndexTimestamp": 5, pi.IDENTITY_FIELD: "inproc:txt@1", pi.IDENTITY_AT_FIELD: 5,
+        pi.IDENTITY_VRID_FIELD: "v-moved", pi.IDENTITY_SOURCE_FIELD: pi.SOURCE_PARSED,
+    }
+    queued = {"_key": "q", "mimeType": "text/plain", "recordName": "q.txt"}
+    assert pi.promotion_fields(source, queued, {"extension": "txt"}, at=9, vrid="v-written") is None
+    assert pi.promotion_fields(source, queued, {"extension": "txt"}, at=9, vrid="v-moved") is not None

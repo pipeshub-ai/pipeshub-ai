@@ -289,7 +289,9 @@ class EventProcessor:
         stored = record.get(parser_identity.IDENTITY_FIELD)
         has_stored = isinstance(stored, str) and bool(stored)
         try:
-            key = parser_identity.graph_parser_key(record, await self._files_document(record_id))
+            key = parser_identity.graph_parser_key(
+                record, await self._files_document(record_id), service=self._use_service_pipeline(),
+            )
         except Exception as exc:
             self.logger.warning(
                 "Record %s: the parser of its indexed copy could not be checked (%s); running it in full",
@@ -333,12 +335,16 @@ class EventProcessor:
         """
         if not parser_identity.identity_write_enabled():
             return True
-        record_key = parser_identity.graph_parser_key(doc, await self._files_document(_record_key(doc)))
+        record_key = parser_identity.graph_parser_key(
+            doc, await self._files_document(_record_key(doc)), service=self._use_service_pipeline(),
+        )
         if record_key is None:
             return True
         twin_key = None
         if parser_identity.known_identity(twin) is None:
-            twin_key = parser_identity.graph_parser_key(twin, await self._files_document(_record_key(twin)))
+            twin_key = parser_identity.graph_parser_key(
+                twin, await self._files_document(_record_key(twin)), service=self._use_service_pipeline(),
+            )
         shares = parser_identity.twin_may_share(record_key, twin, twin_key)
         if not shares:
             self.logger.info(
