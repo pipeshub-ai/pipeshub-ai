@@ -227,6 +227,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     KH_LISTING_STATE_FLAG,
+    KH_SKIP_READS,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
     UNSUPPORTED_PAGE_FIELDS,
@@ -21742,6 +21743,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     # Chain-top walks one arrow question runs at once (each is a few statements).
     _KH_SPLIT_WALKS_AT_ONCE = 8
 
+    @property
+    def kh_browse_skip_rows(self) -> int:
+        # A split browse reads its page by id from the listing it decided (`LISTED`), which does not grow with the rows read. Legacy holds every
+        # row it keeps against the transaction memory pool: a page at a time.
+        return 1000 if self.kh_browse_mode() == "split" else 0
+
     @staticmethod
     def kh_browse_mode() -> str:
         mode = os.getenv("KH_BROWSE_MODE", "").strip().lower() or "split"
@@ -23099,7 +23106,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         split_memo: dict[str, bool] = {}
         split_access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids},
                         "probe": probe, "cross": cross}
-        if split:
+        # A read before a numbered page reuses the listing the first such read of this request decided for the same viewer's access; the page
+        # itself, read after them, decides afresh, so what it lists is as current as a page read alone.
+        skip_reads = KH_SKIP_READS.get() if split and browse_mode == "split" else None
+        decided_for = repr((start_id if scoped_start else app_id, app_id, org_id, split_access, placed_ids, sidebar, state)) if skip_reads is not None else ""
+        if skip_reads is not None and decided_for in skip_reads:
+            params["kh_listed"], params["kh_arrows"] = skip_reads[decided_for]
+        elif split:
             try:
                 listed = await self._kh_split_listed(
                     start_id if scoped_start else app_id, app_id=app_id, org_id=org_id, access=split_access, placed=placed_ids,
@@ -23114,6 +23127,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     params["kh_arrows"] = []
             except _KhSplitUndecided as undecided:
                 return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
+            if skip_reads is not None:
+                skip_reads[decided_for] = (params["kh_listed"], params["kh_arrows"])
         if not use_scope:
             try:
                 walk_started = time.monotonic()
@@ -23140,8 +23155,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for r in rows_:
                 r.pop("khAsk", None)
             try:
-                lit = await self._kh_split_lists([r["id"] for r in rows_], app_id=app_id, org_id=org_id, access=split_access,
-                                                 transaction=transaction, memo=split_memo)
+                # A read before the page only places it: none of its rows is shown, so none needs an arrow.
+                lit = set() if skip_reads is not None else await self._kh_split_lists(
+                    [r["id"] for r in rows_], app_id=app_id, org_id=org_id, access=split_access, transaction=transaction, memo=split_memo)
             except _KhSplitUndecided as undecided:
                 return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
             for r in rows_:

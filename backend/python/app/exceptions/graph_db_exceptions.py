@@ -135,6 +135,20 @@ def is_out_of_memory(error: BaseException) -> bool:
     return False
 
 
+def listing_busy(error: BaseException) -> KnowledgeHubListingBusy | None:
+    """The listing's own busy refusal behind ``error``, however it was wrapped on the way up (``check_access`` wraps whatever stopped it,
+    a passed deadline too, in ``PermissionVerificationUnavailableError``), or None."""
+    if isinstance(error, BaseExceptionGroup):
+        return next((b for e in error.exceptions if (b := listing_busy(e)) is not None), None)
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, KnowledgeHubListingBusy):
+            return error
+        error = getattr(error, "__cause__", None)
+    return None
+
+
 def is_graph_memory_refusal(exc: BaseException) -> bool:
     """The graph server's memory pool refused a write: a ``GraphMemoryLimitError``, or a driver
     error that carries one of the pool's status codes (a statement not marked as bulk keeps the
