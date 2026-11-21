@@ -256,8 +256,11 @@ async function wheel(page: Page, deltaY: number) {
 }
 
 /**
- * The list's scroll state, and how far below the list's top edge the heading
- * of the question containing `text` sits (NaN while it is not rendered).
+ * The list's scroll state, and how far below the top of the list the heading
+ * of the question containing `text` sits (NaN while it is not rendered). The
+ * top of the list is where a question brought to the top rests: its top edge,
+ * or, when the list runs under the top bar, below the bar's fade (the list's
+ * top padding plus its column's, as the list itself measures it).
  */
 async function measure(page: Page, text = '') {
   return page.evaluate(({ selector, text }) => {
@@ -266,11 +269,14 @@ async function measure(page: Page, text = '') {
     const heading = text
       ? [...document.querySelectorAll('[data-testid="user-query-heading"]')].find((h) => h.textContent?.includes(text))
       : undefined;
+    const padTop = (el: Element | null) => (el ? parseFloat(getComputedStyle(el).paddingTop) || 0 : 0);
+    const inset = padTop(list);
+    const rest = inset > 0 ? inset + padTop(list.querySelector('.chat-column-gutter')) : 0;
     return {
       top: list.scrollTop,
       fromBottom: list.scrollHeight - list.scrollTop - list.clientHeight,
       height: list.clientHeight,
-      offset: heading ? heading.getBoundingClientRect().top - list.getBoundingClientRect().top : NaN,
+      offset: heading ? heading.getBoundingClientRect().top - list.getBoundingClientRect().top - rest : NaN,
     };
   }, { selector: SCROLLER, text });
 }

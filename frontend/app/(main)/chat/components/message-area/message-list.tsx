@@ -304,8 +304,9 @@ export function MessageList({
   /** The tail-follow as it is now, for that next frame to call. */
   const syncTailRef = useRef<(catchingUp?: boolean) => void>(() => {});
   /**
-   * True from opening a finished chat until the next question: the chat lands on
-   * its end, so no blank space is added under the last answer.
+   * True from coming back to a chat whose answer finished while away until the
+   * next question: the chat lands on its end, so no blank space is added under
+   * the last answer.
    */
   const spacerHeldAtZeroRef = useRef(false);
   /** The scroll position the reader last had, from the scroll event. */
@@ -1372,16 +1373,16 @@ export function MessageList({
       }
     }
 
-    // No saved position (or stale mid-stream position discarded above) —
-    // land on the end of the conversation in one step: the last answer and its
-    // toolbar just above the composer, with no blank space added under them.
-    // A run still streaming keeps following its tail.
-    spacerHeldAtZeroRef.current = !isCurrentlyStreaming;
+    // No saved position (or stale mid-stream position discarded above): the
+    // last question at the top of the list, with the space under a short last
+    // answer that lets it rest there. A run still streaming keeps following its
+    // tail.
+    spacerHeldAtZeroRef.current = false;
     recalcSpacerHeight();
     requestAnimationFrame(() => requestAnimationFrame(() => {
       executeScroll({
-        target: 'bottom-of-container',
-        behavior: 'auto',
+        target: isCurrentlyStreaming ? 'bottom-of-container' : 'top-of-last-message',
+        behavior: isCurrentlyStreaming ? 'auto' : '80/20-jump',
         chatBecameActive: true,
       });
     }));

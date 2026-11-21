@@ -521,24 +521,15 @@ describe('MessageList — row identity', () => {
 });
 
 describe('MessageList — scrolling', () => {
-  it('opens a finished conversation at its end, in one step, with no blank space under the last answer', () => {
+  it('opens a finished conversation with its latest question at the top of the view', () => {
     thread.messages = TWO_TURNS;
     geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
     openConversation('conv-1');
 
     render(<MessageList />);
-    const tops: number[] = [];
-    const el = scroller();
-    const record = () => tops.push(el.scrollTop);
-    el.addEventListener('scroll', record);
     settle();
 
-    expect(el.scrollTop).toBe(2000 - 500);
-    const spacer = el.querySelector('[aria-hidden="true"]') as HTMLElement;
-    expect(parseFloat(spacer.style.minHeight || '0')).toBe(0);
-    // Never a smooth slide: the scroller itself never scrolls smoothly.
-    expect(el.style.scrollBehavior).toBe('auto');
-    el.removeEventListener('scroll', record);
+    expect(scroller().scrollTop).toBe(600);
   });
 
   it('glides a newly sent question to the top over the page motion role, without a jump in any one frame', () => {
@@ -927,28 +918,20 @@ describe('MessageList — scrolling', () => {
     expect(el.scrollTop).toBe(1200);
   });
 
-  it('sizes the bottom spacer, once a question is sent, so it can reach the top of the view', () => {
+  it('sizes the bottom spacer so the last question can reach the top of the view', () => {
     thread.messages = TWO_TURNS;
     geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
     geometry.rowHeight = { 'Who approves exceptions?': 120 };
     openConversation('conv-1');
 
-    const { rerender } = render(<MessageList />);
+    render(<MessageList />);
     settle();
 
     const spacer = scroller().querySelector('[aria-hidden="true"]') as HTMLElement;
-    // Opened: no blank space under the last answer.
-    expect(parseFloat(spacer.style.minHeight || '0')).toBe(0);
-
-    geometry.rowTop['A brand new question'] = 1200;
-    geometry.rowHeight['A brand new question'] = 120;
-    thread.messages = [...TWO_TURNS, user('u3', 'A brand new question'), assistant('a3', 'Sure.')];
-    rerender(<MessageList />);
-    settle();
     expect(spacer.style.minHeight).toBe(`${500 - 120}px`);
 
     act(() => {
-      geometry.rowHeight['A brand new question'] = 300;
+      geometry.rowHeight['Who approves exceptions?'] = 300;
       for (const cb of [...resizeCallbacks]) cb([], {} as ResizeObserver);
       flushFrames();
     });
@@ -1680,7 +1663,7 @@ describe('MessageList — jump to newest', () => {
 });
 
 describe('MessageList — opening a chat', () => {
-  it('lands on the end of the conversation, with the jump button wrapper around the list', () => {
+  it('lands on the latest question, with the jump button wrapper around the list', () => {
     thread.messages = [
       user('u1', 'What is our refund policy?'), assistant('a1', 'Refunds.'),
       user('u2', 'Who approves exceptions?'), assistant('a2', 'Finance.'),
@@ -1690,7 +1673,7 @@ describe('MessageList — opening a chat', () => {
     render(<MessageList />);
     settle();
 
-    expect(scroller().scrollTop).toBe(2000 - 500);
+    expect(scroller().scrollTop).toBe(600);
   });
 });
 
@@ -2012,8 +1995,7 @@ describe('MessageList — opening at a linked message', () => {
     await flush();
 
     expect(loadOlder).toHaveBeenCalledTimes(10);
-    // The latest is the end of the conversation: a chat opens on its last answer, with no blank space under it.
-    expect(scroller().scrollTop).toBe(geometry.contentHeight - geometry.viewportHeight);
+    expect(scroller().scrollTop).toBe(600);
   });
 
   it('opens at the latest, without loading anything, when there is no link', async () => {
@@ -2025,7 +2007,7 @@ describe('MessageList — opening at a linked message', () => {
     await flush();
 
     expect(loadOlder).not.toHaveBeenCalled();
-    expect(scroller().scrollTop).toBe(geometry.contentHeight - geometry.viewportHeight);
+    expect(scroller().scrollTop).toBe(600);
   });
 });
 
