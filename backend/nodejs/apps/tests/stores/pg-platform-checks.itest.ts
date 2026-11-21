@@ -570,7 +570,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           [u1, 'LOGIN', 120],
           [u1, 'LOGIN', 95],
         ]);
-        const [deletedOrgs] = await plant(gone, [[u1, 'LOGIN', 300]]);
+        const [deletedOrgs] = await plant(gone, [[null, 'WRONG PASSWORD', 300]]); // removable if the organisation were swept
         const before = await inOrg(a, () =>
           activities.latestSessionEnding(u1, a),
         );
@@ -591,6 +591,24 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         // the trim runs once a day: a second pass the same day leaves new old rows alone
         await plant(a, [[u1, 'LOGIN', 100]]);
         expect(await sweeper.sweepOnce()).to.not.have.property('user_activities');
+      });
+
+      it('a trim that fails stays due: the next pass runs it again', async () => {
+        const a = await org();
+        await plant(a, [[null, 'WRONG PASSWORD', 200]]);
+        logger.error.resetHistory();
+        const sweeper = new TtlSweeper(logger as never, 60_000, () => new Date(), 90);
+        await sql('ALTER TABLE identity.user_activities RENAME TO user_activities_away');
+        try {
+          expect(await sweeper.sweepOnce()).to.not.have.property('user_activities');
+          expect(
+            logger.error.calledWithMatch('TTL sweep failed', sinon.match({ target: 'user_activities' })),
+          ).to.equal(true);
+        } finally {
+          await sql('ALTER TABLE identity.user_activities_away RENAME TO user_activities');
+        }
+        expect((await sweeper.sweepOnce()).user_activities).to.be.at.least(1);
+        expect(await left(a)).to.deep.equal([]);
       });
 
       it('pages through an organisation by id, each row read once', async () => {

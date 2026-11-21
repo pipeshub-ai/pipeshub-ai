@@ -160,10 +160,14 @@ export class TtlSweeper {
         });
       }
       if (now.getTime() >= this.nextActivitySweepMs) {
-        this.nextActivitySweepMs = now.getTime() + ACTIVITY_SWEEP_EVERY_MS;
-        await this.guarded('user_activities', removed, () =>
-          this.trimActivities(new Date(now.getTime() - this.activityKeepMs)),
-        );
+        // the day's slot is taken only by a trim that finished: a failed one (a lock timeout, a blip) stays due for the next tick
+        await this.guarded('user_activities', removed, async () => {
+          const n = await this.trimActivities(
+            new Date(now.getTime() - this.activityKeepMs),
+          );
+          this.nextActivitySweepMs = now.getTime() + ACTIVITY_SWEEP_EVERY_MS;
+          return n;
+        });
       }
       const total = Object.values(removed).reduce((a, b) => a + b, 0);
       if (total > 0) this.logger.info('TTL sweep removed rows', removed);
