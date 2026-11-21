@@ -742,10 +742,24 @@ export const agentAddMessageSchema = z.object({
 /** Defensive max length for long agent text fields (not enforced by Python). */
 const agentLongTextSchema = z.string().max(100_000);
 
+/**
+ * Bound on a tool description in an agent create/update payload. Python further
+ * caps MCP tool descriptions at 2000 when it stores the agent. Some MCP vendors
+ * (e.g. Amplitude) publish tool docs longer than 10k; truncating here keeps the
+ * save working instead of rejecting the whole agent with "Description must be
+ * at most 10000 characters".
+ */
+const AGENT_TOOL_DESCRIPTION_MAX = 10_000;
+
 const agentToolRefSchema = z.object({
   name: z.string().trim().min(1),
   fullName: z.string().trim().min(1).optional(),
-  description: z.string().max(10_000).optional(),
+  description: z
+    .string()
+    .optional()
+    .transform((value) =>
+      value === undefined ? undefined : value.slice(0, AGENT_TOOL_DESCRIPTION_MAX),
+    ),
 });
 
 /**
