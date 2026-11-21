@@ -530,6 +530,7 @@ async def test_the_configuring_user_reads_through_the_source_account_only_while_
 
     await processor.link_authenticator_to_source_user(APP, "u-admin", "sa@x.com", "src-sa", Connectors.JIRA)
     assert await w.allowed("admin", "own", "public") == {"own", "public"}
+    assert await processor.get_linked_source_user_id(APP, "u-admin") == "src-sa"      # the account the link points at
     await processor.withdraw_app_user_access(APP, [app_user("sa@x.com", "sa")], drop_grants=True)
     assert await w.allowed("admin", "own", "public") == {"public"}         # the link alone passes the gate
     await processor.unlink_authenticator(APP)

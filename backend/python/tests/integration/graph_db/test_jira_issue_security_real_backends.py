@@ -845,6 +845,10 @@ async def test_credentials_moved_to_another_account_replace_the_link_to_the_earl
     assert await reads(erin_id) == alice
     await processor.link_authenticator_to_source_user(world["connector_id"], erin_id, _email("dave", run), PEOPLE["dave"], Connectors.JIRA)
     assert await reads(erin_id) == dave
+    # The account the link points at, as a connector compares it with the one its credentials name now.
+    assert await processor.get_linked_source_user_id(world["connector_id"], erin_id) == PEOPLE["dave"]
+    await processor.unlink_authenticator(world["connector_id"])
+    assert await processor.get_linked_source_user_id(world["connector_id"], erin_id) is None
 
 
 async def test_the_configuring_user_reads_through_the_connectors_jira_account_only_while_it_is_linked(
