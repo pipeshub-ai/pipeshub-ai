@@ -1,5 +1,7 @@
 """Unit tests for Confluence Data Center v1 migration helpers (no live API)."""
 
+from collections.abc import Awaitable, Callable
+
 import pytest
 
 pytestmark = pytest.mark.confluence_datacenter
@@ -65,3 +67,50 @@ def test_read_page_reads_a_page_and_its_links() -> None:
     assert (page.results, page.base, page.next_url) == ([{"name": "eng"}], "b", "n")
     assert read_page({"results": []}).results == []
     assert read_page({"results": [{"userKey": ""}]}, user_key) is None, "an empty key is no key"
+
+
+class _Answer:
+    def __init__(self, status: int, body: object = None) -> None:
+        self.status, self._body = status, body
+
+    def json(self) -> object:
+        return self._body
+
+
+def _pages(answers: dict[int, object], asked: list[int]) -> Callable[[int, int], Awaitable[_Answer]]:
+    async def fetch(start: int, limit: int) -> _Answer:
+        asked.append(start)
+        answer = answers[start]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    return fetch
+
+
+@pytest.mark.asyncio
+async def test_read_all_pages_reads_after_the_rows_whatever_the_link_names() -> None:
+    from app.connectors.sources.atlassian.core.confluence_access import (
+        content_id,
+        read_all_pages,
+    )
+    asked: list[int] = []
+    answers = {0: _Answer(200, {"results": [{"id": "1"}], "_links": {"base": "b", "next": "/x?start=100"}}),
+               1: _Answer(200, {"results": [{"id": "2"}], "_links": {"next": "/x?cursor=opaque"}}),
+               2: _Answer(200, {"results": [], "_links": {"base": "b"}})}
+    assert await read_all_pages(_pages(answers, asked), content_id) == ([{"id": "1"}, {"id": "2"}], "b")
+    assert asked == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second", [_Answer(500, {"message": "boom"}), _Answer(200, {"results": None}),
+                                    RuntimeError("connection reset"), None])
+async def test_read_all_pages_is_unread_when_any_page_is(second) -> None:
+    from app.connectors.sources.atlassian.core.confluence_access import read_all_pages
+    answers = {0: _Answer(200, {"results": [{"id": "1"}], "_links": {"next": "/x?start=1"}}), 1: second}
+    assert await read_all_pages(_pages(answers, [])) is None
+
+
+@pytest.mark.asyncio
+async def test_read_all_pages_of_content_that_is_gone_is_empty() -> None:
+    from app.connectors.sources.atlassian.core.confluence_access import read_all_pages
+    assert await read_all_pages(_pages({0: _Answer(404, {"message": "No content found"})}, [])) == ([], None)

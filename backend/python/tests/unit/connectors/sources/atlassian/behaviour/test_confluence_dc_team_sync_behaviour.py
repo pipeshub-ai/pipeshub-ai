@@ -803,7 +803,7 @@ class TestUsersAndGroups:
         )
 
     async def test_a_capped_member_page_is_followed_by_the_rows_it_returned(self, atlassian_api, db, store) -> None:
-        # Data Center caps a page below the limit but still links to start + limit (CONFSERVER-95272).
+        # A page capped below the limit that links to start + limit: the rows read decide where the next one starts.
         connector = await make_connector(atlassian_api, db, store)
         alice, bob, eve = user("alice", "alice@example.com"), user("bob", "bob@example.com"), user("eve", "eve@example.com")
         with_directory(atlassian_api, [alice, bob, eve], {"eng": []})
@@ -940,8 +940,9 @@ class TestFullSyncCoverage:
 
     async def test_a_page_listing_that_failed_halfway_makes_the_sync_incomplete(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
+        # A short page that links to start=50: the next page is read from 1, after the rows read.
         search.add("page", 0, listing([content("p1")], next_start=50))
-        search.add("page", 50, json_response({"message": "boom"}, status=500))
+        search.add("page", 1, json_response({"message": "boom"}, status=500))
 
         await connector.run_sync()
 
@@ -1245,6 +1246,19 @@ class TestPageRestrictions:
         assert stand_in, "a user with no email yet keeps access through a stand-in group"
         assert db.records["open"].access_rule == AccessRule.STRICT
         assert db.record_permissions["open"] == []
+
+    async def test_a_restriction_naming_a_user_only_by_username_keeps_the_page_restricted(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
+        search.add("page", 0, listing([content("p1")]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read",
+                         restricted_to(users=[{"type": "known", "username": "ana"}]))
+
+        await connector.run_sync()
+
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED, "an entry it read is never dropped into open"
 
     async def test_a_restricted_page_on_a_release_without_relevant_view_restrictions_keeps_its_restriction(
         self, atlassian_api, db, store, search
@@ -1936,6 +1950,109 @@ class TestCommentsDeep:
         assert "c2" not in db.records
 
 
+class TestCommentAndAttachmentPaging:
+    """``start`` is the index of the first item and the limit may be cut by fixed system limits: the next page
+    starts after the rows read, whatever the link names, and a page that can't be read makes the whole list unread."""
+
+    @staticmethod
+    def _paged(atlassian_api: AtlassianApiStub, path: str, pages: dict[str, Any]) -> None:
+        def answer(request: httpx.Request) -> httpx.Response:
+            page = pages[AtlassianApiStub.query(request).get("start", "0")]
+            return page if isinstance(page, httpx.Response) else json_response(page)
+        atlassian_api.on("GET", f"{API}/{path}", answer)
+
+    @pytest.mark.parametrize("next_link", ["start=100", "cursor=opaque"])
+    async def test_comments_and_replies_after_a_short_page_are_read(
+        self, atlassian_api, db, store, search, next_link
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")]))
+        end = {"results": [], "_links": {"base": BASE}}
+        for parent, first, second in (("p1", "c1", "c2"), ("c1", "r1", "r2")):
+            self._paged(atlassian_api, f"content/{parent}/child/comment", {
+                "0": {"results": [comment(first)], "_links": {"base": BASE, "next": f"{API}/content/{parent}/child/comment?{next_link}"}},
+                "1": {"results": [comment(second)], "_links": {"base": BASE}},
+                "100": end,
+            })
+
+        await connector.run_sync()
+
+        assert {"c1", "c2", "r1", "r2"} <= set(db.records), "the rows between the short page and its link are read"
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_attachments_content_and_spaces_after_a_short_page_are_read(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        page = content("p1", attachments=[attachment("a1")])
+        page["children"]["attachment"]["size"] = 2  # truncated inline: the attachments are read on their own
+        search.add("page", 0, listing([page], next_start=50))
+        search.add("page", 1, listing([content("p2")]))
+        end = {"results": [], "_links": {"base": BASE}}
+        self._paged(atlassian_api, "content/p1/child/attachment", {
+            "0": {"results": [attachment("a1")], "_links": {"base": BASE, "next": f"{API}/content/p1/child/attachment?start=100"}},
+            "1": {"results": [attachment("a2")], "_links": {"base": BASE}},
+            "100": end,
+        })
+        spaces = {"0": {"results": [space("ENG", 10)], "_links": {"base": BASE, "next": f"{API}/space?start=25"}},
+                  "1": {"results": [space("OPS", 20)], "_links": {"base": BASE}},
+                  "25": end}
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            return json_response({"results": []} if q.get("expand") == "homepage" else spaces[q.get("start", "0")])
+
+        atlassian_api.on("GET", f"{API}/space", answer)
+
+        await connector.run_sync()
+
+        assert {"a1", "a2", "p2"} <= set(db.records)
+        assert set(db.record_groups) == {"10", "20"}
+
+    @pytest.mark.parametrize("inline", [
+        pytest.param({"size": 2}, id="no-results"),
+        pytest.param({"results": None, "size": 2}, id="null-results"),
+        pytest.param({"results": [], "size": 2}, id="empty-but-says-two"),
+        pytest.param({"results": [], "_links": {"next": f"{API}/content/p1/child/attachment?start=25"}}, id="empty-but-links-on"),
+    ])
+    async def test_an_inline_attachment_list_it_cannot_use_is_fetched_on_its_own(
+        self, atlassian_api, db, store, search, inline
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        page = content("p1")
+        page["children"]["attachment"] = inline
+        search.add("page", 0, listing([page]))
+        self._paged(atlassian_api, "content/p1/child/attachment",
+                    {"0": {"results": [attachment("a1"), attachment("a2")], "_links": {"base": BASE}}})
+
+        await connector.run_sync()
+
+        assert {"a1", "a2"} <= set(db.records), "unknown is not empty: the attachments are read on their own"
+
+    @pytest.mark.parametrize("path", ["content/p1/child/comment", "content/c1/child/comment", "content/p1/child/attachment"])
+    async def test_a_page_that_fails_part_way_keeps_the_rest_and_the_sync_incomplete(
+        self, atlassian_api, db, store, search, path
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        page = content("p1", attachments=[attachment("a1")])
+        page["children"]["attachment"]["size"] = 2  # truncated inline: the attachments are read on their own
+        search.add("page", 0, listing([page]))
+        self._paged(atlassian_api, "content/p1/child/comment", {"0": {"results": [comment("c1")], "_links": {"base": BASE}}})
+        self._paged(atlassian_api, "content/c1/child/comment", {"0": {"results": [], "_links": {"base": BASE}}})
+        self._paged(atlassian_api, "content/p1/child/attachment", {"0": {"results": [attachment("a1"), attachment("a2")], "_links": {"base": BASE}}})
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+
+        first = {"content/p1/child/comment": comment("c1"), "content/c1/child/comment": comment("r1"),
+                 "content/p1/child/attachment": attachment("a1")}[path]
+        self._paged(atlassian_api, path, {
+            "0": {"results": [first], "_links": {"base": BASE, "next": f"{API}/{path}?start=1"}},
+            "1": json_response({"message": "boom"}, status=500),
+        })
+        store.sync_points.clear()  # a full sync starts by forgetting the checkpoints
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False, "a list read in part must not let a full sync unlink"
+
+
 class TestSpaceGrantFailures:
     async def test_a_failed_space_permission_lookup_keeps_existing_access(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -2003,6 +2120,8 @@ class TestSpaceListingEdges:
         pages = {
             "0": {"results": [space("ENG", 10), {"id": 11, "key": "NONAME"}], "_links": {"base": BASE, "next": f"{API}/space?start=2"}},
             "2": {"results": [space("OPS", 20)], "_links": {"base": BASE, "next": f"{API}/space?cursor=opaque"}},
+            # Data Center documents only start/limit here: the next page starts after the spaces read.
+            "3": {"results": [], "_links": {"base": BASE}},
         }
 
         def spaces(request: httpx.Request) -> httpx.Response:

@@ -47,6 +47,7 @@ from app.config.constants.arangodb import (
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
+    read_restriction_fingerprint,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.connectors.sources.atlassian.core.quota import (
@@ -455,6 +456,25 @@ class TestPageSync:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         assert {"10", "12"} <= set(db.records) and "11" not in db.records
+
+    @pytest.mark.parametrize("inline", [
+        pytest.param({"results": ["not an attachment"], "size": 1}, id="malformed"),
+        pytest.param({"results": [], "size": 3}, id="empty-but-says-three"),
+        pytest.param({"results": [], "size": 0, "_links": {"next": "/rest/api/content/10/child/attachment?start=25"}},
+                     id="empty-but-links-on"),
+    ])
+    async def test_an_unreadable_inline_attachment_list_does_not_complete_the_listing(
+        self, api, db, checkpoints, search, inline
+    ) -> None:
+        page = v1_page("10")
+        page["children"]["attachment"] = inline
+        search.by_cursor[None] = search_page([page])
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        saved = checkpoints.values_for("confluence_pages/ENG") or {}
+        assert not saved.get("last_sync_time"), "its attachments are unread, not none: the window is read again"
 
     async def test_a_failed_listing_page_does_not_move_the_checkpoint(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10")], cursor="C2")
@@ -2903,3 +2923,11 @@ class TestFoldersAboveInScopePages:
         await connector._remove_folders_gone(ENG)
 
         assert db.records["500"].id in db.kept_records
+
+
+def test_a_restriction_listing_that_links_onward_is_always_checked_again() -> None:
+    first_page = {"results": [{"accountId": "acc-ana"}], "size": 1, "_links": {"next": "/rest/api/content/10/restriction?start=1"}}
+    item = {"restrictions": {"read": {"restrictions": {"user": first_page, "group": {"results": [], "size": 0}}}}}
+    assert read_restriction_fingerprint(item).startswith("unlisted@"), "a fingerprint of the first page only can't be compared"
+    first_page["_links"] = {}
+    assert not read_restriction_fingerprint(item).startswith("unlisted@"), "a listing read to its end is compared"

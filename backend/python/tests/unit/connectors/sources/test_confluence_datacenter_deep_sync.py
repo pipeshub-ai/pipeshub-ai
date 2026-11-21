@@ -489,7 +489,7 @@ class TestSyncContent:
 
     @pytest.mark.asyncio
     async def test_pagination_with_next_start(self):
-        """v1 content listing paginates via numeric ``start`` in ``_links.next``, not opaque cursors."""
+        """The next page starts after the items read, whatever offset the next link names."""
         connector = _make_connector()
         from app.connectors.core.registry.filters import FilterCollection
         connector.sync_filters = FilterCollection()
@@ -509,7 +509,7 @@ class TestSyncContent:
                     "results": [{"id": "p1", "title": "P1", "space": {"id": 1}, "childTypes": {"comment": {"value": False}}, "children": {"attachment": {"results": []}}}],
                     "_links": {"next": "/wiki/rest/api/content/search?start=50"},
                 })
-            assert kw.get("start") == 50
+            assert kw.get("start") == 1
             return _resp(200, {
                 "results": [{"id": "p2", "title": "P2", "space": {"id": 1}, "childTypes": {"comment": {"value": False}}, "children": {"attachment": {"results": []}}}],
                 "_links": {},

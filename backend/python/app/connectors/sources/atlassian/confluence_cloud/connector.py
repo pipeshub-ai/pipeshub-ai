@@ -236,9 +236,10 @@ def read_restriction_fingerprint(item: dict[str, Any]) -> str | None:
     if any(
         read_page({k: v for k, v in listing.items() if k not in ("size", "totalSize")} if isinstance(listing, dict) else listing)
         is None
+        or (listing.get("_links") or {}).get("next")
         for listing in (users, groups)
     ):
-        # Not read in full: it can't be compared, so the item is always checked again.
+        # Not read in full (or only its first page): it can't be compared, so the item is always checked again.
         return f"unlisted@{time.time()}"
     names = sorted(str(u.get("accountId")) for u in users.get("results") or [] if isinstance(u, dict))
     names += sorted(
@@ -2388,6 +2389,12 @@ class ConfluenceConnector(BaseConnector):
                         attachments_complete = not attachments and not attachment_data.get("size") and not (
                             attachment_data.get("_links") or {}
                         ).get("next")
+                        if not attachments and not attachments_complete:
+                            # Unreadable, or empty while it says it holds some: its attachments are unread, not none.
+                            listing_complete = False
+                            self._note_skipped(
+                                space_key, f"{content_type}s whose attachment list could not be read in full"
+                            )
 
                         if attachments:
                             # v2 list API puts base URL only on response _links, not per attachment

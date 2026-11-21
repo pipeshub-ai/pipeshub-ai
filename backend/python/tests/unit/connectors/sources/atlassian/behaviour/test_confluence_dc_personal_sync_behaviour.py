@@ -471,6 +471,46 @@ class TestAttachmentsAndComments:
         assert files["att1"].size_in_bytes == 2048
         assert files["att1"].weburl == f"{BASE}/download/attachments/att1"
 
+    @pytest.mark.parametrize("inline", [
+        pytest.param({"size": 2}, id="no-results"),
+        pytest.param({"results": None, "size": 2}, id="null-results"),
+        pytest.param({"results": [], "size": 2}, id="empty-but-says-two"),
+    ])
+    async def test_an_inline_attachment_list_it_cannot_use_is_fetched_on_its_own(
+        self, atlassian_api, records_db, checkpoints, search, inline
+    ) -> None:
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        page = content("p1")
+        page["children"]["attachment"] = inline
+        search.add("page", "ENG", 0, listing([page]))
+        atlassian_api.on("GET", f"{API}/content/p1/child/attachment",
+                         {"results": [attachment("att1"), attachment("att2", "notes.txt", "text/plain")], "_links": {"base": BASE}})
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert set(saved(records_db, RecordType.FILE)) == {"att1", "att2"}
+
+    @pytest.mark.parametrize("path", ["content/p1/child/comment", "content/c1/child/comment", "content/p1/child/attachment"])
+    async def test_a_child_list_that_fails_part_way_leaves_the_full_sync_incomplete(
+        self, atlassian_api, records_db, checkpoints, search, path
+    ) -> None:
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1", attachments=[attachment("att1")], attachment_total=2)]))
+        first = {"content/p1/child/comment": footer_comment("c1"), "content/c1/child/comment": footer_comment("r1"),
+                 "content/p1/child/attachment": attachment("att1")}[path]
+        for other in ("content/p1/child/comment", "content/c1/child/comment", "content/p1/child/attachment"):
+            atlassian_api.on("GET", f"{API}/{other}", {"results": [], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [footer_comment("c1")], "_links": {"base": BASE}})
+        pages = {"0": json_response({"results": [first], "_links": {"base": BASE, "next": f"{API}/{path}?start=1"}}),
+                 "1": json_response({"message": "busy"}, status=503)}
+        atlassian_api.on("GET", f"{API}/{path}", lambda r: pages[AtlassianApiStub.query(r).get("start", "0")])
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False, "a child list read in part is not the whole of it"
+
     async def test_footer_and_inline_comments_with_nested_replies_are_synced(
         self, atlassian_api, records_db, checkpoints, search
     ) -> None:

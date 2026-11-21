@@ -8,11 +8,12 @@ from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 from app.config.constants.arangodb import MimeTypes
+from app.config.constants.http_status_code import HttpStatusCode
 from app.models.entities import Record, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
@@ -121,7 +122,8 @@ def v1_next_start(
             return None
         if not page_len:
             raise ValueError(f"an empty page links to a next one: {next_url}")
-        # Cloud's link points at the next page; Data Center's short page still links to start + limit (CONFSERVER-95272).
+        # Cloud's link points at the next page. On Data Center ``start`` is "the index of the first item within the
+        # result set" and the limit may be cut by fixed system limits, so the rows read decide, not the link.
         if not use_link_offset:
             return start + page_len
         values = parse_qs(urlparse(next_url).query).get("start") or []
@@ -130,6 +132,44 @@ def v1_next_start(
         return int(values[0])
     size = response_data.get("size", page_len)
     return start + page_len if size >= batch_size and page_len else None
+
+
+async def read_all_pages(
+    fetch: Callable[[int, int], Awaitable[Any]],
+    item_id: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
+    batch_size: int = 100,
+) -> Optional[tuple[list[dict[str, Any]], Optional[str]]]:
+    """Every row of a Data Center offset-paged listing and its ``_links.base``; None when any page can't be read.
+
+    ``fetch(start, limit)`` returns the HTTP response of one page. The next page starts where the rows read so far
+    end (``v1_next_start``): ``start`` is "the index of the first item within the result set" and the limit "may be
+    restricted by fixed system limits" (the Data Center REST specs), so neither the offset a next link names nor a
+    short page decides it. A 404 means the content is gone, so it has no children. Any other failed request, an
+    exception, a page ``read_page`` refuses, or an empty page that links onward makes the whole listing unread.
+    """
+    rows: list[dict[str, Any]] = []
+    base: Optional[str] = None
+    start = 0
+    while True:
+        try:
+            response = await fetch(start, batch_size)
+            if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                return [], None  # the content is gone (or out of sight), and its children with it
+            body = response.json() if response is not None and response.status == HttpStatusCode.SUCCESS.value else None
+        except Exception:
+            return None
+        page = read_page(body, item_id)
+        if page is None:
+            return None
+        rows.extend(page.results)
+        base = base or page.base
+        try:
+            next_start = v1_next_start(body, start, len(page.results), batch_size, use_link_offset=False)
+        except ValueError:
+            return None
+        if next_start is None:
+            return rows, base
+        start = next_start
 
 
 def _parse_iso(value: str) -> datetime:
