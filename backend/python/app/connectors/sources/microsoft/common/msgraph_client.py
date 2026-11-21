@@ -161,7 +161,8 @@ async def read_user_status(graph: GraphServiceClient, user_id: str) -> str:
     """Read one user by id: ``gone`` only when it answers 404 three times, 2 s and then 4 s
     apart, ``disabled`` when the account is found with ``accountEnabled`` false, ``present``
     otherwise. Any other failure (throttling, a server error, an answer with no body), on any attempt,
-    raises, so the caller keeps the user.
+    raises. The account check counts that as a refused read: the user keeps access until
+    ``UNCONFIRMED_SYNCS_BEFORE_CLOSE`` refusals are counted (``withdraw_unconfirmed_accounts``).
 
     Get user: "If a user with the ID doesn't exist, this method returns a ``404 Not Found``"; ``accountEnabled``
     "Requires ``$select`` to retrieve" (learn.microsoft.com/en-us/graph/api/user-get, .../resources/user). A deleted
