@@ -371,5 +371,32 @@ async def test_an_unreadable_completion_marker_is_a_counted_failure_with_writes_
     assert record["indexingStatus"] == ProgressStatus.COMPLETED.value
 
 
+async def test_a_served_request_whose_clear_failed_is_not_handed_over_when_a_long_adopting_update_ends(env) -> None:
+    """An update adopted request A, which is already done; the clear of A fails; the update outlasts the life, so A is expired at the
+    end. The run began holding A, so A is not a request it had not seen: it is not handed over."""
+    handler, record = _world(intent="A")
+    env.done.add((ORG, "r1", "A"))
+    real_now = record_module.get_epoch_timestamp_in_ms
+    offset = {"ms": 0}
+
+    def clock() -> int:
+        return real_now() + offset["ms"]
+
+    async def on_event(*_a, **_k) -> AsyncGenerator:
+        record["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
+        offset["ms"] = ri.INTENT_LIFE_MS + 5_000
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+        record["indexingStatus"] = ProgressStatus.COMPLETED.value
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+    handler.event_processor.on_event = on_event
+    with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"), patch.object(
+        handler, "_clear_intent", AsyncMock(return_value=False),
+    ), patch.object(record_module, "get_epoch_timestamp_in_ms", clock):
+        await _drive(handler, {**_PAYLOAD, "is_final_failure": False}, EventTypes.UPDATE_RECORD.value)
+    sent = [c.kwargs.get("payload") for c in handler.producer.send_event.await_args_list]
+    assert not any(p and p.get(ri.PAYLOAD_ID_KEY) == "A" for p in sent), sent
+
+
 def test_the_record_module_still_imports_unpatched() -> None:
     assert record_module.RefreshRun is not None

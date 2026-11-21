@@ -5,7 +5,7 @@ world (real handler, sweep, hand-over) with the walk host ahead of and behind th
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -199,3 +199,72 @@ async def test_a_request_that_was_already_there_expired_at_the_runs_start_is_not
     assert w.active is not None and w.active["run"].id_at_start == "old"
     await w.finish(allow_crash=False)
     assert not [m for m in w.msgs if (m["payload"] or {}).get(ri.PAYLOAD_ID_KEY) == "old"]
+
+
+async def test_a_claim_restore_survives_a_second_cancellation_of_the_sweep(w: World) -> None:
+    """The send is cancelled (shutdown) and the sweep is cancelled again while it restores the claim: the restore is shielded, so it
+    completes, and the next pass is not made to wait out a backoff for a send that never happened."""
+    import asyncio
+
+    w.row.update(ri.intent_fields("A", w.now_ms - 2 * HOUR_MS), republishCount=2)
+    before = w.row.get("lastRepublishedAt")
+    in_send = asyncio.Event()
+    real = w.graph.update_node_fields_if_match
+    calls = 0
+
+    async def send_that_waits(self, *, topic, event_type, payload, key):  # noqa: ANN202
+        in_send.set()
+        await asyncio.sleep(3600)
+
+    async def slow_restore(key: str, collection: str, updates: dict, expected: dict, *a: object, **kw: object) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 2:                                                                       # the restore: it takes a moment
+            await asyncio.sleep(0.05)
+        return await real(key, collection, updates, expected, *a, **kw)
+
+    w.graph.update_node_fields_if_match = slow_restore                                       # type: ignore[method-assign]
+    with patch("tests.support.refresh_intent_world._Producer.send_event", send_that_waits):
+        task = asyncio.ensure_future(w.intent_sweep())
+        await in_send.wait()
+        task.cancel()                                                                        # shutdown: the send is cancelled
+        await asyncio.sleep(0.01)
+        task.cancel()                                                                        # and again, during the restore
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.2)                                                             # the shielded restore finishes
+    assert calls == 2 and w.row.get("lastRepublishedAt") == before and w.row.get("republishCount") == 2
+
+
+async def test_a_served_request_whose_clear_failed_is_not_handed_over_when_a_long_adopting_run_ends(w: World) -> None:
+    """An update adopted request A, which is already done; the clear of A failed; the run outlasts the life, so A is expired at its end.
+    The run began holding A, so A is not a request it had not seen: it is not handed over."""
+    w.row.update(ri.intent_fields("A", w.now_ms - 1_000))
+    w.cache.done.add((ORG, KEY, "A"))
+    w.handler._clear_intent = AsyncMock(return_value=False)                                  # type: ignore[method-assign]
+    w.msgs.append({"event_type": EventTypes.UPDATE_RECORD.value, "payload": {"recordId": KEY, "orgId": ORG, "version": 1}})
+    await w.consume(allow_loss=False)
+    assert w.active is not None and w.active["run"].adopted is False and w.active["run"].id_at_start == "A"
+    w.now_ms += 25 * HOUR_MS
+    await w.finish(allow_crash=False)
+    assert not [m for m in w.msgs if (m["payload"] or {}).get(ri.PAYLOAD_ID_KEY) == "A"], w.msgs
+
+
+async def test_a_connector_clear_keeps_the_request_of_a_row_that_no_longer_names_a_connector(w: World) -> None:
+    w.graph.docs["c1"] = {"_key": "c1", "isActive": False}
+    w.row.update(ri.intent_fields("A", w.now_ms - 2 * HOUR_MS))
+    real = w.graph.get_document
+    reads = 0
+
+    async def connector_removed_from_the_row(key: str, collection: str, **kw: object) -> dict | None:
+        nonlocal reads
+        doc = await real(key, collection, **kw)
+        if collection == "records":
+            reads += 1
+            if reads == 1 and doc is not None:                                               # the re-read under the lease
+                doc = {k: v for k, v in doc.items() if k != "connectorId"}
+        return doc
+
+    w.graph.get_document = connector_removed_from_the_row                                    # type: ignore[method-assign]
+    await w.intent_sweep()
+    assert w.row[ri.ID_FIELD] == "A"
