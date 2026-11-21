@@ -40,6 +40,8 @@ from app.connectors.core.registry.connector_registry import (
 def _make_container():
     container = MagicMock()
     container.logger.return_value = MagicMock()
+    # No licence key in the config store, which counts as licensed.
+    container.config_service.return_value.get_config = AsyncMock(return_value=None)
     return container
 
 

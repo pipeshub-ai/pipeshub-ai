@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import functools
 import json
 from collections.abc import Awaitable, Callable
@@ -18,6 +20,7 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.data_processor.permission_sync_gate import (
     PERSONAL_CONNECTOR_CAP,
     PersonalConnectorCapReachedError,
+    PersonalConnectorCapUnavailableError,
     permission_sync_licensed,
     personal_cap_applies,
     personal_cap_reached,
@@ -32,6 +35,7 @@ from app.services.graph_db.common.utils import (
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import assign_lane_to_new_connector
+from app.services.vector_db.rebuild_state import RebuildJobLock, redis_from_config_service
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -40,6 +44,15 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # app/connectors/sources/localKB/connector.py, KB_CONNECTOR_NAME) — so registry
 # lookups keyed directly on doc "type" miss KB instances entirely.
 _KB_REGISTRY_KEY = "Collections"
+
+_CAP_CHECK_FAILED = (
+    "We couldn't check the limit on personal connectors just now, so this one was not added. "
+    "Please try again in a moment."
+)
+# Long enough for the writes of one create; a crashed create frees the lock when it runs out.
+_CAP_LOCK_SECONDS = 60
+_CAP_LOCK_TRIES = 25
+_CAP_LOCK_WAIT_SECONDS = 0.2
 
 
 
@@ -497,31 +510,66 @@ class ConnectorRegistry:
             )
             return None
 
-    async def _check_personal_connector_cap(
+    async def _hold_personal_connector_cap(
         self, connector_type: str, scope: str, created_by: str, org_id: str
-    ) -> None:
+    ) -> Callable[[], Awaitable[None]] | None:
         """Without a licence key, a personal connector of each source is limited to
         PERSONAL_CONNECTOR_CAP people per install: each one brings in what others
-        shared with its owner, so one per employee would be permission-aware search."""
+        shared with its owner, so one per employee would be permission-aware search.
+
+        Returns the release of a lock the caller holds until the new connector's
+        org edge is written (``None`` when no cap applies). The count only sees
+        connectors that edge points at, so two creates that both counted before
+        either wrote would both pass; the lock is shared by every connector process.
+        A check that cannot be made refuses the create rather than dropping the cap.
+        """
         if scope != ConnectorScope.PERSONAL.value or not personal_cap_applies(connector_type):
-            return
+            return None
+        config_service = self.container.config_service()
         try:
-            if await permission_sync_licensed(self.container.config_service()):
-                return
+            if await permission_sync_licensed(config_service):
+                return None
+            redis = await redis_from_config_service(config_service)
+        except Exception as e:
+            raise PersonalConnectorCapUnavailableError(_CAP_CHECK_FAILED) from e
+        # shortcut: the lease is not renewed, so a create slower than it lets one more person in.
+        lock = RebuildJobLock(
+            redis, key=f"personal_connector_cap:{org_id}:{connector_type}", ttl_seconds=_CAP_LOCK_SECONDS
+        )
+
+        async def release() -> None:
+            try:
+                await lock.release()
+            except Exception as exc:
+                self.logger.warning("Personal connector cap lock not released (it expires): %s", exc)
+            finally:
+                with contextlib.suppress(Exception):
+                    await redis.aclose()
+
+        try:
+            for _ in range(_CAP_LOCK_TRIES):
+                if await lock.try_acquire():
+                    break
+                await asyncio.sleep(_CAP_LOCK_WAIT_SECONDS)
+            else:
+                raise PersonalConnectorCapUnavailableError(_CAP_CHECK_FAILED)
             graph_provider = await self._get_graph_provider()
             apps = await graph_provider.get_org_apps(
                 org_id, active_only=False, app_type=connector_type, raise_on_error=True
             )
+            if personal_cap_reached(created_by, apps):
+                raise PersonalConnectorCapReachedError(
+                    f"Without a licence key, up to {PERSONAL_CONNECTOR_CAP} people in an organisation can "
+                    f"connect their own {connector_type} account, and that many already have. "
+                    "Ask an admin to add a licence key to lift the limit."
+                )
+        except (PersonalConnectorCapReachedError, PersonalConnectorCapUnavailableError):
+            await release()
+            raise
         except Exception as e:
-            # Same as the name check: a failed lookup must not block setting up a connector.
-            self.logger.warning(f"Could not check the personal {connector_type} connector limit: {e}")
-            return
-        if personal_cap_reached(created_by, apps):
-            raise PersonalConnectorCapReachedError(
-                f"Without a licence key, up to {PERSONAL_CONNECTOR_CAP} people in an organisation can "
-                f"connect their own {connector_type} account, and that many already have. "
-                "Ask an admin to add a licence key to lift the limit."
-            )
+            await release()
+            raise PersonalConnectorCapUnavailableError(_CAP_CHECK_FAILED) from e
+        return release
 
     async def _create_connector_instance(
         self,
@@ -547,6 +595,7 @@ class ConnectorRegistry:
         Returns:
             Created connector instance document or None if failed
         """
+        release_cap: Callable[[], Awaitable[None]] | None = None
         try:
             graph_provider = await self._get_graph_provider()
 
@@ -579,7 +628,7 @@ class ConnectorRegistry:
                     f"Please choose a different name."
                 )
 
-            await self._check_personal_connector_cap(connector_type, scope, created_by, org_id)
+            release_cap = await self._hold_personal_connector_cap(connector_type, scope, created_by, org_id)
 
             # Create connector instance document
             instance_key = str(uuid4())
@@ -676,7 +725,7 @@ class ConnectorRegistry:
             )
             return instance_document
 
-        except ValueError:
+        except (ValueError, PersonalConnectorCapUnavailableError):
             # Re-raise ValueError (name uniqueness) as-is
             raise
         except Exception as e:
@@ -684,6 +733,9 @@ class ConnectorRegistry:
                 f"Error creating connector instance for {connector_type}: {e}"
             )
             return None
+        finally:
+            if release_cap is not None:
+                await release_cap()
 
     async def _deactivate_connector_instance(self, connector_id: str) -> bool:
         """

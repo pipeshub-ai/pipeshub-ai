@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.api.router import create_connector_instance
+from app.connectors.core.base.data_processor.permission_sync_gate import PersonalConnectorCapUnavailableError
 
 _ROUTER = "app.connectors.api.router"
 
@@ -527,6 +528,21 @@ class TestCreateInstanceInDB:
             # the person is told what failed and what to do, not the exception text
             assert exc.value.detail == "We couldn't set up this connector with those details. Check the settings and try again."
             assert "Duplicate instance name" not in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_an_uncheckable_personal_connector_cap_says_try_again(self) -> None:
+        """The cap could not be checked: nothing was created, and trying again is the fix -> 503."""
+        registry = _default_registry()
+        registry.create_connector_instance_on_configuration = AsyncMock(
+            side_effect=PersonalConnectorCapUnavailableError("Please try again in a moment."),
+        )
+        req = _mock_request(body=_base_body(authType="NONE"), is_admin=True, connector_registry=registry)
+
+        with _common_patches():
+            with pytest.raises(HTTPException) as exc:
+                await create_connector_instance(req, _default_graph_provider())
+        assert exc.value.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value
+        assert exc.value.detail == "Please try again in a moment."
 
     @pytest.mark.asyncio
     async def test_taken_name_keeps_its_own_advice(self) -> None:

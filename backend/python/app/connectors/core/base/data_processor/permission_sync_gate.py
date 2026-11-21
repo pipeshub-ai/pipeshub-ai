@@ -73,6 +73,10 @@ class PersonalConnectorCapReachedError(ValueError):
     """Shown to the user as is: it says what happened and what lifts the limit."""
 
 
+class PersonalConnectorCapUnavailableError(Exception):
+    """The cap could not be checked, so the connector was not created; trying again is the fix."""
+
+
 def personal_cap_applies(connector_type: str) -> bool:
     return connector_type.upper() not in _UNCAPPED_PERSONAL_TYPES
 
