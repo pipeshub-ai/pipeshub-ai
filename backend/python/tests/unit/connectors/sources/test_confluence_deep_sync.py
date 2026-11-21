@@ -19,7 +19,6 @@ from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     CONTENT_EXPAND_PARAMS,
-    PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
     ConfluenceConnector,
 )
@@ -48,6 +47,7 @@ def _make_mock_deps():
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.permission_sync_gated = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)

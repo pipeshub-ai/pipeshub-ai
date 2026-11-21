@@ -11,8 +11,10 @@ from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, Pr
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator, SyncFilterKey
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
-    PSEUDO_USER_GROUP_PREFIX,
     ConfluenceConnector,
+)
+from app.ee.permission_sync.confluence_cloud import (
+    PSEUDO_USER_GROUP_PREFIX,
 )
 from app.models.entities import (
     AppUser,
@@ -36,6 +38,7 @@ def _make_mock_deps():
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.permission_sync_gated = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_content_update = AsyncMock()
     dep.on_updated_record_permissions = AsyncMock()

@@ -1940,3 +1940,30 @@ class TestRemovalFromSource:
 
         assert "10" in db.record_groups
         assert {"p1", "p2"} <= set(db.records)
+
+
+
+async def _no_licence(connector_id: str | None) -> bool:
+    return True  # what the processor's licence gate answers for a company-wide connector with no key
+
+
+def _access_reads(api: AtlassianApiStub, *parts: str) -> list[str]:
+    return sorted({r.url.path for r in api.requests if any(part in r.url.path for part in parts)})
+
+
+class TestWithoutALicenceKey:
+    """The licence gate holds: the connector still syncs the content, and reads no access from the source."""
+
+    async def test_a_gated_sync_stores_the_pages_and_reads_no_access_from_confluence(self, atlassian_api, db, store, search) -> None:
+        db.permission_sync_gated = _no_licence
+        connector = await make_connector(atlassian_api, db, store)
+        alice = user("alice", "alice@example.com")
+        with_directory(atlassian_api, [alice], {"eng": [alice]})
+        search.add("page", 0, listing([content("p1")]))
+
+        await connector.run_sync()
+
+        assert db.records["p1"].record_type == RecordType.CONFLUENCE_PAGE
+        assert db.record_group_permissions == {"10": []}, "the space carries no grant of its own"
+        assert db.user_groups == []
+        assert _access_reads(atlassian_api, "/permissions", "/restriction", "/group", AUDIT) == []

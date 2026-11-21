@@ -28,6 +28,7 @@ def _make_cloud_connector() -> JiraConnector:
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.permission_sync_gated = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.on_new_app_roles = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
@@ -50,6 +51,7 @@ def _make_dc_connector() -> JiraDataCenterConnector:
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.permission_sync_gated = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.on_new_app_roles = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
@@ -163,7 +165,7 @@ class TestCloudHandleDeletedIssueGaps:
         connector.data_entities_processor.on_new_app_roles = AsyncMock()
 
         with patch(
-            "app.connectors.sources.atlassian.jira_cloud.connector.AppRole",
+            "app.ee.permission_sync.jira_cloud.AppRole",
             side_effect=RuntimeError("lead lookup failed"),
         ):
             await connector._sync_project_lead_roles(

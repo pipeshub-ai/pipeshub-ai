@@ -60,6 +60,6 @@ deltas:
       here through a group. When the level also names a person Browse does not name on the issue (the assignee), that person reads it
       only through the project. An access rule belongs to the record, not to a grant, so one issue cannot hold "the reporter alone, or the
       project and the assignee": the connector keeps the issue STRICT with the assignee's grant
-      (atlassian/core/jira_issue_security.py, apply_issue_access_settled), and the reporter needs the project too. OPEN would admit the
+      (app/ee/permission_sync/jira_issue_security.py, apply_issue_access_settled), and the reporter needs the project too. OPEN would admit the
       assignee without the project. Fail-closed by design.
     fix: "A per-grant condition in the access model, or a second record carrying the reporter's grant; not planned."

@@ -18,7 +18,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
+from app.ee.permission_sync.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.atlassian.jira_cloud.connector import (
@@ -61,6 +61,7 @@ def _make_mock_deps():
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.permission_sync_gated = AsyncMock(return_value=False)
     dep.on_new_app_roles = AsyncMock()
     dep.on_record_deleted = AsyncMock()
     dep.on_record_content_update = AsyncMock()

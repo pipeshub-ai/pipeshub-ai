@@ -2788,3 +2788,29 @@ class TestAttachmentMetByTwoWritersAtOnce:
             ).id
 
         assert await new_id() == await new_id() == new_record_id(CONNECTOR_ID, "attachment_902")
+
+
+
+async def _no_licence(connector_id: str | None) -> bool:
+    return True  # what the processor's licence gate answers for a company-wide connector with no key
+
+
+def _access_reads(api: AtlassianApiStub, *parts: str) -> list[str]:
+    return sorted({r.url.path for r in api.requests if any(part in r.url.path for part in parts)})
+
+
+class TestWithoutALicenceKey:
+    """The licence gate holds: the connector still syncs the content, and reads no access from the source."""
+
+    async def test_a_gated_sync_stores_the_issues_and_reads_no_access_from_jira(self, api, site_db, checkpoints, search) -> None:
+        stub_site(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        site_db.permission_sync_gated = _no_licence
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert len(tickets(site_db)) == 1
+        assert acl(site_db) == [], "the project carries no grant of its own"
+        assert site_db.user_groups == [] and site_db.app_roles == {}
+        assert _access_reads(api, "permissionscheme", "/role", "group/bulk", "issuesecurity") == []

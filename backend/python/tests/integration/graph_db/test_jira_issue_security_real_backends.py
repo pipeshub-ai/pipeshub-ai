@@ -27,7 +27,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-from app.connectors.sources.atlassian.core.jira_issue_security import (
+from app.ee.permission_sync.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
 )

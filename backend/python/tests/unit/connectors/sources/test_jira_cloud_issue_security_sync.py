@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import AccessRule
-from app.connectors.sources.atlassian.core.jira_issue_security import (
+from app.ee.permission_sync.jira_issue_security import (
     LEVEL_MEMBERS_UNREAD,
     UNREADABLE_AUTH,
     UNREADABLE_PERMISSION,
@@ -67,6 +67,7 @@ def _resp(status: int = 200, body: object = None) -> MagicMock:
 
 def _connector() -> JiraConnector:
     dep = MagicMock()
+    dep.permission_sync_gated = AsyncMock(return_value=False)
     dep.org_id = "org-1"
     for name in ("on_new_records", "on_record_content_update", "on_new_record_groups"):
         setattr(dep, name, AsyncMock())
@@ -2112,7 +2113,7 @@ async def _roles_at(points: _KeptSyncPoints, now_ms: int, *, roles: dict | None)
     c.issues_sync_point = points
     c.notify = AsyncMock()
     c._app_roles_forbidden, c._app_roles_mapping = roles is None, roles or {}
-    with patch("app.connectors.sources.atlassian.jira_cloud.connector.get_epoch_timestamp_in_ms", return_value=now_ms):
+    with patch("app.ee.permission_sync.jira_cloud.get_epoch_timestamp_in_ms", return_value=now_ms):
         await c._read_level_roles()
     return c
 

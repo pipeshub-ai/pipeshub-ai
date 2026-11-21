@@ -17,11 +17,13 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import IndexingFilterKey, ListOperator, SyncFilterKey
 from app.models.blocks import ChildRecord, ChildType, GroupSubType
-from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
+from app.ee.permission_sync.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.connectors.sources.atlassian.jira_data_center.connector import (
+    JiraDataCenterConnector,
+)
+from app.ee.permission_sync.jira_data_center import (
     GroupMemberships,
     GroupPickerPage,
-    JiraDataCenterConnector,
     _normalize_jira_dc_group_row,
 )
 from app.models.entities import (
@@ -52,6 +54,7 @@ def _make_connector() -> JiraDataCenterConnector:
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.permission_sync_gated = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.on_new_app_roles = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
