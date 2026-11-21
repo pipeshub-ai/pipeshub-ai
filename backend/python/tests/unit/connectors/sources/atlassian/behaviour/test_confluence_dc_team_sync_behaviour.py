@@ -342,21 +342,26 @@ class TestUsersAndGroups:
         assert [u.source_user_id for u in db.app_users] == ["ana"]
         assert atlassian_api.calls("GET", f"{API}/user/list") == []
 
-    @pytest.mark.parametrize("version", ["8.5.4", "9.0.0", "9.2.1"])
-    async def test_before_9_3_the_listed_users_are_linked(self, atlassian_api, db, store, version) -> None:
-        # These docs give no per-user status, so a disabled duplicate is linked too: a known limit, exact from 9.3.
+    @pytest.mark.parametrize("version", ["8.5.4", "9.0.0", "9.2.1", "9.2.15"])
+    async def test_before_9_3_only_the_sign_in_account_is_linked(self, atlassian_api, db, store, version) -> None:
+        # These docs give no way to tell an enabled user with "Can use" from a disabled or unlicensed one, so no
+        # listed user is linked (fail closed) and earlier links go; the account the connector signs in with is
+        # one Confluence just let in.
         connector = await make_connector(atlassian_api, db, store)
         numbers = [int(part) for part in version.split(".")]
         atlassian_api.on("GET", f"{API}/server-information", {"version": version, "versionNumbers": numbers})
+        atlassian_api.on("GET", f"{API}/user/current", {"type": "known", "userKey": "svc", "username": "svc",
+                                                         "displayName": "Sync", "email": "svc@example.com"})
         ana, disabled = user("ana", "ana@example.com"), user("ana-disabled", "ana@example.com")
         atlassian_api.on("GET", f"{API}/user/list", {"results": [ana, disabled]})
-        atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana]})
+        db.app_users.append(AppUser(app_name=Connectors.CONFLUENCE_DATA_CENTER, connector_id=CONNECTOR_ID,
+                                    source_user_id="ana", email="ana@example.com", full_name="Ana", org_id="org-1"))
 
         await connector._sync_users()
 
-        assert [u.source_user_id for u in db.app_users] == ["ana", "ana-disabled"]
-        assert atlassian_api.calls("GET", ACTIVE_USERS) == []
-        assert db.withdrawn_users == []
+        assert [u.source_user_id for u in db.withdrawn_users] == ["ana"], "a link an earlier release made goes"
+        assert [u.source_user_id for u in db.app_users if u.source_user_id != "ana"] == ["svc"]
+        assert atlassian_api.calls("GET", ACTIVE_USERS) == [] and atlassian_api.calls("GET", f"{API}/user/list") == []
 
     @pytest.mark.parametrize("info", [
         {},
@@ -433,7 +438,9 @@ class TestUsersAndGroups:
 
     async def test_a_linked_user_the_active_list_no_longer_shows_is_withdrawn(self, atlassian_api, db, store) -> None:
         connector = await make_connector(atlassian_api, db, store)
-        db.creator_link = SimpleNamespace(id="creator-node", source_user_id="creator_admin-user-1", email="owner@example.com")
+        # The account the connector signs in with keeps its link.
+        connector._authenticated_source_user_id = "svc"
+        db.creator_link = SimpleNamespace(id="svc-node", source_user_id="svc", email="svc@example.com")
         ana, bob = user("ana", "ana@example.com"), user("bob", "bob@example.com")
         atlassian_api.on("GET", ACTIVE_USERS, {"results": [ana, bob]})
         await connector._sync_users()
@@ -722,7 +729,7 @@ class TestFullSyncCoverage:
         await connector.run_sync()
         assert connector.full_sync_coverage().complete is True
 
-    @pytest.mark.parametrize("path", ["/user/list", "/group", "/group/eng/member", "/space", "/space/ENG/permissions"])
+    @pytest.mark.parametrize("path", ["/admin/users/list/active", "/group", "/group/eng/member", "/space", "/space/ENG/permissions"])
     async def test_a_listing_that_failed_makes_the_sync_incomplete(self, atlassian_api, db, store, search, path) -> None:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": []})
@@ -981,7 +988,8 @@ class TestPageRestrictions:
         await connector.run_sync()
 
         assert db.records["p1"].access_rule == AccessRule.RESTRICTED
-        assert [p.email for p in db.record_permissions["p1"]] == ["alice@example.com"]
+        # Before 9.3 no listed user is linked, so alice's grant waits on her stand-in group.
+        assert [p.external_id for p in db.record_permissions["p1"]] == ["alice"]
         assert db.records["open"].access_rule == AccessRule.STRICT
 
     async def test_a_restriction_longer_than_a_page_is_read_to_the_end(self, atlassian_api, db, store, search) -> None:
