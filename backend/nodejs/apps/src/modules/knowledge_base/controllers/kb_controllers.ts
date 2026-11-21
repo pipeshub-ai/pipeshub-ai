@@ -1514,7 +1514,7 @@ export const updateRecord =
       // Blob is already uploaded at this point, so indexing service will find new content.
       logger.info('Updating record in database via Python service', {
         recordId,
-        hasFileUpload: hasFileBuffer,
+        hasFileUpload: Boolean(hasFileBuffer),
         updatedFields: Object.keys(updatedData),
       });
 
