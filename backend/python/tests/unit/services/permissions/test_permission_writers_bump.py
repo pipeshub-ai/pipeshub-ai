@@ -165,6 +165,8 @@ NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::delete_skill": AGENT,
     "api/routes/chatbot.py::_rollback_attachment_records":
         "rolls back attachment records the same request just created: nothing could have been cached for them",
+    "connectors/api/router.py::_remove_unconfigured_connector":
+        "takes back a connector the same request just created, before it had settings, records or any grant",
     "connectors/core/base/data_store/graph_data_store.py::delete_nodes_and_edges": STORE,
     "connectors/core/base/data_store/graph_data_store.py::delete_user_group_by_id": STORE,
     "connectors/core/base/data_store/graph_data_store.py::reap_stale_external_app_relations": STORE,

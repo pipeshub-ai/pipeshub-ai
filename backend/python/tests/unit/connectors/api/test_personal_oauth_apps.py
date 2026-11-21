@@ -5,6 +5,7 @@ personal OAuth app (``ownerUserId`` set). These tests run the connector and OAut
 against an in-memory config store and pin who may list, link, change and sign in with it.
 """
 
+import contextlib
 import copy
 import logging
 from typing import Any
@@ -754,3 +755,65 @@ class TestAFailedRemovalIsRetried:
             pytest.raises(RuntimeError),
         ):
             await service._remove_personal_oauth_apps(ORG_ID, ALICE)
+
+
+def _create_request(store: InMemoryConfigService) -> MagicMock:
+    return _request(ALICE, store=store, body={
+        "connectorType": "Drive", "instanceName": "My Drive", "scope": "personal", "authType": "OAUTH",
+        "config": {"auth": {"clientId": "alice-client", "clientSecret": ALICE_SECRET}},
+    })
+
+
+async def _create_with(request: MagicMock, store: InMemoryConfigService, graph: AsyncMock, *extra: contextlib.AbstractContextManager[object]) -> dict[str, Any]:
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(router_module, "resolve_config_service", return_value=store))
+        stack.enter_context(patch.object(router_module, "check_beta_connector_access", AsyncMock()))
+        stack.enter_context(patch.object(router_module, "_store_config_action_items", AsyncMock()))
+        stack.enter_context(patch.object(router_module, "free_lane_of_deleted_connector", AsyncMock()))
+        for extra_patch in extra:
+            stack.enter_context(extra_patch)
+        return await create_connector_instance(request, graph)
+
+
+def _graph() -> AsyncMock:
+    graph = AsyncMock()
+    graph.get_account_type = AsyncMock(return_value="individual")
+    return graph
+
+
+@pytest.mark.asyncio
+class TestAConnectorWhoseSettingsAreNotStoredGoes:
+    async def test_a_refused_config_write_removes_the_connector_and_its_new_app(self) -> None:
+        store = _ConnectorConfigWriteFails()
+        graph = _graph()
+
+        with pytest.raises(HTTPException) as exc:
+            await _create_with(_create_request(store), store, graph)
+
+        assert exc.value.status_code == 500
+        graph.delete_nodes_and_edges.assert_awaited_once_with([CONNECTOR_ID], "apps")
+        assert store.apps() == []
+
+    async def test_a_failure_while_preparing_the_config_removes_the_connector(self) -> None:
+        store = InMemoryConfigService()
+        graph = _graph()
+
+        with pytest.raises(HTTPException):
+            await _create_with(
+                _create_request(store), store, graph,
+                patch.object(router_module, "_prepare_connector_config", AsyncMock(side_effect=RuntimeError("boom"))),
+            )
+
+        graph.delete_nodes_and_edges.assert_awaited_once_with([CONNECTOR_ID], "apps")
+        assert store.apps() == []
+        assert CONFIG_PATH not in store.values
+
+    async def test_a_connector_whose_settings_are_stored_stays(self) -> None:
+        store = InMemoryConfigService()
+        graph = _graph()
+
+        result = await _create_with(_create_request(store), store, graph)
+
+        assert result["success"] is True
+        graph.delete_nodes_and_edges.assert_not_awaited()
+        assert _linked_app_id(store) == store.apps()[0]["_id"]

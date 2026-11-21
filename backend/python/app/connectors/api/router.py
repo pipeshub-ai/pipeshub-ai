@@ -186,6 +186,7 @@ from app.services.featureflag.platform_settings import (
 )
 from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.services.permissions import access_status
 from app.services.permissions.currency import MODE_KEY, chosen_mode
 from app.services.permissions.mode import AclFilterMode
@@ -4818,6 +4819,18 @@ async def _undo_oauth_app_write(
         await _restore_oauth_app(app_before_update, connector_type, config_service, logger)
 
 
+async def _remove_unconfigured_connector(
+    graph_provider: IGraphDBProvider, connector_id: str, logger: logging.Logger
+) -> None:
+    """Take back a connector this request created when its settings could not be stored. Nothing
+    refers to it yet: no config, no records, no sign-in."""
+    try:
+        await graph_provider.delete_nodes_and_edges([connector_id], CollectionNames.APPS.value)
+        await free_lane_of_deleted_connector(logger, connector_id)
+    except Exception as e:
+        logger.error(f"Could not remove connector {connector_id} after its setup failed: {e}")
+
+
 async def _oauth_apps_before_save(connector_type: str, config_service: ConfigurationService) -> list[dict[str, Any]]:
     """The connector type's OAuth apps before a save writes one, to undo that write if the
     connector's own settings then fail to store."""
@@ -5205,6 +5218,7 @@ async def create_connector_instance(
                 logger.debug(f"No OAuth config created for connector type {connector_type} (credentials not provided or existing ID used)")
 
         config_saved = False
+        connector_id: str | None = None
         try:
             # ============================================================
             # 9. Create Connector Instance in Database
@@ -5256,13 +5270,22 @@ async def create_connector_instance(
                     container=container,
                 )
 
-                await config_service.set_config(config_path, prepared_config)
+                if not await config_service.set_config(config_path, prepared_config):
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail=action_failed("set up this connector"),
+                    )
                 config_saved = True
                 logger.info(f"Stored initial config for instance {connector_id}")
                 await _store_config_action_items(request, connector_type, connector_id, _auth_section(prepared_config), logger)
         except Exception:
-            if written_app_id and not config_saved:
-                await _undo_oauth_app_save(written_app_id, apps_before, connector_type, config_service, logger)
+            # A connector without its settings can't be used, and would have to be found and
+            # deleted by hand: everything this request wrote goes.
+            if not config_saved:
+                if connector_id:
+                    await _remove_unconfigured_connector(graph_provider, connector_id, logger)
+                if written_app_id:
+                    await _undo_oauth_app_save(written_app_id, apps_before, connector_type, config_service, logger)
             raise
 
         # ============================================================
