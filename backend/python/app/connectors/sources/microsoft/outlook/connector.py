@@ -87,6 +87,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.registry.types import FieldType
 from app.connectors.sources.microsoft.common.account_check import (
+    EmptyGraphAnswer,
     GroupMemberGrace,
     withdraw_unconfirmed_accounts,
 )
@@ -1085,12 +1086,14 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         )
         members: list[User] = []
         page = await builder.get(RequestConfiguration(query_parameters=query))
-        while page:
+        while True:
+            if page is None:
+                # Not the end of the list: a page with no body would save the members read so far as the whole group.
+                raise EmptyGraphAnswer(f"Graph answered a members page of group {group_id} with no body")
             members.extend(page.value or [])
             if not page.odata_next_link:
-                break
+                return members
             page = await builder.with_url(page.odata_next_link).get()
-        return members
 
     async def _get_user_groups(self, user_id: str) -> list[Group]:
         """Get groups that a user is a member of (cached for performance).

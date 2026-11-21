@@ -16,6 +16,7 @@ from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.common.account_check import (
     GROUP_CHECK_KEY,
     UNCONFIRMED_SYNCS_BEFORE_CLOSE,
+    EmptyGraphAnswer,
 )
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -134,6 +135,14 @@ class SharePoint:
         self.c.msgraph_client.get_groups_delta_response = AsyncMock(
             return_value={"groups": [_group("g1")], "delta_link": "https://graph/next-delta"})
         self.c._containing_groups = AsyncMock(return_value=[])
+        self.c.client = MagicMock()
+
+        def by_group_id(gid: str) -> MagicMock:
+            b = MagicMock()
+            b.get = AsyncMock(return_value=_group(gid))
+            return b
+
+        self.c.client.groups.by_group_id.side_effect = by_group_id
         self.answer: object = [{"id": "u-ann", "email": "ann@x.com", "name": "Ann"}]
         self.answers: dict[str, object] = {}  # per group, over ``answer``
 
@@ -154,6 +163,7 @@ class SharePoint:
             await self.c._perform_initial_full_sync()
         else:
             self.applied.append(await self.c._perform_delta_sync("https://graph/delta", "k"))
+        await self.c._reread_closed_groups()
         await g.finish()
 
 
@@ -232,13 +242,63 @@ async def test_an_unreadable_count_closes_no_group(world: Outlook | SharePoint) 
 
 
 @pytest.mark.asyncio
-async def test_sharepoint_keeps_the_change_page_held_after_the_close() -> None:
+async def test_sharepoint_moves_past_a_change_page_once_its_group_is_closed_and_applies_the_next_page() -> None:
+    """A group refused for good (hidden membership) held its group-change page forever, so a member removal on a
+    later page was never read. Past the grace the page moves on and the closed group is read again each sync."""
     w = SharePoint()
-    w.answer = _odata(403)
-    for _ in range(N + 1):
+    pages = {"https://graph/delta": {"groups": [_group("g1")], "next_link": "https://graph/delta?page=2"},
+             "https://graph/delta?page=2": {"groups": [_group("g2")], "delta_link": "https://graph/next-delta"}}
+    w.c.msgraph_client.get_groups_delta_response = AsyncMock(side_effect=lambda url: pages[url])
+    w.c.user_group_sync_point = MagicMock(update_sync_point=AsyncMock())
+    w.answers["g1"] = _odata(403)
+    w.answers["g2"] = []  # ann left g2
+    for _ in range(N - 1):
         await w.sync()
-    assert w.applied == [False] * (N + 1), "a closed group is read again on every sync until its members are"
-    assert _written(w.proc, "g1")[-1] == []
+    assert _written(w.proc, "g2") == [] and w.applied == [False] * (N - 1), "held within the grace"
+    await w.sync()
+    assert _written(w.proc, "g1")[-1] == [] and _written(w.proc, "g2")[-1] == [], "closed, and the next page applied"
+    assert w.applied[-1] is True
+    w.c.user_group_sync_point.update_sync_point.assert_any_await("k", {"nextLink": None, "deltaLink": "https://graph/next-delta"})
+    pages["https://graph/delta"] = {"groups": [], "delta_link": "https://graph/next-delta"}  # nothing changed since
+    reads = w.c.client.groups.by_group_id.call_count
+    await w.sync()
+    assert w.c.client.groups.by_group_id.call_count == reads + 1, "the closed group is read again each sync"
+    w.answers["g1"] = [{"id": "u-ann", "email": "ann@x.com", "name": "Ann"}]
+    await w.sync()
+    assert _written(w.proc, "g1")[-1] == ["ann@x.com"], "its first good read writes the members back"
+
+
+@pytest.mark.asyncio
+async def test_a_page_with_no_body_is_not_the_end_of_the_member_list() -> None:
+    """Outlook and SharePoint: a members page answered with no body raises (it would save the pages read so far, or
+    none, as the whole group) and is counted like a refusal, so it keeps the stored members only for the grace."""
+    o = Outlook()
+    full = MagicMock(value=[_member("ann@x.com")], odata_next_link="https://graph/next")
+    builder = MagicMock()
+    builder.transitive_members.get = AsyncMock(return_value=None)
+    o.c.external_users_client.client.groups.by_group_id.side_effect = lambda gid: builder
+    with pytest.raises(EmptyGraphAnswer):
+        await o.c._get_group_members("g1")
+    builder.transitive_members.get = AsyncMock(return_value=full)
+    builder.transitive_members.with_url.return_value.get = AsyncMock(return_value=None)
+    with pytest.raises(EmptyGraphAnswer):
+        await o.c._get_group_members("g1")
+    for _ in range(N):
+        await o.sync()
+    assert _written(o.proc, "g1") == [[]], "never a partial list; closed at the bound like a refusal"
+
+    sp = SharePoint()
+    del sp.c._fetch_graph_group_members  # the real read
+    sp.c._disabled_set_unknown = False
+    members = MagicMock()
+    sp.c.client.groups.by_group_id.side_effect = lambda gid: MagicMock(transitive_members=members)
+    members.get = AsyncMock(return_value=None)
+    with pytest.raises(EmptyGraphAnswer):
+        await sp.c._fetch_graph_group_members("g1")
+    members.get = AsyncMock(return_value=MagicMock(value=[], odata_next_link="https://graph/next"))
+    members.with_url.return_value.get = AsyncMock(return_value=None)
+    with pytest.raises(EmptyGraphAnswer):
+        await sp.c._fetch_graph_group_members("g1")
 
 
 @pytest.mark.asyncio

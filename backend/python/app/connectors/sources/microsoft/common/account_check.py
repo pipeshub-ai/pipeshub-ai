@@ -210,6 +210,11 @@ async def _save(sync_point: SyncPoint, log: Logger, before: dict, after: dict) -
 GROUP_CHECK_KEY = "unread-group-members"
 
 
+class EmptyGraphAnswer(Exception):
+    """A member page Microsoft answered with no body: neither a member list nor a transport failure. It is counted
+    like a refusal, so it can keep stored members only for the grace; the docs do not describe such an answer."""
+
+
 class GroupMemberGrace:
     """The same bound for a group whose member read Microsoft refuses: its stored members keep the group's access for
     ``UNCONFIRMED_SYNCS_BEFORE_CLOSE`` syncs in a row, then lose it. A refusal that lasts (a 403 on a group whose
@@ -255,9 +260,13 @@ class GroupMemberGrace:
         if self.streaks is not None:
             self.streaks.pop(group_id, None)
 
+    def closed_ids(self) -> list[str]:
+        """The groups already past the grace that this sync has not read yet."""
+        return sorted(k for k, v in (self.streaks or {}).items() if v >= UNCONFIRMED_SYNCS_BEFORE_CLOSE and k not in self.counted)
+
     async def refused(self, group_id: str, error: BaseException) -> bool:
         """Count a failed member read. True when the group's stored members must lose its access now."""
-        if self.streaks is None or not isinstance(error, ODataError):
+        if self.streaks is None or not isinstance(error, (ODataError, EmptyGraphAnswer)):
             return False
         if group_id not in self.counted:  # a group read twice in one sync counts once
             self.counted.add(group_id)
