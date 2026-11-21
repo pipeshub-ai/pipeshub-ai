@@ -29,14 +29,14 @@ SAMPLES = {"docm": samples.make_docm("s"), "dotx": samples.make_dotx("s"), "potx
            "pptm": samples.make_pptm("s"), "xlsm": samples.make_xlsm("s")}
 
 
-async def _run(ext, mime, name, rtype, service: bool, file_path=None):
+async def _run(ext, mime, name, rtype, service: bool, file_path=None):  # noqa: ANN202
     ep, _, processor, gp = _make_event_processor()
     ep.parsing_client = MagicMock(circuit_open=False)
     gp.get_document.return_value = {"_key": "rec-1", "recordType": rtype}
     seen: list[tuple[str, str | None]] = []
 
-    def stub(n):
-        def call(*_a, **_k):
+    def stub(n):  # noqa: ANN202
+        def call(*_a, **_k):  # noqa: ANN202
             seen.append((n, pi.run_identity()))
             return _mock_processor_gen()
         return call
@@ -47,7 +47,7 @@ async def _run(ext, mime, name, rtype, service: bool, file_path=None):
     processor._mark_record = AsyncMock()
     sent: list[tuple[str, str, str | None]] = []
 
-    async def orchestrate(**kw):
+    async def orchestrate(**kw):  # noqa: ANN202
         sent.append((kw["mime_type"], kw["extension"], pi.run_identity()))
         if False:
             yield None
@@ -67,7 +67,7 @@ async def _run(ext, mime, name, rtype, service: bool, file_path=None):
     return seen, sent, None
 
 
-def _route_of(mime, ext, name, rtype, file_path=None):
+def _route_of(mime, ext, name, rtype, file_path=None):  # noqa: ANN202
     dispatch, _code_ext, as_code = EventProcessor._read_plan(rtype, mime, ext, file_path, name, None)
     return dispatch, as_code
 
