@@ -17,6 +17,10 @@ PERMANENT_GRANT_ERROR_CODES = frozenset({
 # new registration's fix, not the user's grant.
 CLIENT_REJECTED_ERROR_CODES = frozenset({"invalid_client", "unauthorized_client", "incorrect_client_credentials"})
 
+# A token lifetime past this is malformed: created_at + timedelta(seconds=v) must stay inside datetime's range
+# (10**12 s already overflows), and no provider issues a token for a century.
+MAX_TOKEN_LIFETIME_S = 100 * 365 * 24 * 3600
+
 # Providers that only say it in prose (Atlassian's "refresh_token is invalid").
 PERMANENT_REFRESH_TEXT_MARKERS = (
     "invalid_grant",

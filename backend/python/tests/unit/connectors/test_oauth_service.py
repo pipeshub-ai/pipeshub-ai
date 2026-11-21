@@ -19,6 +19,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.utils.logger import JsonFormatter, TextFormatter, log_record_fields
 from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
+from app.utils.oauth_errors import MAX_TOKEN_LIFETIME_S
 from tests.support.refusing_token_endpoint import (
     ENTRA_INTERACTION_REQUIRED,
     ENTRA_INVALID_CLIENT,
@@ -242,7 +243,7 @@ class TestFromDictFieldTypes:
     @pytest.mark.parametrize(("value", "expected"), [
         ("3600", 3600), (" 3600 ", 3600), (3600, 3600), (3599.5, 3599.5),
         (None, None), ("", None), ("  ", None),
-        (oauth_service._MAX_LIFETIME_S, oauth_service._MAX_LIFETIME_S),
+        (MAX_TOKEN_LIFETIME_S, MAX_TOKEN_LIFETIME_S),
     ], ids=["numeric_text", "padded_text", "int", "float", "null", "empty", "blank", "the_bound"])
     def test_a_lifetime_that_is_a_number_of_seconds_is_kept(self, name: str, value: object, expected: object) -> None:
         token = OAuthToken.from_dict({"access_token": "tok", name: value})
@@ -252,7 +253,7 @@ class TestFromDictFieldTypes:
 
     @pytest.mark.parametrize("value", [
         f"soon-{MARKER}", True, [3600], "3600.5", float("nan"), float("inf"), float("-inf"), 10**20,
-        oauth_service._MAX_LIFETIME_S + 1,
+        MAX_TOKEN_LIFETIME_S + 1,
     ], ids=["text", "bool", "list", "decimal_text", "nan", "inf", "-inf", "huge", "past_the_bound"])
     def test_an_expires_in_that_is_no_number_of_seconds_is_malformed(self, value: object) -> None:
         error = _malformed({"expires_in": value})

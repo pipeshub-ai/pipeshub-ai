@@ -4,6 +4,7 @@ and auth/token management.
 All models use camelCase aliases on the wire (matching the frontend/Node conventions)
 while keeping snake_case attribute names in Python.
 """
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -263,6 +264,16 @@ class OAuthTokens(MCPCamelModel):
     # Absent on tokens from before it was recorded, all issued with `client_secret_post`.
     token_endpoint_auth_method: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("expires_in", mode="before")
+    @classmethod
+    def _whole_seconds(cls, value: object) -> object:
+        # Some providers send a fraction (3599.5). Connectors accept it too; dropping it only refreshes a moment early.
+        if not isinstance(value, float) or not math.isfinite(value):
+            return value
+        whole = int(value)
+        # Under a second never becomes 0, which the expiry properties read as "no expiry".
+        return whole if whole or value == 0 else (1 if value > 0 else -1)
 
     @property
     def is_expired(self) -> bool:
