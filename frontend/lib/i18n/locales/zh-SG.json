@@ -3776,6 +3776,25 @@
         "reach": "{{connector}} 中的更改会在{{interval}}内同步到 PipesHub。",
         "reachUnknown": "{{connector}} 中的更改会在下次同步时到达 PipesHub。",
         "syncNow": "立即同步权限",
+        "filter": {
+          "label": "搜索如何检查访问权限",
+          "mode": {
+            "inherit": "部署默认值",
+            "legacy": "经典检查",
+            "scopes": "更快的搜索"
+          },
+          "effective": {
+            "scopes": "{{connector}} 的搜索使用更快的搜索：在找到结果之前，就已将结果限定为每个人有权查看的内容，并且每个结果仍会被检查。",
+            "legacy": "{{connector}} 的搜索使用经典检查：结果在找到后再检查。"
+          },
+          "waiting": "{{connector}} 的权限更新完成后，更快的搜索就会开始。",
+          "applies": "此更改会在 30 秒内应用于搜索。",
+          "blocker": {
+            "serving_off": "此部署已关闭更快的搜索。",
+            "store_unsupported": "此部署的向量存储不支持更快的搜索。"
+          },
+          "saveError": "无法更改此设置。请重试。"
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",

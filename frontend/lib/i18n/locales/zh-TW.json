@@ -3776,6 +3776,25 @@
         "reach": "{{connector}} 中的變更會在{{interval}}內同步到 PipesHub。",
         "reachUnknown": "{{connector}} 中的變更會在下次同步時送達 PipesHub。",
         "syncNow": "立即同步權限",
+        "filter": {
+          "label": "搜尋如何檢查存取權限",
+          "mode": {
+            "inherit": "部署預設值",
+            "legacy": "傳統檢查",
+            "scopes": "更快的搜尋"
+          },
+          "effective": {
+            "scopes": "{{connector}} 的搜尋使用更快的搜尋：在找到結果之前，就已將結果限定為每個人有權查看的內容，且每個結果仍會被檢查。",
+            "legacy": "{{connector}} 的搜尋使用傳統檢查：結果在找到後再檢查。"
+          },
+          "waiting": "{{connector}} 的權限更新完成後，更快的搜尋就會開始。",
+          "applies": "此變更會在 30 秒內套用至搜尋。",
+          "blocker": {
+            "serving_off": "此部署已關閉更快的搜尋。",
+            "store_unsupported": "此部署的向量儲存不支援更快的搜尋。"
+          },
+          "saveError": "無法變更此設定。請再試一次。"
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",

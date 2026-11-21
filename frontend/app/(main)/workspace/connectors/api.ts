@@ -15,6 +15,8 @@ import type {
   ConnectorStatsResponse,
   ConnectionCheckResponse,
   PermissionStatus,
+  PermissionFilter,
+  PermissionFilterMode,
   ReindexStage,
   CodeGraphRepo,
   AccessExplanation,
@@ -548,6 +550,15 @@ export const ConnectorsApi = {
   async getPermissionStatus(connectorId: string): Promise<PermissionStatus> {
     const { data } = await apiClient.get<PermissionStatus>(
       `${BASE_URL}/${connectorId}/permissions/status`,
+      { suppressErrorToast: true }
+    );
+    return data;
+  },
+
+  async setPermissionFilter(connectorId: string, mode: PermissionFilterMode): Promise<PermissionFilter> {
+    const { data } = await apiClient.patch<PermissionFilter>(
+      `${BASE_URL}/${connectorId}/permissions/filter`,
+      { mode },
       { suppressErrorToast: true }
     );
     return data;
