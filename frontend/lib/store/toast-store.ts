@@ -247,7 +247,7 @@ export const useToastStore = create<ToastStore>()(
         // A pause belongs to the card that was pointed at or focused. That card is
         // leaving (replaced, closed, or its action pressed), and a removed card
         // fires no leave or blur event, so the pause ends here: the new card
-        // starts its full lifetime, and pauses again on the next pointer move or focus.
+        // starts its full lifetime, and pauses again once the pointer comes to it, or on focus.
         if (get().isHovered) get().setHovered(false);
         // One toast at a time: the one showing makes way for the new one. A
         // loading toast is remembered so its outcome can still be shown.

@@ -1,12 +1,11 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { Theme } from '@radix-ui/themes';
 import {
   useToastStore,
   selectToasts,
-  selectIsHovered,
   type Toast as ToastType,
   type ToastPlacement,
 } from '@/lib/store/toast-store';
@@ -21,6 +20,12 @@ import {
   type CornerStack,
 } from './toast-corner';
 
+/** Where the pointer last was on the page: null before it has moved there, and once it has left. */
+type PointerAt = React.MutableRefObject<{ x: number; y: number } | null>;
+
+/** A press on one of these does its own job; a press anywhere else on a card closes it. */
+const TOAST_CONTROLS = 'button, a, input, textarea, select, [role="button"], [role="link"]';
+
 interface ToastRegionProps {
   /** `status` is polite; `alert` interrupts, for errors. */
   role: 'status' | 'alert';
@@ -28,8 +33,7 @@ interface ToastRegionProps {
   placement: ToastPlacement;
   /** Toast cards other hosts put in the corner; a bottom toast sits above them. */
   stacked: CornerStack;
-  /** The pause is on: pointer or focus is on the toast. */
-  hovered: boolean;
+  pointerAt: PointerAt;
   onHoverChange: (hovered: boolean) => void;
   onDismiss: (id: string) => void;
 }
@@ -39,25 +43,48 @@ interface ToastRegionProps {
  * already listening when a toast arrives. It is the toast's own size and lets
  * clicks through wherever there is no toast. It stays in its corner whatever
  * the page shows: open panels and the chat composer do not move it.
+ *
+ * Pointing at a card or focusing it pauses its clock, so Undo and View can be
+ * reached. A card that comes up under the resting pointer, as over the button
+ * the hand goes to next, does not pause while the pointer stays on it, or it
+ * would never leave that button: it pauses once the pointer has left it and
+ * come back. A press on a card's text closes it, as its close button does.
  */
-function ToastRegion({ role, toast, placement, stacked, hovered, onHoverChange, onDismiss }: ToastRegionProps) {
+function ToastRegion({ role, toast, placement, stacked, pointerAt, onHoverChange, onDismiss }: ToastRegionProps) {
   const isTop = placement === 'top';
+  const regionRef = useRef<HTMLDivElement>(null);
+  const cameUpUnderPointer = useRef(false);
+  const toastId = toast?.id;
+  useLayoutEffect(() => {
+    const at = pointerAt.current;
+    const box = toastId ? regionRef.current?.getBoundingClientRect() : undefined;
+    cameUpUnderPointer.current =
+      !!at && !!box && at.x >= box.left && at.x <= box.right && at.y >= box.top && at.y <= box.bottom;
+  }, [toastId, pointerAt]);
   return (
     <div
+      ref={regionRef}
       role={role}
       aria-live={role === 'alert' ? 'assertive' : 'polite'}
       aria-atomic="true"
       data-ph-toast-region=""
       data-ph-toast-placement={toast ? placement : undefined}
-      onMouseEnter={() => onHoverChange(true)}
-      // A card that arrived under a still pointer pauses on the pointer's next move.
-      onMouseMove={() => {
-        if (!hovered) onHoverChange(true);
+      onMouseEnter={() => {
+        if (!cameUpUnderPointer.current) onHoverChange(true);
       }}
-      onMouseLeave={() => onHoverChange(false)}
+      onMouseLeave={() => {
+        cameUpUnderPointer.current = false;
+        onHoverChange(false);
+      }}
       onFocus={() => onHoverChange(true)}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onHoverChange(false);
+      }}
+      onClick={(e) => {
+        if (!toast?.showCloseButton || (e.target as Element).closest(TOAST_CONTROLS)) return;
+        // A press that ends a text selection is someone copying the text.
+        if (window.getSelection()?.toString()) return;
+        onDismiss(toast.id);
       }}
       style={{
         position: 'fixed',
@@ -86,12 +113,36 @@ function ToastRegion({ role, toast, placement, stacked, hovered, onHoverChange, 
   );
 }
 
+/** Follows the pointer over the page, so a card can tell whether it came up under it. */
+function usePointerAt(): PointerAt {
+  const at = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const follow = (e: PointerEvent) => {
+      at.current = { x: e.clientX, y: e.clientY };
+    };
+    // Off the page, or a finger lifted, the pointer is nowhere a card could come up under.
+    const leave = (e: PointerEvent) => {
+      if (!e.relatedTarget) at.current = null;
+    };
+    const options = { capture: true, passive: true } as const;
+    window.addEventListener('pointermove', follow, options);
+    window.addEventListener('pointerdown', follow, options);
+    window.addEventListener('pointerout', leave, options);
+    return () => {
+      window.removeEventListener('pointermove', follow, options);
+      window.removeEventListener('pointerdown', follow, options);
+      window.removeEventListener('pointerout', leave, options);
+    };
+  }, []);
+  return at;
+}
+
 export function ToastContainer() {
   const toasts = useToastStore(selectToasts);
-  const hovered = useToastStore(selectIsHovered);
   const { setHovered, removeToast } = useToastStore();
   const { appearance } = useThemeAppearance();
   const isMobile = useIsMobile();
+  const pointerAt = usePointerAt();
 
   const stacked = useToastCornerStack();
   const [mounted, setMounted] = useState(false);
@@ -111,7 +162,7 @@ export function ToastContainer() {
   const shared = {
     placement,
     stacked,
-    hovered,
+    pointerAt,
     onHoverChange: setHovered,
     onDismiss: removeToast,
   };

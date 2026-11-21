@@ -415,25 +415,40 @@ describe('the pause belongs to the card on screen', () => {
     expect(shown()).toBeUndefined();
   });
 
-  it('a toast that replaces a hovered one closes on its own lifetime, and pauses again on the next pointer move', () => {
-    render(<ToastContainer />);
-    act(() => {
-      toast.info('First');
+  it('a toast that replaces a hovered one closes on its own lifetime, and pauses once the pointer has left it and come back', () => {
+    // jsdom lays nothing out: the region reports a corner, and the pointer rests in it.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const box = this.hasAttribute('data-ph-toast-region')
+        ? { left: 904, top: 620, right: 1264, bottom: 704 }
+        : { left: 0, top: 0, right: 0, bottom: 0 };
+      return { ...box, x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top, toJSON: () => box };
     });
-    fireEvent.mouseEnter(screen.getByRole('status'));
-    expect(useToastStore.getState().isHovered).toBe(true);
-    act(() => {
-      toast.info('Second');
-    });
-    expect(useToastStore.getState().isHovered).toBe(false);
-    advance(3999);
-    expect(shown()).toBe('Second');
-    fireEvent.mouseMove(screen.getByText('Second'));
-    expect(useToastStore.getState().isHovered).toBe(true);
-    advance(10_000);
-    expect(shown()).toBe('Second');
-    fireEvent.mouseLeave(screen.getByRole('status'));
-    advance(1);
-    expect(shown()).toBeUndefined();
+    try {
+      render(<ToastContainer />);
+      act(() => {
+        toast.info('First');
+      });
+      window.dispatchEvent(new MouseEvent('pointermove', { clientX: 1100, clientY: 680 }));
+      fireEvent.mouseEnter(screen.getByRole('status'));
+      expect(useToastStore.getState().isHovered).toBe(true);
+      act(() => {
+        toast.info('Second');
+      });
+      expect(useToastStore.getState().isHovered).toBe(false);
+      fireEvent.mouseMove(screen.getByText('Second'));
+      expect(useToastStore.getState().isHovered).toBe(false);
+      advance(3999);
+      expect(shown()).toBe('Second');
+      fireEvent.mouseLeave(screen.getByRole('status'));
+      fireEvent.mouseEnter(screen.getByRole('status'));
+      expect(useToastStore.getState().isHovered).toBe(true);
+      advance(10_000);
+      expect(shown()).toBe('Second');
+      fireEvent.mouseLeave(screen.getByRole('status'));
+      advance(1);
+      expect(shown()).toBeUndefined();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
