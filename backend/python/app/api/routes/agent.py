@@ -4982,6 +4982,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
                 if not caps.internal_search:
                     filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
+                    # The tools that read stored records still load: an agent held to open sources
+                    # keeps its strict scope, or the empty one here would read as "everything".
+                    if open_sources_only:
+                        filters["strictScope"] = True
                     agent_knowledge = []
 
                 # Universal Agent Mode (agentIdPlaceholder) is still Chat Assistant —

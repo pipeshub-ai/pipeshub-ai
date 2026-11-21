@@ -16,7 +16,7 @@ import json
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -480,11 +480,22 @@ class TestChatStreamKnowledge:
         """The storage tools as the turn would run them: its filters, its knowledge, its identity."""
         provider = MagicMock()
         provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
-        return StoragePatternMatch({
+        tool = StoragePatternMatch({
             "org_id": "org-1", "user_id": call["user_info"]["userId"], "graph_provider": provider,
             "filters": call["query_info"]["filters"], "agent_knowledge": call["query_info"]["knowledge"],
             "config_service": AsyncMock(), "logger": MagicMock(),
         })
+
+        # Stops each command where it would open the connector's records: only the scope refuses earlier.
+        tool._resolve_connector_path = AsyncMock(return_value=(None, "stopped at the records"))
+        return tool
+
+    @staticmethod
+    def _reaches_records(tool: StoragePatternMatch, connector_id: str) -> bool:
+        """Whether the storage tools get as far as the connector's stored records."""
+        asyncio.run(tool.run_command(connector_id, 'grep -r "x" .'))
+        asyncio.run(tool.find_records(connector_id, 'grep -rl "x" .'))
+        return tool._resolve_connector_path.await_count > 0
 
     def _gated_only(self, graph: InMemoryGraph, agent: str) -> None:
         """A company-wide drive is the agent's only source."""
@@ -516,14 +527,8 @@ class TestChatStreamKnowledge:
         assert call["user_info"]["userId"] == "u-alice"
         assert self._knowledge(call) == set()
         tool = self._storage_tool(call)
-        with patch(
-            "app.agents.actions.storage_search.storage_search._run_subprocess", new_callable=AsyncMock,
-        ) as run:
-            ok_run, _ = asyncio.run(tool.run_command("drive-team", 'grep -r "x" .'))
-            ok_find, _ = asyncio.run(tool.find_records("drive-team", 'grep -rl "x" .'))
-            asyncio.run(tool._check_accessible_vrids(["v1"]))
-        assert (ok_run, ok_find) == (False, False)
-        run.assert_not_called()
+        assert not self._reaches_records(tool, "drive-team")
+        asyncio.run(tool._check_accessible_vrids(["v1"]))
         scope = tool.state["graph_provider"].filter_accessible_virtual_record_ids.await_args.kwargs["scope_connector_ids"]
         assert scope is not None and "drive-team" not in scope
 
@@ -535,6 +540,24 @@ class TestChatStreamKnowledge:
         (call,) = loop.calls
         assert self._storage_tool(call)._out_of_scope_error("drive-team") is not None
 
+    def test_without_a_licence_an_unbound_agent_reads_nothing_through_the_storage_tools_with_internal_search_off(
+        self, graph, loop,
+    ) -> None:
+        self._sources(graph, "sa")
+        c, _ = make_client(graph, FakeConfigService({PERMISSION_SYNC_LICENCE_KEY: {"allowed": False}}))
+        body = {"query": "hi", "agentCapabilities": {"internalSearch": False}}
+        assert _stream(c, "sa", "bob", body).status_code == 200
+        (call,) = loop.calls
+        assert call["user_info"]["userId"] == "u-alice"
+        assert not self._reaches_records(self._storage_tool(call), "drive-team")
+
+    def test_with_a_licence_internal_search_off_leaves_an_unbound_agents_filters_as_they_were(self, graph, loop) -> None:
+        self._sources(graph, "sa")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob", {"query": "hi", "agentCapabilities": {"internalSearch": False}})
+        (call,) = loop.calls
+        assert call["query_info"]["filters"] == {"apps": [], "kb": ["NO_KB_SELECTED"]}
+
     def test_with_a_licence_an_unbound_agent_keeps_its_gated_source_in_the_storage_tools(self, graph, loop) -> None:
         self._gated_only(graph, "sa")
         c, _ = make_client(graph)
@@ -542,7 +565,8 @@ class TestChatStreamKnowledge:
         (call,) = loop.calls
         assert self._knowledge(call) == {"drive-team"}
         assert "strictScope" not in call["query_info"]["filters"]
-        assert self._storage_tool(call)._out_of_scope_error("drive-team") is None
+        # The same check does reach the records of a source that is in scope.
+        assert self._reaches_records(self._storage_tool(call), "drive-team")
 
     def test_without_a_licence_an_agent_bound_to_a_service_account_keeps_its_gated_sources(self, graph, loop) -> None:
         graph.add_node("users", {"_key": "k-svc", "userId": "u-svc", "orgId": "org-1", "email": "svc@acme.test",
