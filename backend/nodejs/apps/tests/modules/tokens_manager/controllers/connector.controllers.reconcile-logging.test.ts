@@ -1,13 +1,13 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import winston from 'winston'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import * as orchestrator from '../../../../src/modules/crawling_manager/services/connector_schedule_orchestrator'
 import { RECONCILE_LOG_MESSAGE } from '../../../../src/modules/crawling_manager/services/connector_schedule_orchestrator'
 import { updateConnectorInstanceFiltersSyncConfig } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { runWithRequestContext } from '../../../../src/libs/context/request-context'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
+import { captureLogRecords, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 /**
  * The background schedule reconcile after a sync-settings save writes one line per reconcile, with the
@@ -29,17 +29,14 @@ const level = (r: Row): string => {
 
 describe('Connector schedule reconcile: one line per reconcile, the cause in reason', () => {
   let records: Row[]
+  // The save under test; the reconcile runs in its context (a timer from elsewhere does not).
+  let requestId: string
   let clock: sinon.SinonFakeTimers
   let scheduler: { markReconcilePending: sinon.SinonStub; clearReconcilePending: sinon.SinonStub }
 
   beforeEach(() => {
-    records = []
-    // Every winston logger, whichever root a module got at load, at every level.
-    sinon.stub(winston.Logger.prototype, 'isLevelEnabled').returns(true)
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Row) {
-      records.push(info)
-      return this
-    } as any)
+    records = captureLogRecords()
+    requestId = newRequestId('reconcile-logging')
     scheduler = { markReconcilePending: sinon.stub().resolves(), clearReconcilePending: sinon.stub().resolves() }
     // Only timers: the reconcile itself starts on a real setImmediate.
     clock = sinon.useFakeTimers({ toFake: ['setTimeout'] })
@@ -66,7 +63,7 @@ describe('Connector schedule reconcile: one line per reconcile, the cause in rea
       user: { userId: 'u1', orgId: 'org-1' },
     }
     const res: any = { status: sinon.stub().returnsThis(), json: sinon.stub().returnsThis() }
-    await runWithRequestContext({ rootId: 'rq-1', logFields: { connector_id: CONNECTOR } }, async () => {
+    await runWithRequestContext({ rootId: requestId, logFields: { connector_id: CONNECTOR } }, async () => {
       await handler(req, res, sinon.stub())
     })
     await new Promise<void>((resolve) => setImmediate(resolve))
@@ -74,7 +71,8 @@ describe('Connector schedule reconcile: one line per reconcile, the cause in rea
     for (let i = 0; i < 5; i += 1) await new Promise<void>((resolve) => setImmediate(resolve))
   }
 
-  const reconcileLines = (): Row[] => records.filter((r) => r.message === RECONCILE_LOG_MESSAGE)
+  const mine = (): Row[] => recordsOf(records, requestId)
+  const reconcileLines = (): Row[] => mine().filter((r) => r.message === RECONCILE_LOG_MESSAGE)
 
   it('three refused reads are three DEBUG lines and one WARN snapshot_failed, all with the connector, no ERROR', async () => {
     await saveSync(async () => ({ statusCode: 503, data: {} }))
@@ -85,7 +83,7 @@ describe('Connector schedule reconcile: one line per reconcile, the cause in rea
       ['debug', 'failure', 'non_2xx', 503, undefined, CONNECTOR],
       ['warn', 'failure', 'snapshot_failed', undefined, 3, CONNECTOR],
     ])
-    expect(records.filter((r) => level(r) === 'error')).to.deep.equal([])
+    expect(mine().filter((r) => level(r) === 'error')).to.deep.equal([])
     expect(scheduler.markReconcilePending.calledOnce).to.equal(true)
   })
 
@@ -136,9 +134,9 @@ describe('Connector schedule reconcile: one line per reconcile, the cause in rea
 
     await saveSync(async () => GOOD_SNAPSHOT)
 
-    const background = records.filter((r) => String(r.message).startsWith('Background schedule reconcile failed'))
+    const background = mine().filter((r) => String(r.message).startsWith('Background schedule reconcile failed'))
     expect(background.map(level)).to.deep.equal(['warn'])
-    expect(records.filter((r) => level(r) === 'error').map((r) => r.reason)).to.deep.equal(['queue_failed'])
+    expect(mine().filter((r) => level(r) === 'error').map((r) => r.reason)).to.deep.equal(['queue_failed'])
     expect(scheduler.markReconcilePending.calledOnce).to.equal(true)
   })
 
@@ -148,7 +146,7 @@ describe('Connector schedule reconcile: one line per reconcile, the cause in rea
 
     await saveSync(async () => GOOD_SNAPSHOT)
 
-    const background = records.filter((r) => String(r.message).startsWith('Background schedule reconcile failed'))
+    const background = mine().filter((r) => String(r.message).startsWith('Background schedule reconcile failed'))
     expect(background.map(level)).to.deep.equal(['error'])
   })
 
@@ -157,7 +155,7 @@ describe('Connector schedule reconcile: one line per reconcile, the cause in rea
 
     await saveSync(async () => ({ statusCode: 503, data: {} }))
 
-    const lines = records.filter((r) => r.message === 'Could not record a schedule change for the hourly repair')
+    const lines = mine().filter((r) => r.message === 'Could not record a schedule change for the hourly repair')
     expect(lines.map(level)).to.deep.equal(['error'])
     expect(lines[0].connector_id).to.equal(CONNECTOR)
   })
