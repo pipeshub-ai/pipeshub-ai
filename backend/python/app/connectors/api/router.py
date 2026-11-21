@@ -7264,7 +7264,7 @@ async def handle_oauth_callback(
             }
 
         if not code or not state:
-            logger.error("Missing OAuth parameters")
+            mark_request_failure(request, None, error_class="bad_request", reason="missing_parameters")
             return {
                 "success": False,
                 "error": "missing_parameters",
@@ -7290,8 +7290,9 @@ async def handle_oauth_callback(
             state_data = _decode_state_with_instance(state)
             original_state = state_data["state"]
             connector_id = state_data["connector_id"]
-        except ValueError as e:
-            logger.error(f"Invalid state format: {e}")
+        except ValueError:
+            # The client's input, not our failure: a client class, and none of the decoder's text.
+            mark_request_failure(request, None, error_class="bad_request", reason="invalid_state")
             return {
                 "success": False,
                 "error": "invalid_state",

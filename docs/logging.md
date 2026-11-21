@@ -592,6 +592,10 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   the error can quote the token URL's query or the provider's answer), a provider's `error=`, and an unknown connector
   (`reason=instance_not_found`). Once the caller is allowed the connector, the line carries `connector_id` and `connector_type`;
   a missing or unreadable OAuth configuration is then `misconfigured` (`reason=config_not_found`, `oauth_config_fetch_error`).
+  A callback that is not for the sign-in in progress (a stale or replayed state, a used code, or a code another callback
+  claimed: `OAuthStateError`) is `bad_request` at WARNING on both the connector and the toolset callback, as on the MCP
+  one; so are the connector callback's missing `code` or `state` (`reason=missing_parameters`) and a state it cannot
+  decode (`reason=invalid_state`, no text).
   A successful sign-in is that line with `outcome=success` and `has_refresh_token`. No field of the provider's token answer
   (scopes, `uid`, `account_id`, `team_id`, `token_type`) is logged: the route serves every connector and can't tell an opaque
   id from a login.
