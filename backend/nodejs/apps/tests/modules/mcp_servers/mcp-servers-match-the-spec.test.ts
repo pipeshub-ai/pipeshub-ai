@@ -5,6 +5,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import yaml from 'js-yaml'
 import { createMcpServersRouter } from '../../../src/modules/mcp_servers/routes/mcp_servers.routes'
+import { requireSessionAuth } from '../../../src/libs/middlewares/require-session-auth.middleware'
 
 /**
  * Every MCP server route the gateway serves is in the published spec, and the spec
@@ -59,6 +60,15 @@ function gateScopes(): Record<string, string[]> {
   return out
 }
 
+/** The routes only a web sign-in can call: no OAuth token gets past them, whatever its scopes. */
+function sessionOnlyRoutes(): Set<string> {
+  return new Set(
+    router()
+      .stack.filter((layer: any) => layer.route?.stack.some((h: any) => h.handle === requireSessionAuth))
+      .flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => routeId(method, String(layer.route.path)))),
+  )
+}
+
 /** Every `method path` the spec documents under `/mcp-servers`. */
 function documentedRoutes(spec: Spec): string[] {
   return Object.entries(spec.paths)
@@ -78,6 +88,8 @@ describe('MCP server routes match the spec', () => {
 
   it('tags every MCP operation and lists the scopes its gate accepts', () => {
     const scopes = gateScopes()
+    const sessionOnly = sessionOnlyRoutes()
+    expect(sessionOnly).to.include('post /mcp-servers/tool-approvals/{approvalId}/validate')
     for (const [path, operations] of Object.entries(spec.paths)) {
       if (!path.startsWith('/mcp-servers')) continue
       for (const [method, operation] of Object.entries(operations)) {
@@ -86,7 +98,7 @@ describe('MCP server routes match the spec', () => {
         expect(scopes[id], id).to.not.be.empty
         expect(operation.security, id).to.deep.equal([
           { bearerAuth: [] },
-          ...scopes[id]!.map((scope) => ({ oauth2: [scope] })),
+          ...(sessionOnly.has(id) ? [] : scopes[id]!.map((scope) => ({ oauth2: [scope] }))),
         ])
       }
     }

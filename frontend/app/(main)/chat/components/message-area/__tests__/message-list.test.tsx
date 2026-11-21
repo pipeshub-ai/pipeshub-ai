@@ -821,6 +821,107 @@ describe('MessageList — blur above the composer dock', () => {
     });
   });
 
+  it('a card appearing above the composer grows the published height and scrolls the transcript clear of it', () => {
+    let height = 150;
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.style.position === 'sticky' && this.querySelector('[data-testid="composer"]') ? height : 0;
+      },
+    });
+    try {
+      open();
+      const before = scroller().scrollTop;
+      expect(scroller().style.getPropertyValue('--composer-dock-height')).toBe('150px');
+
+      height = 400;
+      act(() => {
+        for (const cb of [...resizeCallbacks]) cb([], {} as ResizeObserver);
+      });
+
+      expect(scroller().style.getPropertyValue('--composer-dock-height')).toBe('400px');
+      expect(scroller().scrollTop).toBe(before + 250);
+
+      // Unchanged height: nothing moves.
+      act(() => {
+        for (const cb of [...resizeCallbacks]) cb([], {} as ResizeObserver);
+      });
+      expect(scroller().scrollTop).toBe(before + 250);
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', original);
+      else delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
+    }
+  });
+
+  it('scrolls clear of a growing dock instantly, and a scroll event mid-way does not stop following', () => {
+    let height = 150;
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.style.position === 'sticky' && this.querySelector('[data-testid="composer"]') ? height : 0;
+      },
+    });
+    const calls: Array<ScrollToOptions | number | undefined> = [];
+    const plain = HTMLElement.prototype.scrollTo;
+    // A smooth scroll reports where it is on the way: the old position first, then the end.
+    HTMLElement.prototype.scrollTo = function scrollTo(this: HTMLElement, arg?: ScrollToOptions | number) {
+      calls.push(arg);
+      fireEvent.scroll(this);
+      plain.call(this, arg as ScrollToOptions);
+    } as HTMLElement['scrollTo'];
+    const grow = (to: number) => {
+      height = to;
+      act(() => {
+        for (const cb of [...resizeCallbacks]) cb([], {} as ResizeObserver);
+      });
+    };
+    try {
+      open();
+      const before = scroller().scrollTop;
+      calls.length = 0;
+
+      grow(400);
+      expect(calls.at(-1)).toEqual({ top: before + 250, behavior: 'instant' });
+      expect(scroller().scrollTop).toBe(before + 250);
+
+      // Still following: the next growth moves the transcript too.
+      grow(450);
+      expect(scroller().scrollTop).toBe(before + 300);
+    } finally {
+      HTMLElement.prototype.scrollTo = plain;
+      if (original) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', original);
+      else delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
+    }
+  });
+
+  it('a card appearing above the composer leaves a reader who scrolled up where they are', () => {
+    let height = 150;
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.style.position === 'sticky' && this.querySelector('[data-testid="composer"]') ? height : 0;
+      },
+    });
+    try {
+      open();
+      scrollTo(0);
+
+      height = 400;
+      act(() => {
+        for (const cb of [...resizeCallbacks]) cb([], {} as ResizeObserver);
+      });
+
+      expect(scroller().style.getPropertyValue('--composer-dock-height')).toBe('400px');
+      expect(scroller().scrollTop).toBe(0);
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', original);
+      else delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
+    }
+  });
+
   it('keeps its full height above a full composer', () => {
     withDockHeight(300, () => {
       open();
