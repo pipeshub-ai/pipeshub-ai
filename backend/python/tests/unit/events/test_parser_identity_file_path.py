@@ -2,9 +2,9 @@
 reproduce the key. A path that agrees with the name is tracked as before."""
 from __future__ import annotations
 
-import pytest
-
 from unittest.mock import MagicMock
+
+import pytest
 
 from app.events.processor import Processor
 from app.modules.pipeline import parser_identity as pi
