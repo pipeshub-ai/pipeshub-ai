@@ -116,6 +116,12 @@ def oauth_state(connector_id: str) -> str:
     return base64.urlsafe_b64encode(raw.encode()).decode()
 
 
+def agent_oauth_state(instance_id: str, agent_key: str) -> str:
+    """The ``state`` an agent's toolset sign-in sends back: the toolset, and the agent in place of a user."""
+    raw = json.dumps({"state": "it-state", "instance_id": instance_id, "user_id": agent_key, "is_agent": True})
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
 class _AsUser:
     """What ``KBClient`` needs of a client, for one person's session token."""
 
@@ -704,9 +710,9 @@ class World:
 
     # ------------------------------------------------------------------ agents
 
-    def _create_agent(self, caller: str, what: str) -> str:
+    def _create_agent(self, caller: str, what: str, **fields: Any) -> str:
         body = self._json(caller, "POST", f"{_AGENTS}/create", f"Creating {what}",
-                          ok=(200, 201), json={"name": self._unique_name("agent")})
+                          ok=(200, 201), json={"name": self._unique_name("agent"), **fields})
         agent = body.get("agent")
         agent_key = str(agent.get("_key") or "") if isinstance(agent, dict) else ""
         if not agent_key:
@@ -727,6 +733,19 @@ class World:
             # makes a refusal on the binding field mean the binding and not
             # the agent.
             "member_agent": self._create_agent(CREATOR, "the member's test agent"),
+        }
+
+    def _build_service_agents(self) -> dict[str, str]:
+        # Neither names a service account: binding one needs an admin, and no case here is about it.
+        admin_agent = self._create_agent(
+            ADMIN, "the admin's service account agent", isServiceAccount=True, shareWithOrg=True,
+        )
+        return {
+            "admin_service_agent": admin_agent,
+            "member_service_agent": self._create_agent(
+                CREATOR, "the member's service account agent", isServiceAccount=True,
+            ),
+            "admin_service_agent_state": agent_oauth_state(self.value("toolset"), admin_agent),
         }
 
     # ------------------------------------------------------------------- teams

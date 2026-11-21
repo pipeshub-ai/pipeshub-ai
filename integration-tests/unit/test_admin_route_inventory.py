@@ -35,6 +35,7 @@ from helper.admin_route_table import (
 )
 from helper.admin_routes import (
     NODE_SRC,
+    PYTHON_APP,
     admin_routes_in_file,
     discover_admin_routes,
     discover_python_admin_handlers,
@@ -42,6 +43,7 @@ from helper.admin_routes import (
 )
 from helper.admin_route_conditional_table import (
     ADMIN,
+    AGENT_CREDENTIALS_ADMIN_ONLY,
     CALLERS,
     CONDITIONAL_ROUTES,
     CONNECTOR_SERVICE,
@@ -260,6 +262,14 @@ def test_every_conditional_admin_handler_has_live_cases() -> None:
     assert not stale, f"These rows of live cases name handlers that are no longer conditional: {stale}"
     empty = sorted(key for key, route in rows.items() if not route.cases)
     assert not empty, f"These rows have no cases: {empty}"
+
+
+def test_the_agent_credential_rows_follow_the_edition_config() -> None:
+    """Their creator case turns on the edition's setting; a renamed setting would quietly read as off."""
+    text = (PYTHON_APP / "edition_config.py").read_text(encoding="utf-8")
+    live = re.findall(r"^agent_credentials_admin_only\s*=\s*(True|False)\b", text, re.MULTILINE)
+    assert len(live) == 1, "edition_config.py should set agent_credentials_admin_only once"
+    assert AGENT_CREDENTIALS_ADMIN_ONLY is (live[0] == "True")
 
 
 def test_each_conditional_row_calls_the_route_its_handler_serves() -> None:

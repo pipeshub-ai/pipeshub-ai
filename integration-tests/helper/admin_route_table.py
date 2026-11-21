@@ -323,6 +323,8 @@ PYTHON_BEHIND_NODE_ADMIN = frozenset({
     "connectors_main.py::vector_db_memory_check",
 })
 
+_AGENT_CREDENTIALS = "admin-only where agent credentials are (an edition setting); otherwise any editor of the agent"
+
 # Python handlers that ask whether the caller is an admin but let members
 # through for some inputs, so there is no single "member is refused" request.
 # helper/admin_route_conditional_table.py holds the live cases for each one.
@@ -371,6 +373,14 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/toolsets.py::update_toolset_instance": "a personal toolset is its owner's",
     "api/routes/toolsets.py::delete_toolset_instance": "a personal toolset is its owner's",
     "api/routes/toolsets.py::update_toolset_tool_rules": "a personal toolset's rules are its owner's",
+    # A service account agent's own credentials answer for everyone who uses the agent. Where the edition
+    # says so (`agent_credentials_admin_only`), only an org admin sets them; otherwise any editor of it does.
+    "api/routes/toolsets.py::authenticate_agent_toolset": _AGENT_CREDENTIALS,
+    "api/routes/toolsets.py::get_agent_toolset_oauth_url": _AGENT_CREDENTIALS,
+    "api/routes/toolsets.py::handle_toolset_oauth_callback": _AGENT_CREDENTIALS,
+    "api/routes/toolsets.py::reauthenticate_agent_toolset": _AGENT_CREDENTIALS,
+    "api/routes/toolsets.py::remove_agent_toolset_credentials": _AGENT_CREDENTIALS,
+    "api/routes/toolsets.py::update_agent_toolset_credentials": _AGENT_CREDENTIALS,
     # Record reads: the caller's own access to the record decides, admin or not.
     # The admin flag only reaches the connector loader, which refuses nobody on it.
     "connectors/api/router.py::download_file": "signed link and record permission",
