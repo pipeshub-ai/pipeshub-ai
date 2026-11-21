@@ -982,6 +982,47 @@ The level, by the first matching row:
   stream's headers, and regenerate's checks before its stream. The request's own `http.request.error` line covers them.
 - **Known duplicate.** A failed save still logs ERROR twice: the persistence helper's own line and the end line.
 
+## Mail delivery (Node)
+
+Each mail job the mail consumer takes from the broker writes exactly one `mail.send.end` line
+(`backend/nodejs/apps/src/modules/mail/services/mail.consumer.ts`), after its last attempt. `org_id` comes from the job's envelope.
+
+| Field | Value |
+| --- | --- |
+| `outcome` | `success`, `failure`, or `skipped` (not attempted) |
+| `reason` | failure: `permanent` (the server refused the message), `indeterminate` (the send deadline passed while the server may still deliver it, so it is not retried), `unavailable` (sending is paused after repeated connection failures), `attempts_exhausted`, `budget_exhausted` (no time left for another attempt), `link_failed`, `exception`; skipped: `smtp_not_configured`, `invalid_payload` |
+| `error_class` | from `mailErrorClass` (`modules/mail/types/mail-event.types.ts`), below |
+| `attempt` | turns of the retry loop (0 when none ran). A turn that could not read the SMTP settings counts, though nothing was sent: a job whose settings were unreadable and then missing ends `smtp_not_configured` with `attempt=1` |
+| `smtp_code` | the server's reply code (`550`), when it answered |
+| `email_template_type`, `duration_ms` | the template (`loginWithOTP`); the job's start to the line |
+
+`mailErrorClass` reads the reply code first, whatever nodemailer's own `code` says:
+
+| Failure | `error_class` | Level |
+| --- | --- | --- |
+| any 4xx reply (greylisting `450`, `421`, `454`) | `unavailable` | WARNING |
+| `530` / `535`, `EAUTH`, a 5xx to `MAIL FROM` (`553` sender rejected, `550` relaying denied), nodemailer's `Invalid sender`, an untrusted TLS certificate or a failed TLS upgrade (`ETLS`) | `misconfigured`: our SMTP settings, every mail fails | ERROR |
+| a 5xx to `RCPT TO` or `DATA`, no or invalid recipients, a message larger than the server allows | `bad_request`: this message or recipient | WARNING |
+| a 5xx to another command, `EPROTOCOL` | `upstream_5xx` | WARNING |
+| a refused or lost connection | `unavailable` | WARNING |
+| a connection or send timeout | `timeout` | WARNING |
+| an unknown template, anything else | `internal` | ERROR, with the stack when an exception caused it |
+
+A sent mail is INFO; a skipped one is WARNING (`invalid_payload`) or ERROR (`smtp_not_configured`, `misconfigured`). Each retry is
+DEBUG `mail.send.retry` (`attempt`, `error_class`, `smtp_code`, `next_retry_ms`).
+
+- **Never logged:** the server's reply (it quotes the recipient: `550 5.1.1 <alice@…>: Recipient address rejected`), recipients,
+  the subject, template data (sign-in codes, links) or the message value. A failed write of the mail's audit record logs only
+  `error_class` and `error_type`: a store's message can quote the record. The admin notification for a failed mail still names
+  the recipients and the reply; that is product text, not a log line.
+- **The direct route** (`POST /api/v1/mail/emails/sendEmail`) writes no line of its own: the request's `http.request.error` is
+  the one line. A failure the server caused carries a text-free `{ status }` cause, so it is `upstream_5xx`, `unavailable` or
+  `timeout` (WARNING) while the client still gets the same 500; our own failures (an unknown template, our sender refused,
+  email turned off) stay `internal` (ERROR). A refused login or an unreachable server is answered 502 and is `upstream_5xx`.
+- The notification consumer logs a skipped or failed message with its `type` and `size_bytes`, never its value (a
+  `mail.deliveryFailed` notification quotes the recipients). Producers log each publish at DEBUG (`broker.event.published`,
+  `event_type`, `topic`).
+
 ## Redaction
 
 Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
@@ -1034,7 +1075,7 @@ Node, drop the address from the thrown message.
 
 **Finding a user's lines (support).** Get the PipesHub id from the admin console (Users, open the user: the profile URL has
 `userId=<id>`) or `GET /api/v1/users?search=<email>` (`_id`), then filter on `user_id=<id>` (requests made by that user) or
-`target_user_id=<id>` (sign-in, user management and connector-creator lines). A connector's per-user lines carry
+`target_user_id=<id>` (sign-in, user management, connector-creator, and notification socket and queue lines). A connector's per-user lines carry
 `source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object id, Atlassian
 account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry only
 `connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.
@@ -1064,7 +1105,7 @@ with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest 
   `mcp_server_id`, `toolset_id`, `job`, `template_id`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
   `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Node
   audit lines also have `actor`, `target`, `group_id` and `auth_method`. Python also has `ctx_kind`, `ctx_source`, `target_org_id` (the org a cross-org job acted on, outside its bound context), `error_message`
-  and `cause_type`; Node's `error` is an object (`error.message`). Node also has `upstream` and `network_code` (on
+  and `cause_type`; Node's `error` is an object (`error.message`). Node also has `smtp_code` and `email_template_type` (on `mail.send.end`), `upstream` and `network_code` (on
   `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on `chat_stream.*`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
