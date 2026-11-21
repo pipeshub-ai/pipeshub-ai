@@ -33,6 +33,14 @@ OCR_PAGE_SHARE = 0.5
 # Pages with a text layer that are checked to decide whether a PDF needs OCR.
 OCR_SAMPLE_PAGES = 30
 
+# A page of a document that has text is read by OCR on its own when its text layer holds fewer characters
+# than this and it carries heavy drawn content: text drawn as outlines has no text layer, only curves.
+TEXTLESS_PAGE_MAX_CHARS = 100
+# Curves, rectangles and lines on such a page; a ruled form or a chart has tens, drawn glyphs have thousands.
+TEXTLESS_PAGE_MIN_DRAWN = 200
+# Or the page is mostly one picture or a few: the share of the page they cover.
+TEXTLESS_PAGE_IMAGE_SHARE = 0.75
+
 
 
 @dataclass(frozen=True)
@@ -231,3 +239,82 @@ def repair_pdf(content: bytes) -> bytes:
     finally:
         document.close()
     return rewritten.getvalue()
+
+
+def textless_page_score(page: Page, chars: int) -> int:
+    """How strongly *page* reads as a page whose content has no text layer; 0 when it does not.
+
+    A page qualifies when its text layer is short (under ``TEXTLESS_PAGE_MAX_CHARS`` characters) and it
+    either holds more than ``TEXTLESS_PAGE_MIN_DRAWN`` curves, rectangles and lines together (text drawn as
+    outlines), or its images cover at least ``TEXTLESS_PAGE_IMAGE_SHARE`` of the page. The score ranks the
+    qualifying pages when there are more than may be read: the count of drawn objects, or the image area in
+    thousandths of the page.
+    """
+    if chars >= TEXTLESS_PAGE_MAX_CHARS:
+        return 0
+    drawn = len(page.curves) + len(page.rects) + len(page.lines)
+    if drawn > TEXTLESS_PAGE_MIN_DRAWN:
+        return drawn
+    area = float(page.width) * float(page.height)
+    if area > 0:
+        covered = sum(
+            max(0.0, (img.get("x1", 0) - img.get("x0", 0))) * max(0.0, (img.get("bottom", 0) - img.get("top", 0)))
+            for img in page.images
+        )
+        share = min(1.0, covered / area)
+        if share >= TEXTLESS_PAGE_IMAGE_SHARE:
+            return max(1, int(share * 1000))
+    return 0
+
+
+def textless_pages(content: bytes, max_pages: int) -> tuple[list[int], int]:
+    """The 1-based numbers of the pages of *content* whose content has no text layer, and how many there are.
+
+    Run in a parse worker. pdfium's character counts pick the pages with little text without parsing them
+    (so a long text document pays almost nothing); only those are opened with pdfplumber. At most
+    *max_pages* are returned (the highest-scoring ones, listed in page order); the second value is the
+    number found, so the caller can tell that the cap was hit. A file whose text layer cannot be counted
+    returns nothing.
+    """
+    counts = text_layer_char_counts(content)
+    if not counts:
+        return [], 0
+    candidates = [index for index, chars in enumerate(counts) if chars < TEXTLESS_PAGE_MAX_CHARS]
+    if not candidates:
+        return [], 0
+    scored: list[tuple[int, int]] = []
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        pages = pdf.pages
+        for index in candidates:
+            if index >= len(pages):
+                break
+            try:
+                score = textless_page_score(pages[index], counts[index])
+            except Exception:
+                _logger.warning("Could not inspect a page for drawn content", exc_info=True)
+                score = 0
+            finally:
+                pages[index].close()
+            if score:
+                scored.append((score, index))
+    found = len(scored)
+    if found > max_pages:
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        scored = scored[: max(0, max_pages)]
+    return sorted(index + 1 for _, index in scored), found
+
+
+def extract_pages(content: bytes, page_numbers: Sequence[int]) -> bytes:
+    """A PDF holding only the 1-based *page_numbers* of *content*, in the order given."""
+    source = open_pdfium_document(content)
+    try:
+        target = pypdfium2.PdfDocument.new()
+        try:
+            target.import_pages(source, [n - 1 for n in page_numbers])
+            out = io.BytesIO()
+            target.save(out)
+            return out.getvalue()
+        finally:
+            target.close()
+    finally:
+        source.close()

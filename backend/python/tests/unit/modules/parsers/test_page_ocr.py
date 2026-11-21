@@ -1,0 +1,225 @@
+"""Pages whose text is drawn as outlines inside a text-layer PDF are read with OCR, one page at a time."""
+from __future__ import annotations
+
+import io
+import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from reportlab.pdfgen import canvas
+
+from app.modules.parsers.pdf import page_ocr
+from app.modules.parsers.pdf.pdf_inspection import extract_pages, textless_pages
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+    PDFPlumberOpenCVProcessor,
+)
+
+OCR_MARKDOWN = "| Nature of business | Contributions receivable |\n| --- | --- |\n| Total | 32,903,605 |"
+TEXT_LINE = "The quarterly report describes revenue, costs and the outlook for the coming year in detail."
+
+
+def _draw_outlined_text(c: canvas.Canvas, x: float, y: float, glyphs: int = 12) -> None:
+    """Glyph-like closed bezier outlines, 30 per glyph: what text converted to curves looks like."""
+    for g in range(glyphs):
+        for k in range(30):
+            ox, oy = x + g * 14 + (k % 6) * 1.5, y + (k // 6) * 1.5
+            p = c.beginPath()
+            p.moveTo(ox, oy)
+            p.curveTo(ox + 4, oy + 3, ox + 6, oy + 1, ox + 7, oy - 2)
+            p.curveTo(ox + 5, oy - 5, ox + 2, oy - 4, ox, oy)
+            c.drawPath(p, stroke=1, fill=0)
+
+
+def _text_page(c: canvas.Canvas, lines: int = 12) -> None:
+    for i in range(lines):
+        c.drawString(72, 760 - i * 16, TEXT_LINE)
+    c.showPage()
+
+
+def make_pdf(pages: list[str]) -> bytes:
+    """Pages of 'text' (ordinary), 'outlined' (text as paths, a short footer) or 'blank'."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(612, 792))
+    for kind in pages:
+        if kind == "text":
+            _text_page(c)
+        elif kind == "outlined":
+            c.drawString(72, 40, "Schedule footer, page 93")
+            _draw_outlined_text(c, 72, 600)
+            c.showPage()
+        else:
+            c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+@pytest.fixture
+def pdf() -> bytes:
+    return make_pdf(["text", "outlined", "text"])
+
+
+def test_detector_picks_only_the_outlined_page(pdf: bytes) -> None:
+    assert textless_pages(pdf, 25) == ([2], 1)
+
+
+def test_detector_ignores_text_blank_and_ruled_pages() -> None:
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(612, 792))
+    for i in range(20):  # a ruled form with a short caption: a few lines, no heavy drawing
+        c.line(72, 700 - i * 10, 500, 700 - i * 10)
+    c.drawString(72, 40, "Form 7")
+    c.showPage()
+    c.showPage()  # blank
+    _text_page(c)
+    c.save()
+    assert textless_pages(buf.getvalue(), 25) == ([], 0)
+
+
+def test_cap_keeps_the_pages_with_most_drawn_content_in_page_order() -> None:
+    pdf = make_pdf(["outlined", "text", "outlined", "outlined"])
+    numbers, found = textless_pages(pdf, 2)
+    assert found == 3
+    assert numbers == sorted(numbers) and len(numbers) == 2
+
+
+def test_extract_pages_keeps_requested_pages_in_order(pdf: bytes) -> None:
+    import pypdfium2
+
+    sub = pypdfium2.PdfDocument(extract_pages(pdf, [3, 2]))
+    assert len(sub) == 2
+    sub.close()
+
+
+def _stub_handler(markdown: str = OCR_MARKDOWN) -> MagicMock:
+    handler = MagicMock()
+
+    async def process(content: bytes) -> dict:
+        import pypdfium2
+
+        n = len(pypdfium2.PdfDocument(content))
+        return {"pages": [{"page_number": i + 1, "markdown": markdown} for i in range(n)]}
+
+    handler.process_document = AsyncMock(side_effect=process)
+    return handler
+
+
+async def _parse(pdf: bytes) -> tuple[PDFPlumberOpenCVProcessor, list]:
+    proc = PDFPlumberOpenCVProcessor(logger=logging.getLogger("t"), config=MagicMock())
+    return proc, await proc.parse_document("x.pdf", pdf)
+
+
+async def _texts(proc: PDFPlumberOpenCVProcessor, parsed, page: int) -> list[str]:
+    container = await proc.create_blocks(parsed, skip_llm_enrichment=True)
+    return [b.data for b in container.blocks if b.citation_metadata and b.citation_metadata.page_number == page]
+
+
+@pytest.mark.asyncio
+async def test_outlined_page_is_indexed_through_ocr(pdf: bytes) -> None:
+    proc, parsed = await _parse(pdf)
+    # Without the step the page holds no figure text at all (the bug).
+    assert not any("32,903,605" in t for t in await _texts(proc, parsed, 2))
+    handler = _stub_handler()
+    with patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=handler)):
+        replaced = await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t"))
+    assert replaced == [2]
+    assert any("32,903,605" in str(t) for t in await _texts(proc, parsed, 2))
+    handler.process_document.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_text_pages_are_untouched_and_blocks_identical(pdf: bytes) -> None:
+    proc, parsed = await _parse(pdf)
+    before = await proc.create_blocks(parsed, skip_llm_enrichment=True)
+    with patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=_stub_handler())):
+        await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t"))
+    after = await proc.create_blocks(parsed, skip_llm_enrichment=True)
+
+    def page_of(b: object) -> int:
+        return b.citation_metadata.page_number
+
+    for page in (1, 3):
+        old = [b.model_dump(exclude={"id"}) for b in before.blocks if page_of(b) == page]
+        new = [b.model_dump(exclude={"id"}) for b in after.blocks if page_of(b) == page]
+        assert old and old == new
+    # Block indices stay a running count and page order is kept.
+    assert [b.index for b in after.blocks] == list(range(len(after.blocks)))
+    assert [page_of(b) for b in after.blocks] == sorted(page_of(b) for b in after.blocks)
+
+
+@pytest.mark.asyncio
+async def test_text_only_document_makes_no_ocr_call() -> None:
+    pdf = make_pdf(["text", "text"])
+    _, parsed = await _parse(pdf)
+    factory = AsyncMock(return_value=_stub_handler())
+    with patch.object(page_ocr, "_vlm_ocr_handler", factory):
+        assert await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t")) == []
+    factory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cap_is_respected_and_logged(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    pdf = make_pdf(["outlined"] * 4 + ["text"])
+    _, parsed = await _parse(pdf)
+    monkeypatch.setenv(page_ocr.PAGE_OCR_MAX_PAGES_ENV, "2")
+    handler = _stub_handler()
+    with patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=handler)), caplog.at_level(logging.INFO):
+        replaced = await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t"))
+    assert len(replaced) == 2
+    import pypdfium2
+
+    sent = handler.process_document.await_args.args[0]
+    assert len(pypdfium2.PdfDocument(sent)) == 2
+    assert any("cap" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_cap_zero_turns_the_step_off(monkeypatch: pytest.MonkeyPatch, pdf: bytes) -> None:
+    monkeypatch.setenv(page_ocr.PAGE_OCR_MAX_PAGES_ENV, "0")
+    _, parsed = await _parse(pdf)
+    factory = AsyncMock()
+    with patch.object(page_ocr, "_vlm_ocr_handler", factory):
+        assert await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t")) == []
+    factory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_provider_changes_nothing_and_logs_once(pdf: bytes, caplog: pytest.LogCaptureFixture) -> None:
+    proc, parsed = await _parse(pdf)
+    before = await proc.create_blocks(parsed, skip_llm_enrichment=True)
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value={"ocr": [], "llm": []})
+    with caplog.at_level(logging.INFO):
+        assert await page_ocr.ocr_textless_pages(pdf, parsed, config, logging.getLogger("t")) == []
+    after = await proc.create_blocks(parsed, skip_llm_enrichment=True)
+    assert [b.data for b in before.blocks] == [b.data for b in after.blocks]
+    assert sum("no OCR provider" in r.getMessage() for r in caplog.records) == 1
+
+
+@pytest.mark.asyncio
+async def test_ocr_failure_keeps_the_pages(pdf: bytes) -> None:
+    _, parsed = await _parse(pdf)
+    handler = MagicMock()
+    handler.process_document = AsyncMock(side_effect=RuntimeError("model down"))
+    with patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=handler)):
+        assert await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t")) == []
+
+
+@pytest.mark.asyncio
+async def test_processor_route_indexes_the_outlined_page(pdf: bytes) -> None:
+    """process_pdf_with_pdf_plumber hands the page's OCR text to indexing."""
+    from tests.unit.events.test_processor_deep import _make_processor
+
+    proc = _make_processor()
+    proc.graph_provider.get_document = AsyncMock(return_value={"_key": "r1"})
+    captured = SimpleNamespace()
+    proc._convert_record = lambda r: captured
+    proc._create_transform_context = MagicMock(return_value=MagicMock())
+    with patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=_stub_handler())), \
+         patch("app.events.processor.get_llm_for_role", AsyncMock(side_effect=RuntimeError("none"))), \
+         patch("app.events.processor.IndexingPipeline") as pipeline:
+        pipeline.return_value.apply = AsyncMock()
+        async for _ in proc.process_pdf_with_pdf_plumber("x.pdf", "r1", pdf, "vr1"):
+            pass
+    texts = [str(b.data) for b in captured.block_containers.blocks]
+    assert any("32,903,605" in t for t in texts)
