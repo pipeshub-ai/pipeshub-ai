@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from app.connectors.core.base.sync_point.sync_point import SyncPoint
-from app.services.notification.types import NotificationOutcome, NotificationSeverity, NotificationType
+from app.services.notification.types import (
+    NotificationOutcome,
+    NotificationSeverity,
+    NotificationType,
+)
 
 if TYPE_CHECKING:
     from app.connectors.core.base.connector.connector_service import BaseConnector
