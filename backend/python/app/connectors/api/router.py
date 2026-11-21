@@ -4284,7 +4284,11 @@ async def _handle_oauth_config_creation(
         logger: Logger instance
 
     Returns:
-        OAuth config ID if created/updated, None otherwise
+        OAuth config ID if created/updated; None when there is nothing to save (not OAUTH, or no
+        credentials and no app ID)
+
+    Raises:
+        HTTPException: 500 when the app could not be saved
     """
     # Only handle OAUTH type (not OAUTH_ADMIN_CONSENT or others)
     if auth_type.upper() != AuthType.OAUTH:
@@ -4355,7 +4359,7 @@ async def _handle_oauth_config_creation(
             _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
 
     # Create or update OAuth config
-    return await _create_or_update_oauth_config(
+    app_id = await _create_or_update_oauth_config(
         connector_type=connector_type,
         auth_config=auth_config,
         instance_name=oauth_instance_name,
@@ -4368,6 +4372,13 @@ async def _handle_oauth_config_creation(
         logger=logger,
         connector_scope=connector_scope,
     )
+    if not app_id:
+        # Credentials were given, so None is a failed save (the helper logged why), not "no app wanted".
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to create/update OAuth configuration",
+        )
+    return app_id
 
 
 def _apply_confluence_optional_jira_scope(
@@ -5071,7 +5082,15 @@ async def create_connector_instance(
                 container=container,
             )
 
-            await config_service.set_config(config_path, prepared_config)
+            if not await config_service.set_config(config_path, prepared_config):
+                # The instance exists by now, so a retry with the same name is refused: say how to finish it.
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=(
+                        "The connector was created, but its settings were not saved. "
+                        "Open it to finish setting it up, or delete it."
+                    ),
+                ) from OAuthStoreUnavailableError("The connector's settings could not be saved")
             logger.info(f"Stored initial config for instance {connector_id}")
             await _store_config_action_items(request, connector_type, connector_id, _auth_section(prepared_config), logger)
 

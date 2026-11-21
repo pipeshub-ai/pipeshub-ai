@@ -71,8 +71,8 @@ class OAuthStateError(ValueError):
 
 
 class OAuthStoreUnavailableError(Exception):
-    """Our own config or graph store failed during a sign-in callback, so the sign-in was not recorded (the provider's
-    sign-in itself did not fail)."""
+    """Our own config or graph store failed while saving a sign-in or a connector's settings, so they were not recorded
+    (a provider's sign-in itself did not fail)."""
 
     log_error_class = "unavailable"
 
