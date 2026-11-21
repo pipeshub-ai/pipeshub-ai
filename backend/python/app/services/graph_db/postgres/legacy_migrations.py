@@ -27,6 +27,7 @@ from app.services.graph_db.postgres.base import (
     _ekey,
     _j,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -72,7 +73,8 @@ class LegacyMigrationMixin(PgBase):
                 WHERE n.org_id = $1 AND n.coll = 'recordGroups' AND n.doc->>'orgId' = $2 AND n.doc->>'groupType' = $3 AND n.doc->>'connectorName' = $3
                 ORDER BY n.id""", org, org_id, _KB), None)
         except Exception as e:
-            self.logger.error(f"Get legacy KB record groups failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_legacy_kb_record_groups")
             return []
         return [_arango(_doc(r["doc"]), _RG) for r in rows]
 
@@ -85,7 +87,8 @@ class LegacyMigrationMixin(PgBase):
                 WHERE n.org_id = $1 AND n.coll = 'recordGroups' AND n.doc->>'orgId' = $2 AND n.doc->>'groupType' = $3 AND n.doc->>'connectorName' = $3""",
                                                             org, org_id, _KB), None))
         except Exception as e:
-            self.logger.error(f"Count legacy KB record groups failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="count_legacy_kb_record_groups")
             return -1
 
     async def migrate_legacy_kb_to_app(self, kb_record_group: dict, org_id: str, resolved_creator_key: str | None) -> dict:
@@ -151,7 +154,8 @@ class LegacyMigrationMixin(PgBase):
         try:
             await self._q(go, None, write=True)
         except Exception as e:
-            self.logger.error(f"Failed to migrate legacy KB {kb_key} to app: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="migrate_legacy_kb_to_app", kb_id=kb_key)
             return {"success": False, "reason": str(e)}
         return {"success": True}
 
@@ -218,7 +222,8 @@ class LegacyMigrationMixin(PgBase):
         except SchemaValidationError:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to migrate agent hub knowledge for org {org_id}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="migrate_agent_hub_knowledge")
             return {"agents_migrated": 0, "knowledge_nodes_created": 0, "error": str(e)}
         return {"agents_migrated": agents, "knowledge_nodes_created": created}
 

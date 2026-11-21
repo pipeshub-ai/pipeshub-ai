@@ -14,6 +14,7 @@ from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Co
 from app.core.org_context import current_org_id
 from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.postgres.base import PgBase, _arango, _doc
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -181,7 +182,7 @@ class KbListingsMixin(PgBase):
                                           "foldersShown": len(folders), "recordsShown": len(records)}}
             return await self._q(go, transaction)
         except Exception as e:
-            self.logger.error(f"❌ Failed to get children: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="_children")
             return {"success": False, "reason": str(e)}
 
     async def get_kb_children(self, kb_id: str, skip: int, limit: int, level: int = 1, search: str | None = None, record_types: list[str] | None = None,
@@ -287,7 +288,7 @@ class KbListingsMixin(PgBase):
                 WHERE t.org_id = $1 AND t.coll = 'agentTemplates' AND t.id = $3 AND coalesce((t.doc->>'isDeleted')::boolean, false) = false""",
                                                       org, user_id, template_id, _TEMPLATE_ROLES), transaction)
         except Exception as e:
-            self.logger.error("❌ Failed to get template access: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_template")
             return None
         return _with_access(r) if r else None
 
@@ -316,7 +317,8 @@ class KbListingsMixin(PgBase):
                   ORDER BY t.id, gr.ord, gr.rk DESC, gr.pid) x
                 ORDER BY x.ord, x.id""", org, user_id, _TEMPLATE_ROLES), transaction)
         except Exception as e:
-            self.logger.error("Failed to get all agent templates: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_all_agent_templates")
             return []
         return [_with_access(r) for r in rows]
 
@@ -342,7 +344,8 @@ class KbListingsMixin(PgBase):
         except SchemaValidationError:
             raise
         except Exception as e:
-            self.logger.error("Failed to update agent template: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_agent_template")
             return False
 
     async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None = None) -> bool | None:
@@ -355,7 +358,8 @@ class KbListingsMixin(PgBase):
             return await self.update_node(template_id, _TEMPLATES, {"isDeleted": True, "deletedAtTimestamp": get_epoch_timestamp_in_ms(), "deletedByUserId": user_id},
                                           transaction=transaction)
         except Exception as e:
-            self.logger.error("Failed to delete agent template: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_agent_template")
             return False
 
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
@@ -372,7 +376,7 @@ class KbListingsMixin(PgBase):
         except SchemaValidationError:
             raise
         except Exception as e:
-            self.logger.error("❌ Failed to clone agent template: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="clone_agent_template")
             return None
 
     async def delete_kb_hub_app(self, org_id: str) -> bool:
@@ -392,7 +396,7 @@ class KbListingsMixin(PgBase):
                 return True
             return await self._q(go, None, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete legacy KB hub app for org {org_id}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_kb_hub_app")
             return False
 
 
