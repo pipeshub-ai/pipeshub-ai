@@ -108,6 +108,7 @@ def _consumer(queue: _Queue, hand_backs: int = 0, group: str = "g", on_check=Non
     consumer.config = SimpleNamespace(group_id=group)
     consumer.precision_filter = _Filter(hand_backs, on_check)
     consumer.queue = queue
+    consumer.inbox = None
     consumer.message_handler = object()
     consumer.stage_admission = None
     consumer._paused_until = 0.0
