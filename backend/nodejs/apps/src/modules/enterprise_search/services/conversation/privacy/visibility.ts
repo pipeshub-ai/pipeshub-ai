@@ -4542,6 +4542,9 @@ export async function includableRows<R extends object>(
         judged.switchAt,
       )
     : new Set<object>();
+  const oldCards = othersReadIt
+    ? cardsFromBeforeLabels(asRows)
+    : new Set<object>();
   return rows.map((m) => {
     const row = m as unknown as ReaderRow & Plain;
     const id = idOf(row._id);
@@ -4561,12 +4564,9 @@ export async function includableRows<R extends object>(
     }
     if (type === 'tool_call') {
       if (!own || verdict?.verdict !== 'visible') return blank(m);
-      // A card from before labels, where others read the chat, goes with its turn's answer.
-      return othersReadIt &&
-        versionOf(row) === LEGACY_LABEL_VER &&
-        !everyMemberSaw.has(row)
-        ? blank(m)
-        : m;
+      // A card from before labels, where others read the chat, goes with its turn's answer. Any other card goes: its
+      // questions go to the model on its run's answer, whose seal makes that answer a parent of the new one.
+      return oldCards.has(row) && !everyMemberSaw.has(row) ? blank(m) : m;
     }
     if (
       !verdict ||
@@ -4606,6 +4606,40 @@ export async function includableRows<R extends object>(
     // Another person's answer that restricts nobody, or the one the sender replied to.
     return replied || pubOf(row) ? sealed(textOnly(m)) : blank(m);
   });
+}
+
+/**
+ * The cards among `rows` from before labels. A card carries no label of its own, so its version says nothing: it is from
+ * before them when the answer of its run is, or, for a card stamped with no run, the answer after it in its turn; with
+ * no such answer, a card with no run is, since every row written under the rules names its run.
+ */
+function cardsFromBeforeLabels(
+  rows: ReadonlyArray<ReaderRow & Plain>,
+): Set<object> {
+  const versionOfRun = new Map<string, string>();
+  for (const row of rows) {
+    const runId = runOf(row);
+    if (runId !== undefined && isLabelledType(row) && !versionOfRun.has(runId))
+      versionOfRun.set(runId, versionOf(row));
+  }
+  const old = new Set<object>();
+  rows.forEach((row, i) => {
+    if (row.messageType !== 'tool_call') return;
+    const runId = runOf(row);
+    if (runId !== undefined) {
+      if (versionOfRun.get(runId) === LEGACY_LABEL_VER) old.add(row);
+      return;
+    }
+    for (const next of rows.slice(i + 1)) {
+      if (next.messageType === 'user_query') break;
+      if (isLabelledType(next)) {
+        if (versionOf(next) === LEGACY_LABEL_VER) old.add(row);
+        return;
+      }
+    }
+    old.add(row);
+  });
+  return old;
 }
 
 /** Whether a row names a record, a file or an address that a per-record view would check: one a reader who can open nothing cannot read. */

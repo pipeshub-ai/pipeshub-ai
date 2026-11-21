@@ -2916,6 +2916,7 @@ export async function includableRows<R extends object>(
       validUntil: Date.now() + UNCHECKED_TTL_MS,
     };
   };
+  const oldCards = cardsFromBeforeLabels(asRows)
   const everyMemberSaw = oldAnswersEveryMemberSaw(
     reader,
     session,
@@ -2947,7 +2948,7 @@ export async function includableRows<R extends object>(
     if (type === 'tool_call') {
       if (!own || verdict?.verdict !== 'visible') return blank(m);
       // A card from before labels, where others read the chat, goes with its turn's answer.
-      return (opts.othersRead ?? othersRead(session)) && versionOf(row) === LEGACY_LABEL_VER && !everyMemberSaw.has(row)
+      return (opts.othersRead ?? othersRead(session)) && oldCards.has(row) && !everyMemberSaw.has(row)
         ? blank(m)
         : m;
     }
@@ -2983,6 +2984,38 @@ export async function includableRows<R extends object>(
     // Another person's answer that restricts nobody, or the one the sender replied to.
     return replied || pubOf(row) ? sealed(textOnly(m)) : blank(m);
   });
+}
+
+
+/**
+ * The cards among `rows` from before labels: a card carries no label of its own, so it is from before them when the
+ * answer of its run is, or, for a card stamped with no run, the answer after it in its turn; with no such answer, a card
+ * with no run is.
+ */
+function cardsFromBeforeLabels(rows: ReadonlyArray<ReaderRow & Plain>): Set<object> {
+  const versionOfRun = new Map<string, string>()
+  for (const row of rows) {
+    const runId = runOf(row)
+    if (runId !== undefined && isLabelledType(row) && !versionOfRun.has(runId)) versionOfRun.set(runId, versionOf(row))
+  }
+  const old = new Set<object>()
+  rows.forEach((row, i) => {
+    if (row.messageType !== 'tool_call') return
+    const runId = runOf(row)
+    if (runId !== undefined) {
+      if (versionOfRun.get(runId) === LEGACY_LABEL_VER) old.add(row)
+      return
+    }
+    for (const next of rows.slice(i + 1)) {
+      if (next.messageType === 'user_query') break
+      if (isLabelledType(next)) {
+        if (versionOf(next) === LEGACY_LABEL_VER) old.add(row)
+        return
+      }
+    }
+    old.add(row)
+  })
+  return old
 }
 
 /** Whether a row names a record, a file or an address a per-record view would check. */

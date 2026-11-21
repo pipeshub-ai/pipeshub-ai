@@ -1264,6 +1264,30 @@ describe('the reader check: who may see an answer', () => {
       expect(byId(await view(DANA, t.rows, w), t.reply._id).content).to.equal(SELECTIONS)
     })
 
+    it("Dana's own model, where others read the chat, gets her card whole: its questions go with its run's answer, sealed", async () => {
+      // A card carries no label of its own; it goes with the answer of its run, which was written under the rules.
+      const t = cardTurn()
+      const w = world(t.rows)
+      const danas = (await includableRows(reader(DANA), session, [t.asked, t.card, t.waiting], { deps: w.deps })) as Row[]
+      expect(byId(danas, t.card._id)).to.not.have.property('_withheld')
+      expect(JSON.stringify(byId(danas, t.card._id).tools)).to.include(CARD_TEXT)
+      expect(byId(danas, t.waiting._id)).to.include({ _ref: String(t.waiting._id), _ver: t.waiting.labelVer })
+    })
+
+    it("a card of a turn from before labels, where others read the chat, goes no further than that turn's answer", async () => {
+      const asked: Row = { ...question('@assistant which figure should lead the deck?'), createdAt: T0 }
+      const card: Row = { _id: nextId(), sessionId: ROOM, orgId: ORG, messageType: 'tool_call', content: '', createdAt: T0, tools: [{ toolName: 'ask_user_question', toolResult: { questions: [{ question: CARD_TEXT }] } }] }
+      // Dana's answer from before labels names R: a run others read is given nothing of it, nor of its card.
+      const old: Row = { _id: nextId(), sessionId: ROOM, orgId: ORG, messageType: 'bot_response', content: 'It leads with CANARY-R-4.2M.', referenceData: [{ id: R, recordId: R, name: R }], createdAt: T0 }
+      const rows = [asked, card, old]
+      const w = world(rows)
+      const room = (await includableRows(reader(DANA), session, rows, { deps: w.deps })) as Row[]
+      expect(byId(room, card._id)).to.include({ _withheld: true })
+      expect(JSON.stringify(byId(room, card._id))).to.not.include(CARD_TEXT)
+      const alone = (await includableRows(reader(DANA), { ...session, sharedWith: [] }, rows, { deps: w.deps })) as Row[]
+      expect(JSON.stringify(byId(alone, card._id).tools), 'in a chat of her own the card goes whole').to.include(CARD_TEXT)
+    })
+
     it("Bob's model gets the same line in its place; Carol's gets the selections", async () => {
       const t = cardTurn()
       const w = world(t.rows)
