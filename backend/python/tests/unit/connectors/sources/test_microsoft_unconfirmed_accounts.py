@@ -313,6 +313,24 @@ async def test_a_notice_that_was_not_delivered_is_sent_by_the_next_sync(world: C
 
 
 @pytest.mark.asyncio
+async def test_an_owed_notice_is_dropped_when_the_account_is_listed_again(world: Callable[[list[str]], World]) -> None:
+    w = world(["a", "x"])
+    w.status["x"] = _odata(500)
+    w.list(["a"], complete=True)
+    w.c.notify_and_wait.return_value = NotificationOutcome.FAILED
+    for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE):
+        await w.sync()
+    assert "x" not in w.stored and len(_closing_notices(w)) == 1
+    w.c.notify_and_wait.return_value = NotificationOutcome.SENT
+    w.c.data_entities_processor.on_new_app_users = AsyncMock(side_effect=lambda users, *a, **k: w.stored.update(
+        {u.source_user_id: u for u in users}))
+    w.list(["a", "x"], complete=True)
+    await w.sync()
+    assert "x" in w.stored and len(_closing_notices(w)) == 1     # linked again, and not told it lost access
+    assert w.c.user_sync_point.data[ACCOUNT_CHECK_KEY]["pending_notice"] == "[]"
+
+
+@pytest.mark.asyncio
 async def test_a_close_waits_while_its_notice_cannot_be_saved(world: Callable[[list[str]], World]) -> None:
     w = world(["a", "x", "gone"])
     w.status["x"] = _odata(500)
