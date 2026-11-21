@@ -13,6 +13,7 @@ import { accessLog } from '../../../../src/libs/middlewares/access-log.middlewar
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { runWithRequestContext } from '../../../../src/libs/context/request-context'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
 import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
@@ -60,7 +61,10 @@ describe('Connector routes: a request is logged once, with its connector', funct
   let config: AppConfig
   let origin: string
   let server: http.Server
+  // Every record the process writes while a test runs; `mine()` is the current request's.
   let records: Row[]
+  let requestId = ''
+  let sent = 0
 
   before(async () => {
     await backend.start()
@@ -120,20 +124,31 @@ describe('Connector routes: a request is logged once, with its connector', funct
   /** Sends one request and returns its status once the access line is written. */
   const send = async (method: string, path: string, body?: unknown): Promise<number> => {
     records.length = 0
+    sent += 1
+    requestId = `n5f-logging-once-${sent}`
     const res = await fetch(`${origin}${path}`, {
       method,
-      headers: { authorization: `Bearer ${session()}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      headers: {
+        authorization: `Bearer ${session()}`,
+        'x-request-id': requestId,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     await res.text()
     const deadline = Date.now() + 5000
-    while (Date.now() < deadline && !records.some((r) => r.message === 'http.request.end')) {
+    while (Date.now() < deadline && !mine().some((r) => r.message === 'http.request.end')) {
       await new Promise((resolve) => setImmediate(resolve))
     }
     return res.status
   }
-  const visible = (): Row[] => records.filter(atLeastInfo)
-  const byMessage = (message: string): Row[] => records.filter((r) => r.message === message)
+  /**
+   * This request's records: those written in its context, the background work it starts included. A timer
+   * another test left running (a chat run's heartbeat) logs in its own context, or in none, and is not counted.
+   */
+  const mine = (): Row[] => records.filter((r) => r.request_id === requestId)
+  const visible = (): Row[] => mine().filter(atLeastInfo)
+  const byMessage = (message: string): Row[] => mine().filter((r) => r.message === message)
 
   it('a connector-service 400 on a config save is the middleware line, the call line and the access line, each with connector_id', async () => {
     backend.on('PUT', `/api/v1/connectors/${CONNECTOR}/config/auth`, { status: 400, body: { detail: 'Base URL must start with https://' } })
@@ -156,7 +171,7 @@ describe('Connector routes: a request is logged once, with its connector', funct
     const status = await send('GET', '/api/v1/connectors/?scope=team')
 
     expect(status).to.equal(503)
-    expect(records.filter((r) => level(r) === 'error')).to.deep.equal([])
+    expect(mine().filter((r) => level(r) === 'error')).to.deep.equal([])
     expect(byMessage('upstream.call.end').length).to.be.at.least(1)
     expect(visible().every((r) => level(r) === 'warn')).to.equal(true)
     expect(byMessage('http.request.error')[0].error_class).to.equal('unavailable')
@@ -170,7 +185,7 @@ describe('Connector routes: a request is logged once, with its connector', funct
     expect(status).to.equal(404)
     const failure = byMessage('http.request.error')
     expect(failure.map((r) => [level(r), r.error_class, r.connector_id])).to.deep.equal([['warn', 'not_found', CONNECTOR]])
-    expect(records.filter((r) => CONTROLLER_LOGGERS.has(r.service))).to.deep.equal([])
+    expect(mine().filter((r) => CONTROLLER_LOGGERS.has(r.service))).to.deep.equal([])
   })
 
   for (const [name, method, path, backendMethod, backendPath, body] of [
@@ -192,6 +207,26 @@ describe('Connector routes: a request is logged once, with its connector', funct
       if (path.includes(CONNECTOR)) expect(visible()[0].connector_id).to.equal(CONNECTOR)
     })
   }
+
+  it('a background timer logging during the request (another run, or no context) is not counted as its line', async () => {
+    backend.on('GET', '/api/v1/connectors/active', { status: 200, body: { connectors: [] } })
+    const background = Logger.getInstance({ service: 'n5f-background' })
+    // Like a chat run's heartbeat that outlived its test: fires on every turn of the event loop.
+    const timers = [
+      setInterval(() => background.warn('Failed to record run activity'), 0),
+      runWithRequestContext({ rootId: 'some-other-run' }, () =>
+        setInterval(() => background.warn('Failed to record run activity'), 0),
+      ),
+    ]
+    try {
+      expect(await send('GET', '/api/v1/connectors/active')).to.equal(200)
+    } finally {
+      timers.forEach(clearInterval)
+    }
+
+    expect(records.some((r) => r.message === 'Failed to record run activity')).to.equal(true)
+    expect(visible().map((r) => r.message)).to.deep.equal(['http.request.end'])
+  })
 
   it('a registry read names the connector type on its lines', async () => {
     backend.on('GET', '/api/v1/connectors/registry/Jira/schema', { status: 200, body: { schema: {} } })
@@ -262,7 +297,7 @@ describe('Connector routes: a request is logged once, with its connector', funct
       expect(backend.calls.length, 'the request must reach the connector service').to.be.at.least(1)
       expect(status).to.be.at.least(400)
       // The deprecated POST /filters still warns that it was called; that is not a failure line.
-      const own = records.filter(
+      const own = mine().filter(
         (r) => CONTROLLER_LOGGERS.has(r.service) && atLeastInfo(r) && !String(r.message).startsWith('Deprecated POST'),
       )
       expect(own).to.deep.equal([])
