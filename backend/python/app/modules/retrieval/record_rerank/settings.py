@@ -1,7 +1,8 @@
 """Switches and knobs for the second-stage record reranker.
 
-``RECORD_RERANK`` is off unless set to ``true``; ``HIGH_ACCURACY_MODE`` does
-not turn it on. The knobs are read per search, so a change needs no restart.
+``RECORD_RERANK`` is on unless set to ``false``, ``0``, ``no`` or ``off``.
+The default strategy is a local cross-encoder; ``llm_listwise`` asks a
+configured LLM instead. The knobs are read per search, so a change needs no restart.
 
 Strategy-specific settings (which model to call) belong to the strategy that
 reads them, so a new strategy adds none here.
@@ -14,7 +15,7 @@ from dataclasses import dataclass
 
 from app.modules.retrieval.record_rerank.dense_pool import dense_pool_size
 from app.utils.env_config import env_float
-from app.utils.env_utils import env_bool, env_int
+from app.utils.env_utils import enabled_unless_off, env_int
 
 RECORD_RERANK_ENV_VAR = "RECORD_RERANK"
 RECORD_RERANK_STRATEGY_ENV_VAR = "RECORD_RERANK_STRATEGY"
@@ -25,7 +26,7 @@ RECORD_RERANK_TIMEOUT_ENV_VAR = "RECORD_RERANK_TIMEOUT_S"
 RECORD_RERANK_LOOKUP_TIMEOUT_ENV_VAR = "RECORD_RERANK_LOOKUP_TIMEOUT_S"
 RECORD_RERANK_TEXT_CHARS_ENV_VAR = "RECORD_RERANK_TEXT_CHARS"
 
-DEFAULT_STRATEGY = "llm_listwise"
+DEFAULT_STRATEGY = "cross_encoder"
 MAX_POOL = 500
 MAX_TOP = 50
 MAX_TEXT_CHARS = 2000
@@ -56,7 +57,7 @@ class RecordRerankSettings:
 
 
 def record_rerank_enabled() -> bool:
-    return env_bool(RECORD_RERANK_ENV_VAR, False)
+    return enabled_unless_off(RECORD_RERANK_ENV_VAR)
 
 
 def _bounded(name: str, default: int, low: int, high: int) -> int:

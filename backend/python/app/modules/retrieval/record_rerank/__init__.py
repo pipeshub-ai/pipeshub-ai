@@ -1,10 +1,10 @@
-"""Second-stage record reranking (``RECORD_RERANK``), off unless enabled.
+"""Second-stage record reranking (``RECORD_RERANK``), on unless turned off.
 
 Importing the package registers the built-in strategies.
 """
 
-# Imported for its side effect: it registers the built-in strategy.
-from app.modules.retrieval.record_rerank import llm_listwise  # noqa: F401  # pyright: ignore[reportUnusedImport]
+# Imported for their side effect: they register the built-in strategies.
+from app.modules.retrieval.record_rerank import cross_encoder, llm_listwise  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from app.modules.retrieval.record_rerank.base import (
     RecordCandidate,
     RecordReranker,

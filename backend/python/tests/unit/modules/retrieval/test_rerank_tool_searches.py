@@ -56,7 +56,7 @@ class TestToolSearchRerank:
         assert tool_search_record_rerank("q", _QUESTION) == {}
 
     def test_off_without_the_rerank_itself(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(RERANK, raising=False)
+        monkeypatch.setenv(RERANK, "false")
         monkeypatch.setenv(TOOL, "true")
         assert tool_search_record_rerank("q", _QUESTION) == {}
 

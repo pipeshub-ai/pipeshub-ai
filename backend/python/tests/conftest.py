@@ -20,6 +20,7 @@ from app.utils.process_hardening import disable_vendor_telemetry
 disable_vendor_telemetry()
 # The suite exercises the real metrics backend whatever the edition default.
 os.environ.setdefault("TELEMETRY_COLLECTION_FLAG", "true")
+os.environ.setdefault("RECORD_RERANK", "false")
 
 # Tests never send traces to a real Opik account. Blank values (not removed ones) also stop a
 # later `load_dotenv()` from filling them in from a checkout's `.env`, and the empty config file

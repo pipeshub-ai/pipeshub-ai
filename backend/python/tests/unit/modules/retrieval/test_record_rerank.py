@@ -113,25 +113,27 @@ def _ten_records() -> list[SearchResult]:
 
 
 class TestSwitch:
-    def test_off_by_default_and_high_accuracy_mode_does_not_turn_it_on(self, monkeypatch) -> None:
-        assert record_rerank_enabled() is False
-        monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
-        assert record_rerank_enabled() is False
-        assert record_rerank_for("question") is None
-        assert search_record_rerank("question") == {}
+    def test_on_by_default(self, monkeypatch) -> None:
+        monkeypatch.delenv("RECORD_RERANK", raising=False)
+        assert record_rerank_enabled() is True
+        rerank = record_rerank_for("question")
+        assert rerank == RecordRerank(question="question", settings=RecordRerankSettings())
+        assert search_record_rerank("question") == {"record_rerank": rerank}
 
-    @pytest.mark.parametrize("value", ["true", "TRUE", " true "])
+    @pytest.mark.parametrize("value", ["true", "TRUE", " true ", "", "yes"])
     def test_on_when_set(self, monkeypatch, value: str) -> None:
         monkeypatch.setenv("RECORD_RERANK", value)
         rerank = record_rerank_for("question")
         assert rerank == RecordRerank(question="question", settings=RecordRerankSettings())
         assert search_record_rerank("question") == {"record_rerank": rerank}
 
-    @pytest.mark.parametrize("value", ["false", "0", "off", "yes", ""])
-    def test_any_other_value_is_off_even_in_high_accuracy_mode(self, monkeypatch, value: str) -> None:
+    @pytest.mark.parametrize("value", ["false", "0", "off", "no", " FALSE "])
+    def test_off_values_turn_it_off_even_in_high_accuracy_mode(self, monkeypatch, value: str) -> None:
         monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
         monkeypatch.setenv("RECORD_RERANK", value)
         assert record_rerank_enabled() is False
+        assert record_rerank_for("question") is None
+        assert search_record_rerank("question") == {}
 
     def test_a_blank_question_is_not_reranked(self, monkeypatch) -> None:
         monkeypatch.setenv("RECORD_RERANK", "true")
@@ -139,7 +141,7 @@ class TestSwitch:
 
     def test_defaults(self) -> None:
         assert record_rerank_settings() == RecordRerankSettings(
-            strategy="llm_listwise", pool=100, top=8, keep_top=1, timeout_s=6.0, lookup_timeout_s=10.0,
+            strategy="cross_encoder", pool=100, top=8, keep_top=1, timeout_s=6.0, lookup_timeout_s=10.0,
             text_chars=300,
         )
 

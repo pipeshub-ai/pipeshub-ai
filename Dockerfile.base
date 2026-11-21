@@ -166,6 +166,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     fi && \
     # Sparse embedding model used by FastEmbedSparse in RetrievalService.__init__.
     python -c "from langchain_qdrant import FastEmbedSparse; FastEmbedSparse(model_name='Qdrant/BM25')" && \
+    python -c "from fastembed.common.model_description import ModelSource; from fastembed.rerank.cross_encoder import TextCrossEncoder; TextCrossEncoder.add_custom_model('syntriq/lupe-multilingual-reranker-small', ModelSource(hf='syntriq/lupe-multilingual-reranker-small'), 'onnx/model_qint8_avx512_vnni.onnx'); TextCrossEncoder('syntriq/lupe-multilingual-reranker-small')" && \
     rm -rf /tmp/*
 
 # Prune dead weight that COPY'd-into-runtime never executes. Preserves:
