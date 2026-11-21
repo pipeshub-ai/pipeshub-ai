@@ -121,6 +121,33 @@ def test_repeated_records_collapse_to_the_last_row_with_the_earliest_date() -> N
     assert collapse_repeated_records(unique) is unique
 
 
+def test_collapsing_a_large_batch_with_one_repeated_id_reads_each_id_once_per_row() -> None:
+    """The cost is linear in the batch: every record's ``id`` is read a bounded number of times (a scan per distinct id would read it
+    tens of thousands of times per row at this size)."""
+    from app.services.graph_db.common.utils import collapse_repeated_records
+
+    reads = 0
+
+    class Row:
+        def __init__(self, key: str, created_at: int) -> None:
+            self._key, self.created_at, self._promotes_stub, self._known_new = key, created_at, False, True
+
+        @property
+        def id(self) -> str:
+            nonlocal reads
+            reads += 1
+            return self._key
+
+        def model_copy(self) -> "Row":
+            return Row(self._key, self.created_at)
+
+    n = 30_000
+    rows = [Row(f"r{i}", i + 1) for i in range(n)] + [Row("r0", 500)]
+    out = collapse_repeated_records(rows)
+    assert len(out) == n and out[0].created_at == 1
+    assert reads <= 4 * len(rows), reads
+
+
 # ---- restore -------------------------------------------------------------------------------------------------------
 
 def test_every_restore_item_gets_its_own_new_id_with_the_flag(incarnation_on: None) -> None:

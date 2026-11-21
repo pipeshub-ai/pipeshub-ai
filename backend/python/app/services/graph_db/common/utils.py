@@ -506,13 +506,11 @@ def collapse_repeated_records(records: list[Any]) -> list[Any]:
     ids = [getattr(record, "id", None) for record in records]
     if None in ids or len(set(ids)) == len(ids):
         return records
-    out: list[Any] = []
-    seen: set[Any] = set()
+    groups: dict[Any, list[Any]] = {}
     for record in records:
-        if record.id in seen:
-            continue
-        seen.add(record.id)
-        rows = [r for r in records if r.id == record.id]
+        groups.setdefault(record.id, []).append(record)          # one pass; a dict keeps each id's first appearance first
+    out: list[Any] = []
+    for rows in groups.values():
         merged = rows[-1].model_copy()
         dates = [r.created_at for r in rows if isinstance(r.created_at, int) and r.created_at > 0]
         merged.created_at = min(dates) if dates else rows[-1].created_at
