@@ -1679,6 +1679,15 @@ describe('the reader check: who may see an answer', () => {
         expect(row?.tools).to.deep.equal([])
       })
 
+      it("the share's text keeps none of the marks an earlier check left on his copy", async () => {
+        const a = shared('people', [BOB])
+        const marked: Row = { ...a, content: '', answerHidden: { redacted: true, reason: 'no_longer_accessible' }, _withheld: true }
+        const [row] = await given(BOB, [marked], world([a]))
+        expect(row).to.include({ content: SHARED_TEXT, _ref: String(a._id) })
+        expect(row).to.not.have.property('answerHidden')
+        expect(row).to.not.have.property('_withheld')
+      })
+
       it('a share covers the version it was made for: once the answer is written again, his turn gets nothing of it', async () => {
         const a = shared('people', [BOB])
         const newer: Row = { ...a, labelVer: nextId(), content: 'R says revenue grew 15%.' }

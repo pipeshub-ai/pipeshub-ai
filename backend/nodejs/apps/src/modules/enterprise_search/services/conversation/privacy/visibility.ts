@@ -4792,7 +4792,7 @@ const sharedTextOf = <R extends object>(
   row: R,
   deps: Pick<VisibilityDeps, 'sharedText'>,
   /** Where the text comes from, when not the row itself. */
-  source: ReaderRow = row as ReaderRow,
+  source: ReaderRow = row,
 ): R => {
   let text: string;
   try {
@@ -4803,10 +4803,13 @@ const sharedTextOf = <R extends object>(
     // A share's text that cannot be made gives the model none of the answer, as `consentedView` shows a reader none.
     text = '';
   }
-  const out: Plain = { ...(textOnly(row) as Plain), content: text };
   // What a filter before the check hid of the row is not what the share shows: the share's text is the row now.
-  delete out.answerHidden;
-  delete out[WITHHELD];
+  const {
+    answerHidden: _answerHidden,
+    [WITHHELD]: _withheld,
+    ...shown
+  } = textOnly(row) as Plain;
+  const out: Plain = { ...shown, content: text };
   return out as R;
 };
 
