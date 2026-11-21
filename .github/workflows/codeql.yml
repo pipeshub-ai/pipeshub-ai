@@ -19,6 +19,9 @@ on:
   schedule:
     - cron: '18 8 * * 5'
 
+permissions:
+  contents: read
+
 jobs:
   # Which of the jobs below this pull request's changes can affect
   # (scripts/pr_changes.py). A pull request analyses only the languages it
@@ -80,6 +83,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     # Add any setup steps before running the `github/codeql-action/init` action.
     # This includes steps like installing compilers or runtimes (`actions/setup-node`

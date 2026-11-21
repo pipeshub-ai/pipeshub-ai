@@ -1,7 +1,31 @@
+# Every service that runs an image the base file runs keeps the base file's
+# baseline (ADR-OPS-02): no capability but those its image proves it needs, with
+# the reason beside each, no privilege gain, and memory and process limits.
+# tests/unit/harness/security/test_container_baseline.py checks it.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# A service whose image writes only to its volumes also gets a read-only root.
+x-read-only-root: &read-only-root
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
 services:
   pipeshub-ai:
+    <<: *hardened
+    # Only the image entrypoint holds these, as root, for its first moments: it
+    # hands earlier root-owned volumes to uid 1000 (CHOWN, DAC_OVERRIDE, FOWNER),
+    # then drops to that user (SETUID, SETGID) and empties its bounding set
+    # (SETPCAP) before any service starts, so no service process has any of them.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP, KILL]
     image: pipeshub-ai:latest
     restart: always
+    # Durable agent runs drain on stop (finish the boundary, commit, yield):
+    # the process monitor waits up to 40 s for them before stopping Node.
+    stop_grace_period: 60s
     build:
       context: ../../
       dockerfile: Dockerfile
@@ -17,12 +41,13 @@ services:
           soft: -1
           hard: -1
     ports:
-      - "3000:3000"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     deploy:
       resources:
         limits:
           # OOM cap only (not reserved). Sibling service limits are likewise caps.
           memory: 12G
+          pids: 16384
     # Lets the kernel page out memory that a co-located idle service (e.g.
     # Docling's model weights between documents) is holding but not
     # actively using, instead of counting it against the hard OOM cap above
@@ -53,12 +78,11 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FORMAT=${LOG_FORMAT:-text}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
-      - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
-      - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY to a random key, e.g. the output of openssl rand -base64 32 (install.sh generates one)}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -82,7 +106,7 @@ services:
       # Neo4j config
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USERNAME=neo4j
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-your_password}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD (SEC-D-06)}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
       
       # Message broker config
@@ -105,20 +129,19 @@ services:
       # Redis config
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?set REDIS_PASSWORD to a random value, e.g. openssl rand -hex 24 (SEC-D-06)}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
       - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
       - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
       - REDIS_DB=${REDIS_DB:-0}
 
       # MongoDB config
-      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-}@mongodb:27017/?authSource=admin&replicaSet=rs0&w=majority
       - MONGO_DB_NAME=es
-      # Standalone mongod — multi-document transactions unavailable. App branches on this.
-      - REPLICA_SET_AVAILABLE=false
+      - REPLICA_SET_AVAILABLE=true
 
       # Qdrant config
-      - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?set QDRANT_API_KEY to a random value, e.g. openssl rand -hex 24 (SEC-D-06)}
       - QDRANT_HOST=qdrant
       - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-4G}
       - QDRANT_GRPC_PORT=6334
@@ -248,6 +271,7 @@ services:
       # The app never sees the Docker socket; sandbox containers are created
       # through docker-socket-proxy, which only admits sandbox-shaped requests.
       - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      - DOCKER_PROXY_TOKEN=${DOCKER_PROXY_TOKEN:?set DOCKER_PROXY_TOKEN (install.sh generates it)}
       # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
       # the storage driver supports it; logs a warning once otherwise.
       - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
@@ -283,8 +307,6 @@ services:
       sandbox-image:
         condition: service_completed_successfully
 
-    security_opt:
-      - no-new-privileges:true
     networks:
       - default
       - sandbox-control
@@ -319,28 +341,33 @@ services:
   # networks), and only acts on containers it created. See
   # backend/python/app/sandbox/docker_proxy.py.
   docker-socket-proxy:
+    <<: [*hardened, *read-only-root]
+    # Reaches the Docker socket through the socket's group, never as root (SEC-D-02):
+    # set DOCKER_GID to the socket's group (stat -c %g /var/run/docker.sock); the
+    # default 0 fits Docker Desktop, whose socket is root:root.
+    user: "1000:1000"
+    group_add:
+      - "${DOCKER_GID:-0}"
     image: pipeshub-ai:latest
     restart: always
-    # Root only to open the root-owned socket; it holds no capabilities.
-    user: "0:0"
     working_dir: /app/python
     # Bypasses the image entrypoint, which drops privileges for the app and
     # needs capabilities this container deliberately does not have.
     entrypoint: ["python", "-m", "app.docker_proxy_main"]
     environment:
+      # SEC-A-04: every caller sends this credential; the proxy beside the Docker socket holds no SECRET_KEY
+      # (ADR-KEY-02).
+      - DOCKER_PROXY_TOKEN=${DOCKER_PROXY_TOKEN:?set DOCKER_PROXY_TOKEN (install.sh generates it)}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshub/sandbox:latest}
       - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    read_only: true
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
     deploy:
       resources:
         limits:
           memory: 256M
+          pids: 4096
     networks:
       - sandbox-control
     healthcheck:
@@ -351,33 +378,37 @@ services:
       start_period: 10s
 
   mongodb:
-    image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
-    restart: always
-    # Shared ~16 GB hosts: cap WiredTiger so Mongo does not grab ~half of RAM.
-    # Sibling deploy.limits are OOM caps, not concurrent reservations.
-    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
+    # Single-node replica set, defined once in the base file.
+    extends:
+      file: docker-compose.yml
+      service: mongodb
+    # The base file attaches its own network; this file uses the default one.
+    networks: !reset null
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
-      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-glibc.pthread.rseq=0}
-    volumes:
-      - mongodb_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:?set MONGO_PASSWORD (SEC-D-06)}
 
   redis:
-    image: redis:7.4-bookworm
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint hands /data to the redis user (CHOWN, and DAC_READ_SEARCH
+    # to reach into the 0700 folder an earlier root-running redis left) and drops to
+    # it (SETUID, SETGID); redis-server holds none of them. The command goes through
+    # that entrypoint: started straight from sh, redis-server ran as root.
+    cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
+    image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
+    # Redis always requires its password (SEC-D-06); REDISCLI_AUTH signs in the healthcheck and redis-cli.
     environment:
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?set REDIS_PASSWORD to a random value, e.g. openssl rand -hex 24 (SEC-D-06)}
+      - REDISCLI_AUTH=${REDIS_PASSWORD:-}
     command: >
-      sh -c "redis-server
+      sh -c 'exec docker-entrypoint.sh redis-server
       --appendonly yes
       --appendfsync everysec
-      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
+      --requirepass "$$REDIS_PASSWORD"'
     volumes:
       - redis_data:/data
     healthcheck:
@@ -385,12 +416,25 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          pids: 4096
 
   neo4j:
-    image: neo4j:5.26.0
+    <<: *hardened
+    # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
+    # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    ulimits:
+      nofile:
+        soft: 60000
+        hard: 60000
     restart: always
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD (SEC-D-06)}
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
       - NEO4J_dbms_memory_heap_initial__size=${NEO4J_HEAP_INITIAL:-1G}
@@ -403,7 +447,9 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: ${NEO4J_MEMORY_LIMIT:-3G}
+          # 2G heap + 1G page cache still needs JVM/native headroom.
+          memory: ${NEO4J_MEMORY_LIMIT:-4G}
+          pids: 4096
         reservations:
           cpus: '2'
           memory: ${NEO4J_MEMORY_RESERVATION:-2G}
@@ -415,8 +461,13 @@ services:
       start_period: 30s
 
   zookeeper:
+    <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-zookeeper:7.9.0
+    image: confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
@@ -429,10 +480,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          pids: 4096
 
   kafka-1:
+    <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-kafka:7.9.0
+    image: confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
     restart: always
     depends_on:
       zookeeper:
@@ -460,24 +521,36 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          pids: 4096
 
   # Build-only helper that ensures the pipeshub/sandbox:latest image is
   # available on the host Docker daemon before pipeshub-ai starts.
   # The container itself is a no-op: it prints a message and exits 0, leaving
   # the image in place for SANDBOX_MODE=docker ephemeral execution.
   sandbox-image:
+    <<: [*hardened, *read-only-root]
     image: pipeshub/sandbox:latest
     build:
       context: ../../deployment/sandbox
       dockerfile: Dockerfile
     restart: "no"
     command: ["sh", "-c", "echo 'pipeshub/sandbox:latest image ready'"]
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          pids: 4096
 
   qdrant:
-    image: qdrant/qdrant:v1.15
+    <<: *hardened
+    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
     stop_grace_period: 120s
     environment:
-      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:?set QDRANT_API_KEY to a random value, e.g. openssl rand -hex 24 (SEC-D-06)}
       # Performance optimizations
       - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
       - QDRANT__SERVICE__GRPC_PORT=6334
@@ -498,6 +571,7 @@ services:
           # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
           # the app the figure, for the warning on the Services page.
           memory: ${QDRANT_MEMORY_LIMIT:-4G}
+          pids: 4096
         reservations:
           cpus: '2'
           memory: ${QDRANT_MEMORY_RESERVATION:-2G}
@@ -517,6 +591,8 @@ services:
 
 volumes:
   mongodb_data:
+    driver: local
+  mongodb_replset_key:
     driver: local
   redis_data:
     driver: local

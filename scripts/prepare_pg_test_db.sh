@@ -2,7 +2,7 @@
 # Creates a migrated PostgreSQL database for the integration suites that connect to a running server and writes the connection
 # variables they read to stdout as `export` lines (workflows append them to $GITHUB_ENV with `sed 's/^export //'`).
 #   PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5432/postgres scripts/prepare_pg_test_db.sh [dbname]
-# Needs: python with backend/db/requirements.txt installed (PREPARE_PG_PYTHON, default python), a superuser in PG_ADMIN_URL.
+# Needs: python with backend/db/requirements.lock installed (PREPARE_PG_PYTHON, default python), a superuser in PG_ADMIN_URL.
 # A non-local PG_ADMIN_URL host is refused unless PG_TEST_ALLOW_REMOTE=1.
 # PG_RUNTIME_ROLE (connectors|node) picks the login in PG_RUNTIME_TEST_URL. Every login role gets the password in PG_TEST_PASSWORD (default: a fixed test value; the server is a throwaway one).
 set -euo pipefail

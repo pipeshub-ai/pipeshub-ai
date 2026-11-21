@@ -27,6 +27,12 @@ spec:
       targetPort: indexing
       protocol: TCP
       name: indexing
+    {{- if .Values.metrics.enabled }}
+    - port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    {{- end }}
   selector:
     {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: main

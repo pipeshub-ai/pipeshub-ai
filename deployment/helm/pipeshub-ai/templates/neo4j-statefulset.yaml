@@ -68,6 +68,8 @@ spec:
         {{- include "pipeshub-ai.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: neo4j
     spec:
+      # Store pods never call the Kubernetes API: no service-account token to steal (SEC-D-10).
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.neo4j.podSecurityContext | nindent 8 }}
       affinity:
@@ -93,7 +95,7 @@ spec:
       {{- end }}
       containers:
         - name: neo4j
-          image: "{{ .Values.neo4j.image.repository }}:{{ .Values.neo4j.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.neo4j.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.neo4j.image.pullPolicy }}
           ports:
             - containerPort: 7474

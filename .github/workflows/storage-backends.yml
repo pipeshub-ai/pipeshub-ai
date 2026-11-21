@@ -74,7 +74,7 @@ jobs:
           cache-dependency-path: backend/nodejs/apps/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Start MinIO
         if: matrix.backend == 's3'
@@ -144,16 +144,16 @@ jobs:
           cache-dependency-path: backend/nodejs/apps/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Start MongoDB
         env:
           TOPOLOGY: ${{ matrix.topology }}
         run: |
           if [ "$TOPOLOGY" = "replica-set" ]; then
-            docker run -d --name mongo -p 27017:27017 "$MONGO_IMAGE" mongod --replSet rs0 --bind_ip_all
+            docker run -d --name mongo --ulimit nofile=64000:64000 -p 27017:27017 "$MONGO_IMAGE" mongod --replSet rs0 --bind_ip_all
           else
-            docker run -d --name mongo -p 27017:27017 "$MONGO_IMAGE"
+            docker run -d --name mongo --ulimit nofile=64000:64000 -p 27017:27017 "$MONGO_IMAGE"
           fi
           for _ in $(seq 1 30); do
             docker exec mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break

@@ -1,5 +1,26 @@
+# Every service that runs an image the base file runs keeps the base file's
+# baseline (ADR-OPS-02): no capability but those its image proves it needs, with
+# the reason beside each, no privilege gain, and memory and process limits.
+# tests/unit/harness/security/test_container_baseline.py checks it.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# A service whose image writes only to its volumes also gets a read-only root.
+x-read-only-root: &read-only-root
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
 services:
   pipeshub-ai:
+    <<: *hardened
+    # Only the image entrypoint holds these, as root, for its first moments: it
+    # hands earlier root-owned volumes to uid 1000 (CHOWN, DAC_OVERRIDE, FOWNER),
+    # then drops to that user (SETUID, SETGID) and empties its bounding set
+    # (SETPCAP) before any service starts, so no service process has any of them.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP, KILL]
     image: pipeshub-ai:latest
     restart: always
     build:
@@ -22,6 +43,7 @@ services:
       resources:
         limits:
           memory: 12G
+          pids: 16384
     # Lets the kernel page out memory that a co-located idle service (e.g.
     # Docling's model weights between documents) is holding but not
     # actively using, instead of counting it against the hard OOM cap above
@@ -50,11 +72,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FORMAT=${LOG_FORMAT:-text}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
-      - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
-      - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY to a random key, e.g. the output of openssl rand -base64 32 (install.sh generates one)}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -106,10 +127,9 @@ services:
       - REDIS_VECTOR_PORT=6379
 
       # MongoDB config
-      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin&replicaSet=rs0&w=majority
       - MONGO_DB_NAME=es
-      # Standalone mongod — multi-document transactions unavailable. App branches on this.
-      - REPLICA_SET_AVAILABLE=false
+      - REPLICA_SET_AVAILABLE=true
 
       # Vector DB — Redis Search (requires Redis >= 8.4 for FT.HYBRID)
       - VECTOR_DB_TYPE=redis
@@ -233,6 +253,7 @@ services:
       # The app never sees the Docker socket; sandbox containers are created
       # through docker-socket-proxy, which only admits sandbox-shaped requests.
       - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      - DOCKER_PROXY_TOKEN=${DOCKER_PROXY_TOKEN:?set DOCKER_PROXY_TOKEN (install.sh generates it)}
       # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
       # the storage driver supports it; logs a warning once otherwise.
       - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
@@ -254,8 +275,6 @@ services:
       sandbox-image:
         condition: service_completed_successfully
 
-    security_opt:
-      - no-new-privileges:true
     networks:
       - default
       - sandbox-control
@@ -290,28 +309,33 @@ services:
   # networks), and only acts on containers it created. See
   # backend/python/app/sandbox/docker_proxy.py.
   docker-socket-proxy:
+    <<: [*hardened, *read-only-root]
+    # Reaches the Docker socket through the socket's group, never as root (SEC-D-02):
+    # set DOCKER_GID to the socket's group (stat -c %g /var/run/docker.sock); the
+    # default 0 fits Docker Desktop, whose socket is root:root.
+    user: "1000:1000"
+    group_add:
+      - "${DOCKER_GID:-0}"
     image: pipeshub-ai:latest
     restart: always
-    # Root only to open the root-owned socket; it holds no capabilities.
-    user: "0:0"
     working_dir: /app/python
     # Bypasses the image entrypoint, which drops privileges for the app and
     # needs capabilities this container deliberately does not have.
     entrypoint: ["python", "-m", "app.docker_proxy_main"]
     environment:
+      # SEC-A-04: every caller sends this credential; the proxy beside the Docker socket holds no SECRET_KEY
+      # (ADR-KEY-02).
+      - DOCKER_PROXY_TOKEN=${DOCKER_PROXY_TOKEN:?set DOCKER_PROXY_TOKEN (install.sh generates it)}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshub/sandbox:latest}
       - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    read_only: true
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
     deploy:
       resources:
         limits:
           memory: 256M
+          pids: 4096
     networks:
       - sandbox-control
     healthcheck:
@@ -322,30 +346,38 @@ services:
       start_period: 10s
 
   mongodb:
-    image: mongo:8.0.17
-    restart: always
+    # Single-node replica set, defined once in the base file.
+    extends:
+      file: ../docker-compose.yml
+      service: mongodb
+    # The base file attaches its own network; this file uses the default one.
+    networks: !reset null
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
-    volumes:
-      - mongodb_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
 
   redis:
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint hands /data to the redis user (CHOWN, and DAC_READ_SEARCH
+    # to reach into the 0700 folder an earlier root-running redis left), drops to it
+    # (SETUID, SETGID) and empties its bounding set (SETPCAP: Redis 8's entrypoint
+    # stops without it); redis-server holds none of them. The command goes through
+    # that entrypoint: started straight from sh, redis-server ran as root.
+    cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID, SETPCAP]
     # General-purpose Redis: KV persistent config (DB 0), BullMQ/Celery queues
-    # (DB 1), Redis Streams (DB 2).  No RediSearch modules needed here — lighter
-    # footprint, no HNSW background workers.  Memory stays bounded by design:
+    # (DB 1), Redis Streams (DB 2).  Through the image entrypoint Redis 8 loads its
+    # bundled modules, RediSearch among them; with no index and no --search-workers
+    # it runs no HNSW background workers.  Memory stays bounded by design:
     # KV has finite keys, BullMQ uses removeOnComplete, Streams use MAXLEN.
-    image: redis:8
+    image: redis:8@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     command: >
-      sh -c "redis-server
+      sh -c "exec docker-entrypoint.sh redis-server
       --appendonly yes
       --appendfsync everysec
       --maxmemory-policy noeviction
@@ -357,8 +389,20 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          pids: 4096
 
   redis-vector:
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint hands /data to the redis user (CHOWN, and DAC_READ_SEARCH
+    # to reach into the 0700 folder an earlier root-running redis left), drops to it
+    # (SETUID, SETGID) and empties its bounding set (SETPCAP: Redis 8's entrypoint
+    # stops without it); redis-server holds none of them. The command goes through
+    # that entrypoint: started straight from sh, redis-server ran as root.
+    cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID, SETPCAP]
     # Dedicated Redis vector DB: HNSW indexes over HASH-backed documents with
     # binary FLOAT16 vectors (2 bytes/dim).  Isolated from the general instance
     # so vector memory growth (proportional to indexed docs) cannot OOM KV/queues.
@@ -372,10 +416,14 @@ services:
     # per-insert latency grows with graph size (~25 ms/vector at 20k docs vs
     # ~1 ms with workers).  Tune REDIS_SEARCH_WORKERS toward available CPU cores.
     #
-    # The RediSearch module ships inside the redis:8 image but is NOT loaded by
-    # a plain `redis-server` start, so we load it explicitly here. The ReJSON
-    # module (rejson.so) is NOT needed — storage is ON HASH, not ON JSON.
-    image: redis:8
+    # The image entrypoint loads the bundled modules, RediSearch among them, when the
+    # command is redis-server; loading search again aborts the server, so the command
+    # names no --loadmodule. Storage is ON HASH, so ReJSON goes unused.
+    image: redis:8@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports: 
     - "6379:6379"
     restart: always
@@ -383,8 +431,7 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_SEARCH_WORKERS=${REDIS_SEARCH_WORKERS:-4}
     command: >
-      sh -c "redis-server
-      --loadmodule /usr/local/lib/redis/modules/redisearch.so
+      sh -c "exec docker-entrypoint.sh redis-server
       --search-workers ${REDIS_SEARCH_WORKERS:-4}
       --appendonly yes
       --appendfsync everysec
@@ -397,9 +444,22 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          pids: 4096
 
   neo4j:
-    image: neo4j:5.26.0
+    <<: *hardened
+    # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
+    # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    ulimits:
+      nofile:
+        soft: 60000
+        hard: 60000
     restart: always
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
@@ -415,7 +475,9 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 3G
+          # 2G heap + 1G page cache still needs JVM/native headroom.
+          memory: 4G
+          pids: 4096
         reservations:
           cpus: '2'
           memory: 2G
@@ -431,15 +493,23 @@ services:
   # The container itself is a no-op: it prints a message and exits 0, leaving
   # the image in place for SANDBOX_MODE=docker ephemeral execution.
   sandbox-image:
+    <<: [*hardened, *read-only-root]
     image: pipeshub/sandbox:latest
     build:
       context: ../../../deployment/sandbox
       dockerfile: Dockerfile
     restart: "no"
     command: ["sh", "-c", "echo 'pipeshub/sandbox:latest image ready'"]
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          pids: 4096
 
 volumes:
   mongodb_data:
+    driver: local
+  mongodb_replset_key:
     driver: local
   redis_data:
     driver: local

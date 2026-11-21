@@ -56,7 +56,7 @@ jobs:
       - name: Install backend dependencies
         run: |
           cd backend/nodejs/apps
-          npm install
+          npm ci --ignore-scripts
 
       # Fails only on ESLint errors this pull request adds; the ruff-lint-pr job explains why.
       - name: Lint backend (changed files)
@@ -112,7 +112,7 @@ jobs:
       - name: Install frontend dependencies
         run: |
           cd frontend
-          npm install
+          npm ci --ignore-scripts
 
       - name: Typecheck frontend
         working-directory: frontend
@@ -163,7 +163,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install ruff
-        run: pip install ruff
+        run: backend/python/requirements/install.sh tools
 
       # Runs every rule on the changed files, but fails only on findings this pull
       # request adds. Findings already on main are reported, not blocking, so a
@@ -238,14 +238,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev
 
-      - name: Install uv
-        run: pip install uv
-
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pyright
-          uv pip install --system -e . 2>&1 || true
+          requirements/install.sh dev --project . --editable
 
       - name: Run pyright on changed Python files
         run: |
@@ -305,6 +301,10 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/installer_test.sh
 
+      - name: Installer sandbox-plane tests
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/sandbox_plane_test.sh
+
       - name: Release tooling unit tests
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/release_tooling_test.sh
@@ -338,6 +338,33 @@ jobs:
           SHELLCHECK_OPTS: -S warning
         run: actionlint -color
 
+  # SEC-SC-07..11 (docs/agent-harness-v2/guides/SUPPLY-CHAIN.md): hashed Python locks that agree with
+  # pyproject.toml, npm ci against integrity-checked locks, the denylist and image pins. Offline, standard
+  # library only; the network checks (a fresh resolve, hashes against PyPI) run in supply-chain-weekly.yml.
+  supply-chain:
+    name: Supply chain (locks, installs, image pins)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Check locks, install commands, image pins and fetched code
+        run: python3 scripts/supply_chain.py check
+
+      # SEC-D-12: what each job may do with its token, its secrets and the text it reads.
+      - name: Install PyYAML
+        run: backend/python/requirements/install.sh tools
+
+      - name: Lint workflow privileges
+        run: python3 scripts/workflow_lint.py
+
   connector-coverage:
     name: Connector integration coverage
     runs-on: ubuntu-latest
@@ -352,10 +379,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      # The workflow trust check parses YAML; scripts/test_assert_no_skips.py runs pytest on a throwaway project. These are the versions
-      # integration-tests/uv.lock pins.
+      # The workflow trust check parses YAML; scripts/test_assert_no_skips.py runs pytest on a throwaway project. Both are in
+      # the hashed tools lock, held to dev.lock's versions.
       - name: Install the scripts' test dependencies
-        run: python3 -m pip install pyyaml==6.0.3 pytest==9.1.1
+        run: PYTHON=python3 backend/python/requirements/install.sh tools
 
       # scripts/test_log_pii.py parses TypeScript; it fails, not skips, without the typescript package.
       - name: Set up Node.js
@@ -363,13 +390,12 @@ jobs:
         with:
           node-version: '20'
 
-      # The version backend/nodejs/apps/package-lock.json locks.
+      # From the committed lock (SEC-SC-08, NODE-CI): log_pii.py reads typescript from backend/nodejs/apps by default.
       - name: Install typescript for the log-pii tests
-        run: npm install --no-save --no-package-lock --prefix "$RUNNER_TEMP/ts" typescript@5.7.2
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test the coverage script
-        env:
-          TS_MODULE: ${{ runner.temp }}/ts/node_modules/typescript
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
       # Fails only when a connector is registered without an integration test

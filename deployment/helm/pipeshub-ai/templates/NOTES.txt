@@ -7,6 +7,54 @@ To learn more about the release, try:
   $ helm get all {{ .Release.Name }}
 
 == IMPORTANT SECURITY NOTE ==
+{{- if ne (include "pipeshub-ai.hardened" .) "true" }}
+
+This release runs the COMPATIBILITY security profile (hardened=false): it keeps
+what the chart and the services did before the security programme, so an
+upgraded release changes no behaviour (ADR-OPS-07). Adopt the hardened profile
+with --set hardened=true; on a new install, do that now. It flips, unless you
+set the item yourself: network policies with a namespace default-deny,
+a read-only root filesystem for the app and the sandbox broker, the sandbox
+broker as the coding sandbox (config.sandboxMode), Kafka's SCRAM login, MongoDB
+and Qdrant running non-root, and in the services (PIPESHUB_HARDENED): refusing a
+weak secretKey and anonymous stores, HKDF keys for new writes, security headers
+with frame-ancestors 'none', the trimmed health answer, refresh-token rotation
+for every client, org-deletion confirmation and conversation erasure.
+Read "Security profile" in docs/agent-harness-v2/guides/HARNESS-OFF.md first.
+{{- end }}
+{{- if not .Values.image.digest }}
+
+The application image runs by tag ({{ include "pipeshub-ai.appImage" . }}). A tag
+can be re-pointed at another image; a digest cannot. Pin it: --set image.digest=
+sha256:<digest of this release, from its image-digests.txt> (and
+config.sandboxDockerImage=pipeshubai/pipeshub-sandbox:<tag>@sha256:<digest>),
+and check the signature first: cosign verify (see the release notes; SEC-D-04).
+{{- end }}
+{{- if not (include "pipeshub-ai.networkPolicyEnabled" .) }}
+
+⚠️  NETWORK ISOLATION IS OFF (networkPolicy.enabled=false, or unset without hardened). Every pod can reach
+every other pod, every store port and cloud metadata (169.254.169.254){{ if eq (include "pipeshub-ai.sandboxMode" .) "broker" }},
+including the sandbox broker pod with its PRIVILEGED Docker daemon{{ end }}.
+Turn it on with --set hardened=true or --set networkPolicy.enabled=true, on a
+CNI that enforces NetworkPolicy (ADR-OPS-04).
+{{- else }}
+
+Network isolation is on (ADR-OPS-04): default-deny, then one allow per
+component pair. It needs a CNI that enforces NetworkPolicy; without one the
+policies are inert.
+{{- if .Values.networkPolicy.ingressControllers }}
+  * Ports 3001 and 8088 accept the ingress controller's namespace only
+    (networkPolicy.ingressControllers).
+{{- else }}
+  * No ingress controller may reach the app (networkPolicy.ingressControllers
+    is empty); kubectl port-forward still works.
+{{- end }}
+{{- if and (eq (include "pipeshub-ai.sandboxMode" .) "broker") (or .Values.redis.external.enabled (and (eq .Values.config.kvStoreType "etcd") (not .Values.etcd.enabled))) (not .Values.networkPolicy.sandboxBroker.extraEgress) }}
+  * The KV store is outside the release, and the sandbox broker logs in to it
+    itself: add its address to networkPolicy.sandboxBroker.extraEgress, or
+    the broker cannot start.
+{{- end }}
+{{- end }}
 
 {{- if not .Values.secretManagement.existingSecrets.enabled }}
 {{- if not .Values.secretManagement.externalSecrets.enabled }}
@@ -93,7 +141,23 @@ Your application is accessible via the configured ingress:
 
 == CODING SANDBOX ==
 
-{{- if eq $path "local" }}
+{{- if hasPrefix "broker" $path }}
+
+run_code executes in throwaway containers started by the sandbox broker
+({{ include "pipeshub-ai.sandboxBrokerUrl" . }}), the only pod with a Docker
+daemon ({{ if eq $path "broker-dind" }}its `dind` sidecar{{ else }}{{ .Values.config.dockerHost }}{{ end }}). The application pods have none.
+Isolation is hardened runc unless that daemon lists the gVisor runtime (runsc).
+Egress allowlists (coding engines, allowed websites) are refused: the egress
+proxy knows a sandbox by its address on the sandbox's own Docker network, which
+no pod outside this daemon can join (ADR-OPS-04, until P5.3). Sandboxes get no
+network, or the legacy egress network for package installs, which leaves
+through the broker pod. Each such sandbox refuses private and link-local
+addresses in its own firewall; {{ if include "pipeshub-ai.networkPolicyEnabled" . }}below that, networkPolicy.sandboxBroker leaves
+the pod DNS, the broker's KV port and public addresses on {{ .Values.networkPolicy.sandboxBroker.registryEgress.ports | join ", " }}, never cloud
+metadata, another store or a private range.{{ else }}with networkPolicy off, nothing below that
+firewall stops the pod reaching what the node can.{{ end }}
+
+{{- else if eq $path "local" }}
 
 NO ISOLATION. Code the model generates runs as a subprocess of the application
 pod, sharing its network and filesystem, bounded only by rlimits. Fine for a
@@ -101,7 +165,7 @@ single-tenant development cluster; NOT fine for a shared or internet-reachable
 one.
 
   For container isolation:
-    --set config.sandboxMode=docker --set sandbox.dind.enabled=true
+    --set config.sandboxMode=broker --set sandbox.dind.enabled=true
 
 {{- else if eq $path "e2b" }}
 
@@ -114,7 +178,9 @@ run_code executes in throwaway containers on the `dind` sidecar. The
 application reaches it only through the `docker-proxy` sidecar
 ({{ include "pipeshub-ai.dockerHost" . }}), which refuses privileged
 containers, host mounts, devices, host namespaces and images other than
-{{ .Values.sandbox.proxy.allowedImages | default .Values.config.sandboxDockerImage }}.
+{{ .Values.sandbox.proxy.allowedImages | default (include "pipeshub-ai.sandboxImage" .) }}.
+DEPRECATED: the daemon is in the APPLICATION pod. Move it to the sandbox
+broker with --set config.sandboxMode=broker.
 
 {{- else if eq $path "external" }}
 
@@ -132,23 +198,29 @@ proxy (python -m app.docker_proxy_main) rather than exposed raw.
   * It can escape to the node. Pod Security Admission `restricted` and
     OpenShift's default SCC will reject this pod; label the namespace
     `privileged`/`baseline` or grant a matching SCC.
+{{- if hasPrefix "broker" $path }}
+  * dockerd has no TCP listener. Its unix socket lives in the `dind-sock`
+    emptyDir, mounted only into `dind` and the sandbox broker in the
+    sandbox-broker pod; never mount that volume into another container.
+{{- else }}
   * dockerd has no TCP listener. Its unix socket lives in the `dind-sock`
     emptyDir, mounted only into `dind` and `docker-proxy`; never mount that
     volume into another container.
-  * `docker-proxy` runs app.docker_proxy_main from {{ .Values.sandbox.proxy.image | default (include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global)) }}.
+  * `docker-proxy` runs app.docker_proxy_main from {{ .Values.sandbox.proxy.image | default (include "pipeshub-ai.appImage" .) }}.
     An image built before the Docker API proxy was added lacks it, and the
     sidecar crash-loops; set sandbox.proxy.image to a newer one.
+{{- end }}
 {{- if not .Values.sandbox.dind.storage.existingClaim }}
-  * /var/lib/docker is an emptyDir, so {{ .Values.config.sandboxDockerImage }}
+  * /var/lib/docker is an emptyDir, so {{ include "pipeshub-ai.sandboxImage" . }}
     is re-pulled after every pod restart. Set
     sandbox.dind.storage.existingClaim to keep the cache.
 {{- end }}
-{{- if ne $path "dind" }}
+{{- if not (has $path (list "dind" "broker-dind")) }}
 
   NOTE: run_code is NOT using this sidecar (it uses the "{{ $path }}" path
   above), so you are running a privileged container for nothing. Either
   --set sandbox.dind.enabled=false, or point run_code at it by clearing
-  config.dockerHost and setting config.sandboxMode=docker.
+  config.dockerHost and setting config.sandboxMode=broker.
 {{- end }}
 {{- end }}
 

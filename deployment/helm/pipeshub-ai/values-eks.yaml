@@ -27,7 +27,7 @@ autoscaling:
   enabled: true
   minReplicas: 2
   maxReplicas: 4
-  targetCPUUtilizationPercentage: 70
+  targetCPUAverageValue: 700m  # one core, not a share of the request: Node is one thread (values.yaml)
   targetMemoryUtilizationPercentage: 80
 podDisruptionBudget:
   enabled: true
@@ -46,6 +46,7 @@ persistence:
   enabled: false
 
 # Privileged DinD only on the app node group. See deployment/helm/aws/cluster.yaml.
+# For a node group of its own (SEC-D-09), taint it and set sandbox.nodePool.
 nodeSelector:
   pipeshub/role: app
 tolerations:
@@ -75,7 +76,9 @@ ingress:
 
 config:
   kvStoreType: redis
-  sandboxMode: docker
+  # Empty follows `hardened`: broker (the DinD sidecar below then runs in the
+  # sandbox-broker pod, not the app pods), else docker as this preset ran before.
+  sandboxMode: ""
   sandboxDockerImage: "pipeshubai/pipeshub-sandbox:0.8.0"
   sandboxAllowNetwork: false
   sandboxEgressNetwork: pipeshub_sandbox_egress
@@ -249,36 +252,24 @@ neo4j:
       value: data
       effect: NoSchedule
 
+# ADR-OPS-04: the chart's default-deny and per-component rules, plus what EKS adds.
 networkPolicy:
-  enabled: true
+  # Unset follows `hardened` (ADR-OPS-07): an upgrade from a release whose preset used broad rules gets no
+  # policy rather than stricter ones it was not written for; a hardened release gets the per-pair rules below.
+  enabled: null
+  # The ALB sends to pod IPs itself; there is no in-cluster controller.
+  ingressControllers: []
+  # ALB target-type ip is not a pod and has no namespace. Nodes are private;
+  # these are the only Service ports the chart publishes.
   ingress:
-    - from:
-        - podSelector: {}
-    # ALB target-type ip is not a pod. Nodes are private; these are the only
-    # Service ports the chart publishes.
     - ports:
         - protocol: TCP
           port: 3001
         - protocol: TCP
           port: 8088
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    - to:
-        - podSelector: {}
-      ports:
-        - protocol: TCP
-    - ports:
-        - protocol: TCP
-          port: 443
-    # EKS Pod Identity agent on the node; S3 credentials come from here.
+  # EKS Pod Identity agent on the node; the app's S3 credentials come from here.
+  # The sandbox broker gets no such rule (its ServiceAccount has no role).
+  extraEgress:
     - to:
         - ipBlock:
             cidr: 169.254.170.23/32

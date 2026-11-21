@@ -1,0 +1,71 @@
+{{- /*
+SEC-D-06: credentials for the stores the chart runs itself that have none of their own: etcd's TLS client
+certificates and Kafka's SCRAM login. Each is generated once and kept across upgrades (lookup); helm template, which
+cannot look up, renders fresh ones. The etcd set is reissued when one is missing or within a year of expiry
+(_etcd_tls.tpl, R41OPS-FU-4).
+*/ -}}
+{{- $fullname := include "pipeshub-ai.fullname" . }}
+{{- if .Values.etcd.enabled }}
+{{- $names := include "pipeshub-ai.etcdTls.names" . | fromYaml }}
+{{- $state := include "pipeshub-ai.etcdTls.state" . | fromYaml }}
+{{- /* All or none (R41OPS-FU-4): a missing certificate, or one within a year of expiry, reissues the set under a new CA. */ -}}
+{{- $bundle := dict }}
+{{- if $state.keep }}
+{{- range $role, $name := $names }}
+{{- $_ := set $bundle $role (lookup "v1" "Secret" $.Release.Namespace $name).data }}
+{{- end }}
+{{- else }}
+{{- $ca := genCA "PipesHub internal CA" 3650 }}
+{{- $host := printf "%s-etcd" $fullname }}
+{{- $days := include "pipeshub-ai.etcdTls.leafDays" . | int }}
+{{- $server := genSignedCert "etcd" (list "127.0.0.1") (list $host (printf "%s.%s.svc" $host .Release.Namespace) (printf "%s.%s.svc.cluster.local" $host .Release.Namespace) "localhost") $days $ca }}
+{{- $_ := set $bundle "server" (dict "ca.crt" ($ca.Cert | b64enc) "tls.crt" ($server.Cert | b64enc) "tls.key" ($server.Key | b64enc)) }}
+{{- range $role := list "pipeshub-ai" "sandbox-broker" }}
+{{- $client := genSignedCert $role nil nil $days $ca }}
+{{- $_ := set $bundle $role (dict "ca.crt" ($ca.Cert | b64enc) "tls.crt" ($client.Cert | b64enc) "tls.key" ($client.Key | b64enc)) }}
+{{- end }}
+{{- end }}
+{{- range $role, $name := $names }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: etcd
+  annotations:
+    {{ include "pipeshub-ai.etcdTls.annotation" $ }}: {{ $state.notAfter | quote }}
+type: kubernetes.io/tls
+data:
+  ca.crt: {{ index (index $bundle $role) "ca.crt" | quote }}
+  tls.crt: {{ index (index $bundle $role) "tls.crt" | quote }}
+  tls.key: {{ index (index $bundle $role) "tls.key" | quote }}
+{{- end }}
+{{- end }}
+{{- if eq .Values.messageBroker.type "kafka" }}
+{{- $name := printf "%s-kafka-auth" $fullname }}
+{{- if and .Values.kafka.auth.password (not (regexMatch "^[A-Za-z0-9._~-]{16,}$" .Values.kafka.auth.password)) }}
+{{- fail "kafka.auth.password must be at least 16 characters of A-Z a-z 0-9 . _ ~ - (it is quoted into Kafka's JAAS setting); leave it empty to generate one" }}
+{{- end }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+{{- $password := .Values.kafka.auth.password | default "" | b64enc }}
+{{- if and (not .Values.kafka.auth.password) $existing $existing.data }}
+{{- $password = index $existing.data "password" | default "" }}
+{{- end }}
+{{- if not $password }}
+{{- $password = randAlphaNum 40 | b64enc }}
+{{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+type: Opaque
+data:
+  username: {{ .Values.kafka.auth.username | default "pipeshub" | b64enc | quote }}
+  password: {{ $password | quote }}
+{{- end }}

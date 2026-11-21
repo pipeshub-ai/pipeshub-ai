@@ -42,17 +42,17 @@ DURATIONS = Path(__file__).resolve().parent / "unit_shard_durations.json"
 MAX_OVER_MEAN = 1.35
 
 SHARDS: dict[str, tuple[str, ...]] = {
-    # The connector test files directly under sources/.
-    "connectors-a": ("tests/unit/connectors/sources/test_*.py",),
+    # The connector test files directly under sources/, and microsoft.
+    "connectors-a": ("tests/unit/connectors/sources/test_*.py", "tests/unit/connectors/sources/microsoft"),
     # web, localKB and the smaller connector directories.
     "connectors-b": ("tests/unit/connectors/sources",),
-    # google, microsoft, and connectors outside sources/.
+    # google, and connectors outside sources/.
     "connectors-c": (
         "tests/unit/connectors",
         "tests/unit/connectors/sources/google",
-        "tests/unit/connectors/sources/microsoft",
     ),
-    "agents": ("tests/unit/agents", "tests/unit/agent_loop_lib"),
+    # agents, and modules/transformers, which held modules a hair under the balance bound.
+    "agents": ("tests/unit/agents", "tests/unit/agent_loop_lib", "tests/unit/modules/transformers"),
     "services": (
         "tests/unit/services",
         "tests/unit/events",
@@ -60,8 +60,17 @@ SHARDS: dict[str, tuple[str, ...]] = {
         "tests/unit/containers",
         "tests/unit/config",
         "tests/unit/telemetry",
+        "tests/unit/utils",
     ),
-    "modules": ("tests/unit/modules", "tests/unit/utils"),
+    "modules": ("tests/unit/modules",),
+    # The agent harness: its service tests and its engines.
+    "harness": ("tests/unit/harness", "tests/unit/harness_engines"),
+    # The harness kernel, its generated contracts and the control plane.
+    "harness-contracts": (
+        "tests/unit/harness_core",
+        "tests/unit/contracts_harness",
+        "tests/unit/control_plane",
+    ),
     # Top-level test files, api, sources, models and the rest.
     "core": (UNIT_ROOT,),
 }
@@ -212,6 +221,29 @@ def balance_problems(totals: dict[str, float]) -> list[str]:
     ]
 
 
+# The share of a shard's test files that may have no measured minutes. Past it the
+# balance check is reading zeros: 1,250 new test directories' files once counted
+# as nothing while the shard holding them ran into the job's time limit. Files
+# added since the last refresh stay well under it.
+MAX_UNMEASURED_SHARE = 0.5
+
+
+def unmeasured_problems(durations: dict[str, float], root: Path = PYTHON_ROOT) -> list[str]:
+    owners = owned_paths(root)
+    files = dict.fromkeys(SHARDS, 0)
+    unmeasured = dict.fromkeys(SHARDS, 0)
+    for test_file in test_files(root):
+        shard = owners[nearest_owner(test_file, owners)]
+        files[shard] += 1
+        unmeasured[shard] += test_file not in durations
+    return [
+        f"{shard}: {unmeasured[shard]} of its {files[shard]} test files have no measured minutes: "
+        "refresh unit_shard_durations.json (see the module docstring)"
+        for shard in SHARDS
+        if files[shard] and unmeasured[shard] > files[shard] * MAX_UNMEASURED_SHARE
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -240,10 +272,11 @@ def main(argv: list[str] | None = None) -> int:
             "files": file_minutes(ns.junit),
         }, indent=1))
     else:
-        totals = shard_minutes(load_durations())
+        durations = load_durations()
+        totals = shard_minutes(durations)
         for shard, minutes in sorted(totals.items(), key=lambda item: -item[1]):
             print(f"{shard:14} {minutes:6.1f} min")
-        problems = balance_problems(totals)
+        problems = unmeasured_problems(durations) + balance_problems(totals)
         print("\n".join(problems) or "balanced")
         return 1 if problems else 0
     return 0

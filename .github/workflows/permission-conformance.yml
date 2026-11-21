@@ -71,10 +71,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install uv
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run oracle, scenario and matrix tests
         run: |
@@ -166,7 +164,7 @@ jobs:
             allow: test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]
     services:
       neo4j:
-        image: neo4j:5.26.0
+        image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
         ports:
           - 7688:7687
         env:
@@ -182,7 +180,7 @@ jobs:
           --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
           --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
       arango:
-        image: arangodb:3.12.4
+        image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
         ports:
           - 8530:8529
         env:
@@ -209,10 +207,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install uv
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       # Every suite wipes the stores on setup; each shard has its own, so one database name serves them all.
       - name: Run shard ${{ matrix.shard }} against both stores
@@ -270,7 +266,7 @@ jobs:
         seed: [7, 11, 2026]
     services:
       neo4j:
-        image: neo4j:5.26.0
+        image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
         ports:
           - 7688:7687
         env:
@@ -286,7 +282,7 @@ jobs:
           --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
           --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
       arango:
-        image: arangodb:3.12.4
+        image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
         ports:
           - 8530:8529
         env:
@@ -313,10 +309,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install uv
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run 600 generated worlds per generator against both stores
         env:

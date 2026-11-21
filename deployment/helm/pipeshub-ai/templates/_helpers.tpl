@@ -78,18 +78,72 @@ app.kubernetes.io/component: neo4j
 {{- end }}
 
 {{/*
-Image helper with registry support
-Usage: include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global "context" $)
+Every image the chart renders goes through pipeshub-ai.imageRef, so
+global.imageRegistry alone mirrors all of them (ADR-OPS-01 D9). A reference
+whose first path segment names a registry (has a "." or ":", or is
+"localhost") keeps it; otherwise the registry is global.imageRegistry, else
+the image's own `registry` value, else none (Docker Hub). The path is kept, so
+a mirror holds quay.io/coreos/etcd as {mirror}/coreos/etcd.
+Usage: include "pipeshub-ai.imageRef" (dict "ref" "repo/name:tag" "global" .Values.global)
+       include "pipeshub-ai.image" (dict "image" .Values.qdrant.image "global" .Values.global)
+*/}}
+{{- define "pipeshub-ai.imageRef" -}}
+{{- $ref := .ref | toString -}}
+{{- $parts := splitList "/" $ref -}}
+{{- $first := first $parts -}}
+{{- $named := and (gt (len $parts) 1) (or (contains "." $first) (contains ":" $first) (eq $first "localhost")) -}}
+{{- $registry := .global.imageRegistry | default .registry | default "" -}}
+{{- if and $registry (not $named) -}}
+{{- printf "%s/%s" (trimSuffix "/" $registry) $ref -}}
+{{- else -}}
+{{- $ref -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+An image block's reference: repository, then ":tag" (else defaultTag), then
+"@digest". A digest makes the reference immutable whatever the tag says, so a
+re-pushed tag cannot change what a pod runs (SEC-D-04); the tag stays for
+people reading the manifest.
 */}}
 {{- define "pipeshub-ai.image" -}}
-{{- $registry := .global.imageRegistry | default "" -}}
-{{- $repository := .image.repository -}}
-{{- $tag := .image.tag | toString -}}
-{{- if $registry }}
-{{- printf "%s/%s:%s" $registry $repository $tag }}
-{{- else }}
-{{- printf "%s:%s" $repository $tag }}
+{{- $tag := .image.tag | default .defaultTag | default "" | toString -}}
+{{- $digest := .image.digest | default "" | toString -}}
+{{- if and $digest (not (regexMatch "^sha256:[0-9a-f]{64}$" $digest)) -}}
+{{- fail (printf "%s: image digest %q is not sha256:<64 hex>. Copy the digest from the release notes." .image.repository $digest) -}}
+{{- end -}}
+{{- if not (or $tag $digest) -}}
+{{- fail (printf "%s: set the image's tag or digest." .image.repository) -}}
+{{- end -}}
+{{- $ref := .image.repository -}}
+{{- if $tag -}}{{- $ref = printf "%s:%s" $ref $tag -}}{{- end -}}
+{{- if $digest -}}{{- $ref = printf "%s@%s" $ref $digest -}}{{- end -}}
+{{- include "pipeshub-ai.imageRef" (dict "ref" $ref "registry" (.image.registry | default "") "global" .global) -}}
 {{- end }}
+
+{{/*
+The application image: image.tag defaults to the chart's appVersion, never a
+moving tag. Usage: include "pipeshub-ai.appImage" .
+*/}}
+{{- define "pipeshub-ai.appImage" -}}
+{{- include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global "defaultTag" .Chart.AppVersion) -}}
+{{- end }}
+
+{{/*
+The code-sandbox image: config.sandboxDockerImage, else the sandbox image of
+this release. Usage: include "pipeshub-ai.sandboxImage" .
+*/}}
+{{- define "pipeshub-ai.sandboxImage" -}}
+{{- $ref := .Values.config.sandboxDockerImage | default (printf "pipeshubai/pipeshub-sandbox:%s" .Chart.AppVersion) -}}
+{{- include "pipeshub-ai.imageRef" (dict "ref" $ref "global" .Values.global) -}}
+{{- end }}
+
+{{/*
+The registry engine images are pulled from (HARNESS_ENGINE_IMAGE_REGISTRY):
+agentHarness.engineImageRegistry, else global.imageRegistry.
+*/}}
+{{- define "pipeshub-ai.engineImageRegistry" -}}
+{{- .Values.agentHarness.engineImageRegistry | default .Values.global.imageRegistry | default "" -}}
 {{- end }}
 
 {{/*
@@ -331,9 +385,9 @@ the raw daemon API with no policy in between, i.e. root on the node.
 */}}
 {{- define "pipeshub-ai.validateSandbox" -}}
 {{- if and (eq (include "pipeshub-ai.sandboxMode" .) "local") (ne (include "pipeshub-ai.sandboxAllowLocal" .) "true") }}
-  {{- fail "config.sandboxMode is \"local\", which runs generated code as a subprocess of this pod with no container isolation, and the service refuses it unless config.sandboxAllowLocal=true. Set that only on a single-tenant development cluster; otherwise use docker or e2b." }}
+  {{- fail "config.sandboxMode is \"local\", which runs generated code as a subprocess of this pod with no container isolation, and the service refuses it unless config.sandboxAllowLocal=true. Set that only on a single-tenant development cluster; otherwise use broker, docker or e2b." }}
 {{- end }}
-{{- $socketError := "mounts a Docker socket into the application container, which gives it, and any code it runs, root on the node. Use --set sandbox.dind.enabled=true (the app then reaches the daemon only through the docker-proxy policy sidecar) or --set config.sandboxMode=e2b." }}
+{{- $socketError := "mounts a Docker socket into the application container, which gives it, and any code it runs, root on the node. Use --set sandbox.dind.enabled=true with config.sandboxMode=broker (the daemon then sits in the sandbox-broker pod) or docker (the app then reaches it only through the docker-proxy policy sidecar), or --set config.sandboxMode=e2b." }}
 {{- range $mounts := list .Values.extraVolumeMounts .Values.volumeMounts }}
   {{- range $mounts }}
     {{- if kindIs "map" . }}
@@ -351,6 +405,11 @@ the raw daemon API with no policy in between, i.e. root on the node.
         {{- fail (printf "extraVolumes/volumes %s" $socketError) }}
       {{- end }}
     {{- end }}
+  {{- end }}
+{{- end }}
+{{- if eq (include "pipeshub-ai.sandboxMode" .) "broker" }}
+  {{- if not (or .Values.sandbox.dind.enabled .Values.config.dockerHost) }}
+    {{- fail "config.sandboxMode is \"broker\" but no Docker daemon is configured for the sandbox broker, so run_code would fail at runtime. Pick one: (a) --set sandbox.dind.enabled=true to run a Docker-in-Docker sidecar in the sandbox-broker pod (needs a PRIVILEGED container - see sandbox.dind in values.yaml; the application pods get no daemon); (b) --set config.dockerHost=tcp://<host>:2375 to use a daemon you run; (c) --set config.sandboxMode=e2b with an E2B_API_KEY to execute off-cluster; or (d) --set config.sandboxMode=local --set config.sandboxAllowLocal=true to run generated code as a subprocess of this pod - NO container isolation, acceptable only for single-tenant development clusters." }}
   {{- end }}
 {{- end }}
 {{- if eq (include "pipeshub-ai.sandboxMode" .) "docker" }}
@@ -419,10 +478,14 @@ Emitting the canonical spelling into the env var keeps both layers reading
 the same thing.
 */}}
 {{- define "pipeshub-ai.sandboxMode" -}}
-{{- $raw := .Values.config.sandboxMode | toString -}}
+{{- $raw := .Values.config.sandboxMode | default "" | toString -}}
 {{- $mode := $raw | trim | lower -}}
-{{- if not (has $mode (list "local" "docker" "e2b")) -}}
-  {{- fail (printf "config.sandboxMode=%q is not a supported coding sandbox. Use one of: local, docker, e2b." $raw) -}}
+{{- if eq $mode "" -}}
+{{- /* Unset follows the security profile (ADR-OPS-07): upstream's chart ran docker; hardened runs the broker. */ -}}
+{{- $mode = ternary "broker" "docker" (eq (include "pipeshub-ai.hardened" .) "true") -}}
+{{- end -}}
+{{- if not (has $mode (list "local" "docker" "e2b" "broker")) -}}
+  {{- fail (printf "config.sandboxMode=%q is not a supported coding sandbox. Use one of: broker, local, docker, e2b." $raw) -}}
 {{- end -}}
 {{- $mode -}}
 {{- end -}}
@@ -467,7 +530,9 @@ Docker-in-Docker for an e2b deployment.
 */}}
 {{- define "pipeshub-ai.sandboxPath" -}}
 {{- $mode := include "pipeshub-ai.sandboxMode" . -}}
-{{- if ne $mode "docker" -}}
+{{- if eq $mode "broker" -}}
+{{- if .Values.config.dockerHost -}}broker-external{{- else -}}broker-dind{{- end -}}
+{{- else if ne $mode "docker" -}}
 {{- $mode -}}
 {{- else if .Values.config.dockerHost -}}
 external
@@ -552,9 +617,365 @@ synced Secret never gets.
 {{- if and (not .Values.mongodb.enabled) (not .Values.mongodb.builtin.enabled) -}}
   {{- fail "MongoDB is not deployed. Set mongodb.enabled=true (Bitnami subchart) or mongodb.builtin.enabled=true (chart-owned replica set)." -}}
 {{- end -}}
+{{- /* The subchart's standalone PVC is dropped from the manifest once
+architecture is replicaset, and Helm would delete it on upgrade. lookup is
+empty under helm template, so this only fires against a live release. */ -}}
+{{- if and .Values.mongodb.enabled (eq (.Values.mongodb.architecture | default "standalone") "replicaset") -}}
+  {{- $standaloneClaim := printf "%s-mongodb" .Release.Name -}}
+  {{- if lookup "v1" "PersistentVolumeClaim" .Release.Namespace $standaloneClaim -}}
+    {{- fail (printf "PVC %s holds data from a standalone MongoDB, and switching to a replica set would make Helm delete it. Keep standalone with --set mongodb.architecture=standalone, or move the data first: see \"Standalone MongoDB to a replica set\" in the chart README." $standaloneClaim) -}}
+  {{- end -}}
+{{- end -}}
 {{- if and .Values.secretManagement.externalSecrets.enabled (not .Values.secretManagement.externalSecrets.remoteRefs.secretKey) -}}
   {{- fail "secretManagement.externalSecrets.remoteRefs.secretKey is required when externalSecrets is enabled; the app cannot start without secret-key." -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+The sandbox broker's in-cluster address (config.sandboxMode=broker).
+*/}}
+{{- define "pipeshub-ai.sandboxBrokerUrl" -}}
+{{- printf "http://%s-sandbox-broker:8095" (include "pipeshub-ai.fullname" .) -}}
+{{- end -}}
+
+{{/*
+etcd client settings, for every process that reads the KV store.
+*/}}
+{{- define "pipeshub-ai.etcdEnv" -}}
+{{- if .Values.etcd.enabled }}
+# ETCD config: TLS with this pod's own client certificate (SEC-D-06), mounted by pipeshub-ai.etcdTlsMount
+- name: ETCD_URL
+  value: "https://{{ include "pipeshub-ai.fullname" . }}-etcd:2379"
+- name: ETCD_HOST
+  value: "{{ include "pipeshub-ai.fullname" . }}-etcd"
+- name: ETCD_CA_FILE
+  value: /run/pipeshub/etcd-tls/ca.crt
+- name: ETCD_CERT_FILE
+  value: /run/pipeshub/etcd-tls/tls.crt
+- name: ETCD_KEY_FILE
+  value: /run/pipeshub/etcd-tls/tls.key
+{{- end }}
+{{- end -}}
+
+{{/*
+The volume and mount behind etcdEnv. Call the volume with (dict "root" . "client" "pipeshub-ai" | "sandbox-broker").
+*/}}
+{{- define "pipeshub-ai.etcdTlsMount" -}}
+{{- if .Values.etcd.enabled }}
+- name: etcd-tls
+  mountPath: /run/pipeshub/etcd-tls
+  readOnly: true
+{{- end }}
+{{- end -}}
+
+{{- define "pipeshub-ai.etcdTlsVolume" -}}
+{{- if .root.Values.etcd.enabled }}
+- name: etcd-tls
+  secret:
+    secretName: {{ include "pipeshub-ai.fullname" .root }}-etcd-client-{{ .client }}
+    defaultMode: 0440
+{{- end }}
+{{- end -}}
+
+{{/*
+Redis client settings, for every process that reads the KV store or the broker.
+*/}}
+{{- define "pipeshub-ai.redisEnv" -}}
+{{- include "pipeshub-ai.redisEnvFor" (dict "root" . "auth" true) }}
+{{- end -}}
+
+{{/*
+redisEnv for a sandbox-plane component (ADR-KEY-02, SEC-D-03): the same target, and no password, since the
+component derives its own Redis ACL login from its key.
+*/}}
+{{- define "pipeshub-ai.redisEnvComponent" -}}
+{{- include "pipeshub-ai.redisEnvFor" (dict "root" . "auth" false) }}
+{{- end -}}
+
+{{- define "pipeshub-ai.redisEnvFor" -}}
+{{- $root := .root }}
+{{- $auth := .auth }}
+# Redis config
+{{- /*
+  Connection target:
+    - in-cluster Redis (Bitnami or chart-owned): <release>-redis-master. That Service
+      follows the current master, so the app does not need Sentinel.
+    - redis.external.host: a standalone primary (ElastiCache cluster mode disabled).
+      Its DNS name follows a failover. redis.mode stays standalone, so Celery uses
+      the same endpoint.
+    - redis.external.clusterEndpoints: Redis Cluster or MemoryDB. redis.mode=cluster,
+      and Celery needs celery.brokerUrl because it cannot speak cluster protocol.
+*/}}
+{{- include "pipeshub-ai.validateRedis" $root }}
+{{- $ext := $root.Values.redis.external }}
+{{- $redis := dict "host" (printf "%s-redis-master" $root.Release.Name) "port" "6379" "scheme" "redis" "target" "" }}
+{{- if and $ext.enabled $ext.host }}
+{{- $_ := set $redis "host" ($ext.host | toString) }}
+{{- $_ := set $redis "port" ($ext.port | default 6379 | toString) }}
+{{- else if $ext.enabled }}
+{{- $_ := set $redis "host" "" }}
+{{- end }}
+{{- if and $ext.enabled $root.Values.redis.clientTls.enabled }}
+{{- $_ := set $redis "scheme" "rediss" }}
+{{- end }}
+{{- $_ := set $redis "target" (printf "%s:%s" (get $redis "host") (get $redis "port")) }}
+{{- if and $ext.enabled (not $ext.host) }}
+{{- $_ := set $redis "target" (trim (index (splitList "," (printf "%s," ($ext.clusterEndpoints | toString))) 0)) }}
+{{- end }}
+{{- if and $ext.enabled $ext.host }}
+- name: REDIS_HOST
+  value: {{ get $redis "host" | quote }}
+- name: REDIS_PORT
+  value: {{ get $redis "port" | quote }}
+{{- else if $ext.enabled }}
+- name: REDIS_HOST
+  value: ""
+- name: REDIS_PORT
+  value: "6379"
+- name: REDIS_CLUSTER_ENDPOINTS
+  value: {{ $ext.clusterEndpoints | quote }}
+- name: REDIS_CLUSTER_NAT_MAP
+  value: {{ $ext.natMap | default "" | quote }}
+{{- else }}
+- name: REDIS_HOST
+  value: {{ get $redis "host" | quote }}
+- name: REDIS_PORT
+  value: "6379"
+{{- end }}
+{{- if not $auth }}
+# A sandbox-plane component logs in as its own ACL user (ADR-KEY-02): it gets no Redis password.
+{{- else if $root.Values.redis.auth.enabled }}
+- name: REDIS_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "pipeshub-ai.redisSecretName" $root }}
+      key: redis-password
+- name: REDIS_URL
+  value: "{{ get $redis "scheme" }}://:$(REDIS_PASSWORD)@{{ get $redis "target" }}"
+{{- else }}
+- name: REDIS_PASSWORD
+  value: ""
+- name: REDIS_URL
+  value: "{{ get $redis "scheme" }}://{{ get $redis "target" }}"
+{{- end }}
+- name: REDIS_MODE
+  value: {{ $root.Values.redis.mode | default "standalone" | quote }}
+- name: REDIS_KEY_NAMESPACE
+  value: {{ $root.Values.redis.keyNamespace | default "" | quote }}
+- name: REDIS_CLUSTER_SCALE_READS
+  value: {{ $root.Values.redis.clusterScaleReads | default "master" | quote }}
+- name: REDIS_PROVIDER_MODULE
+  value: {{ $root.Values.redis.providerModule | default "" | quote }}
+- name: REDIS_TLS_ENABLED
+  value: {{ $root.Values.redis.clientTls.enabled | default false | quote }}
+- name: REDIS_TLS_REJECT_UNAUTHORIZED
+  value: {{ $root.Values.redis.clientTls.rejectUnauthorized | default true | quote }}
+- name: REDIS_TLS_CA_PATH
+  value: {{ $root.Values.redis.clientTls.caPath | default "" | quote }}
+{{- end -}}
+
+{{/*
+The privileged Docker-in-Docker sidecar: in the sandbox-broker pod with
+config.sandboxMode=broker, in the app pod with the legacy docker mode. See
+`sandbox.dind` in values.yaml for the privilege trade this makes.
+*/}}
+{{- define "pipeshub-ai.dindContainer" -}}
+- name: dind
+  image: {{ include "pipeshub-ai.imageRef" (dict "ref" .Values.sandbox.dind.image "global" .Values.global) | quote }}
+  imagePullPolicy: {{ .Values.sandbox.dind.pullPolicy | quote }}
+  securityContext:
+    # The daemon needs to create namespaces, mount filesystems and
+    # manage cgroups, which no unprivileged container can do. This
+    # deliberately overrides the pod-level runAsNonRoot.
+    privileged: true
+    runAsNonRoot: false
+    runAsUser: 0
+  env:
+    - name: DOCKER_TLS_CERTDIR
+      value: ""
+    # For the `docker info` probes below.
+    - name: DOCKER_HOST
+      value: "unix:///var/run/dind/docker.sock"
+  # No TCP listener: every container in a pod shares one network
+  # namespace, so a loopback port would hand the raw API to the
+  # application container too. The socket's volume is mounted only
+  # here and in docker-proxy. First arg must be `dockerd`; if it starts
+  # with `-`, dockerd-entrypoint.sh adds its default 0.0.0.0:2375 listener.
+  args:
+    - dockerd
+    - "--host=unix:///var/run/dind/docker.sock"
+    - "--group={{ .Values.sandbox.dind.socketGroup }}"
+  resources:
+    {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}
+  volumeMounts:
+    - name: dind-storage
+      mountPath: /var/lib/docker
+    - name: dind-sock
+      mountPath: /var/run/dind
+  livenessProbe:
+    exec:
+      command: ["docker", "info"]
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  startupProbe:
+    # Pulling the sandbox image on a cold cache can take a while;
+    # this is what stops a slow first start being read as a crash.
+    exec:
+      command: ["docker", "info"]
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 10
+    failureThreshold: 30
+{{- end -}}
+
+{{/*
+/var/lib/docker for the DinD sidecar, and the emptyDir holding its unix socket
+(mounted only into `dind` and the one container that talks to the daemon:
+`docker-proxy`, in the app pod or the sandbox-broker pod).
+*/}}
+{{- define "pipeshub-ai.dindVolume" -}}
+- name: dind-storage
+  {{- if .Values.sandbox.dind.storage.existingClaim }}
+  persistentVolumeClaim:
+    claimName: {{ .Values.sandbox.dind.storage.existingClaim | quote }}
+  {{- else }}
+  emptyDir:
+    sizeLimit: {{ .Values.sandbox.dind.storage.sizeLimit | quote }}
+  {{- end }}
+- name: dind-sock
+  emptyDir:
+    medium: Memory
+    sizeLimit: 1Mi
+{{- end -}}
+
+{{/*
+The Docker API policy proxy sidecar (#3888): the only container besides dind
+that mounts the daemon's socket. Called with (dict "root" . "profile" ...):
+"broker" in the sandbox-broker pod, which then reaches the daemon only through
+it with its own credential (R38IDENT-FU-1); "legacy" in the app pod with the
+legacy docker mode. Listens on loopback; admits only that caller's calls.
+*/}}
+{{- define "pipeshub-ai.dockerProxyContainer" -}}
+{{- $root := .root -}}
+- name: docker-proxy
+  {{- if $root.Values.sandbox.proxy.image }}
+  image: {{ include "pipeshub-ai.imageRef" (dict "ref" $root.Values.sandbox.proxy.image "global" $root.Values.global) | quote }}
+  {{- else }}
+  image: {{ include "pipeshub-ai.appImage" $root | quote }}
+  {{- end }}
+  imagePullPolicy: {{ $root.Values.image.pullPolicy | default $root.Values.global.imagePullPolicy }}
+  # Bypasses the image entrypoint, which drops privileges for the app
+  # and needs capabilities this container deliberately does not have.
+  command: ["python", "-m", "app.docker_proxy_main"]
+  workingDir: /app/python
+  securityContext:
+    # Not root: the daemon's socket belongs to sandbox.dind.socketGroup, which
+    # this container alone runs with (SEC-D-02).
+    runAsUser: 1000
+    runAsGroup: {{ $root.Values.sandbox.dind.socketGroup }}
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
+  env:
+    # Loopback only: the default 0.0.0.0 would also serve the pod IP.
+    - name: DOCKER_PROXY_HOST
+      value: "127.0.0.1"
+    - name: DOCKER_PROXY_PORT
+      value: {{ $root.Values.sandbox.dind.port | quote }}
+    - name: DOCKER_PROXY_UPSTREAM
+      value: "unix:///var/run/dind/docker.sock"
+    - name: DOCKER_PROXY_LOG_LEVEL
+      value: {{ $root.Values.sandbox.proxy.logLevel | quote }}
+    {{- if eq .profile "broker" }}
+    - name: DOCKER_PROXY_BROKER_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: {{ include "pipeshub-ai.secretName" $root }}
+          key: docker-proxy-broker-token
+          # An existing or external secret without it still renders; the proxy then says what to set.
+          optional: true
+    # The broker's scope, as the broker reads it: this install's sandboxes, volumes and networks only.
+    - name: SANDBOX_INSTALL_ID
+      value: {{ printf "%s-%s" $root.Release.Namespace $root.Release.Name | quote }}
+    - name: SANDBOX_DATA_VOLUME
+      value: {{ $root.Values.sandboxBroker.dataVolume | default "pipeshub_sandbox_data" | quote }}
+    {{- else }}
+    - name: DOCKER_PROXY_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: {{ include "pipeshub-ai.secretName" $root }}
+          key: docker-proxy-token
+          optional: true
+    {{- with $root.Values.sandbox.proxy.allowedImages }}
+    - name: DOCKER_PROXY_ALLOWED_IMAGES
+      value: {{ . | quote }}
+    {{- end }}
+    {{- end }}
+    # Legacy: the image sandboxes run. Broker: the only image the egress firewall's root helper may run, the one the
+    # broker runs it from (R44STOP-FU-3).
+    - name: SANDBOX_DOCKER_IMAGE
+      value: {{ include "pipeshub-ai.sandboxImage" $root | quote }}
+    - name: SANDBOX_EGRESS_NETWORK
+      value: {{ $root.Values.config.sandboxEgressNetwork | quote }}
+    - name: PYTHONDONTWRITEBYTECODE
+      value: "1"
+  resources:
+    {{- toYaml $root.Values.sandbox.proxy.resources | nindent 12 }}
+  volumeMounts:
+    - name: dind-sock
+      mountPath: /var/run/dind
+  # A TCP connect, not /_ping: /_ping is forwarded to dockerd, and a
+  # slow daemon should not restart the proxy. The listener is on
+  # loopback, so a kubelet tcpSocket probe (pod IP) cannot reach it.
+  livenessProbe:
+    exec:
+      command:
+        - python
+        - -c
+        - "import socket; socket.create_connection(('127.0.0.1', {{ $root.Values.sandbox.dind.port }}), timeout=3).close()"
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+{{- end -}}
+
+{{/*
+DOCKER_HOST for the sandbox broker: a daemon you run (config.dockerHost; front
+it with the same policy proxy, python -m app.docker_proxy_main), else the
+docker-proxy sidecar in its pod, the only container there with the DinD
+socket (R38IDENT-FU-1), as in Compose.
+*/}}
+{{- define "pipeshub-ai.brokerDockerHost" -}}
+{{- if .Values.config.dockerHost -}}
+{{- .Values.config.dockerHost -}}
+{{- else if .Values.sandbox.dind.enabled -}}
+{{- printf "tcp://127.0.0.1:%v" .Values.sandbox.dind.port -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Shell lines that raise the open-file soft limit to the given number, for a
+server that keeps the limit it is started with (mongod, Qdrant). Kubernetes has
+no field for it: a container gets the node runtime's limit, 1024 soft where
+containerd runs under systemd's defaults. Raising the soft limit within the
+hard one needs no privilege; a hard limit below the number is the node's to
+fix, so it is reported and the server starts on what there is.
+*/}}
+{{- define "pipeshub-ai.raiseOpenFiles" -}}
+want={{ int . }}; hard="$(ulimit -Hn)"; soft="$(ulimit -Sn)"
+if [ "$hard" != unlimited ] && [ "$hard" -lt "$want" ]; then
+  echo "open files: the hard limit is $hard, below the $want this server needs; raise LimitNOFILE of the node's container runtime" >&2
+  want="$hard"
+fi
+if [ "$soft" != unlimited ] && [ "$soft" -lt "$want" ]; then
+  ulimit -Sn "$want"
+fi
 {{- end -}}
 
 {{/*
@@ -567,4 +988,153 @@ ceiling when autoscaling is on.
 {{- $replicas = max $replicas (.Values.autoscaling.maxReplicas | int) -}}
 {{- end -}}
 {{- $replicas -}}
+{{- end -}}
+
+{{/*
+The container half of the restricted baseline (SEC-D-10), for containers whose
+pod sets runAsNonRoot and the RuntimeDefault seccomp profile.
+*/}}
+{{- define "pipeshub-ai.restrictedContainer" -}}
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+{{- end }}
+
+{{/*
+The Kafka SCRAM login (SEC-D-06), for the broker and its init container. Not KAFKA_-prefixed: the cp-kafka image
+writes every KAFKA_ variable into server.properties.
+*/}}
+{{- define "pipeshub-ai.kafkaLoginEnv" -}}
+- name: PIPESHUB_KAFKA_USERNAME
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "pipeshub-ai.fullname" . }}-kafka-auth
+      key: username
+- name: PIPESHUB_KAFKA_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "pipeshub-ai.fullname" . }}-kafka-auth
+      key: password
+{{- end -}}
+
+{{- /*
+R38IDENT-FU-8 (ADR-KEY-02 D8): SECRET_KEY reaches the app as a file in a Secret volume (mode 0400; the pod's fsGroup
+may add group read), so it is not in the container's environment, `kubectl describe` or /proc/<pid>/environ.
+SECRET_KEY_PREVIOUS / SECRET_KEY_NEXT stay variables: they are set only while a rotation runs, and are optional keys.
+*/ -}}
+{{- define "pipeshub-ai.secretKeyFilePath" -}}/run/secrets/pipeshub/secret-key{{- end -}}
+
+{{- define "pipeshub-ai.secretKeyMount" -}}
+{{- if .Values.secretKeyAsFile }}
+- name: secret-key
+  mountPath: /run/secrets/pipeshub
+  readOnly: true
+{{- end }}
+{{- end -}}
+
+{{- define "pipeshub-ai.secretKeyVolume" -}}
+{{- if .Values.secretKeyAsFile }}
+- name: secret-key
+  secret:
+    secretName: {{ include "pipeshub-ai.secretName" . }}
+    defaultMode: 0400
+    items:
+      - key: secret-key
+        path: secret-key
+{{- end }}
+{{- end -}}
+
+{{/*
+The security profile (ADR-OPS-07). `hardened` (PIPESHUB_HARDENED in the app) decides the defaults that would break a
+release upgraded from a chart without them: off (the default) renders what that chart rendered, so `helm upgrade` of
+an existing release changes no network policy, store identity or wire protocol; true renders the hardened set. The
+chart never guesses install from upgrade: `helm template` (GitOps) cannot tell them apart.
+"true" or "false", parsed as the services parse PIPESHUB_HARDENED.
+*/}}
+{{- define "pipeshub-ai.hardened" -}}
+{{- $raw := .Values.hardened | default false | toString | trim | lower -}}
+{{- ternary "true" "false" (has $raw (list "1" "true" "yes" "on")) -}}
+{{- end -}}
+
+{{/*
+A per-item switch that follows `hardened` while the operator leaves it unset (null or ""); an explicit value wins.
+Called with (dict "value" <the item's value> "root" $). "true" or "" (for `if`).
+*/}}
+{{- define "pipeshub-ai.followsHardened" -}}
+{{- $value := .value -}}
+{{- if or (kindIs "invalid" $value) (eq (toString $value) "") -}}
+{{- if eq (include "pipeshub-ai.hardened" .root) "true" }}true{{ end -}}
+{{- else if has ($value | toString | trim | lower) (list "1" "true" "yes" "on") -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/* networkPolicy.enabled, following `hardened` when unset (upstream's chart rendered none). */}}
+{{- define "pipeshub-ai.networkPolicyEnabled" -}}
+{{- include "pipeshub-ai.followsHardened" (dict "value" .Values.networkPolicy.enabled "root" .) -}}
+{{- end -}}
+
+{{/* Kafka's SCRAM login (SEC-D-06), following `hardened` when kafka.auth.enabled is unset (upstream's was PLAINTEXT). */}}
+{{- define "pipeshub-ai.kafkaAuthEnabled" -}}
+{{- include "pipeshub-ai.followsHardened" (dict "value" .Values.kafka.auth.enabled "root" .) -}}
+{{- end -}}
+
+{{/*
+MongoDB's pods as the mongodb user from the start (SEC-D-10), following `hardened` when mongodb.builtin.nonRoot is
+unset. Off: upstream's pods, whose entrypoint starts as root and drops to mongodb itself.
+*/}}
+{{- define "pipeshub-ai.mongodbNonRoot" -}}
+{{- include "pipeshub-ai.followsHardened" (dict "value" .Values.mongodb.builtin.nonRoot "root" .) -}}
+{{- end -}}
+
+{{/*
+The app's (and the sandbox broker's) container securityContext: .Values.securityContext, whose
+readOnlyRootFilesystem follows `hardened` while it is unset (upstream's chart had a writable root).
+*/}}
+{{- define "pipeshub-ai.appSecurityContext" -}}
+{{- $ctx := deepCopy .Values.securityContext -}}
+{{- if or (not (hasKey $ctx "readOnlyRootFilesystem")) (kindIs "invalid" $ctx.readOnlyRootFilesystem) (eq (toString $ctx.readOnlyRootFilesystem) "") -}}
+{{- $_ := set $ctx "readOnlyRootFilesystem" (eq (include "pipeshub-ai.hardened" .) "true") -}}
+{{- end -}}
+{{- toYaml $ctx -}}
+{{- end -}}
+
+{{/*
+Qdrant's pod and container securityContext. A non-empty value is the operator's and wins. Unset, hardened runs the
+-unprivileged image as uid 1000 (SEC-D-10); compatibility runs it as root, as upstream's root-running image did, so a
+volume that image wrote stays writable.
+*/}}
+{{- define "pipeshub-ai.qdrantPodSecurityContext" -}}
+{{- if .Values.qdrant.podSecurityContext -}}
+{{- toYaml .Values.qdrant.podSecurityContext -}}
+{{- else if eq (include "pipeshub-ai.hardened" .) "true" -}}
+runAsNonRoot: true
+runAsUser: 1000
+runAsGroup: 1000
+fsGroup: 1000
+fsGroupChangePolicy: OnRootMismatch
+seccompProfile:
+  type: RuntimeDefault
+{{- else -}}
+runAsUser: 0
+runAsGroup: 0
+fsGroup: 1000
+fsGroupChangePolicy: OnRootMismatch
+{{- end -}}
+{{- end -}}
+
+{{- define "pipeshub-ai.qdrantSecurityContext" -}}
+{{- if .Values.qdrant.securityContext -}}
+{{- toYaml .Values.qdrant.securityContext -}}
+{{- else if eq (include "pipeshub-ai.hardened" .) "true" -}}
+allowPrivilegeEscalation: false
+runAsNonRoot: true
+capabilities:
+  drop:
+    - ALL
+{{- else -}}
+{}
+{{- end -}}
 {{- end -}}
