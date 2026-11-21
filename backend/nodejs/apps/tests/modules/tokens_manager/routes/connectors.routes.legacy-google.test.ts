@@ -171,18 +171,16 @@ describe('Connector routes: legacy Google Workspace endpoints', () => {
       expect(h.entityEvents.published).to.have.length(0)
     })
 
-    for (const [missing, message] of [
-      ['clientId', 'Client ID is missing'],
-      ['clientSecret', 'Client secret is missing'],
-    ] as const) {
+    // Our own setup gap: answered as our failure, not as a missing resource.
+    for (const missing of ['clientId', 'clientSecret'] as const) {
       it(`stops before Google when the stored OAuth config has no ${missing}`, async () => {
         h.backend.on('GET', CM_OAUTH_CONFIG, { status: 200, body: { ...oauthConfig, [missing]: '' } })
         const google = googleGrants(DRIVE_SCOPE)
 
         const r = await call(h, 'POST', '/getTokenFromCode', sessionToken(h, admin), { tempCode: 'consent-code' })
 
-        expect(r.status).to.equal(404)
-        expect(errorMessage(r)).to.equal(message)
+        expect(r.status).to.equal(500)
+        expect(errorMessage(r)).to.equal('Google Workspace client id or secret is not configured')
         expect(google.isDone()).to.equal(false)
       })
     }
@@ -368,7 +366,7 @@ describe('Connector routes: legacy Google Workspace endpoints', () => {
 
       expect(reload.status).to.equal(200)
       expect(h.backend.callsTo('GET', `/moved${CM_OAUTH_CONFIG}`)).to.have.length(1)
-      expect(errorMessage(exchange)).to.equal('Client ID is missing')
+      expect(errorMessage(exchange)).to.equal('Google Workspace client id or secret is not configured')
     })
   })
 })
