@@ -199,3 +199,47 @@ async def test_a_failure_is_propagated_to_every_queued_duplicate_whatever_its_pa
     await queue_three(provider, run)
 
     assert await provider.update_queued_duplicates_status(ref, "FAILED", f"{run}-v", reason="boom") == 3
+
+
+async def _queue_json_and_csv_readers(provider: IGraphDBProvider, run: str) -> None:
+    await put(provider, f"{run}-q1", name="q1.csv", mime="application/json", extension="csv")
+    await put(provider, f"{run}-q2", name="q2.csv", mime="text/csv", extension="csv")
+
+
+async def test_a_service_copy_promotes_only_the_duplicate_the_service_reads_as_json(world: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    provider, run = world
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    ref = await finished_reference(provider, run, **known("svc:json@1", vrid=f"{run}-v", at=500))
+    await _queue_json_and_csv_readers(provider, run)
+    assert await provider.update_queued_duplicates_status(ref, "COMPLETED", f"{run}-v") == 1
+    assert (await provider.get_document(f"{run}-q1", RECORDS))["indexingStatus"] == "COMPLETED"
+    assert (await provider.get_document(f"{run}-q2", RECORDS))["indexingStatus"] == "QUEUED"
+
+
+async def test_an_in_process_copy_promotes_both_csv_readers(world: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    provider, run = world
+    monkeypatch.setenv("USE_PARSING_SERVICE", "false")
+    ref = await finished_reference(provider, run, **known("inproc:csv@1", vrid=f"{run}-v", at=500))
+    await _queue_json_and_csv_readers(provider, run)
+    assert await provider.update_queued_duplicates_status(ref, "COMPLETED", f"{run}-v") == 2
+
+
+async def test_a_flip_to_the_other_pipeline_leaves_the_duplicate_queued_not_wrongly_promoted(world: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    provider, run = world
+    monkeypatch.setenv("USE_PARSING_SERVICE", "false")
+    ref = await finished_reference(provider, run, **known("svc:json@1", vrid=f"{run}-v", at=500))
+    await _queue_json_and_csv_readers(provider, run)
+    assert await provider.update_queued_duplicates_status(ref, "COMPLETED", f"{run}-v") == 0
+    for q in ("q1", "q2"):
+        assert (await provider.get_document(f"{run}-{q}", RECORDS))["indexingStatus"] == "QUEUED"
+
+
+async def test_a_source_that_moved_to_another_copy_leaves_every_duplicate_queued(world: tuple) -> None:
+    provider, run = world
+    ref = await finished_reference(provider, run, **known("inproc:txt@1", vrid=f"{run}-v", at=500))
+    await put(provider, f"{run}-q1", name="q1.txt", mime="text/plain", extension="txt")
+    assert await provider.update_queued_duplicates_status(ref, "COMPLETED", f"{run}-written-elsewhere") == 0
+    d = await provider.get_document(f"{run}-q1", RECORDS)
+    assert d["indexingStatus"] == "QUEUED" and d.get("virtualRecordId") != f"{run}-written-elsewhere"
+    # the legitimate promotion with the source's own copy still works afterwards
+    assert await provider.update_queued_duplicates_status(ref, "COMPLETED", f"{run}-v") == 1

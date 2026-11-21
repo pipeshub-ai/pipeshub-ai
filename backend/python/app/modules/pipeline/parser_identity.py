@@ -109,12 +109,12 @@ def service_pipeline_configured() -> bool:
 
 def parser_key(
     mime_type: str | None, extension: str | None, record_name: str | None, record_type: str | None,
-    *, service: bool | None = None,
+    *, service: bool | None = None, file_path: str | None = None,
 ) -> str | None:
     """``"<route>@<rev>"`` for the parser a record with these labels is read by, or None when it is not tracked.
 
     The four inputs are all a graph record and a file's ``files`` document hold, and all an event payload carries, so a
-    payload and the graph give the same answer for the same record. The file path is not an input for that reason.
+    payload and the graph give the same answer for the same record. The file path is the one the record carries (the dispatch reads the extension from it before the name).
     ``service`` says which dispatch reads the file: the in-process one (``file_types.legacy_route``) or the parsing
     service's (``file_types.parse_format``). The two name different parsers for some labels (``application/json`` with a
     ``csv`` extension is a CSV in process and JSON in the service), so the key is the route of the dispatch that runs.
@@ -123,7 +123,7 @@ def parser_key(
     if service is None:
         service = service_pipeline_configured()
     mime, ext, name = _known(mime_type), _known(extension), record_name or ""
-    code_ext = file_types.code_extension(ext, None, name)
+    code_ext = file_types.code_extension(ext, file_path, name)
     as_code = reads_as_code_file(record_type, mime or "", code_ext, name)
     dispatch = file_types.legacy_route(
         mime, ext, code_ext=code_ext, reads_as_code_file=as_code,
@@ -139,17 +139,20 @@ def parser_key(
         return None
     if service:
         # The service is sent the file as prepared (a macro-enabled or template package as the plain one it holds).
-        sent_ext, sent_mime = prepared_labels(dispatch.file_type, ext, mime)
-        fmt = file_types.parse_format(sent_mime, sent_ext)
+        sent_ext, sent_mime = prepared_labels(dispatch.file_type, extension, mime)  # the raw extension: "unknown" is sent as it is
+        fmt = file_types.parse_format(sent_mime, file_types.service_extension(sent_mime, sent_ext, name))
         return None if not fmt or fmt == "code" else f"{fmt}@{PARSER_ROUTE_REV.get(fmt, 1)}"
     return f"{dispatch.route.value}@{PARSER_ROUTE_REV.get(dispatch.route, 1)}"
 
 
 def parser_identity(
     mime_type: str | None, extension: str | None, record_name: str | None, record_type: str | None, *, pipeline: str,
+    file_path: str | None = None,
 ) -> str | None:
     """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or None when not tracked."""
-    key = parser_key(mime_type, extension, record_name, record_type, service=pipeline == PIPELINE_SERVICE)
+    key = parser_key(
+        mime_type, extension, record_name, record_type, service=pipeline == PIPELINE_SERVICE, file_path=file_path,
+    )
     return None if key is None else f"{pipeline}:{key}"
 
 
@@ -167,7 +170,7 @@ def graph_parser_key(
     """The key of a record as the graph holds it: its ``records`` node and the ``files`` document with the same key."""
     return parser_key(
         record.get("mimeType"), (file_doc or {}).get("extension"), record.get("recordName"), record.get("recordType"),
-        service=service,
+        service=service, file_path=record.get("filePath"),
     )
 
 

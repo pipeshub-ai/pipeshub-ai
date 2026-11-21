@@ -829,7 +829,7 @@ class EventProcessor:
             self.parsing_client is not None
             and self.extraction_client is not None
             and self.sink_orchestrator is not None
-            and os.environ.get("USE_PARSING_SERVICE", "false").lower() == "true"
+            and parser_identity.service_pipeline_configured()
         )
 
     async def _orchestrate_via_services(
@@ -2107,6 +2107,7 @@ class EventProcessor:
             if not store_only:
                 parser_identity.begin_run_identity(parser_identity.parser_identity(
                     mime_type, extension, record_name, record_type, pipeline=self._pipeline_label(),
+                    file_path=event_data.get("filePath"),
                 ))
 
             if self._use_service_pipeline():

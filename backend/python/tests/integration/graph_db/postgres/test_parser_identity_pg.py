@@ -130,3 +130,39 @@ async def test_a_failure_is_propagated_to_every_queued_duplicate_whatever_its_pa
     await reference(w, **known("inproc:txt@1", vrid="v1", at=500))
     await queue_three(w)
     assert await w.p.update_queued_duplicates_status("ref", "FAILED", None, reason="boom") == 3
+
+
+async def _queue_json_and_csv_readers(w: World) -> None:
+    await put(w, "q1", name="q1.csv", mime="application/json", extension="csv")
+    await put(w, "q2", name="q2.csv", mime="text/csv", extension="csv")
+
+
+async def test_a_service_copy_promotes_only_the_duplicate_the_service_reads_as_json(w, monkeypatch) -> None:
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    await reference(w, **known("svc:json@1", vrid="v1", at=500))
+    await _queue_json_and_csv_readers(w)
+    assert await w.p.update_queued_duplicates_status("ref", "COMPLETED", "v1") == 1
+    assert (await doc(w, "q1"))["indexingStatus"] == "COMPLETED"
+    assert (await doc(w, "q2"))["indexingStatus"] == "QUEUED"
+
+
+async def test_an_in_process_copy_promotes_both_csv_readers(w, monkeypatch) -> None:
+    monkeypatch.setenv("USE_PARSING_SERVICE", "false")
+    await reference(w, **known("inproc:csv@1", vrid="v1", at=500))
+    await _queue_json_and_csv_readers(w)
+    assert await w.p.update_queued_duplicates_status("ref", "COMPLETED", "v1") == 2
+
+
+async def test_a_flip_to_the_other_pipeline_leaves_the_duplicate_queued(w, monkeypatch) -> None:
+    monkeypatch.setenv("USE_PARSING_SERVICE", "false")
+    await reference(w, **known("svc:json@1", vrid="v1", at=500))
+    await _queue_json_and_csv_readers(w)
+    assert await w.p.update_queued_duplicates_status("ref", "COMPLETED", "v1") == 0
+
+
+async def test_a_source_that_moved_to_another_copy_leaves_every_duplicate_queued(w) -> None:
+    await reference(w, **known("inproc:txt@1", vrid="v1", at=500))
+    await put(w, "q1", name="q1.txt", mime="text/plain", extension="txt")
+    assert await w.p.update_queued_duplicates_status("ref", "COMPLETED", "elsewhere") == 0
+    assert (await doc(w, "q1"))["indexingStatus"] == "QUEUED"
+    assert await w.p.update_queued_duplicates_status("ref", "COMPLETED", "v1") == 1

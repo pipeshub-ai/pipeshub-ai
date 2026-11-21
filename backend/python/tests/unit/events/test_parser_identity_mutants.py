@@ -172,7 +172,7 @@ def _identity_taken_from_the_graph_at_write_time(mp: pytest.MonkeyPatch) -> None
 
     real = pi.parser_identity
 
-    def from_graph(mime: Any, ext: Any, name: Any, rtype: Any, *, pipeline: str) -> str | None:  # noqa: ANN401
+    def from_graph(mime: Any, ext: Any, name: Any, rtype: Any, *, pipeline: str, **_k: Any) -> str | None:  # noqa: ANN401
         return real("text/markdown", "md", "notes.md", rtype, pipeline=pipeline)
 
     mp.setattr(events_module.parser_identity, "parser_identity", from_graph)

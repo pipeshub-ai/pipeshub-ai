@@ -967,6 +967,16 @@ def ext_wins(extension: str | None) -> bool:
     return ft is not None and ft.ext_wins
 
 
+def service_extension(mime_type: str | None, extension: str | None, record_name: str | None) -> str | None:
+    """The extension a request to the parsing service carries: the file's own, else the mime's, else the name's suffix."""
+    if extension:
+        return extension
+    derived = extension_for_mime(mime_type)
+    if not derived and record_name and "." in record_name:
+        derived = record_name.rsplit(".", 1)[-1]
+    return derived
+
+
 def parse_format(mime_type: str | None, extension: str | None) -> str | None:
     """The parsing service's format key.
 

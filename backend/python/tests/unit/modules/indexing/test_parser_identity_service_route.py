@@ -28,12 +28,14 @@ def test_a_service_key_is_the_service_format_for_every_label_pair() -> None:
         key = pi.parser_key(mime, ext, _name(ext), "FILE", service=True)
         if key is None:
             continue
-        # The service is sent the file as prepared: for a type that is prepared, the format of the prepared labels.
-        allowed = {file_types.parse_format(mime, ext)}
-        for file_type in (file_types.by_extension(ext), file_types.by_mime(mime)):
-            sent_ext, sent_mime = prepared_labels(file_type, ext, mime)
-            allowed.add(file_types.parse_format(sent_mime, sent_ext))
-        assert key.split("@")[0] in allowed, (mime, ext)
+        # The service is sent the file as prepared, with the extension its client fills in; the format is exactly that of
+        # the dispatch the legacy route names for these labels.
+        dispatch = file_types.legacy_route(
+            mime, ext, code_ext=file_types.code_extension(ext, None, _name(ext)), reads_as_code_file=False,
+        )
+        sent_ext, sent_mime = prepared_labels(dispatch.file_type if dispatch else None, ext, mime)
+        expected = file_types.parse_format(sent_mime, file_types.service_extension(sent_mime, sent_ext, _name(ext)))
+        assert key.split("@")[0] == expected, (mime, ext)
         checked += 1
     assert checked > 1000
 
@@ -81,3 +83,32 @@ async def test_the_labels_of_a_prepared_file_are_the_ones_the_key_assumes() -> N
     prepared = await prepare_file(b"a line\n", log, extension="unknown", mime_type="text/plain")
     assert prepared is not None
     assert (prepared.extension, prepared.mime_type) == prepared_labels(log, "unknown", "text/plain")
+
+
+def test_an_extension_the_client_fills_in_is_the_one_the_key_uses() -> None:
+    """A macro-enabled pptx mime with no extension is sent as ``ppt``, and the service reads it as such."""
+    mime = "application/vnd.ms-powerpoint.presentation.macroEnabled.12"
+    assert file_types.service_extension(mime, None, "deck") == file_types.extension_for_mime(mime)
+    assert pi.parser_key(mime, None, "deck", "FILE", service=True) == f"{file_types.parse_format(mime, file_types.service_extension(mime, None, 'deck'))}@1"
+
+
+def test_the_file_path_names_the_extension_before_the_record_name_in_process() -> None:
+    """The dispatch reads the extension from the path first: text/plain named ``notes`` at ``src/x.py`` is read as source."""
+    from app.events.events import EventProcessor
+
+    dispatch, _code_ext, as_code = EventProcessor._read_plan("FILE", "text/plain", None, "src/x.py", "notes", None)
+    with_path = pi.parser_key("text/plain", None, "notes", "FILE", service=False, file_path="src/x.py")
+    without = pi.parser_key("text/plain", None, "notes", "FILE", service=False)
+    assert (dispatch is not None and dispatch.route.value in {"code"}) or as_code
+    assert with_path is None and without is not None
+
+
+def test_the_service_predicate_of_the_event_processor_includes_the_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.unit.events.test_events import _make_event_processor
+
+    ep, _, _, _ = _make_event_processor()
+    ep.parsing_client, ep.extraction_client, ep.sink_orchestrator = object(), object(), object()
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    assert ep._use_service_pipeline() is pi.service_pipeline_configured() is True
+    monkeypatch.setenv("USE_PARSING_SERVICE", "false")
+    assert ep._use_service_pipeline() is pi.service_pipeline_configured() is False
