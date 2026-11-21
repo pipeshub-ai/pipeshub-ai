@@ -7,6 +7,7 @@ and however the retry arrives.
 """
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -171,3 +172,120 @@ async def test_a_service_path_with_no_parser_count_is_counted_by_pdfium_before_t
             leave.assert_not_awaited()
         else:
             leave.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("metadata_pages", "pdfium", "stored"), [(None, 400, 400), (350, None, 350), (None, None, None)])
+async def test_the_count_the_page_limit_decided_on_is_stored_with_the_parse_status(
+    metadata_pages: int | None, pdfium: int | None, stored: int | None
+) -> None:
+    """A real write against a record: with no count from the parser, pdfium's count is what ``pageCount`` ends as."""
+    from app.config.constants.arangodb import ProgressStatus
+    from app.modules.parsers.pdf.page_count import Unreadable
+    from app.services.messaging.config import IndexingEvent
+    from tests.unit.events.test_orchestrator_flow import (
+        _make_event_processor,
+        _make_parse_result,
+    )
+
+    record = {"_key": "rec-1", "orgId": "org-1", "recordName": "a.pdf", "recordType": "FILE", "contentRev": "r-1",
+              "indexingStatus": ProgressStatus.IN_PROGRESS.value, "mimeType": "application/pdf"}
+    graph = MagicMock()
+    graph.get_document = AsyncMock(side_effect=lambda *_a, **_k: dict(record))
+
+    async def update_if_unchanged(_key: str, _coll: str, fields: dict, _expected: dict, match: dict) -> bool:
+        if any(record.get(k) != v for k, v in match.items()):
+            return False
+        record.update({k: v for k, v in fields.items() if v is not None})
+        return True
+
+    async def update_node(_key: str, _coll: str, fields: dict, *_a: object, **_k: object) -> bool:
+        record.update({k: v for k, v in fields.items() if v is not None})
+        return True
+
+    graph.update_node_if_unchanged = AsyncMock(side_effect=update_if_unchanged)
+    graph.update_node = AsyncMock(side_effect=update_node)
+    graph.update_node_fields_if_match = AsyncMock(return_value=True)
+    parsing_client = MagicMock()
+    result = _make_parse_result()
+    result.metadata = {"page_count": metadata_pages} if metadata_pages is not None else {}
+    parsing_client.parse = AsyncMock(return_value=result)
+    ep = _make_event_processor(
+        parsing_client=parsing_client, extraction_client=MagicMock(), sink_orchestrator=MagicMock(), graph_provider=graph,
+    )
+    late = AsyncMock(return_value=False)
+    counted = AsyncMock(return_value=pdfium if pdfium is not None else Unreadable())
+    with patch("app.modules.parsers.pdf.page_count.count_pdf_pages", new=counted):
+        stream = ep._orchestrate_via_services(
+            record_id="rec-1", org_id="org-1", virtual_record_id="v-1", record_name="a.pdf", mime_type="application/pdf",
+            extension="pdf", event_type="newRecord", prev_virtual_record_id=None, file_content=b"%PDF", content_rev="r-1",
+            late_page_limit=late,
+        )
+        async for event in stream:
+            if event.event == IndexingEvent.PARSING_COMPLETE:
+                break
+        await stream.aclose()
+    assert record.get("pageCount") == stored
+    assert record["parsingStatus"] == ProgressStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resumes", [False, True])
+async def test_the_old_copy_is_left_late_for_a_fresh_pdf_and_at_once_on_a_resume(resumes: bool) -> None:
+    """A resume has no parse for the page limit to wait on: it moves the record onto the copy its points are under at once."""
+    from app.config.constants.arangodb import MimeTypes
+    from tests.unit.events.test_events import _drain
+    from tests.unit.events.test_events_resume import VRID, _setup
+
+    old_vrid = "vr-old"
+    ep, processor, gp, event = _setup(
+        {"virtualRecordId": old_vrid, "mimeType": MimeTypes.PDF.value, keep_model.PENDING_VIRTUAL_RECORD_ID: VRID},
+        mime=MimeTypes.PDF.value, event_type="reindexRecord",
+    )
+    event["payload"]["virtualRecordId"] = old_vrid
+    if not resumes:
+        gp.get_document.return_value.update({"embedDeliveryId": "another-delivery"})
+    gate = ev.PageLimitGate(late_check=AsyncMock(return_value=False))
+    processor.process_pdf_document = MagicMock(side_effect=lambda *a, **k: _empty_gen())
+    writes = AsyncMock(return_value=True)
+    with patch.object(ep, "_gate_page_limit", AsyncMock(return_value=gate)), patch.object(ep, "update_record_fields", writes), patch(
+        "app.events.events.inspect_untrusted_pdf", AsyncMock(return_value=InspectedPdf(b"%PDF", needs_ocr=False, repaired=False, page_count=3))
+    ):
+        # Only the record writes before the parse are of interest: what follows may fail on the stand-in processor.
+        with contextlib.suppress(Exception):
+            await _drain(ep.on_event(event))
+    moved = any(call.args[1].get("virtualRecordId") for call in writes.await_args_list)
+    assert moved is resumes
+    assert processor.resume_from_checkpoint.called is resumes
+
+
+async def _empty_gen():  # noqa: ANN202
+    return
+    yield
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("current", "applied"),
+    [
+        ({"contentRev": "r-1", "virtualRecordId": "v-old"}, True),
+        ({"contentRev": "r-1", "virtualRecordId": "v-moved"}, False),
+        ({"contentRev": "r-2", "virtualRecordId": "v-old"}, False),
+    ],
+)
+async def test_a_kept_record_is_put_back_only_while_it_is_still_on_the_copy_and_revision_the_run_started_with(
+    current: dict, applied: bool
+) -> None:
+    from tests.unit.events.test_events import _make_event_processor
+
+    ep, _logger, _processor, gp = _make_event_processor()
+    gp.get_document = AsyncMock(return_value=dict(current))
+    gp.update_node_fields_if_match = AsyncMock(return_value=True)
+    record = {"virtualRecordId": "v-old", "contentRev": "r-1", "indexingStatus": "COMPLETED", "parsingStatus": "COMPLETED"}
+    with patch.object(ev, "apply_keep", AsyncMock()):
+        owned = await ep._put_back_kept_record(
+            record=record, doc=dict(record), record_id="rec-1", content_rev="r-1", org_id="org-1", keep=MagicMock(),
+            md5=None, force_reindex=False,
+        )
+    assert owned is applied
+    assert gp.update_node_fields_if_match.await_count == (1 if applied else 0)

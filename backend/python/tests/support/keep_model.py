@@ -28,7 +28,7 @@ from app.services.graph_db.common.record_visibility import (
 )
 from tests.unit.events.test_events import _drain, _make_event_processor
 
-BUF = b"%PDF-1.4 advisor probe bytes"
+BUF = b"%PDF-1.4 sample bytes"
 MD5 = hashlib.md5(BUF).hexdigest()
 V1 = "v-orig"
 RUNNING = ("IN_PROGRESS", "QUEUED")
@@ -76,7 +76,7 @@ class Model:
         return True
 
     async def write_attempt_start(self, key, fields, *_a, **_kw):
-        # record_diagnostics attempt-start rule: a new revision drops the count of the old bytes (D-75)
+        # record_diagnostics attempt-start rule: a new revision drops the count of the old bytes
         if "contentRev" in fields and fields["contentRev"] != self.records[key].get("contentRev"):
             self.records[key].pop("pageCount", None)
         self._merge(key, fields)

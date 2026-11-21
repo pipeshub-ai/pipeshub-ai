@@ -935,7 +935,8 @@ class EventProcessor:
         if record_doc is None:
             raise RecordDeletedError(record_id)
 
-        await self._persist_parsing_completed(record_doc, (parse_result.metadata or {}).get("page_count"), content_rev)
+        # The count the page limit decided on (the parser's, else pdfium's), so the record carries it for the growth check.
+        await self._persist_parsing_completed(record_doc, parsed_pages, content_rev)
 
         yield PipelineEvent(
             event=IndexingEvent.PARSING_COMPLETE,
