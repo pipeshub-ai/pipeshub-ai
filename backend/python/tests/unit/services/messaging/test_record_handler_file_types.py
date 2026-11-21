@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
     from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
-_NEW = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx")
+_NEW = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx", "pptm")
 _MIMES = {
     "msg": ("application/vnd.ms-outlook",),
     "odt": ("application/vnd.oasis.opendocument.text",),
@@ -26,6 +26,7 @@ _MIMES = {
     "docm": ("application/vnd.ms-word.document.macroEnabled.12",),
     "dotx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.template",),
     "potx": ("application/vnd.openxmlformats-officedocument.presentationml.template",),
+    "pptm": ("application/vnd.ms-powerpoint.presentation.macroEnabled.12",),
 }
 
 
@@ -48,7 +49,7 @@ async def test_every_mime_spelling_passes_the_gate_without_an_extension(mime: st
         assert await gen.gate(None, form, name, "FILE") == "ok", form
 
 
-@pytest.mark.parametrize("ext", ["zip", "pptm", "dotm", "xltx", "eml", "ods"])
+@pytest.mark.parametrize("ext", ["zip", "dotm", "xltx", "eml", "ods"])
 async def test_types_still_not_indexed_are_refused(ext: str) -> None:
     decision = await gen.gate(ext, "application/octet-stream", f"f.{ext}", "FILE")
     assert decision.startswith("FILE_TYPE_NOT_SUPPORTED|"), decision
@@ -136,6 +137,8 @@ _OFF_SWITCH_SOURCES = {
                  {"recordName": "Report.docx", "filePath": "x/app.log"}, "log", "log"),
     "a mime no extension names": ({}, "docx", "application/vnd.google-apps.document", {}, "google_docs", None),
     "the extension": ({}, "docm", "text/plain", {}, "docm", "docm"),
+    "a deck's extension with no mime of its own": ({}, "pptm", "application/octet-stream", {}, "pptm", "pptm"),
+    "a deck's mime": ({}, "pptm", "application/vnd.ms-powerpoint.presentation.macroEnabled.12", {}, "pptm", "pptm"),
     "the extension, spelt as the record spells it": ({}, "yml", "application/x-yaml", {}, "yaml", "yml"),
     "the extension the mime implies": ({}, "unknown", _PDF, {}, "pdf", "pdf"),
     "a code file's name": ({"recordType": "CODE_FILE"}, "py", "application/pdf", {}, "py", "py"),
