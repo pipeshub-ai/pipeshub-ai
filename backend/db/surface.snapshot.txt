@@ -1565,7 +1565,7 @@ funcacl kg.w_scopes_set(bigint[],smallint[],bigint[],boolean[],boolean[],boolean
 funcacl kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[],integer) pipeshub_connectors EXECUTE
 funcacl kg.w_trash_set(bigint[],smallint[],text[],smallint[],bigint[],text[]) pipeshub_connectors EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
-funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
+funcacl platform.job_checkpoint(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_start(text) pipeshub_owner EXECUTE
 funcacl platform.kv_admin_or_credential(text) pipeshub_connectors EXECUTE
