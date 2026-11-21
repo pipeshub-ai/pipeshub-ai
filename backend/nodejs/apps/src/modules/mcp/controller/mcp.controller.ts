@@ -20,6 +20,7 @@ import {
   signMcpRelay,
 } from '../../../libs/middlewares/mcp-relay';
 import { sendMcpError } from '../middlewares/mcp-guard.middleware';
+import { markScopeDenied } from '../../../libs/middlewares/agent-call-recorder';
 import { insufficientScopeChallenge, missingToolScopes } from '../step-up';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import {
@@ -322,6 +323,7 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           toolScopes(held, requiredOAuthScopes),
         );
         if (missing.length > 0) {
+          markScopeDenied(req);
           res.set(
             'WWW-Authenticate',
             insufficientScopeChallenge(
