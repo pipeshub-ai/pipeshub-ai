@@ -173,7 +173,6 @@ class SyncStateMixin(PgBase):
                   AND ($6::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($6::int = 2))""", run),
                                                  org, connector_id, status, excluded, included or None, _vis(visibility), reason, get_epoch_timestamp_in_ms()), transaction, write=True)
         except Exception:
-            self.logger.error("❌ Failed to reset indexing status for connector %s", connector_id)
             raise
 
     async def update_queued_duplicates_status(self, record_id: str, new_indexing_status: str, virtual_record_id: str | None = None,

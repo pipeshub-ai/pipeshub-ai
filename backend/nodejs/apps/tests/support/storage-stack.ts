@@ -21,6 +21,8 @@ import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import { createStorageRouter } from '../../src/modules/storage/routes/storage.routes';
 import { StorageController } from '../../src/modules/storage/controllers/storage.controller';
 import { endpoint as ENDPOINTS_KEY, storageEtcdPaths } from '../../src/modules/storage/constants/constants';
+import { registerUpstreams } from '../../src/libs/http/upstream-call';
+import { registerAppUpstreams } from '../../src/modules/tokens_manager/config/config';
 import { AuthMiddleware } from '../../src/libs/middlewares/auth.middleware';
 import { AuthTokenService } from '../../src/libs/services/authtoken.service';
 import { ErrorMiddleware } from '../../src/libs/middlewares/error.middleware';
@@ -131,6 +133,8 @@ export async function startStorageApp(opts: {
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   kv.values.set(ENDPOINTS_KEY, JSON.stringify({ cm: { endpoint: config.url }, storage: { endpoint: origin } }));
+  // The services the app's config would register: the controller reads its storage settings from the cm service.
+  registerAppUpstreams({ cmBackend: config.url, storageBackend: origin });
   return {
     server,
     origin,
@@ -139,6 +143,7 @@ export async function startStorageApp(opts: {
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await config.close();
+      registerUpstreams({});
     },
   };
 }

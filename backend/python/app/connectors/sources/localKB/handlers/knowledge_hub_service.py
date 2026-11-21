@@ -314,39 +314,46 @@ class KnowledgeHubService:
 
     async def _walk_pages(
         self,
-        fetch_page: Callable[[str | None], Awaitable[SearchPage]],
+        fetch_page: Callable[[str | None, int], Awaitable[SearchPage]],
         cursor_token: str | None,
         page: int,
+        limit: int,
     ) -> SearchPage:
-        """One page, by cursor if given, otherwise by walking forward to `page`."""
-        raw_fetch = fetch_page
+        """One page, by cursor if given, otherwise by reading the rows before `page` and then the page from where they end.
 
-        async def fetch(token: str | None) -> SearchPage:
+        ``fetch_page(token, rows)`` reads ``rows`` rows past the cursor ``token`` (None: from the start)."""
+        async def fetch(token: str | None, rows: int = limit) -> SearchPage:
             # A provider that stopped looking at a bound before it had a page leaves a page with no rows and a cursor to go on with: go on, within a time budget,
             # so that in practice a caller sees rows or the end. Only if the budget runs out is the empty page returned (with its cursor).
             started = time.monotonic()
-            got = await raw_fetch(token)
+            got = await fetch_page(token, rows)
             while not got.rows and got.scan_cursor and time.monotonic() - started < SCAN_BUDGET_S:
-                got = await raw_fetch(got.scan_cursor)
+                got = await fetch_page(got.scan_cursor, rows)
             return got
-        fetch_page = fetch
         if cursor_token:
-            return await fetch_page(cursor_token)
+            return await fetch(cursor_token)
         if page > MAX_PAGE_WALK:
             raise BrowseRequestError(
                 f"Invalid page: page must not exceed {MAX_PAGE_WALK}. "
                 f"Use the cursor from a previous response.",
                 400,
             )
-        result = await fetch_page(None)
-        for _ in range(page - 1):
-            if not result.next_cursor:
-                return replace(
-                    result, rows=[], start_index=0, end_index=0,
-                    next_cursor=None, prev_cursor=None,
-                )
-            result = await fetch_page(result.next_cursor)
-        return result
+        # The rows before the page are read as many at a time as the backend takes (``kh_skip_rows``; a page's worth unless it says more): on a backend whose every
+        # read pays the listing's fixed cost (per connector: its state, its access classes), page N is then about two reads, not N. A read that stopped early at a
+        # bound is continued from where it stopped until every row before the page is read; one that found no row within the scan budget is handed back as it is
+        # (no rows, its cursor), never a page from too early.
+        step = getattr(self.graph_provider, "kh_skip_rows", 0)
+        step = step if type(step) is int and step > limit else limit      # exactly an int: a spec'd test double passes isinstance
+        token, left = None, (page - 1) * limit
+        while left > 0:
+            got = await fetch(token, min(left, step))
+            if not got.next_cursor:
+                return replace(got, rows=[], start_index=0, end_index=0, next_cursor=None, prev_cursor=None)
+            if not got.rows:
+                return got
+            left -= len(got.rows)
+            token = got.next_cursor
+        return await fetch(token)
 
     def _page_from_partition(
         self,
@@ -507,26 +514,26 @@ class KnowledgeHubService:
                 if within is not None:
                     access = _only_apps(access, within)
 
-            async def fetch_global(token: str | None) -> SearchPage:
+            async def fetch_global(token: str | None, rows: int) -> SearchPage:
                 self._decode_cursor(token, secret, user_id, org_id, mode=mode)
                 return await search_page(
                     self.graph_provider,
                     user_key=user_key, user_id=user_id, org_id=org_id,
-                    limit=limit, sort_field=sort_field, sort_dir=sort_dir,
+                    limit=rows, sort_field=sort_field, sort_dir=sort_dir,
                     filters=filters, cursor_token=token, secret=secret,
                     access=access, limit_apps=limit_apps,
                     # Depth counts from the root, and each App is one hop below it.
                     max_depth=max_depth - 1 if max_depth < 50 else 50,
                 )
             try:
-                global_page = await self._walk_pages(fetch_global, cursor, page)
+                global_page = await self._walk_pages(fetch_global, cursor, page, limit)
             except CursorError as exc:
                 raise BrowseRequestError(f"Invalid cursor: {exc}", 400) from exc
             return global_page, None
 
         scope: dict[str, Any] | None = None
 
-        async def fetch_single(token: str | None) -> SearchPage:
+        async def fetch_single(token: str | None, rows: int) -> SearchPage:
             nonlocal scope
             page_cursor = self._decode_cursor(
                 token, secret, user_id, org_id,
@@ -591,7 +598,7 @@ class KnowledgeHubService:
             envelope = await ask(
                 page_cursor.boundary.as_after() if page_cursor else None,
                 page_cursor.direction if page_cursor else "next",
-                limit, counting=page_cursor is None,
+                rows, counting=page_cursor is None,
             )
             if page_cursor is not None and not reuse_total:
                 # A carried total that aged out: the page's own query would count only the rows past its boundary, so the whole listing is
@@ -606,7 +613,7 @@ class KnowledgeHubService:
                 user_id=user_id, org_id=org_id, want_counts=want_counts, limit_apps=limit_apps,
             )
 
-        return await self._walk_pages(fetch_single, cursor, page), scope
+        return await self._walk_pages(fetch_single, cursor, page, limit), scope
 
     def _only_signed_cursors(self, page: SearchPage, secret: bytes | None) -> SearchPage:
         """Hand out cursors only when they are signed.
@@ -635,8 +642,14 @@ class KnowledgeHubService:
         it (seconds for the listing and the access check) and again when its
         statistics move, and this takes that cost off a person's click. Returns
         how many requests were made."""
-        sample = await self.graph_provider.get_knowledge_hub_warm_sample()
-        if not sample:
+        sample, user_id, org_id = None, "", ""
+        for candidate in await self.graph_provider.get_knowledge_hub_warm_samples():
+            user_id, org_id = candidate["userId"], candidate["orgId"]
+            # An App the user has switched off (demo data) leaves their gate: every browse under it would be refused.
+            if candidate["appId"] not in await self._excluded_apps(user_id, org_id):
+                sample = candidate
+                break
+        if sample is None:
             return 0
         full = ["counts", "permissions", "breadcrumbs", "availableFilters"]
         main = {"limit": 50, "sort_by": "updatedAt", "sort_order": "desc", "include": full}
@@ -654,7 +667,7 @@ class KnowledgeHubService:
                 })
         for request in requests:
             try:
-                await self.get_nodes(user_id=sample["userId"], org_id=sample["orgId"], **request)
+                await self.get_nodes(user_id=user_id, org_id=org_id, **request)
             except Exception as exc:
                 self.logger.warning("knowledge hub plan warm-up request failed: %s", exc)
         return len(requests)

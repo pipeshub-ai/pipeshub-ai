@@ -889,7 +889,8 @@ class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
         self._bind(remember)
         await orch.index(_make_ctx("rec-7"))
 
-        assert order == ["completed", "metadata", "identity", "remember"]
+        # The record's own entity points go first (a handed-back write leaves the record retryable); the entry is last.
+        assert order == ["identity", "completed", "metadata", "remember"]
         written = orch.graph_provider.batch_update_nodes.await_args.args[0][0]
         assert remembered == [("rec-7", written["lastIndexTimestamp"])]
         assert "lastDelivery" not in str(orch.graph_provider.batch_update_nodes.await_args)
@@ -909,7 +910,7 @@ class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
         with pytest.raises(RuntimeError):
             await orch.index(_make_ctx("rec-7"))
 
-        assert order == ["completed"]
+        assert order == ["identity", "completed"]
         assert remembered == []
 
     @pytest.mark.asyncio

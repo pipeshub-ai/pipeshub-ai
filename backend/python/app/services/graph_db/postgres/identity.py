@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
@@ -41,6 +42,7 @@ from app.services.graph_db.user_email_identity import (
     connector_ids_of_users,
     graph_user_key,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -99,9 +101,9 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
             except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch, SchemaValidationError):    # a rejected payload is never a default
                 raise
             except Exception as e:
-                self.logger.error("%s failed: %s", fn.__name__, e)
-                if flag and k.get("raise_on_error"):
+                if flag and k.get("raise_on_error"):  # raised before logging: the caller that handles it logs it once
                     raise
+                error_class.log_failure(self.logger, f"graph.{fn.__name__}.failed", e, include_error_text=False)
                 return default() if callable(default) else default
         return wrapper
     return deco
@@ -512,7 +514,8 @@ class IdentityMixin(PgBase):
                     except NotImplementedInPostgres:
                         pass
                     except Exception as e:
-                        self.logger.error("Person adoption failed for user %s in org %s: %s", u.id, org_node, e)
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                                op="batch_upsert_app_users", step="person_adoption")
                 member_edges = [{"from_id": u.id, "from_collection": "users", "to_id": org_node, "to_collection": "organizations", "createdAtTimestamp": u.created_at,
                                  "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"} for u in new.values() if not u.is_guest]
                 await self.batch_create_edges(member_edges, CollectionNames.BELONGS_TO.value, tx)
@@ -844,7 +847,6 @@ class IdentityMixin(PgBase):
         return await self._team_view(team_id, org_id, user_key, search, (page - 1) * limit, limit, transaction,
                                      include_service_accounts=include_service_accounts)
 
-    @_soft(list)
     async def delete_team_member_edges(self, team_id: str, user_ids: list[str], transaction: str | None = None) -> list[dict]:
         rows = await self._id_rows("""/* pipeshub:graph.delete_team_member_edges */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_coll = 'users'
             AND from_id = ANY($2::text[]) AND to_coll = 'teams' AND to_id = $3 RETURNING doc, from_id, to_id""", [current_org_id(), list(user_ids), team_id], transaction, write=True)
@@ -1035,6 +1037,19 @@ class IdentityMixin(PgBase):
             await self._join_all_team(team_id, [k for u in users if (k := u.get("id"))], owner_if_empty=True, tid=tid)
 
     # ---- what an agent still uses, and counts of connector instances ----------------------------------------------------------------
+    async def count_active_apps_by_type(self) -> dict[str, int]:
+        """Active connector instances per type (``unknown`` without one): the ambient org's, or every org's under a system context, one count per org."""
+        counts: Counter[str] = Counter()
+        errors: list[tuple[str, Exception]] = []
+        for org_id in await self._sweep_orgs():
+            with self._sweep(org_id, errors):
+                rows = await self._q(lambda tx, org=current_org_id(): tx.fetch("""/* pipeshub:graph.count_active_apps_by_type */
+                    SELECT coalesce(nullif(doc->>'type', ''), 'unknown') AS type, count(*) AS n FROM graph.nodes
+                    WHERE org_id = $1 AND coll = 'apps' AND coalesce((doc->>'isActive')::boolean, false) GROUP BY 1""", org), None)
+                counts.update({r["type"]: r["n"] for r in rows})
+        self._raise_failed(errors)
+        return dict(counts)
+
     async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
         """Names of the live agents with an operation of this API toolset attached (an entry of ``apiToolsetTools`` starting ``<instance>:``)."""
         rows = await self._id_rows("""/* pipeshub:graph.check_api_toolset_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes a
@@ -1169,7 +1184,8 @@ class IdentityMixin(PgBase):
             except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
                 raise
             except Exception as e:
-                self.logger.warning("Agent MCP server enrichment failed for %s: %s", agent_id, e)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="get_agent", step="mcp_server_enrichment", agent_id=agent_id)
                 mcp, agent["mcpServersUnavailable"] = {}, True
             agent["mcpServers"] = mcp.get(agent_id, [])
             agent["shareWithOrg"] = bool(rows[0]["shared"])
@@ -1181,53 +1197,43 @@ class IdentityMixin(PgBase):
             return None
 
     async def get_agents_by_model_key(self, org_id: str, model_key: str) -> list[dict]:
-        """The live agents of the org that use the model (its key, or a key that starts ``<key>_``): those a user of the org owns and those shared with the org."""
+        """The live agents of the org that use the model (its key, or a key that starts ``<key>_``): those a user of the org owns and those shared with the org.
+        A failed read raises: a delete is refused on this answer. Another org than the ambient one reads nothing; that is a caller bug, not a failed read."""
         if not self._mine(org_id):
             return []
-        try:
-            rows = await self._id_rows("""/* pipeshub:graph.get_agents_by_model_key */ WITH x AS (
-                  SELECT p.to_id AS agent FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
-                    JOIN graph.edges p ON p.org_id = b.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentInstances'
-                      AND p.doc->>'type' = 'USER' AND p.doc->>'role' = 'OWNER'
-                  WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $2
-                  UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
-                    AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
-                SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
-                CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
-                  WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
-                  AND jsonb_typeof(y.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(y.doc->'models') e, LATERAL (SELECT e #>> '{}' AS m) q
-                    WHERE jsonb_typeof(e) = 'string' AND (q.m = $3 OR left(q.m, length($3) + 1) = $3 || '_')) LIMIT 1) a
-                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, model_key], None)
-            return [dict(r) for r in rows]
-        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
-            raise
-        except Exception as e:
-            self.logger.error("Failed to get agents by model key: %s", e)
-            return []
+        rows = await self._id_rows("""/* pipeshub:graph.get_agents_by_model_key */ WITH x AS (
+              SELECT p.to_id AS agent FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
+                JOIN graph.edges p ON p.org_id = b.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentInstances'
+                  AND p.doc->>'type' = 'USER' AND p.doc->>'role' = 'OWNER'
+              WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $2
+              UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
+                AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
+            SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
+            CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
+              WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
+              AND jsonb_typeof(y.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(y.doc->'models') e, LATERAL (SELECT e #>> '{}' AS m) q
+                WHERE jsonb_typeof(e) = 'string' AND (q.m = $3 OR left(q.m, length($3) + 1) = $3 || '_')) LIMIT 1) a
+            LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, model_key], None)
+        return [dict(r) for r in rows]
 
     async def get_agents_by_web_search_provider(self, org_id: str, provider: str) -> list[dict]:
-        """The live agents of the org that use the web search provider: those a user of the org owns and those shared with the org."""
+        """The live agents of the org that use the web search provider: those a user of the org owns and those shared with the org.
+        A failed read raises: a delete is refused on this answer. Another org than the ambient one reads nothing; that is a caller bug, not a failed read."""
         if not self._mine(org_id):
             return []
-        try:
-            rows = await self._id_rows("""/* pipeshub:graph.get_agents_by_web_search_provider */ WITH x AS (
-                  SELECT p.to_id AS agent FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
-                    JOIN graph.edges p ON p.org_id = b.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentInstances'
-                      AND p.doc->>'type' = 'USER' AND p.doc->>'role' = 'OWNER'
-                  WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $2
-                  UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
-                    AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
-                SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
-                CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
-                  WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
-                  AND y.doc->>'webSearch' = $3 LIMIT 1) a
-                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, provider], None)
-            return [dict(r) for r in rows]
-        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
-            raise
-        except Exception as e:
-            self.logger.error("Failed to get agents by web search provider: %s", e)
-            return []
+        rows = await self._id_rows("""/* pipeshub:graph.get_agents_by_web_search_provider */ WITH x AS (
+              SELECT p.to_id AS agent FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
+                JOIN graph.edges p ON p.org_id = b.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentInstances'
+                  AND p.doc->>'type' = 'USER' AND p.doc->>'role' = 'OWNER'
+              WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $2
+              UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
+                AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
+            SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
+            CROSS JOIN LATERAL (SELECT y.id, y.doc, y.doc->>'createdBy' AS created_by FROM graph.nodes y
+              WHERE y.org_id = $1 AND y.coll = 'agentInstances' AND y.id = x.agent AND coalesce((y.doc->>'isDeleted')::boolean, false) = false
+              AND y.doc->>'webSearch' = $3 LIMIT 1) a
+            LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.created_by ORDER BY a.id""", [current_org_id(), org_id, provider], None)
+        return [dict(r) for r in rows]
 
     @_soft(list)
     async def get_all_agents(self, user_id: str, org_id: str, page: int | None = None, limit: int | None = None, search: str | None = None,
@@ -1273,14 +1279,16 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.warning("Agent list enrichment failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="get_all_agents", step="agent_enrichment")
             proj = {}
         try:
             mcp, mcp_failed = await self._project_agents_mcp_servers(ids, transaction), False
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.warning("Agent list MCP server enrichment failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="get_all_agents", step="mcp_server_enrichment")
             mcp, mcp_failed = {}, True
         for a in window:
             got = proj.get(a["_key"], {"toolsets": [], "knowledge": []})

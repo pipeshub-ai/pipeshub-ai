@@ -198,9 +198,53 @@ export const saveUserEnsuringOrgRetainsAdmin = async (
 };
 
 /**
- * Persist a user update that may promote a member to admin.
- * Same replica-set vs non-RS pattern as last-admin demotion.
+ * Run a write that makes users admins without taking the org past MAX_ORG_ADMINS.
+ * - Replica set / PostgreSQL: lock the org's admin changes, write, then count inside
+ *   the same transaction; over the cap the transaction rolls back. Counting after
+ *   the write makes the check exact however many admins the write grants.
+ * - Non-RS: check, write, re-count, and `undo` the write if the org went over or
+ *   the re-count failed.
+ * The non-RS pre-check assumes one new admin, so a write that grants none must
+ * not come through here.
  */
+export const writeEnsuringAdminCap = async <T>(
+  orgId: string,
+  rsAvailable: boolean,
+  write: (tx?: Tx) => Promise<T>,
+  undo: (saved: T) => Promise<void>,
+): Promise<T> => {
+  const users = getUserRepository();
+  const overTheCap = (): BadRequestError =>
+    userRefusal(new BadRequestError(MAX_ORG_ADMINS_MESSAGE), 'admin_limit');
+
+  if (!unitsAreAtomic(rsAvailable)) {
+    await assertCanPromoteAdmin(orgId);
+    const saved = await write();
+    let adminCount: number;
+    try {
+      adminCount = await users.countActiveAdmins(orgId);
+    } catch (error) {
+      // Unchecked against the cap, the write must not stay.
+      await undo(saved);
+      throw error;
+    }
+    if (adminCount > MAX_ORG_ADMINS) {
+      await undo(saved);
+      throw overTheCap();
+    }
+    return saved;
+  }
+  return createUnitOfWork(true).run(async (tx) => {
+    await users.lockOrgAdminChanges(orgId, tx);
+    const saved = await write(tx);
+    if ((await users.countActiveAdmins(orgId, tx)) > MAX_ORG_ADMINS) {
+      throw overTheCap();
+    }
+    return saved;
+  });
+};
+
+/** Persist a user update that may promote a member to admin. */
 export const saveUserEnsuringAdminCap = async (
   orgId: string,
   userId: string,
@@ -208,26 +252,30 @@ export const saveUserEnsuringAdminCap = async (
   rsAvailable: boolean,
 ): Promise<UserDto> => {
   const users = getUserRepository();
-  let saved: UserDto | null = null;
-
-  if (!unitsAreAtomic(rsAvailable)) {
-    await assertCanPromoteAdmin(orgId);
-    saved = await users.updateProfile(orgId, userId, fields);
-    const adminCount = await users.countActiveAdmins(orgId);
-    if (adminCount > MAX_ORG_ADMINS) {
-      await users.setRole(orgId, userId, 'member');
-      throw userRefusal(
-        new BadRequestError(MAX_ORG_ADMINS_MESSAGE),
-        'admin_limit',
-      );
-    }
-  } else {
-    await createUnitOfWork(true).run(async (tx) => {
-      await users.lockOrgAdminChanges(orgId, tx);
-      await assertCanPromoteAdmin(orgId, 1, tx);
-      saved = await users.updateProfile(orgId, userId, fields, tx);
-    });
-  }
+  const saved = await writeEnsuringAdminCap(
+    orgId,
+    rsAvailable,
+    (tx) => users.updateProfile(orgId, userId, fields, tx),
+    () => users.setRole(orgId, userId, 'member'),
+  );
   if (!saved) throw new NotFoundError('User not found');
   return saved;
+};
+
+/**
+ * Create a user whose role is admin. A refused create leaves no account: the
+ * non-RS undo is a hard delete, so the address can be used again.
+ */
+export const createUserEnsuringAdminCap = async (
+  orgId: string,
+  fields: UserFields,
+  rsAvailable: boolean,
+): Promise<UserDto> => {
+  const users = getUserRepository();
+  return writeEnsuringAdminCap(
+    orgId,
+    rsAvailable,
+    (tx) => users.create(orgId, fields, tx),
+    (saved) => users.deleteById(saved._id),
+  );
 };

@@ -31,6 +31,7 @@ from app.services.graph_db.postgres.base import (
     _node,
     _pgbool,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -96,7 +97,6 @@ class RecordsMixin(PgBase):
         except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.error("Get record by external ID failed: %s", e)
             raise GraphQueryError(f"Could not look up record {external_id}: {e}") from e
 
     async def get_record_by_id(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
@@ -128,7 +128,7 @@ class RecordsMixin(PgBase):
         org = current_org_id()
         try:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_records_by_virtual_record_id */ SELECT n.id FROM graph.nodes n
-                WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'virtualRecordId' = $2
+                WHERE n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'virtualRecordId' = $2 OR (n.doc ? 'pendingVirtualRecordId' AND n.doc->>'pendingVirtualRecordId' = $2 AND n.doc->>'indexingStatus' IN ('IN_PROGRESS', 'QUEUED', 'NOT_STARTED')))
                 AND ($4::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($4::int = 2))
                 AND ($3::text[] IS NULL OR n.id = ANY($3::text[]))""",
                                                       org, virtual_record_id, list(accessible_record_ids) if accessible_record_ids is not None else None, _vis(visibility)),
@@ -248,8 +248,9 @@ class RecordsMixin(PgBase):
         wanted = _uniq(virtual_record_ids)
         if not wanted:
             return set()
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_ids_in_use */ SELECT DISTINCT n.doc->>'virtualRecordId' AS v FROM graph.nodes n
-            WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY($2::text[])
+        # One row per matched id: a record that holds a vrid through its pending field is reported under that id, not under its committed one.
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_ids_in_use */ SELECT DISTINCT w.v FROM unnest($2::text[]) AS w(v)
+            JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'virtualRecordId' = w.v OR (n.doc ? 'pendingVirtualRecordId' AND n.doc->>'pendingVirtualRecordId' = w.v AND n.doc->>'indexingStatus' IN ('IN_PROGRESS', 'QUEUED', 'NOT_STARTED')))
             AND ($3::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($3::int = 2))""", org, wanted, _vis(visibility)), transaction)
         return {r["v"] for r in rows}
 
@@ -259,10 +260,10 @@ class RecordsMixin(PgBase):
         wanted = _uniq(virtual_record_ids)
         if not wanted or org_id != org:
             return {}
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_holders */ SELECT n.doc->>'virtualRecordId' AS v, jsonb_build_object('id', n.id,
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_holders */ SELECT w.v AS v, jsonb_build_object('id', n.id,
               'connectorId', n.doc->'connectorId', 'connectorName', n.doc->'connectorName', 'recordGroupId', n.doc->'recordGroupId', 'recordName', n.doc->'recordName',
               'webUrl', n.doc->'webUrl', 'contentRev', n.doc->'contentRev', 'isDeleted', coalesce(n.doc->'isDeleted' = 'true'::jsonb, false)) AS h
-            FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY($2::text[]) ORDER BY n.id""", org, wanted), transaction)
+            FROM unnest($2::text[]) AS w(v) JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'virtualRecordId' = w.v OR (n.doc ? 'pendingVirtualRecordId' AND n.doc->>'pendingVirtualRecordId' = w.v AND n.doc->>'indexingStatus' IN ('IN_PROGRESS', 'QUEUED', 'NOT_STARTED'))) ORDER BY n.id""", org, wanted), transaction)
         holders: dict[str, list[dict]] = {}
         for r in rows:
             holders.setdefault(r["v"], []).append(_doc(r["h"]))
@@ -402,7 +403,7 @@ class RecordsMixin(PgBase):
                   AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)""", run),
                                                  org, ids, status, get_epoch_timestamp_in_ms()), None, write=True)
         except Exception as e:
-            self.logger.error("Failed to update records to %s: %s", status, e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
 
     async def has_records_indexed_since(self, connector_id: str, since_ms: int, *, transaction: str | None = None) -> bool:
         org = current_org_id()
@@ -443,7 +444,6 @@ class RecordsMixin(PgBase):
         try:
             await self._q(go, transaction, write=True)
         except Exception:
-            self.logger.exception("Upsert sync point failed")
             raise
         return True
 

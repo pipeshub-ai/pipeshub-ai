@@ -5,15 +5,14 @@ that records every statement and its bound parameters.
 
 from __future__ import annotations
 
-import importlib
 import json
 import logging
-import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
+import mariadb as mariadb_driver
 import pytest
 
 from app.agents.actions.mariadb.mariadb import MariaDB
@@ -23,31 +22,12 @@ from app.sources.client.mariadb.mariadb import READ_ONLY_TIMEOUT_S, MariaDBClien
 from app.utils.conversation_tasks import pop_tasks
 from app.utils.sql_limits import SQL_MAX_ROWS, SQL_QUERY_TIMEOUT_S
 
-if TYPE_CHECKING:
-    from types import ModuleType
-
 
 @pytest.fixture(autouse=True)
 def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
     # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
     monkeypatch.setattr("app.sources.client.mariadb.mariadb.vetted_addresses", AsyncMock(return_value=[]))
 
-
-def _import_real_driver() -> ModuleType:
-    # tests/unit/sources/client/test_mariadb_client.py swaps a MagicMock into
-    # sys.modules["mariadb"] and into the client module for the whole session.
-    current = sys.modules.get("mariadb")
-    if current is not None and not isinstance(current, MagicMock):
-        return current
-    sys.modules.pop("mariadb", None)
-    try:
-        return importlib.import_module("mariadb")
-    finally:
-        if current is not None:
-            sys.modules["mariadb"] = current
-
-
-mariadb_driver = _import_real_driver()
 
 PASSWORD = "s3cr3t-Pa55word!"
 DATABASE = "shop"

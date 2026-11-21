@@ -33,6 +33,7 @@ from app.services.graph_db.postgres.base import (
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -175,8 +176,7 @@ class HierarchyMixin(PgBase):
                 collection=CollectionNames.RECORD_GROUPS.value,
                 transaction=transaction
             )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert record groups failed: {str(e)}")
+        except Exception:
             raise
 
     async def create_record_group_relation(
@@ -436,7 +436,8 @@ class HierarchyMixin(PgBase):
                         p["taxonomyRefs"] = r
                     payloads.append(p)
         except Exception as e:
-            self.logger.error(f"❌ Failed to prepare deletion event payloads: {e}")
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="_delete_events", step="deletion_event_payload")
         return {"eventType": "deleteRecord", "topic": "record-events", "payloads": payloads} if payloads else None
 
     async def delete_records_recursive(self, record_ids: list[str], connector_id: str, transaction: str | None = None, cascade_children: bool = True,  # noqa: FBT001, FBT002
@@ -746,10 +747,15 @@ class HubMixin(PgBase):
             u = _doc(user["doc"])
             kept = [a for a in (_doc(r["doc"]) for r in apps) if (a.get("type") == "KB" or not a.get("hideConnector")) and a["id"] not in exclude_app_ids]
             kbs = [a["id"] for a in kept if a.get("type") == "KB"]
-            filled = {r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.hub_root_kb_children */ SELECT DISTINCT e.to_id FROM graph.edges e
-                JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records'
-                AND e.to_coll = 'apps' AND e.to_id = ANY($2::text[]) AND r.doc->>'connectorId' = e.to_id AND r.doc->>'orgId' = $1
-                AND r.doc->>'isDeleted' IS DISTINCT FROM 'true' AND r.doc->>'isPlaceholder' IS DISTINCT FROM 'true'""", org, kbs)} if kbs and not names_only else set()
+            # One live child per collection is enough: the outer LIMIT 1 stops at the first, where a DISTINCT over the join read every child of every collection.
+            # Each child is read by its key: joined, a planner without statistics scanned the org's records once per collection. The collection comes from ``c``
+            # (OFFSET 0 keeps it a subquery), as in get_connector_stats: a literal 'records' lets a partial records index bounded by the org alone look as cheap.
+            filled = {r["id"] for r in await tx.fetch("""/* pipeshub:graph.hub_root_kb_children */ SELECT k.id FROM unnest($2::text[]) k(id)
+                CROSS JOIN (SELECT 'records'::text AS rec OFFSET 0) c CROSS JOIN LATERAL (
+                SELECT 1 FROM graph.edges e CROSS JOIN LATERAL (SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = c.rec AND n.id = e.from_id LIMIT 1) r
+                WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = k.id AND r.doc->>'connectorId' = k.id
+                AND r.doc->>'orgId' = $1 AND r.doc->>'isDeleted' IS DISTINCT FROM 'true' AND r.doc->>'isPlaceholder' IS DISTINCT FROM 'true' LIMIT 1) x""",
+                                                      org, kbs)} if kbs and not names_only else set()
             rows = []
             for a in kept:
                 kb = a.get("type") == "KB"

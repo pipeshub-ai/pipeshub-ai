@@ -84,10 +84,7 @@ export class MailServiceContainer {
         container.get<Logger>('Logger').warn(
           'Mail broker unavailable; async delivery is disabled until restart',
           {
-            error:
-              brokerError instanceof Error
-                ? brokerError.message
-                : String(brokerError),
+            error: brokerError,
           },
         );
       }

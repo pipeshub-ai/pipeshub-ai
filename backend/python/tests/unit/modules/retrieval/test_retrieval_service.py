@@ -20,12 +20,8 @@ from app.modules.retrieval.retrieval_service import (
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.vector_db.search_retry import VectorSearchUnavailableError
 from app.utils.chat_helpers import attach_connector_instance_names
-from tests.support.provider_errors import (
-    assert_text_free,
-    failure_line,
-    httpx_error,
-    openai_error,
-)
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import SENTINELS, httpx_error, openai_error
 
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
@@ -3422,5 +3418,5 @@ async def test_a_refused_query_embedding_is_one_text_free_line(
 
     assert (result["status"], result["message"]) == (Status.ERROR.value, "Unexpected server error during search.")
     level = logging.ERROR if error_class == "misconfigured" else logging.WARNING
-    failure_line(caplog.records, "search.failed", error_class, level)
-    assert_text_free(caplog.records)
+    failure_line(caplog.records, "search.failed", error_class, level, *SENTINELS)
+    assert_text_free(caplog.records, *SENTINELS)

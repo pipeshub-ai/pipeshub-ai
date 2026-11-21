@@ -252,7 +252,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                 message_log.note(outcome="skipped", reason="duplicate")
                 return True, None
             except EnvelopeRejected as e:
-                message_log.note(reason="envelope_rejected", code=e.reason)
+                message_log.note(reason="envelope_rejected", code=e.reason, **e.facts())
                 return False, e
             message_log.bind_opened(opened.ctx, opened.message)
             try:

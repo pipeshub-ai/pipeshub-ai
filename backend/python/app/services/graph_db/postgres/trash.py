@@ -41,6 +41,7 @@ from app.services.graph_db.push_claim import (
     PushExpect,
     PushSet,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
 
@@ -97,8 +98,7 @@ class TrashMixin(PgBase):
 
         try:
             row = await self._q(go, transaction, write=True)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to move records to the trash: {e}")
+        except Exception:
             raise
         return soft_delete_result(record_ids, list(row["root_keys"]), row["marked"], batch_id)
 
@@ -446,7 +446,8 @@ class TrashMixin(PgBase):
                             )
                         }
                     except Exception as decode_error:
-                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", decode_error, include_error_text=False,
+                                                op="_create_reindex_event_payload", step="decode_file_content")
 
             # Standard payload for non-MAIL records
             return {
@@ -470,8 +471,7 @@ class TrashMixin(PgBase):
                 )
             }
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
+        except Exception:
             raise
 
     async def reindex_single_record(

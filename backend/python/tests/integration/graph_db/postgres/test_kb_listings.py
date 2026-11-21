@@ -7,20 +7,15 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
-import os
-
-import asyncpg
 import pytest
 
 from app.core import org_context
-from app.core.db import uow
 from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
-from tests.support import plan_gate
 
 from .test_access import World, _org
 from .test_identity import w as _identity_world  # noqa: F401
-from .test_kb import FOLDER, folder, grant, kb, other_org, team, users
+from .test_kb import folder, kb, other_org, users
 
 pytestmark = pytest.mark.integration
 
@@ -135,152 +130,6 @@ async def test_a_failed_listing_answers_a_failure_and_the_next_one_answers(w: Wo
     assert (await w.p.get_folder_children("kb1", "top", 0, 5))["success"] is False
     monkeypatch.setattr(w.p, "_q", real)
     assert (await w.p.get_kb_children("kb1", 0, 5))["success"] is True
-
-
-# ---- the flat listing of a user -----------------------------------------------------------------------------------------------------------
-
-async def test_the_flat_listing_shows_a_user_with_a_role_what_the_collection_holds_and_nobody_else(w: World) -> None:
-    await tree(w)
-    await users(w, "me", "viaTeam", "stranger", "outTeam")
-    await grant(w, "me", "READER")
-    await team(w, "viaTeam", "tm", grant_role="READER", member="READER")
-    await w.nodes("teams", {"_key": "tm2"})
-    await w.edge("permission", ("teams", "tm2"), ("apps", "kb1"), type="TEAM", role="WRITER")          # a team the user is not in
-    await w.edge("permission", ("users", "outTeam"), ("teams", "tm9"), type="USER", role="OWNER")
-    await item(w, "foreign", "top", orgId="another-org")                                               # a record of another org's id inside the folder
-    empty = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
-    for who in ("stranger", "outTeam", "nobody"):
-        assert await w.p.list_kb_records("kb1", who, w.org, 0, 10) == ([], 0, empty)
-    for who, role in (("me", "READER"), ("viaTeam", "READER")):
-        recs, total, filters = await w.p.list_kb_records("kb1", who, w.org, 0, 10, sort_by="createdAtTimestamp", sort_order="asc")
-        assert [r["id"] for r in recs] == ["r1", "in-top", "r2", "in-sub"] and total == 4        # not the deleted, foreign-org or other collection's ones
-        assert recs[0]["permission"] == {"role": role, "type": "USER"} and recs[0]["kb_id"] == "kb1" and recs[0]["folder"] is None
-        assert recs[1]["folder"] == {"id": "top", "name": "top"} and recs[3]["folder"] == {"id": "sub", "name": "sub"}
-        assert recs[0]["fileRecord"]["sizeInBytes"] == 10 and "path" not in recs[0]["fileRecord"] and recs[0]["connectorName"] == "KNOWLEDGE_BASE"
-        assert filters["permissions"] == [role] and filters["recordTypes"] == ["FILE", "MAIL"]
-        assert filters["folders"] == [{"id": f, "name": f} for f in ("sub", "top", "zeta")]               # a trashed folder is not offered as a filter
-    with other_org():
-        assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[1] == 0
-    # revoked: the grant goes and the listing goes with it; granted again it returns
-    await w.p.remove_kb_permission("kb1", ["me"], [])
-    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[1] == 0
-    await w.p.remove_kb_permission("kb1", [], ["tm"])
-    assert (await w.p.list_kb_records("kb1", "viaTeam", w.org, 0, 10))[1] == 0
-    await w.p.create_kb_permissions("kb1", "me", ["me"], [], "WRITER")
-    recs, total, _ = await w.p.list_kb_records("kb1", "me", w.org, 0, 10)
-    assert total == 4 and recs[0]["permission"]["role"] == "WRITER"
-
-
-async def test_the_flat_listing_filters_sorts_pages_and_lists_a_record_in_each_of_its_folders(w: World) -> None:
-    await tree(w)
-    await users(w, "me")
-    await grant(w, "me", "OWNER")
-    await w.edge("nodeRelations", ("records", "zeta"), ("records", "in-top"), relationshipType="PARENT_CHILD")      # a second parent
-    ids = lambda r: [x["id"] for x in r[0]]  # noqa: E731
-    all_ = await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="createdAtTimestamp", sort_order="asc")
-    assert all_[1] == 5 and ids(all_) == ["r1", "in-top", "in-top", "r2", "in-sub"] and {x["folder"]["id"] for x in all_[0] if x["id"] == "in-top"} == {"top", "zeta"}
-    assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10)) == ["in-sub", "r2", "in-top", "in-top", "r1"]
-    assert ids(await w.p.list_kb_records("kb1", "me", w.org, 1, 2, sort_by="createdAtTimestamp", sort_order="asc")) == ["in-top", "in-top"]
-    pairs = []                                                                             # one row at a time: the two rows of a record in two folders are each seen once
-    for skip in range(5):
-        page = (await w.p.list_kb_records("kb1", "me", w.org, skip, 1, sort_by="createdAtTimestamp", sort_order="asc"))[0]
-        pairs += [(x["id"], (x["folder"] or {}).get("id")) for x in page]
-    assert sorted(pairs, key=str) == sorted([(x["id"], (x["folder"] or {}).get("id")) for x in all_[0]], key=str) and len(set(pairs)) == 5
-    assert (await w.p.list_kb_records("kb1", "me", w.org, 1, 2))[1] == 5                               # the total ignores the page
-    assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top", sort_by="createdAtTimestamp", sort_order="asc")) == ["in-top"]   # a folder: its children only
-    whole = (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[2]
-    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top"))[2] == whole           # a folder's page offers the facets of the whole collection
-    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, search="ALPHA", record_types=["MAIL"]))[2] == whole    # and a filter does not narrow them
-    assert whole["recordTypes"] == ["FILE", "MAIL"] and whole["origins"] == ["CONNECTOR", "UPLOAD"] and whole["connectors"] == ["GMAIL"] and whole["indexingStatus"] == ["COMPLETED"]
-    assert [f["id"] for f in whole["folders"]] == ["sub", "top", "zeta"]
-    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="nope"))[1] == 0
-    assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, search="ALPHA")) == ["r2"]
-    assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, search="x-r1")) == ["r1"]
-    assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, record_types=["MAIL"], origins=["CONNECTOR"], connectors=["GMAIL"], indexing_status=None)) == ["r2"]
-    assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, indexing_status=["COMPLETED"])) == ["r1"]
-    assert sorted(ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, date_from=2, date_to=3))) == ["in-top", "in-top", "r2"]
-    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, date_from=500))[1] == 0
-    assert (await w.p.list_kb_records("kb1", "me", w.org, -5, -1))[0] == []
-
-
-async def test_the_flat_listing_sorts_strings_by_code_point_and_numbers_by_value(w: World) -> None:
-    await kb(w, orgId=w.org)
-    await users(w, "me")
-    await grant(w, "me", "OWNER")
-    for i, name in enumerate(["b", "B", "a", "A", "Z", "ä"]):
-        await item(w, f"n{i}", recordName=name, createdAtTimestamp=[9, 10, 100, 2, 33, 1000][i], orgId=w.org)
-    names = lambda r: [x["recordName"] for x in r[0]]  # noqa: E731
-    asc = await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="recordName", sort_order="asc")
-    assert names(asc) == ["A", "B", "Z", "a", "b", "ä"]                                      # code point: capitals first, whatever the database collation
-    assert names(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="recordName", sort_order="desc")) == ["ä", "b", "a", "Z", "B", "A"]
-    assert [x["createdAtTimestamp"] for x in (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="createdAtTimestamp", sort_order="asc"))[0]] == [2, 9, 10, 33, 100, 1000]
-
-
-async def test_the_flat_listing_reads_its_collection_and_each_record_by_its_key(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The flat listing of a collection (the page, and one folder's page with the collection's filters) reads the collection's edges by its id, each node by its id and
-    each folder's children by the folder, whatever the organisation's other connectors hold; one folder's page reads that folder only. Its estimates cannot be trusted:
-    the collection's edges are estimated at one row (coll, to_coll and to_id are correlated) and the jsonb filters at the planner's default 0.5 %, so a join left to the
-    planner read every record of the organisation for each folder at a million records (past the 20 s timeout)."""
-    admin_url = os.environ.get("PG_ADMIN_URL")
-    assert admin_url, "set PG_ADMIN_URL (an owner DSN): this test analyses graph.nodes and graph.edges before it reads the plans"
-    await tree(w)
-    await users(w, "me")
-    await grant(w, "me", "READER")
-    # 20 more folders of 10 records each and 200 more root records in kb1 (400 records); 20,000 records and their links in another connector
-    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', id, jsonb_build_object('recordName', id, 'mimeType', mime,
-        'connectorId', app, 'orgId', $1::text, 'createdAtTimestamp', 1000) FROM (SELECT 'kf' || g AS id, $2::text AS mime, 'kb1' AS app FROM generate_series(1, 20) g
-        UNION ALL SELECT 'kr' || g, 'text/plain', 'kb1' FROM generate_series(1, 400) g UNION ALL SELECT 'n' || g, 'text/plain', 'other' FROM generate_series(1, 20000) g) x""",
-        w.org, FOLDER), write=True)
-    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc) SELECT $1, coll, 'records', f, to_coll, t, doc
-        FROM (SELECT 'belongsTo' AS coll, 'kf' || g AS f, 'apps' AS to_coll, 'kb1' AS t, '{}'::jsonb AS doc FROM generate_series(1, 20) g
-        UNION ALL SELECT 'belongsTo', 'kr' || g, 'apps', 'kb1', '{}' FROM generate_series(1, 400) g
-        UNION ALL SELECT 'nodeRelations', 'kf' || (1 + (g - 1) / 10), 'records', 'kr' || g, '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(1, 200) g
-        UNION ALL SELECT 'nodeRelations', 'n' || (g / 10), 'records', 'n' || g, '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(10, 20000) g
-        UNION ALL SELECT 'isOfType', 'n' || g, 'files', 'nf' || g, '{}' FROM generate_series(1, 20000) g) x""", w.org), write=True)
-    # their files, as every file record has one: with none, the organisation's isOfType edges were rightly estimated at a row or two, and a read of all of them
-    # (the to_id index bounded by org and coll, in the page's file order) was as cheap as the record's own edge, and was taken now and then
-    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'files', 'nf' || g, '{"extension": "txt"}'::jsonb
-        FROM generate_series(1, 20000) g""", w.org), write=True)
-    con = await asyncpg.connect(admin_url)
-    try:
-        await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")      # as autovacuum would have by now: a plan that needs no statistics is not what is measured
-    finally:
-        await con.close()
-    sent: list[tuple[str, tuple]] = []
-    real = uow.Tx.fetch
-
-    async def spy(tx: uow.Tx, sql: str, *args: object, **kw: object) -> object:
-        if "pipeshub:graph.list_kb_records" in sql:
-            sent.append((sql, args))
-        return await real(tx, sql, *args, **kw)
-    monkeypatch.setattr(uow.Tx, "fetch", spy)
-    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[1] == 404        # the tree's 4, the 20 folders' 200 and 200 at the root
-    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top"))[1] == 1
-    assert len(sent) == 3                                                         # the page, then a folder's page and the collection's filters
-
-    for i, (sql, args) in enumerate(sent):
-        ran = await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args))
-        plan = plan_gate.root(ran)
-        assert not (bad := plan_gate.unkeyed(plan, "nodes", r"\bid = ")), (i, bad)
-        # every edge read is bounded by a node of the collection: its id, a folder or a record
-        assert not (bad := plan_gate.unkeyed(plan, "edges", r"\b(to_id|from_id) = ")), (i, bad)
-        if i == 1:      # one folder's page reads that folder, not the collection
-            assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 600, plan.get("Shared Hit Blocks")
-
-
-async def test_a_failed_flat_listing_raises_and_the_next_call_answers(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
-    await tree(w)
-    await users(w, "me")
-    await grant(w, "me", "READER")
-    real = w.p._q
-
-    async def boom(*a: object, **k: object) -> None:
-        raise ConnectionError("down")
-    monkeypatch.setattr(w.p, "_q", boom)
-    with pytest.raises(ConnectionError):                      # an empty page would read as "nothing in it"
-        await w.p.list_kb_records("kb1", "me", w.org, 0, 10)
-    monkeypatch.setattr(w.p, "_q", real)
-    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[1] == 4
 
 
 # ---- artifacts ------------------------------------------------------------------------------------------------------------------------------
@@ -503,7 +352,7 @@ async def test_the_hub_app_goes_with_its_edges_unless_something_still_points_at_
 
 NAMES = sorted(n for n, f in vars(KbListingsMixin).items() if not n.startswith("__") and callable(f) and n != "_children")
 CALLS = {
-    "get_kb_children": ("k", 0, 1), "get_folder_children": ("k", "f", 0, 1), "list_kb_records": ("k", "u", "o", 0, 1),
+    "get_kb_children": ("k", 0, 1), "get_folder_children": ("k", "f", 0, 1),
     "list_accessible_artifacts": ("u", "o", 0, 1, None, None, None, None, None, "name", "asc"), "get_artifact_detail": ("u", "o", "a"),
     "get_template": ("t", "u"), "clone_agent_template": ("t",), "delete_kb_hub_app": ("o",),
     "get_all_agent_templates": ("u",), "update_agent_template": ("t", {"name": "n"}, "u"), "delete_agent_template": ("t", "u"), "_template_owned": ("t", "u", None),

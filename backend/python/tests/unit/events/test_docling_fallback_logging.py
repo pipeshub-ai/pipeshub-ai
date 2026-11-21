@@ -145,13 +145,25 @@ async def test_the_processor_lets_a_docling_parse_error_reach_the_fallback_witho
     logger.warning.assert_not_called()
 
 
-async def test_one_line_per_failed_docling_parse_through_the_real_client(caplog: pytest.LogCaptureFixture) -> None:
+@pytest.mark.parametrize(
+    ("answer", "reason", "status", "error_class"),
+    [
+        ({"json": {"success": False, "error": "Parsing failed", "errorCode": "PARSE_FAILED"}},
+         "parse_failed", 422, "bad_request"),
+        # Docling never answers 500 for a file: a crash outside the conversion is the service not serving.
+        ({"text": "Internal Server Error"}, "unavailable", 500, "upstream_5xx"),
+    ],
+    ids=["422-parse-failed", "500-crash"],
+)
+async def test_one_line_per_failed_docling_parse_through_the_real_client(
+    answer: dict[str, object], reason: str, status: int, error_class: str, caplog: pytest.LogCaptureFixture,
+) -> None:
     """The whole indexing chain: real DoclingClient over HTTP, real Processor, real EventProcessor."""
     proc, _, _, _ = _make_processor()
     proc.logger = logging.getLogger("test.f57.processor")
     proc.docling_client = DoclingClient(service_url="http://docling.test", timeout=5.0, retry_delay=0.0)
     proc.docling_client._make_client = lambda: httpx.AsyncClient(transport=httpx.MockTransport(  # type: ignore[method-assign]
-        lambda _r: httpx.Response(422, json={"success": False, "error": "Parsing failed", "errorCode": "PARSE_FAILED"}),
+        lambda _r: httpx.Response(status, **answer),
     ))
 
     with caplog.at_level(logging.DEBUG), \
@@ -159,8 +171,8 @@ async def test_one_line_per_failed_docling_parse_through_the_real_client(caplog:
         processor, _ = await _index_pdf(proc.process_pdf_with_docling)
 
     processor.process_pdf_with_pdf_plumber.assert_called_once()
-    [line] = _failure_lines(caplog)
-    assert (line.getMessage(), line.reason, line.status) == ("index.parse_fallback", "parse_failed", 422)
+    [line] = [r for r in _failure_lines(caplog) if r.getMessage() == "index.parse_fallback"]
+    assert (line.levelno, line.reason, line.status, line.error_class) == (logging.WARNING, reason, status, error_class)
     # The processor's INFO start line still names the record (a later module PR); the failure line must not.
     assert_not_logged([line], NAME)
 
@@ -187,3 +199,27 @@ async def test_the_parsing_service_provider_passes_an_outage_through() -> None:
         await DoclingServiceParser(client).parse(b"%PDF", NAME)
 
     assert raised.value is down
+
+
+async def test_a_pdf_waiting_for_docling_falls_back_at_info_through_the_real_client(caplog: pytest.LogCaptureFixture) -> None:
+    """Docling's port is closed: the client reports the outage once at WARNING; the fallback line of a record that is
+    handed back to wait for Docling is INFO, so a waiting PDF does not add a WARNING every minute."""
+    proc, _, _, _ = _make_processor()
+    proc.logger = logging.getLogger("test.f57.processor")
+    proc.docling_client = DoclingClient(service_url="http://docling.test", timeout=5.0, retry_delay=0.0)
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    proc.docling_client._make_client = lambda: httpx.AsyncClient(transport=httpx.MockTransport(refuse))  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.DEBUG), \
+            patch("app.services.docling.client.get_pdf_page_count", return_value=1):
+        processor, _ = await _index_pdf(proc.process_pdf_with_docling)
+
+    processor.process_pdf_with_pdf_plumber.assert_called_once()
+    [line] = [r for r in caplog.records if r.getMessage() == "index.parse_fallback"]
+    assert (line.levelno, line.reason, line.error_class) == (logging.INFO, "unavailable", "unavailable")
+    [outage] = _failure_lines(caplog)
+    assert outage.name == "app.services.base_client.DoclingService"
+    assert_not_logged([line], NAME)

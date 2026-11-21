@@ -35,6 +35,7 @@ from app.agent_loop_lib.core.messages import (
     ToolCall,
     ToolMessage,
 )
+from app.agent_loop_lib.core.exceptions import spawn_failure_text
 from app.agent_loop_lib.core.scope import StateSlot
 from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
 from app.agent_loop_lib.tools.builtin.coordination.spawn_agent import SpawnAgentTool, child_result_content
@@ -373,7 +374,7 @@ async def _programmatic_dispatch(
             child_result = await tasks[call.id]
             results[call.id] = child_result_content(child_result)
         except Exception as e:
-            results[call.id] = {"output": str(e), "success": False}
+            results[call.id] = {"output": spawn_failure_text(e), "success": False}
 
     # Inject into the agent's conversation so Phase 3 (verify) sees the
     # spawn results in context — same shape as if the LLM had called

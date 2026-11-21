@@ -20,6 +20,7 @@ from app.services.artifact_registry import ArtifactMetadata, ArtifactVersion, Ve
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.services.graph_db.neo4j.neo4j_client import describe_neo4j_error
 from app.utils.error_class import mark_error
+from app.web.own_files import ISSUED_DOWNLOAD_LINKS_KEY, IssuedFile, issued_file
 
 
 def _make_metadata(**overrides) -> ArtifactMetadata:
@@ -448,6 +449,74 @@ class TestGetRecordDownloadUrl:
         assert body["url_type"] == "authenticated_link"
         blob.get_record_stream_url.assert_awaited_once_with("rec-1")
 
+
+
+class TestRecordDownloadLinksAreRemembered:
+    """fetch_url sends the model back to the record for a link handed out here, so the answer cites the file."""
+
+    async def test_signed_link_is_remembered(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed?X-Amz-Signature=abc")
+        manager, _ = _make_manager(graph_provider=_record_graph(record=_upload_record(), acl_access=True), blob_store=blob)
+
+        await manager.get_record_download_url(record_id="rec-1")
+
+        issued = manager.chat_state[ISSUED_DOWNLOAD_LINKS_KEY]
+        assert issued_file(issued, "https://s3.example/signed?X-Amz-Signature=abc") == IssuedFile("rec-1", "salaries.xlsx")
+
+    async def test_stream_link_is_remembered(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value=None)
+        blob.get_record_stream_url = AsyncMock(return_value="https://app.example/api/v1/knowledgeBase/stream/record/rec-1")
+        manager, _ = _make_manager(graph_provider=_record_graph(record=_upload_record(), acl_access=True), blob_store=blob)
+
+        await manager.get_record_download_url(record_id="rec-1")
+
+        issued = manager.chat_state[ISSUED_DOWNLOAD_LINKS_KEY]
+        assert issued_file(issued, "https://app.example/api/v1/knowledgeBase/stream/record/rec-1").record_id == "rec-1"
+
+    async def test_links_from_several_calls_are_all_remembered(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(side_effect=["https://s3.example/a?sig=1", "https://s3.example/b?sig=2"])
+        manager, _ = _make_manager(graph_provider=_record_graph(record=_upload_record(), acl_access=True), blob_store=blob)
+
+        await manager.get_record_download_url(record_id="rec-1")
+        await manager.get_record_download_url(record_id="rec-1")
+
+        issued = manager.chat_state[ISSUED_DOWNLOAD_LINKS_KEY]
+        assert issued_file(issued, "https://s3.example/a?sig=1") and issued_file(issued, "https://s3.example/b?sig=2")
+
+    async def test_connector_record_link_is_not_remembered(self) -> None:
+        """Its source link (a live web page for the web connector) stays readable through fetch_url."""
+        graph = _record_graph(record=_upload_record(origin=OriginTypes.CONNECTOR), acl_access=True)
+        manager, _ = _make_manager(graph_provider=graph)
+
+        await manager.get_record_download_url(record_id="rec-1")
+
+        assert not manager.chat_state.get(ISSUED_DOWNLOAD_LINKS_KEY)
+
+    async def test_refused_request_remembers_nothing(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        manager, _ = _make_manager(graph_provider=_record_graph(record=_upload_record()), blob_store=blob)
+
+        await manager.get_record_download_url(record_id="rec-1")
+
+        assert not manager.chat_state.get(ISSUED_DOWNLOAD_LINKS_KEY)
+
+    async def test_returned_payload_is_unchanged(self) -> None:
+        """Artifacts embed `download_url`; remembering it must not change what the model gets."""
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        manager, _ = _make_manager(graph_provider=_record_graph(record=_upload_record(), acl_access=True), blob_store=blob)
+
+        _, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        assert json.loads(payload) == {
+            "success": True, "record_id": "rec-1", "download_url": "https://s3.example/signed",
+            "file_name": "salaries.xlsx", "mime_type": "application/vnd.ms-excel", "url_type": "direct_download",
+            "note": "Short-lived signed URL for an uploaded file. Can be embedded directly in artifacts.",
+        }
 
 class TestListArtifacts:
     async def test_lists_artifacts_with_lineage(self) -> None:

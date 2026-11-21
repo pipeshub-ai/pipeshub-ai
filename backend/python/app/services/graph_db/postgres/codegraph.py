@@ -7,6 +7,7 @@ to the ambient org; the per-record access filter sits in the agent tools (``Reco
 from __future__ import annotations
 
 import json
+import logging
 import re
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,8 @@ from app.services.graph_db.postgres.base import (
     _field,
     _j,
 )
+from app.utils import error_class
+from app.utils.logging_fields import log_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -278,7 +281,7 @@ async def _unheld_revisions(query: Callable[..., Awaitable[Any]], org: str, ids:
     rows = await query(lambda tx: tx.fetch("""/* pipeshub:graph.stage_states_unheld_revisions */ WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev,
             max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = $2
             AND s.doc->>'virtualRecordId' = ANY($3::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
-        SELECT g.v, g.rev FROM g WHERE g.newest < $4::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev) ORDER BY g.v, g.rev""",
+        SELECT g.v, g.rev FROM g WHERE g.newest < $4::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED' AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true'))) ORDER BY g.v, g.rev""",
                                               org, _STAGES, ids, updated_before_ms), None)
     return [(r["v"], r["rev"]) for r in rows]
 
@@ -312,7 +315,10 @@ class CodeGraphMixin(PgBase):
             with org_context.for_org(org, job="graph.sweep"):
                 yield
         except Exception as e:
-            self.logger.exception("Sweep failed for org %s", org)
+            # A per-org line, not the handling one: _raise_failed raises the first failure after the loop, and its handler
+            # logs it once (log_failure here would mark it logged and demote that line).
+            log_event(self.logger, "graph.provider.step_failed", level=logging.WARNING, op="_sweep", step="org_sweep",
+                      target_org_id=org, outcome="failure", error_class=error_class.classify_error(e), error_type=type(e).__name__)
             errors.append((org, e))
 
     @staticmethod
@@ -911,7 +917,7 @@ class CodeGraphMixin(PgBase):
                             (SELECT max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = $2
                                AND s.doc->>'virtualRecordId' = p.v AND s.doc->>'rev' = p.rev) AS newest
                           FROM unnest($3::text[], $4::text[]) AS p(v, rev)),
-                        ok AS (SELECT g.v, g.rev FROM g WHERE g.newest < $5::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev)),
+                        ok AS (SELECT g.v, g.rev FROM g WHERE g.newest < $5::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED' AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true')))),
                         d AS (DELETE FROM graph.nodes s USING ok WHERE s.org_id = $1 AND s.coll = $2 AND s.doc->>'virtualRecordId' = ok.v AND s.doc->>'rev' = ok.rev RETURNING 1)
                         SELECT count(*) FROM d""", org, _STAGES, vs, rs, updated_before_ms)
                 deleted += int(await self._q(run, None, write=True) or 0)

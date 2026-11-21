@@ -27,12 +27,12 @@ from app.utils.chat_helpers import create_block_from_metadata, get_enhanced_meta
         ("Shared/report.docm", "application/vnd.ms-word.document.macroEnabled.12"),
         ("Shared/form.dotx", "application/vnd.openxmlformats-officedocument.wordprocessingml.template"),
         ("Shared/deck.potx", "application/vnd.openxmlformats-officedocument.presentationml.template"),
+        ("Shared/deck.pptm", "application/vnd.ms-powerpoint.presentation.macroEnabled.12"),
         # Unchanged for every other type.
         ("Shared/a.zip", "application/zip"),
         ("Shared/a.xyz", "application/octet-stream"),
         ("Shared/noextension", "application/octet-stream"),
         ("Shared/a.pdf", "application/pdf"),
-        ("Shared/a.pptm", "application/octet-stream"),
     ],
 )
 def test_a_network_share_stores_each_new_type_under_its_own_mime(path: str, mime: str) -> None:

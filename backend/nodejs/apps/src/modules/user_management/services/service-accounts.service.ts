@@ -1,6 +1,5 @@
 import { injectable, inject } from 'inversify';
 import { randomUUID } from 'crypto';
-import { Logger } from '../../../libs/services/logger.service';
 import { getUserRepository } from '../../../libs/repositories/user';
 import type { UserDto } from '../../../libs/repositories/user';
 import { getGroupRepository } from '../../../libs/repositories/group';
@@ -29,6 +28,7 @@ import {
   SERVICE_ACCOUNT_SLUG_MIN_LENGTH,
   SERVICE_ACCOUNT_SLUG_MAX_LENGTH,
 } from '../constants/service-account.constants';
+import { auditUserChange, userRefusal } from '../utils/user-audit';
 
 export interface ServiceAccountView {
   id: string;
@@ -104,7 +104,6 @@ function toView(user: UserDto, orgId: string): ServiceAccountView {
 @injectable()
 export class ServiceAccountsService {
   constructor(
-    @inject('Logger') private readonly logger: Logger,
     @inject('EntitiesEventProducer')
     private readonly eventService: EntitiesEventProducer,
   ) {}
@@ -154,8 +153,9 @@ export class ServiceAccountsService {
         existing.orgId === orgId;
 
       if (!isOurDeletedServiceAccount) {
-        throw new ConflictError(
-          `A service account named "${slug}" already exists`,
+        throw userRefusal(
+          new ConflictError(`A service account named "${slug}" already exists`),
+          'name_taken',
         );
       }
       return await this.restore(existing, orgId, slug, input);
@@ -181,12 +181,14 @@ export class ServiceAccountsService {
       // above; the unique index fails the loser. That is a conflict, not a
       // server error.
       if (error instanceof UniqueConstraintError) {
-        throw new ConflictError(
-          `A service account named "${slug}" already exists`,
+        throw userRefusal(
+          new ConflictError(`A service account named "${slug}" already exists`),
+          'name_taken',
         );
       }
       throw error;
     }
+    auditUserChange('service_account.create', idOf(serviceAccount));
 
     await getGroupRepository().addToEveryone(orgId, idOf(serviceAccount));
 
@@ -206,12 +208,6 @@ export class ServiceAccountsService {
       eventType: EventType.NewUserEvent,
       timestamp: Date.now(),
       payload: addedPayload,
-    });
-
-    this.logger.info('Service account created', {
-      orgId,
-      serviceAccountId: idOf(serviceAccount),
-      slug,
     });
 
     return toView(serviceAccount, orgId);
@@ -276,8 +272,9 @@ export class ServiceAccountsService {
     );
 
     if (!restored) {
-      throw new ConflictError(
-        `A service account named "${slug}" already exists`,
+      throw userRefusal(
+        new ConflictError(`A service account named "${slug}" already exists`),
+        'name_taken',
       );
     }
 
@@ -320,6 +317,7 @@ export class ServiceAccountsService {
         `The service account "${slug}" changed while it was being restored`,
       );
     }
+    auditUserChange('service_account.create', idOf(finished), 'restore');
 
     await getGroupRepository().addToEveryone(orgId, finished._id);
 
@@ -339,12 +337,6 @@ export class ServiceAccountsService {
       eventType: EventType.NewUserEvent,
       timestamp: Date.now(),
       payload: addedPayload,
-    });
-
-    this.logger.info('Service account restored', {
-      orgId,
-      serviceAccountId: idOf(finished),
-      slug,
     });
 
     return toView(finished, orgId);
@@ -386,10 +378,14 @@ export class ServiceAccountsService {
       );
 
       if (!enabled) {
-        throw new ConflictError(
-          'This service account is being restored. Try again once that has finished.',
+        throw userRefusal(
+          new ConflictError(
+            'This service account is being restored. Try again once that has finished.',
+          ),
+          'restoring',
         );
       }
+      auditUserChange('service_account.update', idOf(account), 'enable');
       account.isDisabled = false;
     }
 
@@ -423,7 +419,16 @@ export class ServiceAccountsService {
       // with. On a deleted account that state is what a bound agent is
       // checked against, so it would put a removed identity back in use.
       if (!written) {
-        throw new NotFoundError('Service account not found');
+        throw userRefusal(
+          new NotFoundError('Service account not found'),
+          'not_found',
+        );
+      }
+      if ('fullName' in changes || 'description' in changes) {
+        auditUserChange('service_account.update', idOf(account), 'profile');
+      }
+      if (changes.isDisabled === true) {
+        auditUserChange('service_account.update', idOf(account), 'disable');
       }
     }
 
@@ -485,12 +490,6 @@ export class ServiceAccountsService {
       });
     }
 
-    this.logger.info('Service account updated', {
-      orgId,
-      serviceAccountId: id,
-      disabled: account.isDisabled,
-    });
-
     return toView(account, orgId);
   }
 
@@ -498,6 +497,7 @@ export class ServiceAccountsService {
     const account = await this.findOrThrow(orgId, id);
 
     await getUserRepository().markDeleted(orgId, account._id);
+    auditUserChange('service_account.delete', idOf(account));
 
     await this.tokenRevoker?.revokeAllForServiceAccount(orgId, idOf(account));
 
@@ -515,11 +515,6 @@ export class ServiceAccountsService {
       timestamp: Date.now(),
       payload: deletedPayload,
     });
-
-    this.logger.info('Service account deleted', {
-      orgId,
-      serviceAccountId: id,
-    });
   }
 
   /**
@@ -530,12 +525,19 @@ export class ServiceAccountsService {
    * passing their id to a service-account route.
    */
   private async findOrThrow(orgId: string, id: string): Promise<UserDto> {
+    // An id from another org reads as missing too: tagged, so a probe is audited.
     if (!isValidId(id)) {
-      throw new NotFoundError('Service account not found');
+      throw userRefusal(
+        new NotFoundError('Service account not found'),
+        'not_found',
+      );
     }
     const account = await getUserRepository().getServiceAccount(orgId, id);
     if (!account) {
-      throw new NotFoundError('Service account not found');
+      throw userRefusal(
+        new NotFoundError('Service account not found'),
+        'not_found',
+      );
     }
     return account;
   }

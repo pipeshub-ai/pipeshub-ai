@@ -205,6 +205,8 @@ app_schema = {
             # app.connectors.core.sync.sync_runner: when the last run started and ended, and how.
             "lastSyncStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
+            # app.services.messaging.kafka.handlers.entity: rewritten while a user-link pass runs, left to go stale after it.
+            "userLinkStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncOutcome": {"type": ["string", "null"]},
             "lastSyncSummary": {"type": ["string", "null"]},
             # What the connector's admin has to do (JSON text, see ActionItem); null when nothing.
@@ -314,6 +316,11 @@ app_schema = {
     "level": "strict",
     "message": "Document does not match the app schema.",
 }
+
+# Raised by one with every change to ``app_schema``; applied as ``RECORD_SCHEMA_GENERATION`` is (see below).
+# tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
+APP_SCHEMA_GENERATION = 1
+app_schema["rule"]["$comment"] = f"pipeshub-app-schema gen={APP_SCHEMA_GENERATION}"
 
 # Record schema for ArangoDB
 record_schema = {
@@ -475,6 +482,9 @@ record_schema = {
             "parseNowAt": {"type": ["number", "null"]},
             # The in-flight embedding marker (see app/modules/indexing/embed_resume.py): flat scalars, so
             # a partial write leaves the others alone on every graph provider. Null once the record is indexed.
+            # The virtual record the record is indexing a replacement copy into; it keeps serving `virtualRecordId` until the
+            # copy commits, and the field is removed (never null) by the commit and by every other end of the run.
+            "pendingVirtualRecordId": {"type": ["string", "null"]},
             "embedVrid": {"type": ["string", "null"]},
             "embedRev": {"type": ["string", "null"]},
             "embedKey": {"type": ["string", "null"]},
@@ -505,7 +515,7 @@ record_schema = {
 # Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
 # collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
 # tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
-RECORD_SCHEMA_GENERATION = 2
+RECORD_SCHEMA_GENERATION = 3
 record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
 
 

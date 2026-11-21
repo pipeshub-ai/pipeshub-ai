@@ -33,7 +33,7 @@ import os
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.core.org_context import for_org, system
 from app.modules.indexing.named_entity_persist_retry import (
     _BUSY,
@@ -138,8 +138,8 @@ async def complete_named_entities(
                 # Being indexed now (that write is newer), queued again by the sink, or
                 # already replaced by a newer write.
                 continue
-            if outcome == "extract_failed":
-                await _count_failure(graph_provider, logger, org_id, record_id, "extract_failed", attempts)
+            if outcome in ("extract_failed", "not_indexed"):
+                await _count_failure(graph_provider, logger, org_id, record_id, str(outcome), attempts)
                 continue
             if outcome == "written":
                 written += 1
@@ -169,6 +169,10 @@ async def _complete_one(
     record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
     if not record or not is_live_record(record) or not record.get("virtualRecordId"):
         return "gone"
+    if record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
+        # Replacing its copy (or failed doing so): its revision is the attempt's, not the served copy's. The job is counted as a failure, so
+        # it backs off and is given up after its attempts (the record is extracted when it is next indexed) instead of staying first in line.
+        return "not_indexed"
     try:
         blob = await sink.blob_storage.get_record_from_storage(record["virtualRecordId"], org_id or record.get("orgId"))
     except StorageDocumentNotFoundError:

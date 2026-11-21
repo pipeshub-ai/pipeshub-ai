@@ -1020,6 +1020,7 @@ class TestDeleteVectorCollectionEvent:
         sink.vector_store = MagicMock(spec=VectorStore)
         sink.vector_store.get_embedding_model_instance = AsyncMock(return_value=False)
         sink.vector_store.embedding_size = embedding_size
+        sink.entity_vector_store = MagicMock(reset_collection=AsyncMock(return_value=True))
         handler.event_processor.sink_orchestrator = sink
         registry = AsyncMock()
         registry.recreate_records_collections = AsyncMock(return_value=["records"])
@@ -1028,7 +1029,7 @@ class TestDeleteVectorCollectionEvent:
 
     @pytest.mark.asyncio
     async def test_recreates_every_managed_collection_and_marks_ready(self):
-        handler, _sink, registry = self._handler_with_vector_store()
+        handler, sink, registry = self._handler_with_vector_store()
 
         with patch(
             "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
@@ -1041,6 +1042,8 @@ class TestDeleteVectorCollectionEvent:
             )
 
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        sink.entity_vector_store.reset_collection.assert_awaited_once()  # the entity index is reset with the records collections
+        registry.release_orphan_pins.assert_awaited_once()
         assert events[0].data.record_id == "delete_vector_collection"
         # The dimension comes from the live model, not the manifest: this event
         # fires precisely because the model (and so the width) changed.

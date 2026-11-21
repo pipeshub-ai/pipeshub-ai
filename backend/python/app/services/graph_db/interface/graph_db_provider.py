@@ -35,6 +35,7 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.conditions import Cond
 from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
+from app.utils import error_class
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.kh_breadcrumbs import browse_scope
 from app.utils.kh_chain_tops import place_chain_tops
@@ -770,7 +771,9 @@ class IGraphDBProvider(ABC):
         services, so it must be idempotent.
 
         Returns:
-            bool: True if schema was ensured successfully, False otherwise
+            bool: True if schema was ensured successfully, False otherwise. The connector
+            service tries 3 times at startup; if every try returns False it logs one error,
+            counts ``graph_schema_not_ensured`` and starts anyway.
         """
         pass
 
@@ -2567,15 +2570,20 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         clock_at_most: float | None = None,
+        unset: Sequence[str] = (),
     ) -> bool:
         """Merge ``updates`` into the node only while every field in
         ``expected`` still holds its value (``None`` means absent), in one
         statement. Unlike ``update_node_if_match`` the document is merged,
-        not replaced. A ``None`` in ``updates`` removes or nulls the field.
+        not replaced. A ``None`` in ``updates`` removes or nulls the field,
+        as the store does (with ``unset`` given, a ``None`` in ``updates`` removes it).
         ``clock_at_most`` (epoch seconds): also only while the store's own
         clock (`store_time`), read by the statement as it writes, is not past
         it, so a value computed from an earlier read of that clock is never
-        written later than the caller allowed.
+        written later than the caller allowed. ``unset`` names fields the same
+        write removes (the attribute is gone, never left null: an older strict
+        schema rejects a stored null it does not list); with ``unset`` given, a
+        ``None`` in ``updates`` removes its field in that write too.
 
         Returns:
             True iff the write applied.
@@ -2593,10 +2601,13 @@ class IGraphDBProvider(ABC):
         updates: dict[str, Any],
         conditions: Sequence[Cond],
         transaction: str | None = None,
+        *,
+        unset: Sequence[str] = (),
     ) -> bool:
         """Merge ``updates`` into the node only while every condition holds, in
-        one statement. ``update_node_fields_if_match`` with named operators
-        (``Cond``: ``eq``, ``is_null``, ``null_or_eq``, ``null_or_le``) instead of
+        one statement; ``unset`` names fields the same write removes (never left
+        null). ``update_node_fields_if_match`` with named operators
+        (``Cond``: ``eq``, ``is_null``, ``null_or_eq``, ``null_or_le``, ``one_of``) instead of
         equality only, so "unset or not newer than" can be asked. A ``None`` in
         ``updates`` removes or nulls the field.
 
@@ -4153,32 +4164,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def list_kb_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: str | None,
-        record_types: list[str] | None,
-        origins: list[str] | None,
-        connectors: list[str] | None,
-        indexing_status: list[str] | None,
-        date_from: int | None,
-        date_to: int | None,
-        sort_by: str,
-        sort_order: str,
-        folder_id: str | None = None,
-    ) -> tuple[list[dict], int, dict]:
-        """List records in a KB. Returns (records, total_count, available_filters).
-
-        An empty list means no matching record or no access. A query that could
-        not be read raises; it is never reported as an empty list.
-        """
-        pass
-
-    @abstractmethod
     async def list_accessible_artifacts(
         self,
         user_id: str,
@@ -5466,7 +5451,8 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with record, knowledgeBase, folder, metadata, permissions if accessible;
-            None if not, and always None for a record in the trash.
+            None if not, and always None for a record in the trash. Any failure to read
+            the graph raises: a read that failed is never None.
         """
         pass
 
@@ -6003,6 +5989,17 @@ class IGraphDBProvider(ABC):
         linked meanwhile, say by a verified email taking over a stub, keeps them). Before the org's All team passes
         the connector gate, no grant may wait there for a person the connector does not link. Returns how many
         edges were deleted."""
+        raise NotImplementedError
+
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on, as ``{id, externalRecordId, recordType}``.
+        Grants through groups, teams, the organization or inheritance are not included. A failed read raises: an
+        empty list must mean the user holds no such grant, since callers add and remove grants from it."""
         raise NotImplementedError
 
     @abstractmethod
@@ -7446,6 +7443,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of deleted permission edges (OLD values)
+
+        Raises:
+            Exception: the delete failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 
@@ -7468,6 +7468,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of updated permission edges
+
+        Raises:
+            Exception: the update failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 
@@ -7638,6 +7641,10 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+
+        Raises:
+            Exception: the store's error when it cannot be read. Deletes are
+            refused on this answer, so a failure must never read as no agents.
         """
         pass
 
@@ -7661,6 +7668,10 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+
+        Raises:
+            Exception: the store's error when it cannot be read. Deletes are
+            refused on this answer, so a failure must never read as no agents.
         """
         pass
 
@@ -7747,12 +7758,16 @@ class IGraphDBProvider(ABC):
     # (a dict it fills as ``{app_id: granted ids}``): the global listing then lets
     # every connector's page read its grants beside the others.
     kh_grants_per_connector = False
+    # Rows one read of the rows before a numbered page may take (``KnowledgeHubService._walk_pages``); 0 is a page's worth, a read per page. Raised by a backend
+    # whose connector page costs about the same for a large window as for one page: its cost is per read, not per row (and whose memory does not grow with it).
+    kh_skip_rows = 0
 
-    async def get_knowledge_hub_warm_sample(self) -> dict[str, str] | None:
-        """One user and one App, record group and record that user can browse
-        (``userId``, ``orgId``, ``appId``, ``groupId``, ``recordId``), for warming
-        the listing statements' plans; None when the backend has no use for it."""
-        return None
+    async def get_knowledge_hub_warm_samples(self) -> list[dict[str, str]]:
+        """Samples for warming the listing statements' plans, in order of preference, at most one per App: each a user
+        and an App, record group and record that user can browse (``userId``, ``orgId``, ``appId``, ``groupId``,
+        ``recordId``). Empty when the backend has no use for it. The caller drops a sample whose App the user has
+        switched off (demo data), which only it can read."""
+        return []
 
     async def kh_scope_enabled(self) -> bool:
         return False
@@ -7849,10 +7864,12 @@ class IGraphDBProvider(ABC):
         except NotImplementedError:
             raise
         except Exception as exc:
-            self.logger.error(
-                "check_access failed for %d nodes and %d vrids: %s",
-                len(asked_nodes), len(asked_vrids), type(exc).__name__,
-            )
+            if not error_class.chain_stamped(exc):  # a client failure already wrote db.query.failed
+                self.logger.log(
+                    error_class.level_for(error_class.classify_error(exc)),
+                    "check_access failed for %d nodes and %d vrids: %s",
+                    len(asked_nodes), len(asked_vrids), type(exc).__name__,
+                )
             raise PermissionVerificationUnavailableError() from exc
         records_by_vrid: dict[str, str] = {}
         for row in rows:

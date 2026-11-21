@@ -19,6 +19,7 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { buildProxyHeaders } from '../controllers/connector.controllers';
 import { configuredLocalStorageReplicaProblem } from '../../storage/utils/replicas';
+import { precisionWaitWarningFromStore } from '../utils/precision-warning';
 
 /** What the health page calls the session cache: PostgreSQL, this process's memory or the Redis server. */
 function cacheDisplayName(redisMode: string): string {
@@ -30,6 +31,16 @@ function cacheDisplayName(redisMode: string): string {
 }
 
 const STORAGE_WARNING_TIMEOUT_MS = 2000;
+
+// GET /services: each Python /health answers from memory, so a slow answer
+// means that service's event loop is busy, not down. 3s marked busy services
+// unhealthy under load. Kept under the 10s docker-compose healthcheck timeout,
+// which calls this route; no Helm probe does (they call GET /).
+const SERVICE_HEALTH_TIMEOUT_MS = 8000;
+
+// The memory report reads every vector collection's configuration and Qdrant's
+// telemetry, which took about 12s on a loaded instance. Not a probe target.
+const VECTOR_MEMORY_TIMEOUT_MS = 20000;
 
 // The graph and vector stores are probed through the connector service. When
 // that service refuses the connection (it is still starting, or it is down) the
@@ -281,24 +292,40 @@ export function createHealthRouter(
         }
       }
 
-      const warnings: string[] = [];
-      // Warning only: a stalled store must not hold the health answer.
-      let timer: NodeJS.Timeout | undefined;
-      try {
-        const replicaProblem = await Promise.race([
-          configuredLocalStorageReplicaProblem(keyValueStoreService),
-          new Promise<null>((resolve) => {
-            timer = setTimeout(() => resolve(null), STORAGE_WARNING_TIMEOUT_MS);
-          }),
-        ]);
-        if (replicaProblem) warnings.push(replicaProblem);
-      } catch (error) {
-        logger.warn(
-          'Could not read the storage configuration for the health warnings',
-          error,
-        );
-      }
-      clearTimeout(timer);
+      // Warnings only: a stalled store must not hold the health answer.
+      const warningWithin = async (
+        read: Promise<string | null>,
+        what: string,
+      ): Promise<string | null> => {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          return await Promise.race([
+            read,
+            new Promise<null>((resolve) => {
+              timer = setTimeout(() => {
+                resolve(null);
+              }, STORAGE_WARNING_TIMEOUT_MS);
+            }),
+          ]);
+        } catch (error) {
+          logger.warn(`Could not read ${what} for the health warnings`, error);
+          return null;
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+      const warnings = (
+        await Promise.all([
+          warningWithin(
+            configuredLocalStorageReplicaProblem(keyValueStoreService),
+            'the storage configuration',
+          ),
+          warningWithin(
+            precisionWaitWarningFromStore(keyValueStoreService),
+            'the weight-precision state',
+          ),
+        ])
+      ).filter((warning): warning is string => warning !== null);
 
       const health: HealthStatus = {
         status: overallHealthy ? 'healthy' : 'unhealthy',
@@ -338,17 +365,18 @@ export function createHealthRouter(
       const parsingBackend = process.env.PARSING_SERVICE_URL || 'http://localhost:8092';
       const extractionBackend = process.env.EXTRACTION_SERVICE_URL || 'http://localhost:8093';
 
+      const probe = { timeout: SERVICE_HEALTH_TIMEOUT_MS };
       const baseSettled = Promise.allSettled([
-        axios.get(aiHealthUrl, { timeout: 3000 }),
-        axios.get(connectorHealthUrl, { timeout: 3000 }),
-        axios.get(indexingHealthUrl, { timeout: 3000 }),
-        axios.get(doclingHealthUrl, { timeout: 3000 }),
-        axios.get(embeddingHealthUrl, { timeout: 3000 }),
+        axios.get(aiHealthUrl, probe),
+        axios.get(connectorHealthUrl, probe),
+        axios.get(indexingHealthUrl, probe),
+        axios.get(doclingHealthUrl, probe),
+        axios.get(embeddingHealthUrl, probe),
       ]);
       const parsingSettled = parsingServicesEnabled
         ? Promise.allSettled([
-            axios.get(`${parsingBackend}/health`, { timeout: 3000 }),
-            axios.get(`${extractionBackend}/health`, { timeout: 3000 }),
+            axios.get(`${parsingBackend}/health`, probe),
+            axios.get(`${extractionBackend}/health`, probe),
           ])
         : null;
 
@@ -422,7 +450,7 @@ export function createHealthRouter(
           `${appConfig.connectorBackend}/health/vector-db/memory`,
           {
             headers: buildProxyHeaders(req),
-            timeout: 5000,
+            timeout: VECTOR_MEMORY_TIMEOUT_MS,
             validateStatus: () => true,
           },
         );

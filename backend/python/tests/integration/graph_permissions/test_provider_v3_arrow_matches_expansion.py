@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
 from .fixture_graph import (
     DRIVE,
     GROUP_G,
@@ -314,4 +316,10 @@ async def test_a_record_in_two_groups_never_shows_an_arrow_for_nothing(arrows_gr
 async def test_in_an_open_app_a_live_filed_record_gives_an_arrow(arrows_graph, provider) -> None:
     rows = {r["id"]: r["hasChildren"] for r in await _browse(provider, "ae-open", "ae-og", "recordGroup")}
 
+    if isinstance(provider, Neo4jProvider) and Neo4jProvider.kh_browse_mode() == "split":
+        # The split browse lights an arrow exactly where opening the row lists something. A record filed only in a record has no
+        # hierarchy parent, so no browse lists it (the conformance layer's `unlisted` shortcut) and its holder opens to nothing.
+        assert rows == {"ae-of1": False, "ae-of2": False}
+        assert await _browse(provider, "ae-open", "ae-of1", "record") == []
+        return
     assert rows == {"ae-of1": True, "ae-of2": False}

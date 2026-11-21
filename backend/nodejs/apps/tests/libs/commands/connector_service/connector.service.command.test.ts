@@ -6,8 +6,12 @@ import {
   ConnectorServiceCommandOptions,
 } from '../../../../src/libs/commands/connector_service/connector.service.command'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 describe('ConnectorServiceCommand', () => {
+  beforeEach(() => registerUpstreams({ connector: ['http://connector.local'] }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {

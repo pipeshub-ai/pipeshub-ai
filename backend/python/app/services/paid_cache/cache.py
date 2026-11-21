@@ -14,9 +14,10 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
+from time import time as wall_clock
 from typing import Any, Generic, TypeVar
 
 from app.core.org_context import spawn_in_request
@@ -32,6 +33,7 @@ from app.services.paid_cache.locks import (
     manifest_lock_name,
     refresh_name,
 )
+from app.services.paid_cache.orphan import STOPPED, RecordGone, current_guard
 from app.services.paid_cache.run import RunScope, current_run
 from app.services.paid_cache.store import PAID_RESULT_ROUTES, ListedFile
 from app.telemetry.backend import METRICS_BACKEND
@@ -119,6 +121,7 @@ class ResultStore:
     async def list_files(self, org_id: str, record_id: str, prefix: str = "") -> list[ListedFile]: ...
     async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None: ...
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None: ...
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]: ...
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None: ...
     async def purge_org(self, org_id: str) -> None: ...
 
@@ -199,6 +202,9 @@ class _FencedStore:
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         await self._inner.purge_record(org_id, record_id, before_ms=before_ms)
 
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        return await self._inner.purge_records(org_id, record_ids)
+
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
         return await self._inner.purge_cutoff(org_id, record_id)
 
@@ -244,6 +250,7 @@ class PaidResultCache:
         """
         scope = self._scope_of(key)
         if not (enabled() and PAID_RESULT_ROUTES.available):
+            await self._stop_if_orphan(key, "call")
             return _plain(await compute())
         path = key.relative_path()
         if not writes_enabled():
@@ -292,6 +299,7 @@ class PaidResultCache:
                 self._count(key, "hit")
                 return value
         self._count(key, "miss")
+        await self._stop_if_orphan(key, "call")
         return _plain(await compute())
 
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
@@ -303,6 +311,15 @@ class PaidResultCache:
         if not valid_record_id(record_id):
             return  # no result was ever stored under such an id (see ``valid_record_id``)
         await self._store.purge_record(org_id, record_id, before_ms=before_ms)
+
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        """Removes every stored result of many records in few storage requests (a re-purge page). One entry per id:
+        ``None`` when done, else the error. An id no result can be stored under has nothing to remove (done)."""
+        valid = [r for r in record_ids if valid_record_id(r)]
+        outcomes: dict[str, BaseException | None] = dict.fromkeys(record_ids)
+        if valid:
+            outcomes.update(await self._store.purge_records(org_id, valid))
+        return outcomes
 
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
         """The store's clock now (ms): the cutoff for one refresh purge, taken once so that every DELETE of it agrees."""
@@ -429,7 +446,7 @@ class PaidResultCache:
         if not valid_record_id(record_id):
             return True
         backend = await self._backend()
-        await backend.mark(deleted_name(org_id, record_id), DELETED_TTL_MS)
+        await backend.mark(deleted_name(org_id, record_id), DELETED_TTL_MS, str(int(wall_clock() * 1000)))
         fenced = bool(getattr(backend, "shared", False))
         if not fenced:
             self.logger.warning(
@@ -445,7 +462,7 @@ class PaidResultCache:
         True when the marker went to the shared backend (see ``delete_record``).
         """
         backend = await self._backend()
-        await backend.mark(deleted_name(org_id), DELETED_TTL_MS)
+        await backend.mark(deleted_name(org_id), DELETED_TTL_MS, str(int(wall_clock() * 1000)))
         fenced = bool(getattr(backend, "shared", False))
         if not fenced:
             self.logger.warning("Paid-result delete marker for org %s reached this process only", org_id)
@@ -456,6 +473,43 @@ class PaidResultCache:
 
     async def _backend(self) -> LockBackend:
         return self._locks if not callable(self._locks) else await self._locks()  # type: ignore[no-any-return,misc,return-value]
+
+    async def _backend_or_none(self) -> LockBackend | None:
+        """The lock backend for an existence check: a backend that cannot be built is advisory (None), so the guard still
+        confirms with the graph and a live record's call is never failed by the check."""
+        try:
+            return await self._backend()
+        except Exception as exc:
+            self.logger.debug("Paid-result lock backend unavailable (%s); the existence check goes on", type(exc).__name__)
+            return None
+
+    async def _stop_if_orphan(self, key: CacheKey, site: str) -> None:
+        """Before a paid call and before a store: a record deleted while its run was in flight stops paying (see
+        ``orphan``). No guard (a call outside a delivery or a parse request) means no check."""
+        guard = current_guard(key.org_id, key.record_id)
+        if guard is not None and await guard.check(await self._backend_or_none()):
+            STOPPED.inc(site)
+            raise RecordGone(key.record_id, f"its {key.kind} is not {'paid for' if site == 'call' else 'stored'}")
+
+    async def read_markers(self, org_id: str, record_id: str) -> tuple[str | None, str | None] | None:
+        """The record's and the org's delete markers as two single-key reads (never a multi-key command: they hash to
+        different slots). None when Redis cannot be read."""
+        try:
+            backend = await self._backend()
+            return (
+                await backend.marker_value(deleted_name(org_id, record_id)),
+                await backend.marker_value(deleted_name(org_id)),
+            )
+        except Exception as exc:
+            self.logger.debug("Paid-result delete markers unreadable (%s)", type(exc).__name__)
+            return None
+
+    async def ensure_alive(self, org_id: str, record_id: str, site: str) -> None:
+        """The check of a stage boundary outside the cache (before the embeddings, before the vector and blob writes)."""
+        guard = current_guard(org_id, record_id)
+        if guard is not None and await guard.check(await self._backend_or_none()):
+            STOPPED.inc(site)
+            raise RecordGone(record_id)
 
     async def _deleted(self, org_id: str, record_id: str) -> bool:
         backend = await self._backend()
@@ -509,6 +563,7 @@ class PaidResultCache:
             if held is not None:
                 held.start_heartbeat()
             try:
+                await self._stop_if_orphan(key, "call")
                 result = await compute()
             except BaseException:
                 if held is not None:
@@ -543,6 +598,7 @@ class PaidResultCache:
         self, key: CacheKey, path: str, value: Any, held: "_Held | None", scope: RunScope | None,  # noqa: ANN401
         started: float, *, keep: bool, overwrite: bool,
     ) -> None:
+        await self._stop_if_orphan(key, "store")
         if not keep:
             self._count(key, "not_cached")
         elif held is not None and not await held.still_owned():
@@ -820,6 +876,19 @@ class NullPaidResultCache:
 
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         return None
+
+    async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
+        return dict.fromkeys(record_ids)
+
+    async def read_markers(self, org_id: str, record_id: str) -> tuple[str | None, str | None] | None:
+        return (None, None)
+
+    async def ensure_alive(self, org_id: str, record_id: str, site: str) -> None:
+        """No markers without a cache, but the graph still decides for a run that has a guard."""
+        guard = current_guard(org_id, record_id)
+        if guard is not None and await guard.check(None):
+            STOPPED.inc(site)
+            raise RecordGone(record_id)
 
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
         return None

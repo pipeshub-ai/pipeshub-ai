@@ -2,6 +2,8 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { forkArtifactCopier } from '../../../../src/modules/enterprise_search/controller/es_controller'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const appConfig = { connectorBackend: 'http://connectors.test' } as never
 const req = { headers: { authorization: 'Bearer user-token', host: 'ignored', 'content-length': '0' } } as never
@@ -12,6 +14,9 @@ const reply = (status: number, body: unknown): Response =>
 const refs = (n: number) => Array.from({ length: n }, (_, i) => ({ artifactId: `a${i}`, upToVersion: 1 }))
 
 describe('forkArtifactCopier', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {

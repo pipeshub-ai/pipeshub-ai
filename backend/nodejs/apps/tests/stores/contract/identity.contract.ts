@@ -881,6 +881,52 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(d).to.equal(fx.transactional ? undefined : 'tx');
     });
 
+    it('create inside a failing unit of work rolls back only when transactional', async () => {
+      const org = await fx.newOrg();
+      const address = email();
+      let err: unknown;
+      try {
+        await fx.uow.run(async (tx) => {
+          await users.create(org, { email: address, fullName: 'In Tx' }, tx);
+          throw new Error('abort');
+        }, { org });
+      } catch (e) {
+        err = e;
+      }
+      expect((err as Error).message).to.equal('abort');
+      const rows = await users.listByEmails(org, [address]);
+      expect(rows).to.have.length(fx.transactional ? 0 : 1);
+    });
+
+    it('createMany, restoreByEmails and promoteToAdmin inside a failing unit of work roll back only when transactional', async () => {
+      const org = await fx.newOrg();
+      const removed = await person(org, { isDeleted: true });
+      const member = await person(org);
+      const [a, b] = [email(), email()];
+      let err: unknown;
+      try {
+        await fx.uow.run(async (tx) => {
+          await users.restoreByEmails(org, [removed.email], tx);
+          await users.createMany(org, [{ email: a, fullName: 'A' }, { email: b, fullName: 'B' }], tx);
+          await users.promoteToAdmin(org, [member._id], tx);
+          throw new Error('abort');
+        }, { org });
+      } catch (e) {
+        err = e;
+      }
+      expect((err as Error).message).to.equal('abort');
+      const after = {
+        restored: !(await users.getAny(org, removed._id))!.isDeleted,
+        created: (await users.listByEmails(org, [a, b])).length,
+        promoted: (await users.getAny(org, member._id))!.role === 'admin',
+      };
+      expect(after).to.deep.equal(
+        fx.transactional
+          ? { restored: false, created: 0, promoted: false }
+          : { restored: true, created: 2, promoted: true },
+      );
+    });
+
     it('listDirectory: search, service accounts, hasLoggedIn, paging and sort by name', async () => {
       const org = await fx.newOrg();
       const tag = uniq('Dir');

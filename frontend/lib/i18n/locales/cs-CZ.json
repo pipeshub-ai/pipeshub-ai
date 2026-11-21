@@ -2910,7 +2910,123 @@
       "tools": {
         "title": "Nástroje",
         "subtitle": "Vypněte jednotlivé nástroje. Vypnutý nástroj se klientům MCP nenabízí a jeho volání jsou odmítnuta.",
-        "writes": "Zapisuje"
+        "writes": "Zapisuje",
+        "descriptions": {
+          "pipeshub_sources": "Vypíše konektory a kolekce, které může uživatel číst, a modely AI nastavené v pracovním prostoru. Klienti podle toho volí, kde hledat a se kterým modelem chatovat.",
+          "pipeshub_search": "Prohledává indexované dokumenty podle významu v konektorech a kolekcích, které může uživatel číst, a vrací odpovídající pasáže s jejich záznamy.",
+          "pipeshub_get_record_content": "Přečte celý text jednoho záznamu. Umí také najít záznam podle adresy URL, klíče požadavku nebo externího ID, procházet obsah složky, prostoru nebo epiku a přečíst celé vlákno ve Slacku.",
+          "pipeshub_download_record": "Stáhne původní soubor uložený k záznamu, volitelně převedený do PDF.",
+          "pipeshub_directory": "Vyhledá přihlášeného uživatele, uživatele a skupiny pracovního prostoru a týmy, do kterých uživatel patří. Nic nemění.",
+          "pipeshub_create_collection": "Vytvoří novou prázdnou kolekci ve vlastnictví uživatele, připravenou pro nahrávání.",
+          "pipeshub_upload": "Nahraje dokumenty do kolekce, aby se indexovaly a daly se vyhledat. Nejvýše 20 dokumentů a přibližně 3 MB na jedno volání.",
+          "pipeshub_indexing_status": "Hlásí, jak daleko je indexování kolekce a které dokumenty selhaly a proč.",
+          "pipeshub_connect_source": "Vrátí odkaz, který uživatel otevře v prohlížeči, aby připojil zdroj, například Slack, Google Drive nebo Jira. Nástroj sám nic nepřipojuje.",
+          "pipeshub_add_web_source": "Přidá web jako vlastní konektor Web uživatele. Prochází web od úvodní stránky, sleduje její odkazy a každý den jej prochází znovu. Uchová 100 stránek, pokud klient nepožádá o více, nejvýše 10 000. Aplikace OAuth nebo přístupový token navíc potřebuje oprávnění connector:write a connector:sync.",
+          "pipeshub_chat": "Zeptá se vlastního asistenta PipesHub nebo některého agenta pracovního prostoru a vrátí jeho odpověď s citacemi. Když jsou nástroje pro zápis vypnuté, nespouští připojené akce. Jeho vypnutím se vypne i seznam agentů.",
+          "pipeshub_agents": "Vypíše agenty pracovního prostoru s jejich nástroji a znalostmi, aby s některým z nich mohl klient chatovat. Nabízí se, jen když je zapnutý chat s PipesHub.",
+          "pipeshub_show_citations": "Ukáže uživateli zdroje, o které se odpověď opírá, očíslované [1], [2] a tak dále, s náhledem každého dokumentu. Nejvýše 30 pasáží na jedno volání. Nabízí se jen klientům, kteří umějí zobrazit prohlížeč citací, například Claude.",
+          "pipeshub_preview_record": "Používá jej pouze prohlížeč citací, nikdy model AI. Načítá uložený soubor záznamu po částech, aby prohlížeč mohl dokument zobrazit. Je-li vypnutý, prohlížeč nemůže načíst náhledy dokumentů.",
+          "pipeshub_code_repos": "Vypíše indexované repozitáře kódu, které může uživatel číst. Nástroje pro kód se nabízejí jen uživatelům s indexovaným kódem; aplikace OAuth nebo přístupový token navíc potřebuje oprávnění code:read.",
+          "pipeshub_code_symbols": "Ukáže, co obsahuje adresář nebo soubor v indexovaném repozitáři: podadresáře a soubory, nebo symboly, které soubor definuje.",
+          "pipeshub_code_neighbours": "Ukáže okolí souboru nebo symbolu v grafu kódu: kdo ho volá, co volá on, jeho importy a dědičnost.",
+          "pipeshub_code_read": "Čte indexovaný zdrojový kód: jeden symbol, rozsah řádků nebo celý soubor. Čte indexovanou kopii, která může být oproti repozitáři pozadu.",
+          "pipeshub_code_path": "Krok za krokem ukáže, jak se v repozitáři jeden symbol dostane k druhému.",
+          "pipeshub_code_search": "Najde kód podle přesného názvu, řetězce nebo regulárního výrazu.",
+          "pipeshub_code_semantic_search": "Najde kód, který stojí za funkcí nebo chováním, podle popisu v běžném jazyce, když nejsou známy jeho názvy.",
+          "pipeshub_code_outline": "Vypíše třídy, funkce a metody souboru s jejich signaturami a rozsahy řádků, bez těl.",
+          "pipeshub_code_impact": "Ukáže, co na symbolu závisí: vše, co ho volá, importuje nebo na něm staví, včetně testů, které k němu vedou. Odpovídá na to, kdo ho volá a co se rozbije, když se změní.",
+          "pipeshub_code_impact_of_diff": "Vezme unified diff, například výstup příkazu git diff nebo diff pull requestu, a ukáže symboly, které mění, soubory a testy, které k nim vedou, a volající, které nepokrývá žádný test.",
+          "pipeshub_code_history": "Vypíše indexované pull requesty, které změnily soubor, s autorem, recenzenty, tím, kdo je sloučil, a s tikety, které zmiňují.",
+          "pipeshub_code_entry_points": "Vypíše, kde do repozitáře vstupuje běh programu, například trasy, nástroje příkazového řádku, úlohy a hooky. Výchozí bod pro čtení neznámého kódu.",
+          "pipeshub_entities": "Najde osoby, týmy, témata, projekty, složky, zákazníky a názvy dokumentů ve znalostním grafu pracovního prostoru, vypíše záznamy propojené s jedním z nich a osoby, firmy nebo produkty zmíněné spolu s ním. Hledání a výpis se nabízejí, jakmile jsou entity zaindexované; seznam společně zmíněných navíc potřebuje rozpoznávání pojmenovaných entit. Aplikace OAuth nebo přístupový token navíc potřebuje oprávnění semantic:read nebo semantic:write.",
+          "pipeshub_find_records": "Vypisuje záznamy podle toho, komu patří nebo co zmiňují, nikoli podle jejich slov: záznamy, které má osoba přiřazené nebo které vytvořila, napsala či vlastní, záznamy zmiňující částku, datum, množství nebo procento, a pasáže v záznamech, které jmenují dané osoby, firmy nebo produkty. Částky a data potřebují rozpoznávání pojmenovaných entit a pasáže se nabízejí jen tam, kde nasazení navíc zapne hledání entit. Aplikace OAuth nebo přístupový token navíc potřebuje oprávnění semantic:read nebo semantic:write."
+        },
+        "count": "nabízeno {{offered}} z {{total}}",
+        "searchPlaceholder": "Hledat nástroje, argumenty nebo oprávnění",
+        "searchLabel": "Hledat nástroje",
+        "filterLabel": "Zobrazit",
+        "filters": {
+          "all": "Vše",
+          "read": "Jen čtení",
+          "writes": "Zapisuje nebo mění data",
+          "off": "Vypnuté"
+        },
+        "expandAll": "Rozbalit vše",
+        "collapseAll": "Sbalit vše",
+        "noMatch": "Tomuto hledání neodpovídá žádný nástroj.",
+        "groupCount": "zapnuto {{offered}} z {{total}}",
+        "groupSwitch": "Všechny nástroje ve skupině {{group}}",
+        "showDetails": "Zobrazit podrobnosti nástroje {{tool}}",
+        "hideDetails": "Skrýt podrobnosti nástroje {{tool}}",
+        "groups": {
+          "read": {
+            "label": "Hledání a čtení",
+            "description": "Hledá, čte a stahuje to, k čemu má uživatel přístup."
+          },
+          "people": {
+            "label": "Lidé a entity",
+            "description": "Uživatelé a skupiny pracovního prostoru a lidé, projekty, témata a hodnoty v jeho znalostním grafu."
+          },
+          "chat": {
+            "label": "Chat a agenti",
+            "description": "Dotaz na asistenta PipesHub nebo na některého agenta pracovního prostoru."
+          },
+          "add": {
+            "label": "Přidání obsahu",
+            "description": "Vytváření kolekcí, nahrávání dokumentů, přidávání webů a připojování zdrojů."
+          },
+          "viewer": {
+            "label": "Prohlížeč citací",
+            "description": "Ukazuje zdroje odpovědi v klientech, které ho umí zobrazit."
+          },
+          "code": {
+            "label": "Kód",
+            "description": "Procházení indexovaných repozitářů kódu.",
+            "availability": "Jen uživatelům, kteří mohou číst indexovaný repozitář kódu."
+          },
+          "other": {
+            "label": "Ostatní",
+            "description": "Nástroje, které tato verze stránky ještě nezná."
+          }
+        },
+        "kinds": {
+          "readOnly": "Jen čtení",
+          "changes": "Může měnit data",
+          "openWorld": "Sahá mimo PipesHub"
+        },
+        "blocked": {
+          "writesOff": "Vypnuto, dokud nejsou povoleny zapisující nástroje.",
+          "chatOff": "Vypnuto, dokud je vypnutý chat s PipesHub."
+        },
+        "details": {
+          "scopes": "Potřebná oprávnění OAuth",
+          "noScopes": "Žádná: v PipesHub nic nevolá.",
+          "availability": "Kdy se nabízí",
+          "arguments": "Argumenty · {{n}}",
+          "noArguments": "Nemá žádné argumenty.",
+          "columns": {
+            "name": "Název",
+            "type": "Typ",
+            "description": "Popis"
+          },
+          "required": "povinný",
+          "oneOf": "Jedna z hodnot: {{values}}",
+          "modelText": "Co vidí AI",
+          "hideModelText": "Skrýt, co vidí AI",
+          "modelTextHint": "Popis, který model AI čte, než tento nástroj zvolí."
+        },
+        "availability": {
+          "default": "Kdykoli je zapnutý.",
+          "pipeshub_chat": "Kdykoli je zapnutý. Připojené akce spouští jen tehdy, když jsou povoleny zapisující nástroje.",
+          "pipeshub_agents": "Jen dokud je zapnutý chat s PipesHub.",
+          "pipeshub_create_collection": "Jen dokud jsou povoleny zapisující nástroje.",
+          "pipeshub_upload": "Jen dokud jsou povoleny zapisující nástroje.",
+          "pipeshub_add_web_source": "Jen dokud jsou povoleny zapisující nástroje.",
+          "pipeshub_show_citations": "Jen klientům, které umí zobrazit prohlížeč citací, například Claude.",
+          "pipeshub_preview_record": "Jen prohlížeči citací, nikdy modelu AI.",
+          "pipeshub_entities": "Hledání entit a výpis jejich záznamů, jakmile jsou entity zaindexované. Seznam společně zmíněných navíc potřebuje rozpoznávání pojmenovaných entit.",
+          "pipeshub_find_records": "Záznamy osoby vždy. Částky a data potřebují rozpoznávání pojmenovaných entit a pasáže jmenující osoby nebo firmy navíc potřebují hledání entit zapnuté pro nasazení."
+        }
       },
       "appliesNote": "Změny se na nové požadavky MCP uplatní během několika sekund.",
       "loadError": "Nastavení přístupu MCP se nepodařilo načíst. Zkuste stránku načíst znovu.",
@@ -2918,6 +3034,45 @@
         "saveSuccess": "Nastavení přístupu MCP uloženo",
         "saveError": "Nastavení přístupu MCP se nepodařilo uložit",
         "saveErrorDescription": "Zkontrolujte připojení a zkuste to znovu."
+      },
+      "status": {
+        "on": "Zapnuto · nabízeno {{offered}} z {{total}} nástrojů",
+        "off": "Vypnuto · žádný klient AI se nepřipojí"
+      },
+      "connect": {
+        "title": "Připojit klienta AI",
+        "description": "Klienti se připojují k tomuto koncovému bodu a každý uživatel se přihlásí vlastním účtem PipesHub. Funguje i osobní přístupový token.",
+        "endpointLabel": "Koncový bod MCP",
+        "copy": "Kopírovat",
+        "copied": "Zkopírováno",
+        "copyEndpoint": "Zkopírovat koncový bod MCP",
+        "copySnippet": "Zkopírovat konfiguraci",
+        "clientsLabel": "Klient AI",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "V aplikaci Claude otevřete Přizpůsobit › Konektory, zvolte + a pak Přidat vlastní konektor. Vložte koncový bod výše, zvolte Připojit a přihlaste se do PipesHub. U plánu Team nebo Enterprise musí konektor nejprve přidat vlastník v nastavení organizace.",
+            "tip": "Claude se připojuje z cloudu společnosti Anthropic, ne z vašeho počítače, takže koncový bod musí být dostupný z internetu. Adresa localhost ani adresa v privátní síti fungovat nebude."
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "Na chatgpt.com otevřete Pluginy, zvolte + a pak Přidat vlastní MCP server. Vložte koncový bod výše jako URL serveru, zvolte OAuth, potvrďte upozornění a zvolte Vytvořit jako plugin, pak se přihlaste do PipesHub. V pracovním prostoru Business, Enterprise nebo Edu musí vlastní MCP servery povolit správce.",
+            "tip": "ChatGPT se připojuje ze serverů společnosti OpenAI, ne z vašeho počítače, takže koncový bod musí být dostupný z internetu. Adresa localhost ani adresa v privátní síti fungovat nebude."
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "Přidejte server do ~/.cursor/mcp.json nebo do .cursor/mcp.json v projektu. Cursor vás požádá o přihlášení při prvním použití nástroje."
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "Přidejte server do .vscode/mcp.json, pak ho spusťte ze seznamu serverů MCP a přihlaste se."
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "Spusťte toto v terminálu a pak v Claude Code spusťte /mcp a přihlaste se.",
+            "tip": "Jen pro otázky ke kódu přidejte ke koncovému bodu ?tools=code: klient pak dostane pouze nástroje pro kód."
+          }
+        }
       }
     },
     "agentActivity": {
@@ -3050,8 +3205,7 @@
       },
       "enterpriseSso": {
         "title": "Jednotné přihlášení SAML a OpenID Connect",
-        "description": "Přihlašujte uživatele přes Okta, OneLogin nebo jiného poskytovatele identity SAML 2.0 či OpenID Connect.",
-        "contactSales": "Pro nákup napište na {{email}}"
+        "description": "Přihlašujte uživatele přes Okta, OneLogin nebo jiného poskytovatele identity SAML 2.0 či OpenID Connect."
       }
     },
     "connectors": {
@@ -3344,7 +3498,8 @@
             "max_pages": "Dosažen limit Maximum stránek",
             "time_limit": "Vypršel časový limit; příští synchronizace naváže",
             "stalled": "Web přestal odpovídat; příští synchronizace naváže",
-            "rate_limited": "Web opakovaně žádal o méně požadavků; příští synchronizace naváže"
+            "rate_limited": "Web opakovaně žádal o méně požadavků; příští synchronizace naváže",
+            "start_not_recorded": "Synchronizace nemohla uložit svůj začátek, a proto neproběhla; příští synchronizace to zkusí znovu"
           },
           "pagesSaved": "Uložené stránky: {{count}}",
           "failed": "Neúspěšné stránky: {{count}}",
@@ -3803,6 +3958,103 @@
           "other": "Na oprávnění tohoto konektoru se musí někdo podívat.",
           "unreadable": "Seznam složek čekajících na aktualizaci nelze přečíst. Požádejte provozovatele PipesHub o opětovné vytvoření indexu oprávnění tohoto konektoru. Vyhledávání mezitím kontroluje každý výsledek."
         }
+      },
+      "userAccess": {
+        "connect": "Připojit",
+        "reconnect": "Znovu připojit",
+        "connected": "Připojeno",
+        "connectedAs": "Připojeno jako {{account}}",
+        "connectDialog": {
+          "title": "Připojit váš účet k {{name}}",
+          "description": "Vložte osobní přístupový token ze svého vlastního účtu {{source}}. PipesHub vám zobrazí jen stránky, které může otevřít váš účet.",
+          "howTo": "Jak vytvořit osobní přístupový token",
+          "tokenLabel": "Osobní přístupový token",
+          "submitting": "Připojování…",
+          "errorFallback": "Váš účet se nepodařilo připojit. Zkuste to znovu.",
+          "signInHint": "{{source}} nabízí jen stránky, ke kterým máte plný přístup. Podstránky vybrané stránky jsou zahrnuty, i nové. Chcete-li později přidat další stránky, přihlaste se znovu.",
+          "signingIn": "Čeká se na {{source}}…",
+          "signInFailed": "Přihlášení nebylo dokončeno. Zkuste to znovu.",
+          "popupBlocked": "Prohlížeč zablokoval přihlašovací okno. Povolte pro tento web vyskakovací okna a zkuste to znovu."
+        },
+        "admin": {
+          "title": "Připojení uživatelé",
+          "description": "Tento konektor ukazuje každému jen to, co může otevřít jeho vlastní účet. Kdo se nepřipojil, z něj nic neuvidí.",
+          "remove": "Odebrat",
+          "removeTitle": "Odebrat připojení uživatele {{email}}?",
+          "removeMessage": "Dokud se znovu nepřipojí, přestane vidět výsledky z tohoto konektoru.",
+          "removing": "Odebírání…",
+          "removed": "Připojení odebráno",
+          "status": {
+            "connected": "Připojeno",
+            "needs_reconnect": "Musí se znovu připojit",
+            "invited": "Pozván",
+            "not_invited": "Nepozván",
+            "opted_out": "Nechce připomínky",
+            "no_account": "Bez účtu PipesHub"
+          },
+          "noAccountHint": "Nejprve je pozvěte do PipesHub",
+          "invite": "Pozvat",
+          "remind": "Připomenout",
+          "sent_one": "Odesláno {{count}} osobě",
+          "sent_few": "Odesláno {{count}} osobám",
+          "sent_many": "Odesláno {{count}} osoby",
+          "sent_other": "Odesláno {{count}} osobám",
+          "notEmailed_one": "E-mail se nepodařilo odeslat {{count}} osobě; oznámení v aplikaci přesto dostala.",
+          "notEmailed_few": "E-mail se nepodařilo odeslat {{count}} osobám; oznámení v aplikaci přesto dostaly.",
+          "notEmailed_many": "E-mail se nepodařilo odeslat {{count}} osoby; oznámení v aplikaci přesto dostaly.",
+          "notEmailed_other": "E-mail se nepodařilo odeslat {{count}} osobám; oznámení v aplikaci přesto dostaly.",
+          "lastSent": "Naposledy odesláno {{time}}",
+          "connectedAt": "Připojeno {{time}}",
+          "membersUpdated": "Seznam členů naposledy načten {{time}}",
+          "membersPending": "Seznam členů se zobrazí po příští synchronizaci",
+          "queued_one": "Odesílá se {{count}} osobě. Dostane oznámení a e-mail.",
+          "queued_few": "Odesílá se {{count}} osobám. Dostanou oznámení a e-mail.",
+          "queued_many": "Odesílá se {{count}} osoby. Dostanou oznámení a e-mail.",
+          "queued_other": "Odesílá se {{count}} osobám. Dostanou oznámení a e-mail.",
+          "nothingSent": "Nic nebylo odesláno",
+          "skipReason": {
+            "connected": "Už připojeno.",
+            "not_found": "Už není členem.",
+            "opted_out": "Nechce připomínky.",
+            "recently_sent": "Během posledního dne už něco dostal(a).",
+            "not_sent": "Nepodařilo se odeslat. Zkuste to později."
+          },
+          "inviteWho": "Pozvat {{name}}",
+          "remindWho": "Připomenout {{name}}",
+          "removeWho": "Odebrat připojení {{name}}",
+          "yourAccount": "Váš účet",
+          "connectedOf": "Připojeno {{connected}} z {{total}} lidí",
+          "needReconnect_one": "{{count}} se musí znovu připojit",
+          "needReconnect_few": "{{count}} se musí znovu připojit",
+          "needReconnect_many": "{{count}} se musí znovu připojit",
+          "needReconnect_other": "{{count}} se musí znovu připojit",
+          "search": "Hledat lidi podle jména nebo e-mailu",
+          "inviteEveryoneHint": "Všichni, kdo se ještě nepřipojili",
+          "inviteEveryone": "Pozvat všechny ({{count}})",
+          "noMatches": "Nikdo neodpovídá „{{q}}“",
+          "nobody": "Zatím tu nikdo není. Lidé se zobrazí po další synchronizaci."
+        },
+        "link": {
+          "title": "Připojte svůj účet {{source}}",
+          "forEmail": "pro {{email}}",
+          "continue": "Pokračovat do {{source}}",
+          "loading": "Ověřujeme odkaz…",
+          "alreadyConnected": "Váš účet {{source}} je už připojen.",
+          "openApp": "Otevřít PipesHub",
+          "expired": "Platnost tohoto odkazu vypršela nebo už byl použit. Požádejte administrátora o nový, nebo se připojte v PipesHub v části Vaše osobní konektory.",
+          "optedOut": "Další připomínky k tomuto konektoru už nedostanete.",
+          "error": "Něco se pokazilo. Zkuste to znovu za minutu.",
+          "noSignIn": "Tento konektor používá osobní přístupové tokeny. Otevřete PipesHub a v oznámení vyberte Připojit, kam vložíte svůj token.",
+          "done": "{{name}} je připojen. Vaše stránky se ve vyhledávání PipesHub objeví během několika minut.",
+          "doneUnnamed": "Váš účet je připojen. Vaše stránky se ve vyhledávání PipesHub objeví během několika minut.",
+          "failedTitle": "Připojení se nezdařilo",
+          "failedRetry": "Zkuste to znovu pomocí odkazu ve svém e-mailu.",
+          "confirmOptOut": "Zastavit připomínky pro {{name}}?",
+          "stopReminders": "Zastavit připomínky",
+          "rateLimited": "Příliš mnoho pokusů, zkuste to znovu za minutu.",
+          "cancelled": "Přihlášení jste zrušili.",
+          "signInFailed": "Přihlášení nebylo dokončeno. Zkuste to znovu."
+        }
       }
     },
     "mcpServers": {
@@ -3829,7 +4081,6 @@
         "confirm": "Uložit a odebrat přihlášení"
       },
       "cta": {
-        "manage": "Spravovat",
         "delete": "Smazat",
         "reauthenticate": "Znovu ověřit",
         "reconnect": "Znovu připojit",
@@ -3851,6 +4102,18 @@
         "needsAuth": "Vyžaduje ověření",
         "disabled": "Zakázáno"
       },
+      "filters": {
+        "label": "Filtrovat podle stavu",
+        "needsAction": "Vyžaduje akci",
+        "unavailable": "Nedostupné"
+      },
+      "catalog": {
+        "title": "Přidat další servery",
+        "description": "Připravené servery. Přidejte jeden a pak se k němu přihlaste.",
+        "personalDescription": "Servery, které sem přidáte, uvidíte jen vy.",
+        "added": "Přidáno",
+        "addAnother": "Přidat další"
+      },
       "team": {
         "title": "MCP servery",
         "subtitle": "Připojte servery Model Context Protocol a rozšiřte možnosti agentů vašeho týmu.",
@@ -3862,38 +4125,16 @@
         "subtitle": "Připojte se k MCP serverům, které zpřístupnil váš správce, nebo si přidejte vlastní.",
         "emptyTitle": "Žádné dostupné MCP servery",
         "emptyDescription": "Přidejte si vlastní server, nebo požádejte správce, aby přidal server pro všechny.",
-        "yourServersDescription": "Servery, které jste přidali. Vidíte a používáte je pouze vy a nelze je přidat do agentů sdílených s vaší organizací.",
         "tabs": {
           "all": "Vše",
-          "connected": "Připojené",
-          "notConnected": "Nepřipojené"
+          "connected": "Připojené"
         },
         "yours": "Vaše",
         "noneInTab": "Žádné MCP servery."
       },
       "details": {
         "breadcrumbLabel": "MCP servery",
-        "refreshAll": "Obnovit vše",
-        "addInstance": "Přidat další instanci",
-        "configuration": "KONFIGURACE",
-        "transport": "TRANSPORT",
-        "tools": "NÁSTROJE",
-        "discoverTools": "Zjistit nástroje",
-        "discoveredTools_one": "{{count}} dostupný nástroj",
-        "discoveredTools_few": "{{count}} dostupné nástroje",
-        "discoveredTools_many": "{{count}} dostupného nástroje",
-        "discoveredTools_other": "{{count}} dostupných nástrojů",
-        "discovering": "Zjišťování nástrojů…",
-        "discoveryError": "Zjišťování nástrojů se nezdařilo",
-        "discoveryNeedsAuth": "Pro zjištění nástrojů se ověřte",
-        "retry": "Zkusit znovu",
-        "noInstances": "Nejsou nakonfigurovány žádné instance",
-        "authBannerTitle": "Vyžadováno ověření",
-        "authBannerDescription": "Ověřte tento MCP server, aby jej mohli agenti vašeho týmu používat.",
-        "authBannerAuthenticatedTitle": "Připojeno",
-        "reconnectBannerDescription": "Přihlášení k tomuto serveru vypršelo nebo bylo odmítnuto. Znovu se připojte, abyste jej mohli dál používat.",
-        "authBannerAuthenticatedDescription": "Tento MCP server můžete znovu ověřit nebo odpojit.",
-        "createdBy": "Vytvořil(a)"
+        "tools": "NÁSTROJE"
       },
       "deleteDialog": {
         "title": "Smazat MCP server?",
@@ -3953,27 +4194,28 @@
         "tokenUrl": "URL tokenu",
         "scopes": "Rozsahy",
         "scopesPlaceholder": "Přidat rozsah",
-        "useAdminAuth": "Použít sdílené ověření správce pro všechny uživatele",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "Přihlašovací údaje (volitelné)",
-        "credentialsHint": "Přidejte přihlašovací údaje nyní, nebo tento krok přeskočte a připojte se později na kartě Připojení a nástroje.",
+        "credentialsHint": "Přidejte je teď, nebo se přihlaste později na stránce serveru.",
         "multiEnvIncomplete": "Vyplňte všechny požadované proměnné prostředí, nebo je všechny ponechte prázdné a připojte se později.",
         "oauthPairRequired": "Zadejte ID klienta i tajný klíč klienta, nebo ponechte obě pole prázdná.",
-        "connectAfterCreateHint": "Uložte tento server a poté znovu otevřete Spravovat, abyste jej připojili.",
         "timeoutsHeading": "Časové limity",
         "connectTimeout": "Časový limit připojení (sekundy)",
         "callTimeout": "Časový limit volání nástroje (sekundy)",
-        "timeoutRange": "Zadejte číslo od {{min}} do {{max}}, nebo ponechte prázdné pro výchozí hodnotu."
+        "timeoutRange": "Zadejte číslo od {{min}} do {{max}}, nebo ponechte prázdné pro výchozí hodnotu.",
+        "whoSignsIn": "Jak se lidé přihlašují",
+        "signIn": {
+          "personal": "Každý používá své vlastní",
+          "personalHint": "Každý se přihlásí svými přihlašovacími údaji a získá jen přístup, který mají.",
+          "shared": "Jeden sdílený přihlašovací údaj pro všechny",
+          "sharedHint": "Přidáte ho jednou níže. Všichni pak jednají s jeho přístupem."
+        },
+        "advanced": "Pokročilé"
       },
       "configPanel": {
         "editTitle": "Upravit MCP server",
         "createTitle": "Nový MCP server",
-        "tabs": {
-          "configuration": "Konfigurace",
-          "tools": "Nástroje a schvalování",
-          "toolList": "Nástroje"
-        },
         "synced": "Synchronizováno {{time}}",
         "refreshTools": "Obnovit seznam nástrojů",
         "signInForTools": "Přihlaste se, abyste viděli nástroje tohoto serveru.",
@@ -4017,7 +4259,8 @@
           "remove": "Smazat server",
           "removeHint": "Smaže jej pro všechny.",
           "removeHintPersonal": "Smaže jej i vaše přihlášení."
-        }
+        },
+        "addTemplateTitle": "Přidat {{name}}"
       },
       "oauthConfig": {
         "saved": "OAuth aplikace byla uložena",
@@ -4052,7 +4295,6 @@
         "noState": "Nebyl vrácen žádný parametr state.",
         "backendRejected": "Server autorizační požadavek odmítl."
       },
-      "deleteDisabledTooltip": "Tento server nelze smazat",
       "stdioPolicy": {
         "disabledTitle": "V tomto nasazení zakázáno",
         "disabledDescription": "Vlastní STDIO servery spouštějí příkaz na serveru PipesHub, proto zůstávají vypnuté, dokud operátor nenastaví {{flag}}=true v prostředí nasazení (soubor .env pro Docker Compose nebo config.mcpAllowCustomStdio v Helmu). Do té doby agenti nemohou nástroje tohoto serveru používat. Můžete jej smazat nebo přepnout na vzdálený (HTTP) server.",
@@ -4066,8 +4308,6 @@
         "customDescription": "Libovolný vzdálený MCP server podle URL."
       },
       "toolRules": {
-        "open": "Schvalování nástrojů",
-        "title": "Schvalování nástrojů: {{name}}",
         "description": {
           "personal": "Zvolte, co se stane, když asistent nebo agent chce ve vašich chatech použít některý z těchto nástrojů."
         },
@@ -4124,6 +4364,12 @@
         "orgRulesDescription": "Rozhodněte, které nástroje se spouštějí, které se nejprve ptají a které se nikdy nespustí, a to pro všechny ve vaší organizaci. Lidé si vlastní pravidla nastavují na své stránce MCP serverů.",
         "userServersTitle": "Vlastní MCP servery uživatelů",
         "userServersDescription": "Zkontrolujte a odeberte MCP servery, které si lidé ve vaší organizaci přidali sami."
+      },
+      "added": {
+        "ready": "{{name}} je přidán a připraven k použití.",
+        "signIn": "{{name}} je přidán. Přihlaste se níže, aby jeho nástroje mohly běžet.",
+        "other": "{{name}} je přidán, ale zatím nefunguje. Důvod najdete níže.",
+        "dismiss": "Hotovo"
       }
     },
     "bots": {
@@ -4754,6 +5000,9 @@
           "label": "Služba Extraction",
           "description": "Klasifikace dokumentů a extrakce metadat pomocí LLM"
         }
+      },
+      "healthWarnings": {
+        "title": "Vyžaduje pozornost"
       },
       "vectorDbMemory": {
         "title": "Vyhledávací index se nevejde do paměti vektorové databáze",

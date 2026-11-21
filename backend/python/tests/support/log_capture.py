@@ -1,9 +1,10 @@
-"""Assert that no personal value reached the logs (docs/logging.md, "Personal data").
+"""Assert that no personal value or error text reached the logs (docs/logging.md, "Personal data", ``log_failure``).
 
 A line carries a value in its message, its fields (bound or ``extra=``), its traceback or its
-stack, so all four are searched, as every log format renders them. Matching ignores case:
-code lowercases emails. Pass the email whole and the first and last names separately. Both
-helpers fail when nothing was logged, so a test whose logger was silenced cannot pass.
+stack (``exc_text``, where ``log_failure`` writes it when it keeps no ``exc_info``), so all are
+searched, as every log format renders them. Matching ignores case: code lowercases emails. Pass
+the email whole and the first and last names separately. The record helpers fail when nothing
+was logged, so a test whose logger was silenced cannot pass.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ def _rendered(record: logging.LogRecord) -> str:
     parts = [record.getMessage(), *(f"{k}={v}" for k, v in log_record_fields(record).items())]
     if record.exc_info:
         parts.append(logging.Formatter().formatException(record.exc_info))
+    if record.exc_text:
+        parts.append(record.exc_text)
     if record.stack_info:
         parts.append(record.stack_info)
     return "\n".join(parts)
@@ -55,6 +58,46 @@ def assert_not_logged(records: Sequence[logging.LogRecord], *values: str) -> Non
     """None of ``values`` is in any of ``records`` (``caplog.records``, or a handler's list)."""
     assert records, "no log records were captured; check the logger name and level the test captures"
     _assert_absent([_rendered(r) for r in records], values)
+
+
+def assert_text_free(records: Sequence[logging.LogRecord], *values: str) -> None:
+    """None of ``values`` is in any of ``records``, and none carries ``log_failure``'s ``error_message`` (the error's text).
+
+    With no ``values`` only ``error_message`` is checked: pass the strings the test's errors carry.
+    """
+    assert_not_logged(records, *values)
+    carrying = [r.getMessage() for r in records if log_record_fields(r).get("error_message") is not None]
+    assert not carrying, f"error text was logged: error_message on {carrying}"
+
+
+def failure_line(
+    records: Sequence[logging.LogRecord], event: str, error_class: str, level: int, *values: str, handler: str | None = None,
+) -> dict[str, object]:
+    """The one ``event`` record, checked as a text-free ``log_failure`` line of ``error_class`` at ``level``; its fields.
+
+    Text-free: none of ``values``, no ``error_message`` and no ``exc_info`` (the stack, if any, is the masked ``exc_text``).
+    With ``handler`` (a function name) it is also the only record carrying an error, and the only WARNING-or-above record
+    ``handler`` wrote: the failure is logged once, at the layer that handles it.
+    """
+    messages = [r.getMessage() for r in records]
+    lines = [r for r in records if r.getMessage() == event]
+    assert len(lines) == 1, f"expected one {event!r} line, got {len(lines)}: {messages}"
+    line, fields = lines[0], log_record_fields(lines[0])
+    got = (fields.get("outcome"), fields.get("error_class"), logging.getLevelName(line.levelno))
+    assert got == ("failure", error_class, logging.getLevelName(level)), f"{event!r} is (outcome, class, level) {got}"
+    assert line.exc_info is None, f"{event!r} carries exc_info: a formatter would print the error's text"
+    assert_text_free(lines, *values)
+    if handler is not None:
+        carrying = [
+            r.getMessage()
+            for r in records
+            if getattr(r, "error_type", None) or r.exc_info or r.exc_text
+            or log_record_fields(r).get("error_message") is not None
+        ]
+        assert carrying == [event], f"records carrying an error: {carrying}, expected only {event!r}"
+        warned = [r.getMessage() for r in records if r.funcName == handler and r.levelno >= logging.WARNING]
+        assert warned == [event], f"{handler} wrote WARNING-or-above {warned}, expected only {event!r}"
+    return fields
 
 
 def assert_not_logged_mock(logger: Mock, *values: str) -> None:

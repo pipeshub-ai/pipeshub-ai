@@ -20,10 +20,12 @@ import { Org } from '../../src/modules/user_management/schema/org.schema';
 import { Users, type User } from '../../src/modules/user_management/schema/users.schema';
 import {
   MAX_ORG_ADMINS,
+  createUserEnsuringAdminCap,
   saveUserEnsuringAdminCap,
   saveUserEnsuringOrgRetainsAdmin,
 } from '../../src/modules/user_management/services/user-admin.service';
 import { BadRequestError } from '../../src/libs/errors/http.errors';
+import { adminInviter, withoutSideStores } from './admin-invite-race';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -208,5 +210,109 @@ describe('MongoDB code paths against a real MongoDB', function () {
       expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
       expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
     }
+  });
+
+  const newAdminFields = () => ({
+    email: `new-admin-${randomUUID().slice(0, 8)}@example.com`,
+    fullName: 'New Admin',
+    role: 'admin' as const,
+  });
+
+  it(`refuses to create an admin past ${MAX_ORG_ADMINS} admins, and leaves no account`, async () => {
+    const orgId = await newOrg();
+    for (let i = 0; i < MAX_ORG_ADMINS; i += 1) {
+      await newUser(orgId, 'admin');
+    }
+    const fields = newAdminFields();
+    let caught: unknown;
+    try {
+      await createUserEnsuringAdminCap(orgId, fields, rsAvailable);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).to.be.instanceOf(BadRequestError);
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+    expect(await Users.countDocuments({ email: fields.email })).to.equal(0);
+  });
+
+  it(`never exceeds ${MAX_ORG_ADMINS} admins when two admins are created at once, and a refused create leaves no account`, async () => {
+    const orgId = await newOrg();
+    for (let i = 0; i < MAX_ORG_ADMINS - 1; i += 1) {
+      await newUser(orgId, 'admin');
+    }
+    const a = newAdminFields();
+    const b = newAdminFields();
+
+    const { ok, refused } = await raceSaves([
+      async () => { await createUserEnsuringAdminCap(orgId, a, rsAvailable); },
+      async () => { await createUserEnsuringAdminCap(orgId, b, rsAvailable); },
+    ]);
+
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS - 1 + ok);
+    expect(await Users.countDocuments({ email: { $in: [a.email, b.email] } })).to.equal(ok);
+    expect(ok).to.be.at.most(1);
+    if (rsAvailable) {
+      expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
+    }
+  });
+
+  it(`never exceeds ${MAX_ORG_ADMINS} admins when an admin create races a promotion`, async () => {
+    const orgId = await newOrg();
+    for (let i = 0; i < MAX_ORG_ADMINS - 1; i += 1) {
+      await newUser(orgId, 'admin');
+    }
+    const member = await newUser(orgId, 'member');
+
+    const { ok, refused } = await raceSaves([
+      async () => { await createUserEnsuringAdminCap(orgId, newAdminFields(), rsAvailable); },
+      async () => { await saveUserEnsuringAdminCap(orgId, String(member._id), { role: 'admin' }, rsAvailable); },
+    ]);
+
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS - 1 + ok);
+    expect(ok).to.be.at.most(1);
+    if (rsAvailable) {
+      expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
+    }
+  });
+
+  describe('bulk admin invites racing for the last seats', () => {
+    let restoreSideStores: () => void;
+    before(() => { restoreSideStores = withoutSideStores(); });
+    after(() => restoreSideStores());
+
+    /** One invite batch: a removed member, a pending member and a new address — three new admins. */
+    async function batch(orgId: string) {
+      const tag = randomUUID().slice(0, 8);
+      const removed = await Users.create({ orgId, email: `removed-${tag}@example.com`, fullName: 'Removed', role: 'member', isDeleted: true });
+      const pending = await Users.create({ orgId, email: `pending-${tag}@example.com`, fullName: 'Pending', role: 'member', hasLoggedIn: false });
+      return { removed, pending, fresh: `fresh-${tag}@example.com` };
+    }
+
+    it(`never passes ${MAX_ORG_ADMINS} admins, and a refused batch leaves no trace`, async () => {
+      const orgId = await newOrg();
+      await newUser(orgId, 'admin');
+      await newUser(orgId, 'admin');
+      const a = await batch(orgId);
+      const b = await batch(orgId);
+      const invite = adminInviter(rsAvailable);
+
+      const done = await Promise.allSettled([a, b].map((x) => invite(orgId, [x.removed.email, x.pending.email, x.fresh])));
+      for (const d of done) if (d.status === 'rejected') expect(d.reason).to.be.instanceOf(BadRequestError);
+      const ok = done.filter((d) => d.status === 'fulfilled').length;
+
+      expect(await adminCount(orgId)).to.equal(2 + 3 * ok);
+      for (const [x, d] of [[a, done[0]], [b, done[1]]] as const) {
+        const removed = await Users.findById(x.removed._id).lean();
+        const pending = await Users.findById(x.pending._id).lean();
+        const fresh = await Users.find({ email: x.fresh }).lean();
+        if (d.status === 'fulfilled') {
+          expect([removed?.isDeleted, removed?.role, pending?.role, fresh.map((u) => u.role)]).to.deep.equal([false, 'admin', 'admin', ['admin']]);
+        } else {
+          // Removed again and a member, as it was; the pending account is still a member; no row for the new address.
+          expect([removed?.isDeleted, removed?.role, pending?.role, fresh.length]).to.deep.equal([true, 'member', 'member', 0]);
+        }
+      }
+      if (rsAvailable) expect(ok).to.equal(1);
+    });
   });
 });

@@ -13,12 +13,14 @@ import {
   assertCanPromoteAdmin,
   saveUserEnsuringOrgRetainsAdmin,
   saveUserEnsuringAdminCap,
+  createUserEnsuringAdminCap,
   MAX_ORG_ADMINS_MESSAGE,
 } from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { refusalReason } from '../../../../src/libs/services/audit';
+import * as userRepo from '../../../../src/libs/repositories/user';
 
 function stubUsersFindOne(role: 'admin' | 'member' | null | undefined) {
   const doc =
@@ -554,7 +556,8 @@ describe('user-admin.service', () => {
       expect(updateStub.firstCall.args[0]).to.deep.include({ _id: userId });
     });
 
-    it('does not save when pre-check finds the org is already at 5 admins', async () => {
+    // Inside the transaction the count follows the save, so a refusal rolls the save back.
+    it('replica set: the count after the save finds 6 admins, so the unit of work throws and the save rolls back', async () => {
       const save = sinon.stub().resolves();
       const user = {
         _id: userId,
@@ -571,7 +574,7 @@ describe('user-admin.service', () => {
       } as any);
       sinon.stub(Org, 'updateOne').resolves({} as any);
       sinon.stub(Users, 'countDocuments').returns({
-        session: sinon.stub().callsFake(() => Promise.resolve(5)),
+        session: sinon.stub().callsFake(() => Promise.resolve(6)),
       } as any);
 
       try {
@@ -581,7 +584,144 @@ describe('user-admin.service', () => {
         expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);
       }
 
-      expect(save.called).to.equal(false);
+      expect(save.calledOnce).to.equal(true);
+      expect(withTransaction.calledOnce).to.equal(true);
+    });
+
+    it('non-RS, the re-count fails after the save: the user is set back to member, then the count error is raised', async () => {
+      const save = sinon.stub().resolves();
+      sinon.stub(Users, 'findOne').resolves({ _id: userId, orgId, role: 'admin', save } as any);
+      const countDown = new Error('count failed');
+      const count = sinon.stub(Users, 'countDocuments');
+      count.onFirstCall().resolves(4);
+      count.onSecondCall().rejects(countDown);
+      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
+
+      try {
+        await saveUserEnsuringAdminCap(orgId, userId, {}, false);
+        expect.fail('expected the count error');
+      } catch (error) {
+        expect(error).to.equal(countDown);
+      }
+      expect(save.calledOnce).to.equal(true);
+      expect(updateStub.calledOnce).to.equal(true);
+      expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { role: 'member' } });
+    });
+
+    it('a user gone before the non-RS save is still re-counted: over the cap it is admin_limit, as before the refactor', async () => {
+      sinon.stub(Users, 'findOne').resolves(null);
+      const count = sinon.stub(Users, 'countDocuments');
+      count.onFirstCall().resolves(4);
+      count.onSecondCall().resolves(6);
+      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
+
+      try {
+        await saveUserEnsuringAdminCap(orgId, userId, {}, false);
+        expect.fail('expected BadRequestError');
+      } catch (error: any) {
+        expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);
+      }
+      expect(updateStub.calledOnce).to.equal(true);
+    });
+  });
+
+  // Stubs the repository rather than the models: these pin the order and the
+  // unit of work each repository call runs in.
+  describe('createUserEnsuringAdminCap', () => {
+    const created = { _id: userId, orgId, role: 'admin' };
+    const fields = { email: 'new@acme.test', role: 'admin' as const };
+    let calls: string[];
+    let txs: Record<string, unknown>;
+    const stubRepo = (counts: number[], overrides: Record<string, unknown> = {}) => {
+      calls = [];
+      txs = {};
+      let n = 0;
+      const repo = {
+        countActiveAdmins: sinon.stub().callsFake(async (_o: string, tx?: unknown) => { calls.push('count'); txs.count = tx; return counts[n++]; }),
+        lockOrgAdminChanges: sinon.stub().callsFake(async (_o: string, tx: unknown) => { calls.push('lock'); txs.lock = tx; }),
+        create: sinon.stub().callsFake(async (_o: string, _f: unknown, tx?: unknown) => { calls.push('create'); txs.create = tx; return created; }),
+        deleteById: sinon.stub().callsFake(async () => { calls.push('delete'); }),
+        ...overrides,
+      };
+      sinon.stub(userRepo, 'getUserRepository').returns(repo as any);
+      return repo;
+    };
+    // The driver's withTransaction resolves to the callback's result.
+    const inSession = () =>
+      sinon.stub(mongoose, 'startSession').resolves({
+        withTransaction: sinon.stub().callsFake((fn: () => Promise<unknown>) => fn()),
+        endSession: sinon.stub().resolves(),
+      } as any);
+    const refusal = async (run: () => Promise<unknown>): Promise<any> => {
+      try {
+        await run();
+      } catch (error) {
+        return error;
+      }
+      return expect.fail('expected a refusal');
+    };
+
+    it('non-RS, under the cap: check, create, re-count; nothing undone', async () => {
+      const repo = stubRepo([4, 5]);
+      expect(await createUserEnsuringAdminCap(orgId, fields, false)).to.equal(created);
+      expect(calls).to.deep.equal(['count', 'create', 'count']);
+      expect(repo.create.firstCall.args.slice(0, 2)).to.deep.equal([orgId, fields]);
+    });
+
+    it('non-RS, already at the cap: refused before anything is created', async () => {
+      stubRepo([5]);
+      const error = await refusal(() => createUserEnsuringAdminCap(orgId, fields, false));
+      expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);
+      expect(refusalReason(error)).to.equal('admin_limit');
+      expect(calls).to.deep.equal(['count']);
+    });
+
+    it('non-RS, over the cap after the write: the new account is hard-deleted, then admin_limit', async () => {
+      const repo = stubRepo([4, 6]);
+      const error = await refusal(() => createUserEnsuringAdminCap(orgId, fields, false));
+      expect(refusalReason(error)).to.equal('admin_limit');
+      expect(calls).to.deep.equal(['count', 'create', 'count', 'delete']);
+      expect(repo.deleteById.firstCall.args).to.deep.equal([userId]);
+    });
+
+    it('non-RS, the undo itself fails: its store error is what the caller gets (same as promotion)', async () => {
+      const storeDown = new Error('store down');
+      stubRepo([4, 6], { deleteById: sinon.stub().rejects(storeDown) });
+      expect(await refusal(() => createUserEnsuringAdminCap(orgId, fields, false))).to.equal(storeDown);
+    });
+
+    it('non-RS, the re-count fails after the write: the new account is hard-deleted, then the count error is raised', async () => {
+      const countDown = new Error('count failed');
+      const repo = stubRepo([], {
+        countActiveAdmins: sinon.stub().callsFake(async () => {
+          calls.push('count');
+          if (calls.length > 1) throw countDown;
+          return 4;
+        }),
+      });
+      expect(await refusal(() => createUserEnsuringAdminCap(orgId, fields, false))).to.equal(countDown);
+      expect(calls).to.deep.equal(['count', 'create', 'count', 'delete']);
+      expect(repo.deleteById.firstCall.args).to.deep.equal([userId]);
+    });
+
+    it('replica set: lock, create, then count, in one unit of work', async () => {
+      inSession();
+      const repo = stubRepo([5]);
+      expect(await createUserEnsuringAdminCap(orgId, fields, true)).to.equal(created);
+      expect(calls).to.deep.equal(['lock', 'create', 'count']);
+      expect(txs.lock).to.not.equal(undefined);
+      expect(txs.count).to.equal(txs.lock);
+      expect(txs.create).to.equal(txs.lock);
+      expect(repo.deleteById.called).to.equal(false);
+    });
+
+    it('replica set, over the cap after the create: admin_limit is thrown inside the unit of work, nothing undone by hand', async () => {
+      inSession();
+      const repo = stubRepo([6]);
+      const error = await refusal(() => createUserEnsuringAdminCap(orgId, fields, true));
+      expect(refusalReason(error)).to.equal('admin_limit');
+      expect(calls).to.deep.equal(['lock', 'create', 'count']);
+      expect(repo.deleteById.called).to.equal(false);
     });
   });
   describe('refusal tags (the audit reason, invisible to the client)', () => {
@@ -639,7 +779,7 @@ describe('user-admin.service', () => {
     });
 
     it('admin cap inside a transaction: admin_limit survives the unit of work', async () => {
-      inTransaction(5);
+      inTransaction(6);
       expect(refusalReason(await rejection(() => saveUserEnsuringAdminCap(orgId, userId, {}, true)))).to.equal('admin_limit');
     });
 

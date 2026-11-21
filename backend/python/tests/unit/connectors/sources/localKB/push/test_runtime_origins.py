@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock
 
 import pytest
@@ -184,6 +185,7 @@ def test_the_connectors_lifespan_closes_the_push_runtime_before_the_container() 
 
     src = (Path(__file__).resolve().parents[6] / "app" / "connectors_main.py").read_text()
     teardown = src[src.index("async def lifespan"):]
-    teardown = teardown[teardown.index("\n    yield\n"):]
+    # The lifespan's yield, at any indent (it sits in a try/finally).
+    teardown = teardown[re.search(r"\n +yield\n", teardown).start():]
     assert "await kb_push_api.close_runtime(app)" in teardown
     assert teardown.index("await kb_push_api.close_runtime(app)") < teardown.index("await shutdown_container_resources(app_container)")

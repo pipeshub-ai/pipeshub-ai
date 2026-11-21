@@ -202,7 +202,7 @@ class TestPermissionMap:
         provider = _neo4j()
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _neo4j_queries(provider)
-        paths = query.count("RETURN r.virtualRecordId AS virtualId, r.id AS recordId")
+        paths = query.count("RETURN collect([r.virtualRecordId, r.id]) AS pairs")
         assert paths == 1
         assert query.count(cypher_searchable_record("r")) == paths
         assert query.count(f"AND {cypher_live_record('r')}") == paths
@@ -349,6 +349,11 @@ class TestNeo4jKnowledgeHubListing:
     """The knowledge hub listing (``get_knowledge_hub_connector_page_v3``) never
     lists the trash: every arm that collects nodes drops deleted ones, and a row
     counts only its live children."""
+
+    @pytest.fixture(autouse=True)
+    def _legacy_browse(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The browse statement pinned here is the legacy browse's (split's live tests: test_kh_split_browse.py); split is the default.
+        monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
 
     @staticmethod
     def _live(var: str) -> str:

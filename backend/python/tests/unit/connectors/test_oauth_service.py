@@ -1,7 +1,8 @@
 """Tests for app.connectors.core.base.token_service.oauth_service"""
 
 import base64
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -11,11 +12,17 @@ from app.connectors.core.base.token_service import oauth_service
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
+    OAuthStateError,
+    OAuthStoreUnavailableError,
     OAuthToken,
     OAuthTokenRequestError,
     RefreshTokenInvalidError,
 )
+from app.utils.encryption.encryption_service import DecryptionError
+from app.utils.error_class import classify_error
+from app.utils.logger import JsonFormatter, TextFormatter, log_record_fields
 from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
+from app.utils.oauth_errors import MAX_TOKEN_LIFETIME_S
 from tests.support.refusing_token_endpoint import (
     ENTRA_INTERACTION_REQUIRED,
     ENTRA_INVALID_CLIENT,
@@ -164,6 +171,136 @@ class TestOAuthTokenSerialization:
         }
         token = OAuthToken.from_dict(d)
         assert token.created_at == datetime(2025, 6, 15, 12, 30, 0)
+
+
+# ---------------------------------------------------------------------------
+# OAuthToken.from_dict: field types (a provider's answer or a saved record)
+# ---------------------------------------------------------------------------
+
+MARKER = "FIELD-MARKER-31"
+_NOW_TOLERANCE = timedelta(seconds=5)
+
+
+def _malformed(data: dict) -> oauth_service.MalformedTokenError:
+    with pytest.raises(oauth_service.MalformedTokenError) as raised:
+        OAuthToken.from_dict({"access_token": "tok", **data})
+    return raised.value
+
+
+class TestFromDictFieldTypes:
+    def test_a_bad_created_at_names_the_field_never_the_value(self) -> None:
+        error = _malformed({"created_at": MARKER})
+
+        assert error.field_name == "created_at"
+        assert MARKER not in str(error) and str(error) == "OAuth token field 'created_at' is malformed"
+        assert error.__context__ is None and error.__cause__ is None  # the stdlib's text, which quotes the value, is not chained
+        assert isinstance(error, ValueError)  # callers that catch ValueError are unchanged
+        assert error.refresh_reason == "malformed_token"
+
+    # The offsets at datetime's ends overflow on the way through UTC, whatever the host's zone.
+    @pytest.mark.parametrize("value", [
+        10**15, -10**15, True, [1], {"a": 1}, float("nan"), "0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00",
+    ], ids=["year_too_big", "year_too_small", "bool", "list", "dict", "nan", "offset_before_the_start", "offset_past_the_end"])
+    def test_a_created_at_that_is_no_time_is_malformed(self, value: object) -> None:
+        error = _malformed({"created_at": value})
+
+        assert error.field_name == "created_at" and "year" not in str(error)
+        assert error.__context__ is None  # the stdlib's text is not chained
+
+    # Two days in from each end: inside the range in every zone from UTC-14 to UTC+14.
+    @pytest.mark.parametrize("value", ["0001-01-02T12:00:00+01:00", "9999-12-30T12:00:00-01:00"], ids=["near_the_start", "near_the_end"])
+    def test_an_offset_near_datetimes_ends_is_kept(self, value: str) -> None:
+        expected = datetime.fromisoformat(value).astimezone().replace(tzinfo=None)
+
+        assert OAuthToken.from_dict({"access_token": "tok", "created_at": value}).created_at == expected
+
+    # OAuthToken's convention is naive local time, hence the naive datetimes below.
+    @pytest.mark.parametrize(("value", "expected"), [
+        ("2025-06-15T12:30:00", datetime(2025, 6, 15, 12, 30)),  # noqa: DTZ001
+        (1_750_000_000, datetime.fromtimestamp(1_750_000_000)),  # noqa: DTZ006
+        (1_750_000_000.5, datetime.fromtimestamp(1_750_000_000.5)),  # noqa: DTZ006
+        (datetime(2025, 1, 1), datetime(2025, 1, 1)),  # noqa: DTZ001
+    ], ids=["iso", "epoch_int", "epoch_float", "datetime"])
+    def test_a_created_at_that_is_a_time_is_kept(self, value: object, expected: datetime) -> None:
+        assert OAuthToken.from_dict({"access_token": "tok", "created_at": value}).created_at == expected
+
+    def test_an_iso_created_at_with_an_offset_becomes_naive_local_time(self) -> None:
+        # A non-zero offset: on a UTC host, dropping the zone without converting would still pass with +00:00.
+        offset = timezone(timedelta(hours=5, minutes=30))
+        token = OAuthToken.from_dict({"access_token": "tok", "expires_in": 3600, "created_at": "2026-01-01T00:00:00+05:30"})
+
+        assert token.created_at == datetime(2026, 1, 1, tzinfo=offset).astimezone().replace(tzinfo=None)
+        assert token.created_at.tzinfo is None
+        assert token.is_expired is True  # an aware value would raise TypeError against the naive datetime.now()
+        assert token.expires_at_epoch == int(datetime(2026, 1, 1, 1, tzinfo=offset).timestamp())
+
+    @pytest.mark.parametrize("data", [{}, {"created_at": None}, {"created_at": ""}, {"created_at": "  "}],
+                             ids=["absent", "null", "empty", "blank"])
+    def test_an_empty_created_at_is_absent_so_now(self, data: dict) -> None:
+        before = datetime.now()  # noqa: DTZ005 - OAuthToken is naive
+        token = OAuthToken.from_dict({"access_token": "tok", **data})
+
+        assert before <= token.created_at <= datetime.now() + _NOW_TOLERANCE  # noqa: DTZ005
+
+    @pytest.mark.parametrize("name", ["expires_in", "refresh_token_expires_in"])
+    @pytest.mark.parametrize(("value", "expected"), [
+        ("3600", 3600), (" 3600 ", 3600), (3600, 3600), (3599.5, 3599.5),
+        (None, None), ("", None), ("  ", None),
+        (MAX_TOKEN_LIFETIME_S, MAX_TOKEN_LIFETIME_S),
+    ], ids=["numeric_text", "padded_text", "int", "float", "null", "empty", "blank", "the_bound"])
+    def test_a_lifetime_that_is_a_number_of_seconds_is_kept(self, name: str, value: object, expected: object) -> None:
+        token = OAuthToken.from_dict({"access_token": "tok", name: value})
+
+        assert getattr(token, name) == expected
+        assert token.is_expired is False  # usable: created_at + the lifetime is inside datetime's range
+
+    @pytest.mark.parametrize("value", [
+        f"soon-{MARKER}", True, [3600], "3600.5", float("nan"), float("inf"), float("-inf"), 10**20,
+        MAX_TOKEN_LIFETIME_S + 1,
+    ], ids=["text", "bool", "list", "decimal_text", "nan", "inf", "-inf", "huge", "past_the_bound"])
+    def test_an_expires_in_that_is_no_number_of_seconds_is_malformed(self, value: object) -> None:
+        error = _malformed({"expires_in": value})
+
+        assert error.field_name == "expires_in"
+        assert MARKER not in str(error) and error.__context__ is None
+
+    @pytest.mark.parametrize("value", [f"soon-{MARKER}", float("nan"), 10**20], ids=["text", "nan", "huge"])
+    def test_a_bad_refresh_token_lifetime_is_dropped_with_one_warning_without_its_value(
+        self, value: object, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=oauth_service.__name__)
+
+        tokens = [OAuthToken.from_dict({"access_token": "tok", "refresh_token_expires_in": value}) for _ in range(2)]
+
+        assert [t.refresh_token_expires_in for t in tokens] == [None, None]  # nothing reads it: no lockout
+        [line] = [r for r in caplog.records if r.name == oauth_service.__name__]  # the second parse is in the same hour
+        assert (line.getMessage(), line.levelno, log_record_fields(line)) == (
+            "oauth_token.field_ignored", logging.WARNING, {"field": "refresh_token_expires_in"})
+        assert MARKER not in TextFormatter().format(line) + JsonFormatter().format(line)
+
+    @pytest.mark.parametrize(("created_at", "expires_in"), [
+        (datetime.max, 3600), (datetime.min, -3600),
+    ], ids=["past_the_end", "before_the_start"])
+    def test_a_created_at_whose_expiry_leaves_datetimes_range_is_malformed(self, created_at: datetime, expires_in: int) -> None:
+        error = _malformed({"created_at": created_at, "expires_in": expires_in})
+
+        assert error.field_name == "created_at"
+        assert error.__cause__ is None and error.__suppress_context__  # a traceback shows no chained OverflowError
+
+    @pytest.mark.parametrize("expires_in", [3600, -3600, 0])
+    def test_a_created_at_at_datetimes_edge_with_room_for_the_lifetime_is_kept(self, expires_in: int) -> None:
+        created_at = (datetime.max - timedelta(hours=1)) if expires_in >= 0 else (datetime.min + timedelta(hours=1))
+        token = OAuthToken.from_dict({"access_token": "tok", "created_at": created_at, "expires_in": expires_in})
+
+        assert token.is_expired is (expires_in < 0)
+
+    def test_from_dict_does_not_mutate_input_it_corrects(self) -> None:
+        data = {"access_token": "tok", "created_at": "", "expires_in": "3600", "refresh_token_expires_in": "x"}
+        original = dict(data)
+
+        OAuthToken.from_dict(data)
+
+        assert data == original
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +555,7 @@ def mock_config_service():
     svc = MagicMock()
     svc.get_config = AsyncMock(return_value={})
     svc.set_config = AsyncMock()
+    svc.create_config_if_absent = AsyncMock(return_value=True)  # the callback's claim on its code
     return svc
 
 
@@ -780,7 +918,8 @@ class TestMakeTokenRequest:
         result = await provider._make_token_request({"grant_type": "authorization_code"})
         assert result["access_token"] == "tok"
         assert result["token_type"] == "bearer"
-        assert result["expires_in"] == 3600  # Converted to int
+        assert result["expires_in"] == "3600"  # the text as sent: OAuthToken.from_dict makes it a number
+        assert OAuthToken.from_dict(result).expires_in == 3600
 
     @pytest.mark.asyncio
     async def test_text_plain_response(self, mock_config_service):
@@ -868,7 +1007,7 @@ class TestMakeTokenRequest:
 
     @pytest.mark.asyncio
     async def test_form_urlencoded_invalid_expires_in(self, mock_config_service):
-        """expires_in that can't be converted to int is left as-is."""
+        """The raw answer keeps an expires_in that is not a number; OAuthToken.from_dict is what rejects it."""
         config = _make_oauth_config()
         provider = OAuthProvider(config, mock_config_service, "/path")
 
@@ -888,6 +1027,8 @@ class TestMakeTokenRequest:
         result = await provider._make_token_request({"grant_type": "authorization_code"})
         assert result["access_token"] == "tok"
         assert result["expires_in"] == "not_a_number"  # Left as string
+        with pytest.raises(oauth_service.MalformedTokenError):
+            OAuthToken.from_dict(result)
 
 
 class TestFormEncodedRefreshRefusal:
@@ -1014,6 +1155,15 @@ class TestExchangeCodeForToken:
         with pytest.raises(ValueError, match="missing required 'access_token'"):
             await provider.exchange_code_for_token("code")
 
+    @pytest.mark.asyncio
+    async def test_exchange_missing_access_token_is_tagged_for_the_refresh_lines(self, mock_config_service) -> None:
+        provider = OAuthProvider(_make_oauth_config(), mock_config_service, "/path")
+        provider._make_token_request = AsyncMock(return_value={"token_type": "Bearer"})
+
+        with pytest.raises(oauth_service.TokenResponseError) as raised:
+            await provider.exchange_code_for_token("code")
+        assert isinstance(raised.value, ValueError)  # callers that catch ValueError are unchanged
+
 
 # ---------------------------------------------------------------------------
 # OAuthProvider.refresh_access_token()
@@ -1022,6 +1172,49 @@ class TestExchangeCodeForToken:
 
 class TestRefreshAccessToken:
     """Tests for refresh_access_token()."""
+
+    @pytest.mark.parametrize("token_response_path", [None, "authed_user"], ids=["top_level", "nested_path"])
+    @pytest.mark.parametrize("body", [{"token_type": "bearer"}, [{"access_token": "in-a-list"}]], ids=["no_access_token", "json_list"])
+    @pytest.mark.asyncio
+    async def test_a_success_answer_without_an_access_token_is_a_tagged_token_response_error(
+        self, mock_config_service, body: object, token_response_path: str | None,
+    ) -> None:
+        provider = OAuthProvider(
+            _make_oauth_config(token_response_path=token_response_path), mock_config_service, "/path",
+        )
+        provider._make_token_request = AsyncMock(return_value=body)
+
+        with pytest.raises(oauth_service.TokenResponseError, match="missing required 'access_token'") as raised:
+            await provider.refresh_access_token("old-refresh")
+        assert raised.value.refresh_reason == "no_access_token"
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.parametrize("field", ["created_at", "expires_in"])
+    @pytest.mark.asyncio
+    async def test_a_success_answer_with_a_malformed_field_saves_nothing(self, mock_config_service, field: str) -> None:
+        provider = OAuthProvider(_make_oauth_config(), mock_config_service, "/path")
+        provider._make_token_request = AsyncMock(return_value={"access_token": "new", "expires_in": 3600, field: MARKER})
+
+        with pytest.raises(oauth_service.MalformedTokenError) as raised:
+            await provider.refresh_access_token("old-refresh")
+        assert (raised.value.field_name, raised.value.refresh_reason) == (field, "malformed_token")
+        assert MARKER not in str(raised.value)
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_form_encoded_answer_saves_expires_in_as_a_number(self, mock_config_service) -> None:
+        provider = OAuthProvider(_make_oauth_config(), mock_config_service, "/path")
+        response = AsyncMock(status=200, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        response.text = AsyncMock(return_value="access_token=new&expires_in=3600")
+        response.raise_for_status = MagicMock()
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=False)
+        provider._session = MagicMock(closed=False, post=MagicMock(return_value=response))
+
+        token = await provider.refresh_access_token("old-refresh")
+
+        assert token.expires_in == 3600
+        assert mock_config_service.set_config.call_args[0][1]["credentials"]["expires_in"] == 3600
 
     @pytest.mark.asyncio
     async def test_basic_refresh(self, mock_config_service):
@@ -1453,6 +1646,21 @@ class TestHandleCallback:
         assert "auth-code" in stored["oauth"]["used_codes"]
 
     @pytest.mark.asyncio
+    async def test_a_sign_in_answer_with_a_malformed_created_at_saves_no_credentials(
+        self, oauth_provider, mock_config_service,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(return_value={"oauth": {"state": "valid-state", "used_codes": []}})
+        oauth_provider._make_token_request = AsyncMock(return_value={"access_token": "new", "created_at": MARKER})
+
+        with pytest.raises(oauth_service.MalformedTokenError) as raised:
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        assert raised.value.field_name == "created_at"
+        chain = [raised.value, raised.value.__cause__, raised.value.__context__]
+        assert not any(MARKER in str(link) for link in chain if link is not None)
+        assert not any("credentials" in call.args[1] for call in mock_config_service.set_config.call_args_list)
+
+    @pytest.mark.asyncio
     async def test_callback_state_mismatch_raises(self, oauth_provider, mock_config_service):
         """State mismatch raises ValueError."""
         mock_config_service.get_config = AsyncMock(return_value={
@@ -1462,8 +1670,13 @@ class TestHandleCallback:
             }
         })
 
-        with pytest.raises(ValueError, match="Invalid or expired state"):
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="wrong-state")
+        mock_config_service.set_config.assert_not_called()  # a refused callback saves nothing
+
+    def test_state_error_is_still_a_value_error(self) -> None:
+        # Callers that catch ValueError, and the user message read from the text, keep working.
+        assert issubclass(OAuthStateError, ValueError)
 
     @pytest.mark.asyncio
     async def test_callback_no_stored_state_raises(self, oauth_provider, mock_config_service):
@@ -1472,7 +1685,7 @@ class TestHandleCallback:
             "oauth": {"used_codes": []},
         })
 
-        with pytest.raises(ValueError, match="Invalid or expired state"):
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="any-state")
 
     @pytest.mark.asyncio
@@ -1508,8 +1721,10 @@ class TestHandleCallback:
 
         # We need to make from_dict raise. Patch it.
         with patch.object(OAuthToken, "from_dict", side_effect=TypeError("bad data")):
-            with pytest.raises(ValueError, match="Invalid or expired state"):
+            with pytest.raises(ValueError, match="Invalid or expired state") as raised:
                 await oauth_provider.handle_callback(code="auth-code", state="different-state")
+            # The earlier sign-in succeeded and its credentials no longer load: the callback signs the connector out.
+            assert not isinstance(raised.value, OAuthStateError)
 
     @pytest.mark.asyncio
     async def test_callback_code_already_used_with_valid_creds(self, oauth_provider, mock_config_service):
@@ -1539,7 +1754,7 @@ class TestHandleCallback:
             "credentials": None,
         })
 
-        with pytest.raises(ValueError, match="Authorization code has already been used"):
+        with pytest.raises(OAuthStateError, match="Authorization code has already been used"):
             await oauth_provider.handle_callback(code="auth-code", state="valid-state")
 
     @pytest.mark.asyncio
@@ -1556,8 +1771,10 @@ class TestHandleCallback:
         })
 
         with patch.object(OAuthToken, "from_dict", side_effect=TypeError("bad")):
-            with pytest.raises(ValueError, match="Authorization code has already been used"):
+            with pytest.raises(ValueError, match="Authorization code has already been used") as raised:
                 await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+        # Saved credentials that no longer load sign the connector out; only a replay with nothing saved is a refusal.
+        assert not isinstance(raised.value, OAuthStateError)
 
     @pytest.mark.asyncio
     async def test_callback_exchange_failure_marks_code_used(self, oauth_provider, mock_config_service):
@@ -1586,7 +1803,7 @@ class TestHandleCallback:
         """handle_callback with non-dict config from get_config raises due to no state."""
         mock_config_service.get_config = AsyncMock(return_value="not a dict")
 
-        with pytest.raises(ValueError, match="Invalid or expired state"):
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
 
     @pytest.mark.asyncio
@@ -1596,8 +1813,115 @@ class TestHandleCallback:
             "oauth": None,
         })
 
-        with pytest.raises(ValueError, match="Invalid or expired state"):
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
+
+
+def _matching() -> dict:
+    """A sign-in in progress (a fresh copy: the callback appends to its used_codes)."""
+    return {"oauth": {"state": "valid-state", "used_codes": []}, "credentials": {"access_token": "old-tok"}}
+
+
+class TestHandleCallbackStore:
+    """The callback's own store: an outage is told apart from "nothing stored", and only one callback exchanges a code."""
+
+    @pytest.mark.asyncio
+    async def test_the_config_is_read_asking_the_store_to_raise(self, oauth_provider, mock_config_service) -> None:
+        mock_config_service.get_config = AsyncMock(side_effect=ConnectionError("kv down"))
+        oauth_provider.exchange_code_for_token = AsyncMock()
+
+        with pytest.raises(OAuthStoreUnavailableError) as raised:
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        assert mock_config_service.get_config.await_args.kwargs == {"raise_on_error": True}
+        assert isinstance(raised.value.__cause__, ConnectionError)
+        oauth_provider.exchange_code_for_token.assert_not_awaited()
+        mock_config_service.create_config_if_absent.assert_not_awaited()
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unreadable", [ValueError("Stored value could not be decoded"),
+                                            DecryptionError("Decryption failed")])
+    async def test_a_value_that_does_not_decode_reads_as_unset_not_as_an_outage(
+        self, oauth_provider, mock_config_service, unreadable: Exception,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(side_effect=unreadable)
+
+        with pytest.raises(OAuthStateError, match="Invalid or expired state"):
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+    @pytest.mark.asyncio
+    async def test_the_code_is_claimed_once_hashed_and_expiring(self, oauth_provider, mock_config_service) -> None:
+        mock_config_service.get_config = AsyncMock(return_value=_matching())
+        oauth_provider.exchange_code_for_token = AsyncMock(return_value=OAuthToken(access_token="new-tok"))
+
+        await oauth_provider.handle_callback(code="CODE-MARKER", state="valid-state")
+
+        (key, value), kwargs = mock_config_service.create_config_if_absent.await_args
+        assert key.startswith("/services/oauth-code-claims/") and "CODE-MARKER" not in key
+        assert (value, kwargs) == ({"claimed": True}, {"ttl_seconds": 600})
+        assert key == oauth_service._code_claim_path("/test/creds/path", "CODE-MARKER")
+        assert key != oauth_service._code_claim_path("/other/creds/path", "CODE-MARKER")
+        assert key != oauth_service._code_claim_path("/test/creds/path", "other-code")
+
+    @pytest.mark.asyncio
+    async def test_a_code_another_callback_claimed_is_refused_without_an_exchange_or_a_write(
+        self, oauth_provider, mock_config_service,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(return_value=_matching())
+        mock_config_service.create_config_if_absent = AsyncMock(return_value=False)
+        oauth_provider.exchange_code_for_token = AsyncMock()
+
+        with pytest.raises(OAuthStateError, match="already submitted") as raised:
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        assert "start a new sign-in" in extract_oauth_error_message(raised.value)
+        oauth_provider.exchange_code_for_token.assert_not_awaited()
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_claim_the_store_cannot_make_is_unavailable(self, oauth_provider, mock_config_service) -> None:
+        mock_config_service.get_config = AsyncMock(return_value=_matching())
+        mock_config_service.create_config_if_absent = AsyncMock(side_effect=ConnectionError("kv down"))
+        oauth_provider.exchange_code_for_token = AsyncMock()
+
+        with pytest.raises(OAuthStoreUnavailableError):
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        oauth_provider.exchange_code_for_token.assert_not_awaited()
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_credentials_the_store_did_not_save_are_unavailable_not_a_token(
+        self, oauth_provider, mock_config_service,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(return_value=_matching())
+        mock_config_service.set_config = AsyncMock(return_value=False)
+        oauth_provider.exchange_code_for_token = AsyncMock(return_value=OAuthToken(access_token="new-tok"))
+
+        with pytest.raises(OAuthStoreUnavailableError, match="could not be saved"):
+            await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        # Only the save of the new credentials: the exchange's failure path, which would re-save, does not run.
+        (call,) = mock_config_service.set_config.await_args_list
+        assert call.args[1]["credentials"]["access_token"] == "new-tok"
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_after_a_finished_sign_in_reuses_the_token_without_a_claim(
+        self, oauth_provider, mock_config_service,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(return_value={
+            "oauth": {"used_codes": ["auth-code"]}, "credentials": {"access_token": "saved-tok"}})
+
+        token = await oauth_provider.handle_callback(code="auth-code", state="valid-state")
+
+        assert token.access_token == "saved-tok"
+        mock_config_service.create_config_if_absent.assert_not_awaited()
+
+    def test_an_outage_is_classed_unavailable_and_answered_with_a_retry_message(self) -> None:
+        error = OAuthStoreUnavailableError("The OAuth config could not be read")
+        assert classify_error(error) == "unavailable"
+        assert "try again" in extract_oauth_error_message(error)
 
 
 class TestSlackTokenEndpoint:
