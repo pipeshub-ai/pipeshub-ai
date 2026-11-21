@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY
-from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+from app.agents.agent_loop.skills.graph_store import GraphSkillStore, SkillVisibility
 from app.agents.agent_loop.skills_wiring import build_skill_manager
 from app.modules.agents.chat_extension import ChatExtension
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
@@ -31,7 +31,7 @@ async def _graph() -> FakeGraphProvider:
 class TestTheStore:
     async def test_without_own_skills_it_reads_only_builtins_and_the_agents_skills(self) -> None:
         store = GraphSkillStore(
-            await _graph(), ORG, "user-dana", visibility_scope="user-dana", also_visible={"team-playbook"},
+            await _graph(), ORG, "user-dana", visibility=SkillVisibility.of(["user-dana"]), also_visible={"team-playbook"},
             own_skills=False,
         )
 
@@ -40,7 +40,7 @@ class TestTheStore:
         assert await store.get_resource("comp-bands", "refs/a.md") is None
 
     async def test_a_skill_the_run_created_stays_readable_to_it(self) -> None:
-        store = GraphSkillStore(await _graph(), ORG, "user-dana", visibility_scope="user-dana", own_skills=False)
+        store = GraphSkillStore(await _graph(), ORG, "user-dana", visibility=SkillVisibility.of(["user-dana"]), own_skills=False)
 
         await store.create_skill("new-notes", _md("new-notes"))
 
@@ -48,7 +48,7 @@ class TestTheStore:
         assert await store.get_skill("comp-bands") is None
 
     async def test_by_default_it_reads_the_persons_own_skills(self) -> None:
-        store = GraphSkillStore(await _graph(), ORG, "user-dana", visibility_scope="user-dana")
+        store = GraphSkillStore(await _graph(), ORG, "user-dana", visibility=SkillVisibility.of(["user-dana"]))
 
         assert {m.name for m in await store.list_skills()} == {"pdf-tools", "comp-bands"}
 
@@ -58,8 +58,8 @@ class TestTheRunsManager:
         extension = MagicMock()
         extension.reads_own_skills = MagicMock(return_value=reads_own)
         context = SimpleNamespace(
-            graph_provider=MagicMock(), org_id=ORG, user_id="user-dana", user_key="key-dana", retrieval_service=None,
-            agent_skills=None, agent_key=None, tool_state={},
+            graph_provider=MagicMock(), org_id=ORG, user_id="user-dana", user_info={"_key": "key-dana"},
+            retrieval_service=None, agent_skills=None, agent_key=None, tool_state={},
         )
         with patch(
             "app.agents.agent_loop.skills.manager_factory._build_manager", new_callable=AsyncMock,

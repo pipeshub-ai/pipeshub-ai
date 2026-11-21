@@ -366,6 +366,21 @@ async def collect_referential_usage(
     )
 
 
+def is_builtin(doc: Mapping[str, Any]) -> bool:
+    """A builtin-sourced skill, which is the whole org's."""
+    return doc.get("source") == SkillSource.BUILTIN.value
+
+
+def is_creator(doc: Mapping[str, Any], user_key: str | None, account_id: str | None = None) -> bool:
+    """Whether the person with graph user key `user_key` created this skill. `createdBy` holds the
+    creator's user key; a skill a run created before runs stamped the key holds the creator's account
+    id instead, so `account_id`, when given, is compared with it. Each is compared with its own kind."""
+    created_by = doc.get("createdBy")
+    if not isinstance(created_by, str) or not created_by:
+        return False
+    return created_by in {person for person in (user_key, account_id) if person}
+
+
 @dataclass(frozen=True, slots=True)
 class SkillVisibility:
     """Which of an org's skills a reader sees: builtins always; a custom skill when one of ``viewers`` owns it, or
@@ -395,7 +410,7 @@ class SkillVisibility:
         )
 
     def allows(self, doc: Mapping[str, Any]) -> bool:
-        if self.viewers is None or doc.get("source") == SkillSource.BUILTIN.value:
+        if self.viewers is None or is_builtin(doc):
             return True
         if doc.get("createdBy") in self.viewers or doc.get("name") in self.shared:
             return True
@@ -405,10 +420,12 @@ class SkillVisibility:
         return sharing.scope == SkillScope.ORG or (sharing.scope == SkillScope.TEAM and sharing.team_id in self.teams)
 
 
-def skill_visible_to(doc: Mapping[str, Any], viewer: str | None) -> bool:
+def skill_visible_to(doc: Mapping[str, Any], viewer: str | None, account_id: str | None = None) -> bool:
     """Whether `viewer` (a user key) may see this skill, by `SkillVisibility`'s rule: a builtin is the whole org's,
-    any other skill only its creator's. `None` is the org-wide view."""
-    return (SkillVisibility.everyone() if viewer is None else SkillVisibility.of([viewer])).allows(doc)
+    any other skill only its creator's (`is_creator`, with the viewer's `account_id` when known). `None` is the
+    org-wide view. Callers use the rule `app.edition_services.skill_visible_to` names, which an edition may
+    replace together with the store."""
+    return (SkillVisibility.everyone() if viewer is None else SkillVisibility.of([viewer, account_id])).allows(doc)
 
 
 class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
@@ -428,6 +445,13 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         own_skills: bool = True,
         account_id: str | None = None,
     ) -> None:
+        """`visibility` decides which of the org's skills a read sees (`SkillVisibility`; unstated, the acting
+        user's). For a run: `also_visible` names the agent's assigned skills, which its creator chose for everyone
+        who uses it, and a read always sees them; `origins` is told where each skill read or created came from,
+        for the answer's label (see `ledger_manager.py`); `own_skills=False` (a run whose answer others read)
+        leaves out the person's own skills, so a read then sees the builtins, the `also_visible` skills and those
+        this store created. `account_id` is the person's account id, which a skill a run created before runs
+        stamped the graph user key holds as its `createdBy`."""
         self._graph = graph_provider
         self._org_id = org_id
         self._user_id = user_id
@@ -444,8 +468,15 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         self._origins = origins
         self._own_skills = own_skills
         self._account_id = account_id
-        # (name, when it was created) of each skill this store created.
+        # The creation (`_creation`) of each skill this store created.
         self._created: set[tuple[Any, Any]] = set()
+
+    # Who may see a skill, and which skills are the whole org's. An edition's store may replace both.
+    @staticmethod
+    def visible_to(doc: Mapping[str, Any], visibility: SkillVisibility) -> bool:
+        return visibility.allows(doc)
+
+    is_builtin = staticmethod(is_builtin)
 
     def _key(self, name: str) -> str:
         return f"{self._org_id}_{name}"
@@ -461,7 +492,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return creation is not None and creation in self._created
 
     def _origin(self, doc: Mapping[str, Any]) -> SkillOrigin:
-        if doc.get("source") == SkillSource.BUILTIN.value:
+        if self.is_builtin(doc):
             return SkillOrigin.BUILTIN
         if self._created_here(doc):
             return SkillOrigin.RUN
@@ -476,8 +507,14 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             self._origins.record(name, self._origin(doc))
 
     def _sees(self, doc: Mapping[str, Any]) -> bool:
-        """Visible to the reader, or a shared skill they govern (an org admin sees every team's commands)."""
-        if self._visibility.allows(doc):
+        """Visible to the reader, or a shared skill they govern (an org admin sees every team's commands). The
+        agent's assigned skills and those this store created are always seen; a run whose answer others read
+        (`own_skills=False`) sees only those and the builtins, never the person's own."""
+        if doc.get("name") in self._also_visible or self._created_here(doc):
+            return True
+        if not self._own_skills:
+            return self.is_builtin(doc)
+        if self.visible_to(doc, self._visibility):
             return True
         sharing = SkillSharing.of(doc)
         return sharing.scope in SkillScope.SHARED and self._rights.manages(sharing.scope, sharing.team_id)
@@ -486,7 +523,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         doc = await self._get_org_doc(name)
         if doc is None:
             return None
-        if doc.get("source") == SkillSource.BUILTIN.value:
+        if self.is_builtin(doc):
             if not self._allow_builtin_writes:
                 raise RegistryError("Built-in skills are read-only")
         else:
@@ -665,10 +702,16 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return self._provenance() if self._provenance is not None else None
 
     async def _get_org_doc(self, name: str) -> dict | None:
+        doc = await self._get_unscoped_org_doc(name)
+        if doc is None or not self._sees(doc):
+            return None
+        self._seen(doc)
+        return doc
+
+    async def _get_unscoped_org_doc(self, name: str) -> dict | None:
+        """The org's doc for `name` whoever created it, before the visibility check `_get_org_doc` adds."""
         doc = await self._graph.get_document(self._key(name), _SKILLS)
         if doc is None or org_of(doc) != self._org_id:
-            return None
-        if not self._sees(doc):
             return None
         return doc
 
@@ -1283,19 +1326,15 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         from_key = self._key(name)
         await self._graph.delete_edges_from(from_key, _SKILLS, _RELATION)
 
-        edges: list[dict[str, Any]] = []
-        for related_name in metadata.related:
-            edges.append({
+        edges: list[dict[str, Any]] = [
+            {
                 "from_id": from_key, "from_collection": _SKILLS,
-                "to_id": self._key(related_name), "to_collection": _SKILLS,
-                "type": "related", "createdAtTimestamp": now,
-            })
-        for required_name in metadata.requires:
-            edges.append({
-                "from_id": from_key, "from_collection": _SKILLS,
-                "to_id": self._key(required_name), "to_collection": _SKILLS,
-                "type": "requires", "createdAtTimestamp": now,
-            })
+                "to_id": self._key(other), "to_collection": _SKILLS,
+                "type": kind, "createdAtTimestamp": now,
+            }
+            for kind, names in (("related", metadata.related), ("requires", metadata.requires))
+            for other in names
+        ]
         if metadata.replaced_by:
             edges.append({
                 "from_id": from_key, "from_collection": _SKILLS,

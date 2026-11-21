@@ -1894,6 +1894,11 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         agent.update(perm)
         if versioning is not None:
             agent["versioning"] = versioning
+        from app.edition_services import skills_shown_with_an_agent
+
+        agent["skills"] = await skills_shown_with_an_agent(
+            agent.get("skills") or [], org_key, user_doc["_key"], services["graph_provider"],
+        )
 
         _mark_deprecated_tools(agent, services["logger"])
 

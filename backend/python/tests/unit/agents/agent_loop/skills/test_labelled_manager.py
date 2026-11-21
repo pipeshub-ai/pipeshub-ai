@@ -14,7 +14,7 @@ from app.agent_loop_lib.modules.providers.skills.manager import (
     SkillManagerConfig,
 )
 from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY
-from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+from app.agents.agent_loop.skills.graph_store import GraphSkillStore, SkillVisibility
 from app.agents.agent_loop.skills.graph_tracker import GraphUsageTracker
 from app.agents.agent_loop.skills.ledger_manager import (
     LedgerSkillManager,
@@ -55,7 +55,7 @@ async def _graph() -> FakeGraphProvider:
 
 async def _run_manager(graph: FakeGraphProvider, **store: Any) -> tuple[LedgerSkillManager, SkillOrigins]:  # noqa: ANN401
     origins = SkillOrigins()
-    store_ = GraphSkillStore(graph, ORG, "user-dana", visibility_scope="user-dana", origins=origins, **store)
+    store_ = GraphSkillStore(graph, ORG, "user-dana", visibility=SkillVisibility.of(["user-dana"]), origins=origins, **store)
     manager = SkillManager(
         store=store_, index=SemanticSkillIndex(None), tracker=GraphUsageTracker(graph, ORG, "user-dana"),
         governor=AutoApproveGovernor(), config=SkillManagerConfig(),
@@ -92,13 +92,14 @@ class TestWhereASkillCameFrom:
 
         assert origins.of("x") is SkillOrigin.PERSON and origins.of("y") is SkillOrigin.PERSON
 
-    async def test_a_builtin_whose_source_is_claimed_by_its_text_alone_is_a_persons(self) -> None:
+    async def test_a_builtin_is_one_the_stores_rule_calls_builtin(self) -> None:
+        """This store's rule: a builtin-sourced skill is the org's (`GraphSkillStore.is_builtin`)."""
         graph = await _graph()
         graph._col("agentSkills")[f"{ORG}_comp-bands"]["source"] = "builtin"
 
         _manager, origins = await _run_manager(graph)
 
-        assert origins.of("comp-bands") is SkillOrigin.PERSON
+        assert origins.of("comp-bands") is SkillOrigin.BUILTIN
 
 
 class TestWhatTheLedgerIsTold:

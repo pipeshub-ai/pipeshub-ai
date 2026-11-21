@@ -8,7 +8,6 @@ from collections.abc import Awaitable, Callable, Iterable
 from logging import Logger
 from typing import TYPE_CHECKING, Any
 
-from app.agents.agent_loop.skills.graph_store import skill_visible_to
 from app.agents.openapi import attachments as api_toolset_attachments
 from app.agents.openapi.service import ApiToolsetError
 from app.agents.openapi.store import ApiToolsetStore
@@ -1331,6 +1330,8 @@ async def _create_skill_edges(
     """
     if not skill_names:
         return []
+
+    from app.edition_services import skill_visible_to
 
     skills_collection = CollectionNames.AGENT_SKILLS.value
     time = get_epoch_timestamp_in_ms()

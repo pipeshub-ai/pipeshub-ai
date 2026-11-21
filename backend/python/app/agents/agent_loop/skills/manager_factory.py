@@ -56,7 +56,6 @@ from app.agents.agent_loop.skills.builtin_seeder import (
     BuiltinSkillSeeder,
 )
 from app.agents.agent_loop.skills.graph_store import (
-    GraphSkillStore,
     SharedSkillRights,
     SkillVisibility,
 )
@@ -177,7 +176,9 @@ async def _reconcile(graph_provider: "IGraphDBProvider", org_id: str) -> None:
     seeder = get_builtin_seeder()
     if seeder is None or _is_reconciled(org_id, seeder):
         return
-    seed_store = GraphSkillStore(
+    from app.edition_services import skill_store
+
+    seed_store = skill_store(
         graph_provider, org_id, SEED_IDENTITY, visibility=SkillVisibility.everyone(), allow_builtin_writes=True,
     )
     try:
@@ -279,10 +280,14 @@ async def _build_manager(
     provenance: Callable[[], SkillProvenance] | None = None,
     origins: "SkillOrigins | None" = None,
     own_skills: bool = True,
+    **store_options: object,
 ) -> SkillManager:
-    store = GraphSkillStore(
+    from app.edition_services import skill_store
+
+    store = skill_store(
         graph_provider, org_id, user_id, visibility=visibility, rights=rights, provenance=provenance,
         also_visible=visibility.shared, origins=origins, own_skills=own_skills,
+        **store_options,
     )
     index = SemanticSkillIndex(retrieval_service)
     tracker = GraphUsageTracker(graph_provider, org_id, user_id)
@@ -372,13 +377,17 @@ async def build_management_skill_manager(
     *,
     visibility: SkillVisibility | None = None,
     rights: SharedSkillRights | None = None,
+    **store_options: object,
 ) -> SkillManager:
     """Management profile for the REST API: creator-scoped reads (see
     `SkillVisibility`; the routes widen them to the caller's team and org
     commands), no learning-loop extractor, no
     builtin-pack seeding side effect. Never returns `None` — routes call
     this only once `graph_provider` is already known to exist (same
-    `get_services()` guard every other agent route uses)."""
+    `get_services()` guard every other agent route uses).
+
+    `store_options` are what the edition's store takes beyond these
+    (`app.edition_services.skill_store`)."""
     config = skills_manager_config()
     return await _build_manager(
         graph_provider, org_id, user_id, config,
@@ -386,4 +395,5 @@ async def build_management_skill_manager(
         extractor_transport=None,
         visibility=visibility or SkillVisibility.of([user_id]),
         rights=rights,
+        **store_options,
     )

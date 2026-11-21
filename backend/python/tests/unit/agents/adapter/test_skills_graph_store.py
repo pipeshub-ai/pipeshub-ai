@@ -569,7 +569,9 @@ class TestCreatorScoping:
         await creator_store.create_skill("deploy-service", _SKILL_MD)
         await creator_store.create_skill("release-notes", _SKILL_MD.replace("deploy-service", "release-notes"))
 
-        users_view = GraphSkillStore(graph, "org-1", "user-2", visibility_scope="user-2", also_visible={"deploy-service"})
+        users_view = GraphSkillStore(
+            graph, "org-1", "user-2", visibility=SkillVisibility.of(["user-2"]), also_visible={"deploy-service"},
+        )
         assert await users_view.get_skill("deploy-service") is not None
         assert await users_view.get_skill("release-notes") is None
         assert {m.name for m in await users_view.list_skills()} == {"deploy-service"}

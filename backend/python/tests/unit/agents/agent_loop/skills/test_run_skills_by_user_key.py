@@ -1,5 +1,6 @@
-"""A run reads and writes skills as the asker's graph user key, the kind of id a skill's `createdBy`
-holds. The account id the request was signed with is another kind, compared only with an account id.
+"""A run reads skills as the asker by each id their skills are stamped under: the graph user key the
+skills page writes as `createdBy` (from the user's details the route read), and the account id a run
+writes. Each is compared with its own kind.
 
 So a person's own skill made on the skills page reaches their own runs, and a co-worker's never does.
 """
@@ -19,6 +20,7 @@ from app.agent_loop_lib.tools.builtin.data.skills import (
 from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY
 from app.agents.agent_loop.skills.graph_store import (
     GraphSkillStore,
+    SkillVisibility,
     is_creator,
     skill_visible_to,
 )
@@ -66,8 +68,8 @@ def _md(name: str, description: str = "Use when asked about Bluebird", body: str
 async def _graph() -> _Graph:
     graph = _Graph()
     # As the skills page writes them: `createdBy` is the creator's graph user key.
-    await GraphSkillStore(graph, ORG, DANA_KEY, visibility_scope=DANA_KEY).create_skill(OWN, _md(OWN))
-    await GraphSkillStore(graph, ORG, CAROL_KEY, visibility_scope=CAROL_KEY).create_skill(
+    await GraphSkillStore(graph, ORG, DANA_KEY, visibility=SkillVisibility.of([DANA_KEY])).create_skill(OWN, _md(OWN))
+    await GraphSkillStore(graph, ORG, CAROL_KEY, visibility=SkillVisibility.of([CAROL_KEY])).create_skill(
         "carol-private", _md("carol-private", "Use when asked about Carol's deals"),
     )
     await GraphSkillStore(graph, ORG, SEED_IDENTITY).create_skill("pdf-tools", _md("pdf-tools", "Use for PDF files"))
@@ -78,7 +80,7 @@ async def _graph() -> _Graph:
 def _context(graph: _Graph, account: str, *, key: str = "", **overrides: Any) -> Any:  # noqa: ANN401
     fields: dict[str, Any] = {
         "org_id": ORG, "user_id": account, "user_key": key, "graph_provider": graph, "retrieval_service": None,
-        "user_info": {"userId": account, "orgId": ORG},
+        "user_info": {"userId": account, "orgId": ORG, **({"_key": key} if key else {})},
     }
     return make_context(**(fields | overrides))
 
@@ -116,17 +118,20 @@ class TestAPersonsOwnSkillInTheirOwnRun:
         assert await _loads(manager, OWN)
         assert "The codeword is in R." in str((await LoadSkillTool(manager).execute(name=OWN)).data)
 
-    async def test_fix_my_skill_edits_it(self) -> None:
+    async def test_fix_my_skill_edits_one_a_run_created(self) -> None:
+        # A run writes as its user id: it edits the skills runs created for her (the skills page edits its own).
         graph = await _graph()
+        await GraphSkillStore(graph, ORG, DANA_ACCOUNT).create_skill("bluebird-older", _md("bluebird-older"))
         manager = await _run_manager(_context(graph, DANA_ACCOUNT, key=DANA_KEY))
 
         out = await SkillManageTool(manager).execute(
-            action="patch", name=OWN, old_string="The codeword is in R.", new_string="The budget is 4.2 million.",
+            action="patch", name="bluebird-older", old_string="The codeword is in R.",
+            new_string="The budget is 4.2 million.",
         )
         assert out.success, out.error
-        assert "4.2 million" in graph._col("agentSkills")[f"{ORG}_{OWN}"]["content"]
+        assert "4.2 million" in graph._col("agentSkills")[f"{ORG}_bluebird-older"]["content"]
 
-    async def test_a_skill_the_run_creates_is_stamped_with_the_graph_user_key(self) -> None:
+    async def test_a_skill_the_run_creates_is_hers_by_either_id(self) -> None:
         graph = await _graph()
         manager = await _run_manager(_context(graph, DANA_ACCOUNT, key=DANA_KEY))
 
@@ -134,17 +139,11 @@ class TestAPersonsOwnSkillInTheirOwnRun:
             action="create", name="bluebird-budget", description="Use for the Bluebird budget", body="4.2 million",
         )
         assert out.success, out.error
-        assert graph._col("agentSkills")[f"{ORG}_bluebird-budget"]["createdBy"] == DANA_KEY
-        # So the skills page, which scopes by the key, lists it as hers.
-        page = GraphSkillStore(graph, ORG, DANA_KEY, visibility_scope=DANA_KEY)
+        # The runtime stamps its user id; a reader naming her by both ids (as the skills page does) lists it as hers.
+        assert graph._col("agentSkills")[f"{ORG}_bluebird-budget"]["createdBy"] == DANA_ACCOUNT
+        page = GraphSkillStore(graph, ORG, DANA_KEY, visibility=SkillVisibility.of([DANA_ACCOUNT, DANA_KEY]))
         assert "bluebird-budget" in {m.name for m in await page.list_skills()}
-
-    async def test_without_the_key_on_the_context_the_run_reads_it_from_the_user_record(self) -> None:
-        graph = await _graph()
-        context = _context(graph, DANA_ACCOUNT)
-
-        assert OWN in _names(await _run_manager(context))
-        assert graph.user_reads == 1 and context.user_key == DANA_KEY
+        assert "bluebird-budget" not in _names(await _run_manager(_context(graph, CAROL_ACCOUNT, key=CAROL_KEY)))
 
     async def test_in_a_turn_others_read_it_stays_out(self) -> None:
         manager = await _run_manager(_context(await _graph(), DANA_ACCOUNT, key=DANA_KEY), reads_own=False)
@@ -194,13 +193,10 @@ class TestASkillAnEarlierRunCreated:
 
 
 class TestNoKeyNoSkills:
-    async def test_a_person_with_no_graph_user_gets_no_skills(self) -> None:
-        assert await _run_manager(_context(await _graph(), "6650f0aa00000000000000ee")) is None
-
-    async def test_a_failed_read_of_the_key_gets_no_skills(self) -> None:
-        graph = await _graph()
-        graph.fail_user_reads = True
-        assert await _run_manager(_context(graph, DANA_ACCOUNT)) is None
+    async def test_a_person_with_no_graph_user_key_sees_only_the_builtins(self) -> None:
+        manager = await _run_manager(_context(await _graph(), "6650f0aa00000000000000ee"))
+        assert _names(manager) == {"pdf-tools"}
+        assert not await _loads(manager, OWN)
 
     async def test_the_key_is_read_under_the_editions_lookup_scope(self, monkeypatch: pytest.MonkeyPatch) -> None:
         asked: list[str | None] = []

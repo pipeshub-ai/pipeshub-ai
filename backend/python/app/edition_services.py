@@ -131,6 +131,28 @@ async def pre_sync_hook(app_container, logger) -> None:
     pass
 
 
+def skill_store(graph_provider: "IGraphDBProvider", org_id: str, user_id: str, **options: object) -> "GraphSkillStore":
+    """The agent skill store a request or the builtin seeder opens. OSS: the graph store, whose builtins
+    are builtin-sourced skills and whose other skills are their creator's."""
+    from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+
+    return GraphSkillStore(graph_provider, org_id, user_id, **options)
+
+
+def skill_visible_to(doc: "Mapping[str, Any]", viewer: str | None, account_id: str | None = None) -> bool:
+    """Who may see a skill, the rule of the store `skill_store` opens."""
+    from app.agents.agent_loop.skills.graph_store import skill_visible_to as rule
+
+    return rule(doc, viewer, account_id)
+
+
+async def skills_shown_with_an_agent(
+    skills: list[dict[str, Any]], org_id: str, user_key: str, graph_provider: "IGraphDBProvider",
+) -> list[dict[str, Any]]:
+    """The skill entries an agent shows the caller. OSS: every entry as stored."""
+    return skills
+
+
 def get_data_entities_processor_cls():
     """Return the DataSourceEntitiesProcessor class for this edition."""
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -148,8 +170,10 @@ if TYPE_CHECKING:
 
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agents.agent_loop.context import AgentContext
+    from app.agents.agent_loop.skills.graph_store import GraphSkillStore
     from app.agents.registry.toolset_registry import ToolsetRegistry
     from app.config.configuration_service import ConfigurationService
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.messaging.consumer_concurrency import AdmissionBacklog
     from app.services.messaging.scheduling.interface import IndexingFairness
     from app.services.model_identity.forwarders.registry import ForwarderRegistry
