@@ -24279,6 +24279,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   RETURN true AS granted
                 }}
                 WITH rec, pos
+                ORDER BY pos
                 LIMIT $limit
                 RETURN collect({{pos: pos, row: {projection}}}) AS hits
               }}"""
