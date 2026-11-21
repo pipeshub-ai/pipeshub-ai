@@ -61,6 +61,8 @@ export interface QdrantConfig {
   apiKey: string;
   host: string;
   grpcPort: number;
+  https?: boolean;
+  preferGrpc?: boolean;
 }
 
 export interface ArangoConfig {
@@ -231,6 +233,8 @@ export class ConfigService {
       host: process.env.QDRANT_HOST || 'localhost',
       port: parseInt(process.env.QDRANT_PORT || '6333', 10),
       grpcPort: parseInt(process.env.QDRANT_GRPC_PORT || '6334', 10),
+      https: process.env.QDRANT_HTTPS?.toLowerCase() === 'true',
+      preferGrpc: process.env.QDRANT_PREFER_GRPC?.toLowerCase() !== 'false',
     });
 
     return this.getEncryptedConfig<QdrantConfig>(configPaths.db.qdrant, {
@@ -238,6 +242,8 @@ export class ConfigService {
       host: process.env.QDRANT_HOST || 'localhost',
       port: parseInt(process.env.QDRANT_PORT || '6333', 10),
       grpcPort: parseInt(process.env.QDRANT_GRPC_PORT || '6334', 10),
+      https: process.env.QDRANT_HTTPS?.toLowerCase() === 'true',
+      preferGrpc: process.env.QDRANT_PREFER_GRPC?.toLowerCase() !== 'false',
     });
   }
 
