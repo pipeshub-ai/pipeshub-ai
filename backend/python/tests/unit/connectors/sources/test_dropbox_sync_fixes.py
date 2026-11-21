@@ -15,7 +15,7 @@ from dropbox.team_log import EventCategory
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.filters import FilterCollection
-from app.connectors.sources.dropbox.connector import DropboxConnector, _reset_time
+from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox.errors import (
     is_auth_error,
     is_cursor_reset,
@@ -37,6 +37,7 @@ from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+from app.ee.permission_sync.dropbox_team import _reset_time
 from app.models.entities import AppUser
 from app.sources.client.dropbox.dropbox_ import DropboxResponse
 
@@ -77,6 +78,7 @@ def team() -> DropboxConnector:
     conn.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
     p = conn.data_entities_processor
     p.org_id = "org-1"
+    p.permission_sync_gated = AsyncMock(return_value=False)
     for name in ("on_new_records", "on_record_metadata_update", "on_record_content_update", "on_new_app_users",
                  "withdraw_app_user_access", "on_record_group_deleted", "batch_update_nodes"):
         setattr(p, name, AsyncMock())

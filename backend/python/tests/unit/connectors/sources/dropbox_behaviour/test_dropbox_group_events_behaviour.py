@@ -226,3 +226,21 @@ class TestGroupEvents:
         assert api.cursors_read() == ["c1", "c2"]
         assert db.members(ENG) == [ANA, CAL]
         assert await saved_cursor(connector) == "c3"
+
+
+async def _no_licence(connector_id: str | None) -> bool:
+    return True  # what the processor's licence gate answers for a company-wide connector with no key
+
+
+class TestWithoutALicenceKey:
+    """The licence gate holds: the group events are not read, and wait under the saved cursor for a key."""
+
+    async def test_a_gated_run_reads_no_group_events_and_keeps_the_cursor(self, connector, api, db) -> None:
+        api.page("c1", [member_removed(ENG, BEN)], next_cursor="c2")
+        db.permission_sync_gated = _no_licence
+
+        await sync(connector)
+
+        assert api.calls == []
+        assert await saved_cursor(connector) == "c1"
+        assert db.members(ENG) == [ANA, BEN]

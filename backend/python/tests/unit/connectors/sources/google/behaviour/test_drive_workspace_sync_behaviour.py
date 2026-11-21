@@ -3961,9 +3961,9 @@ async def test_a_folder_turning_limited_takes_an_old_style_grant_off_the_items_b
 async def test_the_items_below_a_folder_turning_limited_are_checked_over_several_runs_past_the_bound(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.connectors.sources.google.drive.team.connector as drive_connector
+    import app.ee.permission_sync.google_drive_workspace as drive_permissions
 
-    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    monkeypatch.setattr(drive_permissions, "LIMITED_SUBTREE_MAX_CHECKS", 1)
     carol = "carol@example.com"
     ws.world.add_user(carol)
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader", carol: "reader"})
@@ -3992,9 +3992,9 @@ async def test_the_items_below_a_folder_turning_limited_are_checked_over_several
 async def test_no_member_keeps_a_stand_in_grant_below_a_limited_folder_past_the_run_it_turned_limited(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.connectors.sources.google.drive.team.connector as drive_connector
+    import app.ee.permission_sync.google_drive_workspace as drive_permissions
 
-    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    monkeypatch.setattr(drive_permissions, "LIMITED_SUBTREE_MAX_CHECKS", 1)
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     ws.world.folder("dir", "Plans", parent="sd-1")
     items = [f"f{i}" for i in range(5)]
@@ -4055,9 +4055,9 @@ async def test_a_descendant_whose_read_keeps_failing_holds_back_none_after_it(ws
 async def test_a_descendant_check_that_fails_still_spends_the_runs_bound(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.connectors.sources.google.drive.team.connector as drive_connector
+    import app.ee.permission_sync.google_drive_workspace as drive_permissions
 
-    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    monkeypatch.setattr(drive_permissions, "LIMITED_SUBTREE_MAX_CHECKS", 1)
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     for d in ("dirA", "dirB"):
         ws.world.folder(d, d, parent="sd-1")
@@ -4078,9 +4078,9 @@ async def test_a_descendant_check_that_fails_still_spends_the_runs_bound(
 async def test_a_folder_the_bound_never_reached_stays_pending_until_it_is_checked(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.connectors.sources.google.drive.team.connector as drive_connector
+    import app.ee.permission_sync.google_drive_workspace as drive_permissions
 
-    monkeypatch.setattr(drive_connector, "LIMITED_SUBTREE_MAX_CHECKS", 1)
+    monkeypatch.setattr(drive_permissions, "LIMITED_SUBTREE_MAX_CHECKS", 1)
     ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", BOB: "reader"})
     for folder, item in (("dir-a", "fa"), ("dir-b", "fb")):
         ws.world.folder(folder, folder, parent="sd-1")

@@ -3,11 +3,11 @@
 from types import SimpleNamespace
 
 from app.connectors.sources.dropbox.shared_folders import (
-    folder_grants,
     outside_namespace,
     parents_first,
     plan_shared_folders,
 )
+from app.ee.permission_sync.dropbox_team import folder_grants
 from app.models.permission import EntityType, PermissionType
 
 

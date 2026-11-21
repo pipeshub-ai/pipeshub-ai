@@ -150,7 +150,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("rss", "container", CONTAINER, "rss/connector.py::RSSConnector"),
     Connector("web", "container", CONTAINER, "web/connector.py::WebConnector"),
     Connector("box", "item-acl", OVERRIDE, "box/connector.py::BoxConnector._process_box_entry", "per-item API permissions; a company shared link adds an ORG grant", read=False),
-    Connector("dropbox", "item-acl", OVERRIDE, "dropbox/shared_folders.py::folder_grants", "shared-folder members as user and group grants", read=False),
+    Connector("dropbox", "item-acl", OVERRIDE, "../../ee/permission_sync/dropbox_team.py::folder_grants", "shared-folder members as user and group grants", read=False),
     Connector("salesforce", "item-acl", OVERRIDE, "salesforce/connector.py::SalesforceConnector._build_deal_record", "records inherit=False; org grant on product groups (SalesforceConnector._run_sync)", read=False),
     Connector("servicenow/servicenow", "item-acl", OVERRIDE, "servicenow/servicenow/connector.py::ServiceNowConnector._process_single_article", "an article inherits unless it has read criteria: Can Read only is inherit and a grant, Cannot Read or an ownership group computes the users", read=False),
     Connector("zendesk", "item-acl", OVERRIDE, "zendesk/connector.py::ZendeskConnector._ticket_to_record", "ticket folders inherit=False, opened to the requester", read=False),

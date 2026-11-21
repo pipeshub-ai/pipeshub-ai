@@ -134,6 +134,7 @@ def connector():
         dep.on_new_records = AsyncMock()
         dep.on_new_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
+        dep.permission_sync_gated = AsyncMock(return_value=False)
         dep.on_new_user_groups = AsyncMock()
         dep.on_record_deleted = AsyncMock()
         dep.on_record_metadata_update = AsyncMock()
