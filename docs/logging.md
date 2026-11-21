@@ -955,7 +955,8 @@ their own HTTP clients.
   call, not the error report: the request's `http.request.error` still logs the failure once. `handleBackendError` logs
   nothing; a 5xx it maps carries `{ status }` as its cause, so an upstream 500 is `upstream_5xx` (WARNING) on the request's
   lines too, and a 4xx it passes on keeps the service's words in its message. A 5xx's own detail stays in the service's log.
-  About 30 controller catch blocks still log `error.response?.data` themselves; they are being removed module by module.
+  A controller that passes a failure to `next` does not log it itself (see "Connector proxy (Node)"). A few catch blocks in
+  the knowledge base, toolset and MCP server controllers still log `error.response?.data`; they are being removed module by module.
 - **Request id.** A call to a PipesHub service always carries the request's sanitised root id, replacing an `x-request-id`
   copied from the client (`injectRequestHeaders`, and the axios adapter). The gateway never adds one for a third party.
 - **Streams.** The chat stream's line is written when the body ends (DEBUG), fails midway (`unavailable`, with the 200), or
@@ -1084,6 +1085,33 @@ DEBUG `mail.send.retry` (`attempt`, `error_class`, `smtp_code`, `next_retry_ms`)
   `mail.deliveryFailed` notification quotes the recipients). Producers log each publish at DEBUG (`broker.event.published`,
   `event_type`, `topic`).
 
+## Connector proxy (Node)
+
+The connector routes (`/api/v1/connectors`, `backend/nodejs/apps/src/modules/tokens_manager`) and the OAuth app config routes
+pass each request on to the connector service. They write no line of their own for a failure they pass on: the error
+middleware's `http.request.error` is the one failure line, at its class's level, and each call has its `upstream.call.end`.
+A read or a change is told by the access line; the connector service logs the change it made under the same request id.
+`connector_id`, `connector_type` and `record_id` are bound from the path (`bindConnectorLogFields`, after `guardPathParams`), so
+the call, error and access lines of a request about one connector all carry it.
+
+After a sync toggle or a sync-settings save, the schedule is brought in line in the background, and that reconcile writes one
+`connector schedule reconcile` line:
+
+| Case | Level | `outcome` | `reason` | Other fields |
+| --- | --- | --- | --- | --- |
+| one read of the connector's settings failed | DEBUG (its call line already warned); ERROR for a 2xx without the settings or our own bug | `failure` | `non_2xx`, `no_envelope`, `no_type`, `request_failed` | `status`, `error` |
+| every read failed (3 tries); the hourly repair applies the settings | WARNING | `failure` | `snapshot_failed` | `attempt` |
+| every read failed, and recording the change for the hourly repair failed too | ERROR `Could not record a schedule change for the hourly repair` (with `error`), before the WARNING above | | | |
+
+When that ERROR appears and no earlier change of the connector is still pending, the hourly repair does not pick this
+change up: save the connector's sync settings again once the connector service answers.
+| the reconcile itself | the orchestrator's line (crawling manager) | | | |
+
+A failure after the reconcile (recording it for the hourly repair, or our own bug) is `Background schedule reconcile failed …`
+at its class's level; when the orchestrator threw, it already logged the failure and this line is WARNING. `Access explanation
+requested` (an admin asking why a person can or cannot read a record) is one INFO line with `record_id`, `status`, `code`,
+`outcome`, and `target_user_id` and `admitted` in the metadata.
+
 ## Redaction
 
 Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
@@ -1167,7 +1195,9 @@ with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest 
   `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Node
   audit lines also have `actor`, `target`, `group_id` and `auth_method`. Python also has `ctx_kind`, `ctx_source`, `target_org_id` (the org a cross-org job acted on, outside its bound context), `error_message`
   and `cause_type`; Node's `error` is an object (`error.message`). Node also has `smtp_code` and `email_template_type` (on `mail.send.end`), `upstream` and `network_code` (on
-  `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on `chat_stream.*`).
+  `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on `chat_stream.*`). A Node name that is not a
+  typed field (`target_user_id` and `admitted` on the connector explain line) is kept in the JSON `metadata`, not the ` | k=v`
+  suffix; `outcome` is a field only as `success`, `failure`, `partial` or `skipped`.
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.

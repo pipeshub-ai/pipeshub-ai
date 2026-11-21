@@ -140,8 +140,8 @@ describe('upstream-call: what a request logs about its upstream call', () => {
     const middleware = logged.filter((l) => l.message === 'http.request.error')
     expect(middleware.map((l) => [l.level, l.meta.error_class])).to.deep.equal([['warning', 'upstream_5xx']])
     expect([access.level, access.meta.error_class]).to.deep.equal(['warning', 'upstream_5xx'])
-    // The controller's own catch-and-log line is N5's; it is the only ERROR left.
-    expect(atLeast(['error']).map((l) => l.message)).to.deep.equal(['Error getting connector stats'])
+    // The controller no longer logs what it passes on: no ERROR at all.
+    expect(atLeast(['error']).map((l) => l.message)).to.deep.equal([])
     expect(JSON.stringify(logged.map((l) => [l.message, l.meta]))).to.not.include(BODY_SECRET)
   })
 
@@ -154,7 +154,7 @@ describe('upstream-call: what a request logs about its upstream call', () => {
       ['warning', 2, 'unavailable', 'UND_ERR_SOCKET'],
       ['warning', 3, 'unavailable', 'UND_ERR_SOCKET'],
     ])
-    expect(atLeast(['error']).map((l) => l.message)).to.deep.equal(['Error getting connector stats'])
+    expect(atLeast(['error']).map((l) => l.message)).to.deep.equal([])
   })
 
   it('a 200 and a chat stream log exactly their access line at INFO and above', async () => {

@@ -4,7 +4,8 @@ import {
   ConnectorServiceResponse,
 } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { Response } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
+import { bindLogContext } from '../../../libs/context/request-context';
 import { isLocalFsConnector } from '../../../utils/local-fs-utils';
 import {
   DesktopPresence,
@@ -42,6 +43,28 @@ export { retryAfterToSeconds, SERVICE_UNAVAILABLE_MESSAGE };
  */
 export const handleBackendError = (error: unknown, operation: string): Error =>
   mapBackendError(error, operation);
+
+/**
+ * Names the connector (and record) a request is about on every line it writes: the service call
+ * lines, the error line and the access line. Register after `guardPathParams`, so only a checked
+ * path segment is bound.
+ */
+export const bindConnectorLogFields = (router: Router): void => {
+  const bind =
+    (key: 'connector_id' | 'connector_type' | 'record_id') =>
+    (
+      _req: Request,
+      _res: Response,
+      next: NextFunction,
+      value: string,
+    ): void => {
+      bindLogContext({ [key]: value });
+      next();
+    };
+  router.param('connectorId', bind('connector_id'));
+  router.param('connectorType', bind('connector_type'));
+  router.param('recordId', bind('record_id'));
+};
 
 // Helper function to execute connector service commands
 export const executeConnectorCommand = async <T = unknown>(
