@@ -246,7 +246,9 @@ class SmartPDFParser:
         except DoclingUnavailableError as exc:
             if self._large is None or primary is self._large:
                 raise
-            logger.warning(
+            # A parse that waits for Docling (DoclingNotServing) logs at its hand-back's INFO: the outage is already reported.
+            logger.log(
+                getattr(exc, "log_level", logging.WARNING),
                 "SmartPDFParser: Docling is unavailable for '%s' (%s). Using the PdfPlumber+OpenCV parser.",
                 record_name,
                 exc,
