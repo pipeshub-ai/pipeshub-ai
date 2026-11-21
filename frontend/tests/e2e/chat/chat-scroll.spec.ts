@@ -256,27 +256,35 @@ async function wheel(page: Page, deltaY: number) {
 }
 
 /**
- * The list's scroll state, and how far below the top of the list the heading
- * of the question containing `text` sits (NaN while it is not rendered). The
- * top of the list is where a question brought to the top rests: its top edge,
- * or, when the list runs under the top bar, below the bar's fade (the list's
- * top padding plus its column's, as the list itself measures it).
+ * The list's scroll state, and where the question containing `text` is (NaN
+ * while it is not rendered): `offset`, how far below the list's top edge its
+ * heading sits, and `fromRest`, how far its top is from where a question
+ * brought to the top rests.
+ *
+ * That rest is the list's top edge, or, when the list runs under the top bar,
+ * below the bar's fade: the list's top padding plus its column's, as the list
+ * itself measures it. A question's top is its heading's line: an inline
+ * heading's own box starts lower, by the line's half-leading.
  */
 async function measure(page: Page, text = '') {
   return page.evaluate(({ selector, text }) => {
     const list = document.querySelector<HTMLElement>(selector);
-    if (!list) return { top: NaN, fromBottom: NaN, height: NaN, offset: NaN };
+    if (!list) return { top: NaN, fromBottom: NaN, height: NaN, offset: NaN, fromRest: NaN };
     const heading = text
       ? [...document.querySelectorAll('[data-testid="user-query-heading"]')].find((h) => h.textContent?.includes(text))
       : undefined;
+    let line: Element | null = heading ?? null;
+    while (line?.parentElement && getComputedStyle(line).display.startsWith('inline')) line = line.parentElement;
     const padTop = (el: Element | null) => (el ? parseFloat(getComputedStyle(el).paddingTop) || 0 : 0);
     const inset = padTop(list);
     const rest = inset > 0 ? inset + padTop(list.querySelector('.chat-column-gutter')) : 0;
+    const listTop = list.getBoundingClientRect().top;
     return {
       top: list.scrollTop,
       fromBottom: list.scrollHeight - list.scrollTop - list.clientHeight,
       height: list.clientHeight,
-      offset: heading ? heading.getBoundingClientRect().top - list.getBoundingClientRect().top - rest : NaN,
+      offset: heading ? heading.getBoundingClientRect().top - listTop : NaN,
+      fromRest: line ? line.getBoundingClientRect().top - listTop - rest : NaN,
     };
   }, { selector: SCROLLER, text });
 }
@@ -310,11 +318,11 @@ async function settled(page: Page) {
   }), SCROLLER);
 }
 
-/** The question containing `text` ends up, and stays, at the top edge of the list. */
+/** The question containing `text` ends up, and stays, where a question brought to the top of the list rests. */
 async function expectAtTop(page: Page, text: string) {
-  await expect.poll(async () => Math.abs((await measure(page, text)).offset)).toBeLessThanOrEqual(2);
+  await expect.poll(async () => Math.abs((await measure(page, text)).fromRest)).toBeLessThanOrEqual(2);
   await settled(page);
-  expect(Math.abs((await measure(page, text)).offset)).toBeLessThanOrEqual(2);
+  expect(Math.abs((await measure(page, text)).fromRest)).toBeLessThanOrEqual(2);
 }
 
 /** The list ends up, and stays, at scrollTop `top`. */
@@ -471,7 +479,6 @@ test.describe('Chat — message list scrolling (mocked backend)', () => {
     await wheel(page, -500);
     await expectScrollTop(page, opened - 500);
 
-    await page.getByText('Recents', { exact: true }).click();
     await page.locator('a', { hasText: 'scroll-b' }).click();
     await expectAtTop(page, question('scroll-b', 4));
     const bOpened = (await measure(page)).top;
