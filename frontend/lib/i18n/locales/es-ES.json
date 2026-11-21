@@ -2823,11 +2823,13 @@
         "clients": {
           "claude": {
             "label": "Claude",
-            "steps": "En Claude, abre Configuración › Conectores, elige Añadir conector personalizado, pega el endpoint de arriba, elige Conectar e inicia sesión en PipesHub."
+            "steps": "En Claude, abre Personalizar › Conectores, selecciona + y luego Añadir conector personalizado. Pega el endpoint de arriba, elige Conectar e inicia sesión en PipesHub. En un plan Team o Enterprise, primero un propietario añade el conector en la configuración de la organización.",
+            "tip": "Claude se conecta desde la nube de Anthropic, no desde tu ordenador, así que el endpoint debe ser accesible desde internet. Una dirección localhost o de una red privada no funcionará."
           },
           "chatgpt": {
             "label": "ChatGPT",
-            "steps": "En ChatGPT, activa el modo de desarrollador, añade un conector con el endpoint de arriba como URL y OAuth como autenticación, e inicia sesión en PipesHub."
+            "steps": "En chatgpt.com, abre Plugins, selecciona + y luego Añadir servidor MCP personalizado. Pega el endpoint de arriba como URL del servidor, elige OAuth, acepta la advertencia y selecciona Crear como plugin; después inicia sesión en PipesHub. En un espacio de trabajo Business, Enterprise o Edu, un administrador debe permitir los servidores MCP personalizados.",
+            "tip": "ChatGPT se conecta desde los servidores de OpenAI, no desde tu ordenador, así que el endpoint debe ser accesible desde internet. Una dirección localhost o de una red privada no funcionará."
           },
           "cursor": {
             "label": "Cursor",

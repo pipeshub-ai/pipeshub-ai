@@ -3050,11 +3050,13 @@
         "clients": {
           "claude": {
             "label": "Claude",
-            "steps": "V aplikaci Claude otevřete Nastavení › Konektory, zvolte Přidat vlastní konektor, vložte koncový bod výše, pak zvolte Připojit a přihlaste se do PipesHub."
+            "steps": "V aplikaci Claude otevřete Přizpůsobit › Konektory, zvolte + a pak Přidat vlastní konektor. Vložte koncový bod výše, zvolte Připojit a přihlaste se do PipesHub. U plánu Team nebo Enterprise musí konektor nejprve přidat vlastník v nastavení organizace.",
+            "tip": "Claude se připojuje z cloudu společnosti Anthropic, ne z vašeho počítače, takže koncový bod musí být dostupný z internetu. Adresa localhost ani adresa v privátní síti fungovat nebude."
           },
           "chatgpt": {
             "label": "ChatGPT",
-            "steps": "V ChatGPT zapněte režim pro vývojáře, přidejte konektor s koncovým bodem výše jako URL a OAuth jako ověřením, pak se přihlaste do PipesHub."
+            "steps": "Na chatgpt.com otevřete Pluginy, zvolte + a pak Přidat vlastní MCP server. Vložte koncový bod výše jako URL serveru, zvolte OAuth, potvrďte upozornění a zvolte Vytvořit jako plugin, pak se přihlaste do PipesHub. V pracovním prostoru Business, Enterprise nebo Edu musí vlastní MCP servery povolit správce.",
+            "tip": "ChatGPT se připojuje ze serverů společnosti OpenAI, ne z vašeho počítače, takže koncový bod musí být dostupný z internetu. Adresa localhost ani adresa v privátní síti fungovat nebude."
           },
           "cursor": {
             "label": "Cursor",

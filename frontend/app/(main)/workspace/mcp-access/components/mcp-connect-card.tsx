@@ -9,6 +9,11 @@ import { useCopyText } from '@/lib/hooks/use-copy-text';
 export const MCP_CLIENTS = ['claude', 'chatgpt', 'cursor', 'vscode', 'claudeCode'] as const;
 export type McpClient = (typeof MCP_CLIENTS)[number];
 
+/** Single-quotes a value for a POSIX shell, so `?`, `[` or `]` in a URL are not read as a glob (zsh stops on one). */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /** What to paste into each client's own config, for the clients configured by file or command. */
 export function clientSnippet(client: McpClient, url: string): string | undefined {
   switch (client) {
@@ -17,7 +22,7 @@ export function clientSnippet(client: McpClient, url: string): string | undefine
     case 'vscode':
       return JSON.stringify({ servers: { pipeshub: { type: 'http', url } } }, null, 2);
     case 'claudeCode':
-      return `claude mcp add --transport http pipeshub ${url}`;
+      return `claude mcp add --transport http pipeshub ${shellQuote(url)}`;
     default:
       return undefined;
   }
@@ -27,7 +32,14 @@ function CopyButton({ text, label }: { text: string; label: string }) {
   const { t } = useTranslation();
   const { copied, copy } = useCopyText();
   return (
-    <Button size="2" variant="soft" color="gray" onClick={() => void copy(text)} aria-label={label}>
+    <Button
+      size="2"
+      variant="soft"
+      color="gray"
+      className="touch-size"
+      onClick={() => void copy(text)}
+      aria-label={label}
+    >
       <span aria-hidden="true" style={{ display: 'inline-flex' }}>
         <MaterialIcon name={copied ? 'check' : 'content_copy'} size={16} />
       </span>
@@ -83,13 +95,13 @@ export function McpConnectCard({ url }: { url: string }) {
       <Tabs.Root value={client} onValueChange={(value) => setClient(value as McpClient)}>
         <Tabs.List size="1" aria-label={t('workspace.mcpAccess.connect.clientsLabel')} style={{ flexWrap: 'wrap' }}>
           {MCP_CLIENTS.map((id) => (
-            <Tabs.Trigger key={id} value={id}>
+            <Tabs.Trigger key={id} value={id} className="touch-size">
               {t(`workspace.mcpAccess.connect.clients.${id}.label`)}
             </Tabs.Trigger>
           ))}
         </Tabs.List>
-        <Box pt="3">
-          <Flex direction="column" gap="2">
+        <Tabs.Content value={client}>
+          <Flex direction="column" gap="2" pt="3">
             <Text size="2" style={{ color: 'var(--gray-12)', lineHeight: '20px' }}>
               {t(`workspace.mcpAccess.connect.clients.${client}.steps`)}
             </Text>
@@ -114,7 +126,8 @@ export function McpConnectCard({ url }: { url: string }) {
                 >
                   <pre>{snippet}</pre>
                 </Box>
-                <CopyButton text={snippet} label={t('workspace.mcpAccess.connect.copySnippet')} />
+                {/* Keyed by the snippet, so "Copied" does not carry over to another client's configuration. */}
+                <CopyButton key={snippet} text={snippet} label={t('workspace.mcpAccess.connect.copySnippet')} />
               </Flex>
             )}
             {tip !== tipKey && (
@@ -123,7 +136,7 @@ export function McpConnectCard({ url }: { url: string }) {
               </Text>
             )}
           </Flex>
-        </Box>
+        </Tabs.Content>
       </Tabs.Root>
     </Flex>
   );

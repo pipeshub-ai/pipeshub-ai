@@ -2934,11 +2934,13 @@
         "clients": {
           "claude": {
             "label": "Claude",
-            "steps": "Claude에서 설정 › 커넥터를 열고 사용자 지정 커넥터 추가를 선택한 다음, 위의 엔드포인트를 붙여 넣고 연결을 선택해 PipesHub에 로그인합니다."
+            "steps": "Claude에서 사용자 지정 › 커넥터를 열고 +를 선택한 다음 사용자 지정 커넥터 추가를 선택합니다. 위의 엔드포인트를 붙여 넣고 연결을 선택해 PipesHub에 로그인합니다. Team 또는 Enterprise 요금제에서는 먼저 소유자가 조직 설정에서 커넥터를 추가합니다.",
+            "tip": "Claude는 사용자의 컴퓨터가 아니라 Anthropic 클라우드에서 연결하므로 엔드포인트가 인터넷에서 접근 가능해야 합니다. localhost나 사설 네트워크 주소는 작동하지 않습니다."
           },
           "chatgpt": {
             "label": "ChatGPT",
-            "steps": "ChatGPT에서 개발자 모드를 켜고, 위의 엔드포인트를 URL로, OAuth를 인증 방식으로 하는 커넥터를 추가한 다음 PipesHub에 로그인합니다."
+            "steps": "chatgpt.com에서 플러그인을 열고 +를 선택한 다음 사용자 지정 MCP 서버 추가를 선택합니다. 위의 엔드포인트를 서버 URL로 붙여 넣고 OAuth를 선택한 뒤, 경고를 확인하고 플러그인으로 만들기를 선택한 다음 PipesHub에 로그인합니다. Business, Enterprise 또는 Edu 워크스페이스에서는 관리자가 사용자 지정 MCP 서버를 허용해야 합니다.",
+            "tip": "ChatGPT는 사용자의 컴퓨터가 아니라 OpenAI 서버에서 연결하므로 엔드포인트가 인터넷에서 접근 가능해야 합니다. localhost나 사설 네트워크 주소는 작동하지 않습니다."
           },
           "cursor": {
             "label": "Cursor",

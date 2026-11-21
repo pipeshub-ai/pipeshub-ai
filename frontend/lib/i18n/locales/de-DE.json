@@ -2791,11 +2791,13 @@
         "clients": {
           "claude": {
             "label": "Claude",
-            "steps": "Öffnen Sie in Claude Einstellungen › Konnektoren, wählen Sie „Benutzerdefinierten Konnektor hinzufügen“, fügen Sie den Endpunkt oben ein, wählen Sie dann „Verbinden“ und melden Sie sich bei PipesHub an."
+            "steps": "Öffnen Sie in Claude Anpassen › Konnektoren, wählen Sie + und dann „Benutzerdefinierten Konnektor hinzufügen“. Fügen Sie den Endpunkt oben ein, wählen Sie „Verbinden“ und melden Sie sich bei PipesHub an. Bei einem Team- oder Enterprise-Plan fügt zuerst ein Owner den Konnektor in den Organisationseinstellungen hinzu.",
+            "tip": "Claude verbindet sich aus der Cloud von Anthropic, nicht von Ihrem Computer. Der Endpunkt muss daher aus dem Internet erreichbar sein; eine localhost-Adresse oder eine Adresse in einem privaten Netzwerk funktioniert nicht."
           },
           "chatgpt": {
             "label": "ChatGPT",
-            "steps": "Schalten Sie in ChatGPT den Entwicklermodus ein, fügen Sie einen Konnektor mit dem Endpunkt oben als URL und OAuth als Authentifizierung hinzu und melden Sie sich dann bei PipesHub an."
+            "steps": "Öffnen Sie auf chatgpt.com „Plugins“, wählen Sie + und dann „Benutzerdefinierten MCP-Server hinzufügen“. Fügen Sie den Endpunkt oben als Server-URL ein, wählen Sie OAuth, bestätigen Sie den Warnhinweis, wählen Sie „Als Plugin erstellen“ und melden Sie sich dann bei PipesHub an. In einem Business-, Enterprise- oder Edu-Workspace muss ein Admin benutzerdefinierte MCP-Server erlauben.",
+            "tip": "ChatGPT verbindet sich von den Servern von OpenAI, nicht von Ihrem Computer. Der Endpunkt muss daher aus dem Internet erreichbar sein; eine localhost-Adresse oder eine Adresse in einem privaten Netzwerk funktioniert nicht."
           },
           "cursor": {
             "label": "Cursor",

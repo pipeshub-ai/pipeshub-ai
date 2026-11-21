@@ -2786,11 +2786,13 @@
         "clients": {
           "claude": {
             "label": "Claude",
-            "steps": "Claude में Settings › Connectors खोलें, Add custom connector चुनें, ऊपर दिया एंडपॉइंट पेस्ट करें, फिर Connect चुनें और PipesHub से साइन इन करें।"
+            "steps": "Claude में Customize › Connectors खोलें, + चुनें, फिर Add custom connector चुनें। ऊपर दिया एंडपॉइंट पेस्ट करें, फिर Connect चुनें और PipesHub से साइन इन करें। Team या Enterprise प्लान पर पहले कोई owner संगठन की सेटिंग्स में कनेक्टर जोड़ता है।",
+            "tip": "Claude आपके कंप्यूटर से नहीं, Anthropic के क्लाउड से कनेक्ट करता है, इसलिए एंडपॉइंट इंटरनेट से पहुँच योग्य होना चाहिए। localhost या निजी नेटवर्क का पता काम नहीं करेगा।"
           },
           "chatgpt": {
             "label": "ChatGPT",
-            "steps": "ChatGPT में डेवलपर मोड चालू करें, ऊपर दिए एंडपॉइंट को URL और OAuth को ऑथेंटिकेशन बनाकर एक कनेक्टर जोड़ें, फिर PipesHub से साइन इन करें।"
+            "steps": "chatgpt.com पर Plugins खोलें, + चुनें, फिर Add custom MCP server चुनें। ऊपर दिए एंडपॉइंट को सर्वर URL के रूप में पेस्ट करें, OAuth चुनें, चेतावनी स्वीकार करें और Create as a plugin चुनें, फिर PipesHub से साइन इन करें। Business, Enterprise या Edu वर्कस्पेस में किसी एडमिन को कस्टम MCP सर्वर की अनुमति देनी होगी।",
+            "tip": "ChatGPT आपके कंप्यूटर से नहीं, OpenAI के सर्वरों से कनेक्ट करता है, इसलिए एंडपॉइंट इंटरनेट से पहुँच योग्य होना चाहिए। localhost या निजी नेटवर्क का पता काम नहीं करेगा।"
           },
           "cursor": {
             "label": "Cursor",

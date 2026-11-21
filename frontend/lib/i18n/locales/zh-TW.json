@@ -2934,11 +2934,13 @@
         "clients": {
           "claude": {
             "label": "Claude",
-            "steps": "在 Claude 中開啟「設定 › 連接器」，選擇「新增自訂連接器」，貼上上方的端點，然後選擇「連線」並登入 PipesHub。"
+            "steps": "在 Claude 中開啟「自訂 › 連接器」，選擇 +，然後選擇「新增自訂連接器」。貼上上方的端點，然後選擇「連線」並登入 PipesHub。若為 Team 或 Enterprise 方案，需先由擁有者在組織設定中新增該連接器。",
+            "tip": "Claude 是從 Anthropic 的雲端連線，而不是從你的電腦連線，因此端點必須能從網際網路存取。localhost 或私人網路位址將無法使用。"
           },
           "chatgpt": {
             "label": "ChatGPT",
-            "steps": "在 ChatGPT 中開啟開發人員模式，新增一個以上方端點為 URL、以 OAuth 為驗證方式的連接器，然後登入 PipesHub。"
+            "steps": "在 chatgpt.com 上開啟「外掛程式」，選擇 +，然後選擇「新增自訂 MCP 伺服器」。將上方的端點貼上為伺服器 URL，選擇 OAuth，接受警告並選擇「建立為外掛程式」，然後登入 PipesHub。在 Business、Enterprise 或 Edu 工作區中，需要管理員允許自訂 MCP 伺服器。",
+            "tip": "ChatGPT 是從 OpenAI 的伺服器連線，而不是從你的電腦連線，因此端點必須能從網際網路存取。localhost 或私人網路位址將無法使用。"
           },
           "cursor": {
             "label": "Cursor",

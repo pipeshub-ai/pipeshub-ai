@@ -246,8 +246,34 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
     expect(await screen.findByText(strings.connect.clients.cursor.steps)).toBeTruthy();
     expect(screen.getByText(/"mcpServers"/).textContent).toContain(`${window.location.origin}/mcp`);
     fireEvent.mouseDown(tab(strings.connect.clients.claudeCode.label));
-    expect(await screen.findByText(`claude mcp add --transport http pipeshub ${window.location.origin}/mcp`)).toBeTruthy();
+    expect(await screen.findByText(`claude mcp add --transport http pipeshub '${window.location.origin}/mcp'`)).toBeTruthy();
     expect(screen.getByText(strings.connect.clients.claudeCode.tip)).toBeTruthy();
+  });
+
+  it('says Claude and ChatGPT need an endpoint reachable from the internet, in the panel of the chosen tab', async () => {
+    renderPage();
+    const panel = await screen.findByRole('tabpanel');
+    expect(panel.textContent).toContain(strings.connect.clients.claude.tip);
+    expect(tab(strings.connect.clients.claude.label).getAttribute('aria-controls')).toBe(panel.id);
+    fireEvent.mouseDown(tab(strings.connect.clients.chatgpt.label));
+    expect(await screen.findByText(strings.connect.clients.chatgpt.tip)).toBeTruthy();
+  });
+
+  it('does not carry "Copied" over to another client\'s configuration', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    renderPage();
+    await screen.findByLabelText(strings.connect.endpointLabel);
+    fireEvent.mouseDown(tab(strings.connect.clients.cursor.label));
+    fireEvent.click(await screen.findByRole('button', { name: strings.connect.copySnippet }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: strings.connect.copySnippet }).textContent).toContain(strings.connect.copied),
+    );
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('"mcpServers"'));
+    fireEvent.mouseDown(tab(strings.connect.clients.vscode.label));
+    await screen.findByText(strings.connect.clients.vscode.steps);
+    expect(screen.getByRole('button', { name: strings.connect.copySnippet }).textContent).not.toContain(strings.connect.copied);
+    Reflect.deleteProperty(navigator, 'clipboard');
   });
 
   it('opens a tool to show its scopes, when it is offered, its arguments and what the AI reads', async () => {
@@ -293,7 +319,20 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
     expect(screen.getByRole('switch', { name: 'Read code' })).toBeTruthy();
     expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
     fireEvent.change(search, { target: { value: 'nothing-like-this' } });
-    expect(screen.getByText(strings.tools.noMatch)).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toBe(strings.tools.noMatch);
+  });
+
+  it('finds a tool this build does not describe by the server\'s text, and a described one only by its summary', async () => {
+    vi.mocked(McpAccessApi.getTools).mockResolvedValue([
+      ...TOOLS,
+      { name: 'pipeshub_billing', title: 'pipeshub_billing', writes: false, description: 'Resolve archived invoices.', arguments: [], hints: hints(true), scopes: [] },
+    ]);
+    renderPage();
+    const search = await screen.findByLabelText(strings.tools.searchLabel);
+    fireEvent.change(search, { target: { value: 'invoices' } });
+    expect(screen.getByRole('switch', { name: 'pipeshub_billing' })).toBeTruthy();
+    fireEvent.change(search, { target: { value: 'Vector' } });
+    expect(screen.queryByRole('switch', { name: 'Semantic search' }), 'model text of a described tool').toBeNull();
   });
 
   it('filters to the tools that write or change data, and to the ones that are off', async () => {

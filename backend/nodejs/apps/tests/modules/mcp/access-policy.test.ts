@@ -16,6 +16,7 @@ import Ajv from 'ajv'
 import yaml from 'js-yaml'
 import { readFileSync } from 'fs'
 import path from 'path'
+import { pathToFileURL } from 'url'
 import { makeOrgContext, runWithOrgContext } from '../../../src/libs/context/orgContext'
 
 const mcpServerExports = require.cache[
@@ -285,7 +286,8 @@ describe('MCP access policy', () => {
   })
 
   describe('tool catalog, with the real @pipeshub-ai/mcp package', () => {
-    const nm = (p: string): string => path.join(__dirname, '../../../node_modules', p)
+    // A file URL, not a path: native import() reads a Windows drive letter as a URL scheme.
+    const nm = (p: string): string => pathToFileURL(path.join(__dirname, '../../../node_modules', p)).href
     // The mocha setup mocks the CJS view of the package; load the real ESM files.
     // eslint-disable-next-line @typescript-eslint/no-implied-eval -- ts-node compiles import() to the mocked require()
     const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<any>

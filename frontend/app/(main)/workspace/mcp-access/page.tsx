@@ -323,11 +323,14 @@ export default function McpAccessPage() {
                   </Flex>
                 </Flex>
 
-                {shownGroups.length === 0 && (
-                  <Text size="2" style={{ color: 'var(--slate-11)', padding: 'var(--space-4)', textAlign: 'center' }}>
-                    {t('workspace.mcpAccess.tools.noMatch')}
-                  </Text>
-                )}
+                {/* Always mounted: a live region added together with its text is often not announced. */}
+                <Box role="status">
+                  {shownGroups.length === 0 && (
+                    <Text as="p" size="2" style={{ color: 'var(--slate-11)', padding: 'var(--space-4)', textAlign: 'center' }}>
+                      {t('workspace.mcpAccess.tools.noMatch')}
+                    </Text>
+                  )}
+                </Box>
 
                 {shownGroups.map(({ group, shown, all, offered, switchable, allOn }) => (
                   <McpToolGroup

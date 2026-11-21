@@ -54,7 +54,7 @@ export function isOffered(tool: McpAccessTool, policy: McpAccessPolicy): boolean
 
 export type ToolFilter = 'all' | 'read' | 'writes' | 'off';
 
-/** Whether a tool matches the search text (name, title, description, arguments, scopes) and the filter. */
+/** Whether a tool matches the search text (name, title, summary, arguments, scopes) and the filter. */
 export function matchesTool(
   tool: McpAccessTool,
   summary: string | undefined,
@@ -70,7 +70,10 @@ export function matchesTool(
   const text = [
     tool.name,
     tool.title,
-    summary ?? '',
+    // The translated summary when there is one; otherwise the server's own text, so a tool this build
+    // does not know is still found by what it does. Not both: the server's text is written for the model
+    // and names other tools, so it would match most searches.
+    summary ?? tool.description ?? '',
     ...(tool.scopes ?? []),
     ...(tool.arguments ?? []).map((a) => a.name),
   ]
