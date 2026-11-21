@@ -49,6 +49,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -69,7 +70,8 @@ class _World:
         self.org = run.rjust(24, "0")
         self.conn = f"conn-{run}"
         self.users: dict[str, str] = {}
-        processor = DataSourceEntitiesProcessor(MagicMock(), GraphDataStore(logger, graph), AsyncMock())
+        # an async config service that holds nothing yet: the grant fence reads the connector's saved account state from it
+        processor = DataSourceEntitiesProcessor(MagicMock(), GraphDataStore(logger, graph), InMemoryConfigService())
         processor.org_id = self.org
         processor.messaging_producer = SimpleNamespace(send_messages=AsyncMock(side_effect=lambda _t, m: [True] * len(m)))
         self.processor = processor

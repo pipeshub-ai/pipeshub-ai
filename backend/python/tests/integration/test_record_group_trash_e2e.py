@@ -61,6 +61,7 @@ from app.models.entities import FileRecord, RecordGroupType, RecordType, SQLTabl
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from tests.support.edition_defaults import postgres_sync_state
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -162,7 +163,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
         suffix = uuid.uuid4().hex[:10]
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.messaging_producer = AsyncMock()
         w = _World(graph=graph, processor=processor, org_id=f"org-rgt-{suffix}", connector_id=f"conn-rgt-{suffix}")
         processor.org_id = w.org_id

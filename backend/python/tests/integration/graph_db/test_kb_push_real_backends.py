@@ -39,6 +39,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -118,6 +119,13 @@ class FakeConfig:
 
     async def set_config(self, key, value, **_ttl) -> bool:
         self.data[key] = value
+        return True
+
+    async def compare_and_set_config(self, key, expected, new) -> bool:
+        # The connector processor keeps per-connector state by compare-and-set (SourceAccounts).
+        if await self.get_config(key) != expected:
+            return False
+        await self.set_config(key, new)
         return True
 
     async def delete_config(self, key) -> bool:
@@ -204,7 +212,7 @@ async def env(request, monkeypatch, tmp_path) -> AsyncIterator[Env]:
         assert await graph.batch_upsert_nodes(
             [{"_key": user_key, "userId": user_id, "orgId": org_id, "email": f"{user_id}@example.com", "isActive": True}],
             CollectionNames.USERS.value)
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), InMemoryConfigService())
         processor.org_id = org_id
         processor.messaging_producer = MagicMock()
         events: list = []

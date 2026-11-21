@@ -845,6 +845,30 @@ class ConfluenceDataSource:
         )
         return await self._client.execute(req)
 
+    async def get_active_users_v1(
+        self,
+        start: int = 0,
+        limit: int = 200,
+        headers: dict[str, Any] | None = None,
+    ) -> HTTPResponse:
+        """``GET /rest/api/admin/users/list/active`` — the users who count into license usage (Data Center 9.3+).
+
+        Same page shape as ``get_user_list_v1``, without deactivated, unlicensed, externally deleted, shadowed
+        and anonymous users.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        req = HTTPRequest(
+            method="GET",
+            url=f"{self._v1_rest_api_base()}/admin/users/list/active",
+            headers=_as_str_dict(dict(headers or {})),
+            path={},
+            query=_as_str_dict({"start": start, "limit": limit}),
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def search_users_v1(
         self,
         query: str,

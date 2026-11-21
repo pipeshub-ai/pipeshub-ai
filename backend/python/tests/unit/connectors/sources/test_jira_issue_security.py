@@ -26,6 +26,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     classify_scheme_response,
     closed_level_groups,
     collect_paged_values,
+    level_grants,
     level_group_grants,
     level_readers,
     level_reads_alike,
@@ -243,7 +244,7 @@ class TestIssueAccess:
         record = _record()
         permissions, skipped = apply_issue_access(
             record,
-            {"security": {"id": "20"}},
+            {"security": {"id": "20"}, "reporter": {"accountId": "acc-rep"}, "assignee": {"accountId": "acc-asg"}},
             is_subtask=False,
             project_key="PROJ",
             context=_present(members={
@@ -258,17 +259,19 @@ class TestIssueAccess:
                     {"type": "user", "user": {"accountId": "gone", "active": False, "emailAddress": "old@ex.com"}},
                 ],
             }),
-            user_by_account_id={"acc-1": type("U", (), {"email": "mia@ex.com"})()},
+            user_by_account_id={"acc-1": type("U", (), {"email": "mia@ex.com"})(),
+                                "acc-rep": type("U", (), {"email": "rep@ex.com"})(),
+                                "acc-asg": type("U", (), {"email": "asg@ex.com"})()},
             app_roles_mapping={"jira-software": [{"groupId": "sw-users"}]},
             reporter_email="rep@ex.com",
             assignee_email="asg@ex.com",
         )
         kinds = {(p.entity_type, p.external_id, p.email) for p in permissions}
         assert (EntityType.GROUP, "group-1", None) in kinds
-        assert (EntityType.USER, None, "mia@ex.com") in kinds
+        assert (EntityType.USER, "acc-1", "mia@ex.com") in kinds
         assert (EntityType.ROLE, "PROJ_100", None) in kinds
-        assert (EntityType.USER, None, "rep@ex.com") in kinds
-        assert (EntityType.USER, None, "asg@ex.com") in kinds
+        assert (EntityType.USER, "acc-rep", "rep@ex.com") in kinds
+        assert (EntityType.USER, "acc-asg", "asg@ex.com") in kinds
         assert (EntityType.ROLE, "PROJ_projectLead", None) in kinds
         assert (EntityType.GROUP, "sw-users", None) in kinds
         assert (EntityType.USER, None, "old@ex.com") not in kinds
@@ -650,6 +653,29 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         }, user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})
         assert grants == {(EntityType.USER, "rep@ex.com"), (EntityType.USER, "seven@ex.com"), (EntityType.GROUP, "g-9")}
 
+    def test_a_user_field_grant_names_its_account(self) -> None:
+        record = _record()
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE,
+                                       browse_holders=[{"type": "userCustomField", "parameter": "customfield_10"}])
+        grants, _ = apply_issue_access(
+            record, {"security": None, "customfield_10": [{"accountId": "acc-7"}]}, is_subtask=False,
+            project_key="PROJ", context=context, user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()},
+        )
+        assert [(p.external_id, p.email) for p in grants] == [("acc-7", "seven@ex.com")]
+
+    def test_two_accounts_sharing_an_address_are_each_granted(self) -> None:
+        """Data Center lets two live accounts share an address; which one holds it now is the processor's call."""
+        record = _record()
+        users = {"acc-a": type("U", (), {"email": "bo@ex.com"})(), "acc-b": type("U", (), {"email": "bo@ex.com"})()}
+        grants, _ = apply_issue_access(
+            record, {"security": {"id": "20"}}, is_subtask=False, project_key="PROJ", user_by_account_id=users,
+            context=_present(members={"20": [
+                {"type": "user", "parameter": "acc-a", "user": {"accountId": "acc-a", "active": True}},
+                {"type": "user", "parameter": "acc-b", "user": {"accountId": "acc-b", "active": True}},
+            ]}),
+        )
+        assert sorted(p.external_id for p in grants) == ["acc-a", "acc-b"]
+
     def test_a_deactivated_reporter_or_assignee_is_not_granted_whatever_their_email(self) -> None:
         gone = {"key": "k", "active": False, "emailAddress": "rep@ex.com"}
         # A person the payload names resolves through the directory, never by the payload's email.
@@ -989,6 +1015,29 @@ class TestPagingWithTotalOnly:
             return 200, {"values": [{"n": start}], "maxResults": 1000}
         status, values = await collect_paged_values(endless)
         assert values is None
+
+
+class TestOneGrantPerPerson:
+    def test_a_grant_naming_the_account_is_kept_over_an_address_only_one_seen_first(self) -> None:
+        """The reporter field names no account here, the user holder does: the named grant must stay, as the processor
+        refuses an address-only grant to a re-used address and the current holder would lose the issue."""
+        holders = [{"type": "reporter"},
+                   {"type": "user", "parameter": "acc-1", "user": {"accountId": "acc-1", "emailAddress": "ana@x.com"}}]
+        grants, unreadable, _ = level_grants(
+            holders, project_key="P", fields={"reporter": {"displayName": "Ana"}},
+            user_by_id={"acc-1": type("U", (), {"email": "ana@x.com"})()},
+            app_roles_mapping=None, reporter_email="ana@x.com", assignee_email=None,
+        )
+        assert not unreadable
+        assert [(p.external_id, p.email) for p in grants] == [("acc-1", "ana@x.com")]
+
+    def test_the_reporter_and_assignee_grants_name_their_accounts(self) -> None:
+        grants, _, _ = level_grants(
+            [{"type": "reporter"}, {"type": "assignee"}], project_key="P",
+            fields={"reporter": {"accountId": "acc-1"}, "assignee": {"key": "JIRAUSER2"}}, user_by_id={},
+            app_roles_mapping=None, reporter_email="rep@x.com", assignee_email="asg@x.com",
+        )
+        assert {(p.external_id, p.email) for p in grants} == {("acc-1", "rep@x.com"), ("JIRAUSER2", "asg@x.com")}
 
 
 class TestLevelGroups:

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from . import kh_layer
+from . import kh_layer, layers
 from .graph import Namespace
 from .layers import GraphCheckLayer, arango_graph
 from .runner import OracleLayer
@@ -258,7 +258,7 @@ async def test_a_store_stopped_while_it_loads_a_chunk_releases_what_it_registere
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert unloaded == [["w0-"]] and layer._prefix == {}
+    assert unloaded == [[f"w{layers._RUN}0-"]] and layer._prefix == {}
 
 
 async def test_a_release_cancelled_midway_keeps_the_world_for_a_later_release() -> None:
@@ -281,7 +281,7 @@ async def test_a_release_cancelled_midway_keeps_the_world_for_a_later_release() 
         await task
     assert WORLD in layer._prefix
     await layer.release([WORLD])
-    assert layer._prefix == {} and unloads == [["w0-"], ["w0-"]]
+    assert layer._prefix == {} and unloads == [[f"w{layers._RUN}0-"], [f"w{layers._RUN}0-"]]
 
 
 def test_the_parts_hold_each_generated_world_once() -> None:

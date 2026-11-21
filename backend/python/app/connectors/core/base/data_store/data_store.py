@@ -212,7 +212,7 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_users_by_emails(
-        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str,
     ) -> dict[str, User]:
         pass
 
@@ -521,9 +521,14 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def upsert_authenticated_as(
-        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str
+        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str, *, target_collection: str = "users"
     ) -> None:
         """Link the connector creator to the source-account user it authenticated as (one per connector)."""
+        pass
+
+    @abstractmethod
+    async def set_directory_link(self, user_key: str, connector_id: str, email: str, org_id: str) -> None:
+        """The user's only directory link in the connector goes to the one live account with ``email``, or none; other links stay."""
         pass
 
     @abstractmethod

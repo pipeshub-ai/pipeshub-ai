@@ -98,6 +98,45 @@ def compile_world(world: World, prefix: str) -> Graph:
     return {"nodes": nodes, "edges": edges}
 
 
+def as_source_accounts(graph: Graph, state: str = "listed") -> Graph:
+    """The graph with every linked source account (an AUTHENTICATED_AS target) stored as a SourceAccount node instead of a
+    User. A user reads such an account's grants and badges only through the link, so only its PERMISSION and BELONGS_TO edges
+    are kept: its organization stays so that a reader counting it fails the no-organisation comparison, its gates and links
+    give the user nothing (oracle R4/R5), and it is nobody's viewer."""
+    connector = {e["to"]: e["props"].get("connectorId") for e in graph["edges"] if e["type"] == "AUTHENTICATED_AS"}
+    def account(n: NodeDict) -> NodeDict:
+        p = n["props"]
+        return {"kind": "SourceAccount", "id": n["id"], "props": {
+            "id": n["id"], "orgId": p["orgId"], "connectorId": connector[n["id"]], "sourceUserId": n["id"],
+            "email": p.get("email"), "state": state, "createdAtTimestamp": TS, "updatedAtTimestamp": TS}}
+
+    nodes = [account(n) if n["id"] in connector and n["kind"] == "User" else n for n in graph["nodes"]]
+    accounts = {n["id"] for n in nodes if n["kind"] == "SourceAccount"}
+    edges = [e for e in graph["edges"] if e["from"] not in accounts or e["type"] in ("PERMISSION", "BELONGS_TO")]
+    return {"nodes": nodes, "edges": edges}
+
+
+def without_link_source_orgs(graph: Graph) -> Graph:
+    """The graph with the organisation memberships of every linked source account (an AUTHENTICATED_AS target) removed. A linked account adds
+    its own and its groups' grants only (oracle R5), so nothing a viewer reads may change: a reader that differs here counts the account's
+    organisation for the viewer."""
+    sources = {e["to"] for e in graph["edges"] if e["type"] == "AUTHENTICATED_AS"}
+    orgs = {n["id"] for n in graph["nodes"] if n["kind"] == "Organization"}
+    return {"nodes": graph["nodes"], "edges": [e for e in graph["edges"] if not (e["type"] == "BELONGS_TO" and e["from"] in sources and e["to"] in orgs)]}
+
+
+def unlinked_withdrawn(graph: Graph) -> Graph:
+    """``as_source_accounts`` with the accounts withdrawn and the links removed: what every reader must answer when the links are kept."""
+    graph = as_source_accounts(graph, "withdrawn")
+    return {"nodes": graph["nodes"], "edges": [e for e in graph["edges"] if e["type"] != "AUTHENTICATED_AS"]}
+
+
+# How a layer stores a world: as compiled, with the linked accounts as SourceAccount nodes (listed or withdrawn), without the linked accounts'
+# organisations, or withdrawn and unlinked.
+VARIANTS = {"": lambda graph: graph, "accounts": as_source_accounts, "no_source_org": without_link_source_orgs,
+            "withdrawn": lambda graph: as_source_accounts(graph, "withdrawn"), "unlinked": unlinked_withdrawn}
+
+
 def _principal_node(ns: Namespace, p: Principal, first_app: str | None) -> NodeDict:
     pid, kind = p.id, p.kind
     sid = ns.id(pid)

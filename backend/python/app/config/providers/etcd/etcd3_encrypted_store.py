@@ -159,16 +159,8 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 self.logger.debug("⏭️ Skipping existing key: %s", key)
                 return False  # Key was not created (already exists)
 
-            # Convert value to JSON string
-            value_json = json.dumps(value)
-
             encrypt_value = not is_unencrypted_key(key)
-
-            if encrypt_value:
-                # Encrypt the value
-                encrypted_value = self.encryption_service.encrypt(value_json)
-            else:
-                encrypted_value = value_json
+            encrypted_value = self._encode_value(key, value)
 
             self.logger.debug("🔒 Encrypted value for key %s", key)
 
@@ -206,8 +198,21 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             return False
 
 
+    def _encode_value(self, key: str, value: T) -> str:
+        value_json = json.dumps(value)
+        return value_json if is_unencrypted_key(key) else self.encryption_service.encrypt(value_json)
+
     async def update_value(self, key: str, value: T, ttl: Optional[int] = None) -> None:
         return await self.create_key(key, value, True, ttl)
+
+    async def compare_and_set(self, key: str, expected: Optional[T], new: T) -> bool:
+        # Compared decrypted: the same value encrypts to different bytes every time (a random IV),
+        # so the inner store is asked to swap the exact ciphertext read here.
+        stored = await self.store.get_key(key, raise_on_error=True)
+        current = None if stored is None else self._decode_value(key, stored)
+        if current != expected:
+            return False
+        return await self.store.compare_and_set(key, stored, self._encode_value(key, new))
 
     async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         try:

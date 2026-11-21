@@ -36,7 +36,10 @@ from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
 from app.models.entities import (
     RecordType,
 )
-from app.models.permission import EntityType
+from app.models.permission import EntityType, PermissionType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 # ===========================================================================
 # Helpers
@@ -85,7 +88,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
-    connector = SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "user-1")
+    connector = stub_source_accounts(SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "user-1"))
     return connector, dep, dsp, cs, tx
 
 
@@ -2454,3 +2457,81 @@ class TestHandleRecordUpdatesDeep:
         dep.on_updated_record_permissions.assert_called_once_with(mock_record, new_perms)
         dep.on_record_metadata_update.assert_not_called()
         dep.on_record_content_update.assert_not_called()
+
+
+class TestReusedAddress:
+    """A SharePoint principal carries no Entra object id, so for an address a new account took over it may be the old
+    account's entry in the site's UserInfo list: no grant. A Graph identity is judged by its object id."""
+
+    def test_grants_to_a_reused_address(self) -> None:
+        connector, *_ = _make_connector()
+        connector.source_accounts.current = {"ana@x.com": "new-oid"}
+        connector.source_accounts.reused = {"ana@x.com": "new-oid"}
+        assert not connector._user_may_be_granted("ana@x.com")
+        assert not connector._user_may_be_granted("ana@x.com", "old-oid")
+        assert connector._user_may_be_granted("ANA@x.com", "new-oid")
+        assert connector._user_may_be_granted("bo@x.com")
+        old = MagicMock(id="old-oid", additional_data={"email": "ana@x.com"})
+        assert connector._is_inactive_identity(old)
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_in_a_fresh_process_reads_the_saved_state_before_granting(self) -> None:
+        """A reindex runs no user sync first: the grant writers load what an earlier sync saved."""
+        connector, *_ = _make_connector()
+        connector.source_accounts.loaded = False
+        connector.source_accounts.config_service.get_config = AsyncMock(
+            return_value={"withdrawn": {}, "reused": {"ana@x.com": "new-oid"}})
+        connector._disabled_set_unknown = False
+        rest_user = {"LoginName": "i:0#.f|membership|ana@x.com", "PrincipalType": 1, "Email": "ana@x.com", "Id": 7}
+        assert await connector._sharepoint_principal_permissions(rest_user, PermissionType.READ, "site-1") == []
+        old = MagicMock(granted_to_v2=MagicMock(user=MagicMock(id="old-oid", additional_data={"email": "ana@x.com"}),
+                                                group=None, site_group=None, site_user=None),
+                        granted_to_identities_v2=None, link=None, roles=["read"])
+        assert await connector._convert_to_permissions([old], "site-1") == []
+        bo = {**rest_user, "LoginName": "i:0#.f|membership|bo@x.com", "Email": "bo@x.com"}
+        assert [p.email for p in await connector._sharepoint_principal_permissions(bo, PermissionType.READ, "site-1")] == ["bo@x.com"]
+
+    @pytest.mark.asyncio
+    async def test_a_saved_state_that_cannot_be_read_grants_nothing(self) -> None:
+        connector, *_ = _make_connector()
+        connector.source_accounts.loaded = False
+        connector.source_accounts.config_service.get_config = AsyncMock(side_effect=RuntimeError("store down"))
+        rest_user = {"LoginName": "i:0#.f|membership|bo@x.com", "PrincipalType": 1, "Email": "bo@x.com", "Id": 7}
+        with pytest.raises(RuntimeError):
+            await connector._sharepoint_principal_permissions(rest_user, PermissionType.READ, "site-1")
+        assert not connector.source_accounts.may_grant("bo@x.com", None)
+
+    @pytest.mark.asyncio
+    async def test_owner_and_directory_role_members_are_held_to_the_same_object_id_check(self) -> None:
+        """sh7f: an expanded M365 owner or directory role member that names the deleted account gets no grant."""
+        connector, *_ = _make_connector()
+        connector.source_accounts.reused = {"ana@x.com": "new-oid"}
+        members = [{"id": "old-oid", "email": "ana@x.com"}, {"id": "new-oid", "email": "ana@x.com"},
+                   {"id": "bo-oid", "email": "bo@x.com"}, {"id": "x-oid", "email": None}]
+        connector._fetch_graph_group_members = AsyncMock(return_value=members)
+        owners = await connector._m365_owner_permissions("g-1", PermissionType.READ)
+        assert [(p.external_id, p.email) for p in owners] == [("new-oid", "ana@x.com"), ("bo-oid", "bo@x.com")]
+
+        connector._get_directory_object_type = AsyncMock(return_value="#microsoft.graph.directoryRole")
+        connector._get_directory_role_member_users = AsyncMock(return_value=members)
+        role = await connector._tenant_claim_permissions("c:0t.c|tenant|11111111-2222-3333-4444-555555555555", PermissionType.READ)
+        assert [(p.external_id, p.email) for p in role] == [("new-oid", "ana@x.com"), ("bo-oid", "bo@x.com")]
+
+    @pytest.mark.asyncio
+    async def test_entra_group_members_written_by_address_are_the_accounts_that_hold_it(self) -> None:
+        """Outside-diff: a group member naming the deleted account at ana@ is not written as a member (the membership
+        is resolved by address); the new account and other members are."""
+        connector, *_ = _make_connector()
+        connector._disabled_set_unknown = False
+        connector.source_accounts.reused = {"ana@x.com": "new-oid"}
+
+        def member(oid: str, email: str) -> MagicMock:
+            return MagicMock(odata_type="#microsoft.graph.user", id=oid, mail=email, user_principal_name=email, display_name=email)
+
+        page = MagicMock(value=[member("old-oid", "ana@x.com"), member("new-oid", "ana@x.com"), member("bo-oid", "bo@x.com")],
+                         odata_next_link=None)
+        connector.client = MagicMock()
+        connector.client.groups.by_group_id.return_value.transitive_members.get = AsyncMock(return_value=page)
+        connector.client.directory_roles.by_directory_role_id.return_value.members.get = AsyncMock(return_value=page)
+        assert [u["id"] for u in await connector._fetch_graph_group_members("g-1")] == ["new-oid", "bo-oid"]
+        assert [u["id"] for u in await connector._get_directory_role_member_users("role-1")] == ["new-oid", "bo-oid"]

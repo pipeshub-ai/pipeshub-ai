@@ -3632,10 +3632,11 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> dict[str, 'User']:
         """
-        Get the users whose email is any of ``emails``, in one query.
+        Get the users of org ``org_id`` whose email is any of ``emails``, in one query. The org is required: an address is
+        unique only within an org, so an unscoped read could answer another org's user.
 
         Matching ignores case. The result maps each matched address, lowercased,
         to its user; an address with no user is absent, and no addresses give
@@ -3838,8 +3839,9 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Every user of the org linked to the connector with a source user id, guests
         included (``get_app_users`` lists org members only). Each item is
-        ``{"id": <user key>, "sourceUserId": <id at the source>}``. Used to find the links
-        to withdraw. Reads inside ``transaction`` when given. A failed read raises.
+        ``{"id": <user key>, "sourceUserId": <id at the source>, "email": <the user's address>}``.
+        Used to find the links to withdraw, and which account an address was linked to.
+        Reads inside ``transaction`` when given. A failed read raises.
         """
         pass
 
@@ -5698,12 +5700,33 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        target_collection: str = "users",
     ) -> None:
         """
-        Link a connector creator to the source-account user the connector is authenticated as.
+        Link a connector creator to the source account the connector is authenticated as: a ``users`` node, or a
+        ``sourceAccounts`` node when the connector keeps its accounts in the graph (``target_collection``).
 
-        Exactly one link exists per connector instance: re-linking with a different
-        source user repoints the existing link.
+        Exactly one such link exists per connector instance: re-linking repoints it. The directory links of the
+        connector (``via``: ``directory``) are not this link and are left alone, here and in ``remove_authenticated_as``.
+        """
+        pass
+
+    @abstractmethod
+    async def set_directory_link(
+        self,
+        user_key: str,
+        connector_id: str,
+        email: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        The user's only directory link (``via``: ``directory``) in the connector goes to the one account of the connector whose address is
+        ``email`` and that is not withdrawn; with none or several, or when the user is deactivated (``isActive`` false; a missing field is a
+        live user), the user has none. The accounts and the user are locked before they are read, so a concurrent withdrawal or delete is
+        seen, whoever chose the address. Only directory links are read, written or removed: an authenticator link of the same pair, or a
+        link without ``via``, is another edge and stays.
         """
         pass
 
@@ -5713,7 +5736,7 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         transaction: str | None = None,
     ) -> bool:
-        """Remove the authenticated-as link for a connector instance. True if one existed."""
+        """Remove the authenticated-as link for a connector instance (not its directory links). True if one existed."""
         pass
 
     @abstractmethod

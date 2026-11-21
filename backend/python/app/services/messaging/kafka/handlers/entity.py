@@ -516,6 +516,10 @@ class EntityEventService(BaseEventService):
                 CollectionNames.BELONGS_TO.value,
             )
 
+            # A restored user gets back the source accounts its address holds, as a new one gets those already synced. With its key, as
+            # on an address change: a user re-added under a new address must lose the directory links of its old one.
+            await self._relink_source_accounts(org_id, payload["email"], user_key=user_data["id"])
+
             # Adopt anything this email already accumulated as an external
             # collaborator. Never fatal: the account itself is what this event is for, and
             # letting a failed adoption bubble up would make Kafka redeliver forever while
@@ -640,10 +644,11 @@ class EntityEventService(BaseEventService):
                 return False
 
             user_id = existing_user.get("id") or existing_user.get("_key")
+            org_id = payload["orgId"]
             user_data = {
                 "id": user_id,
                 "userId": payload["userId"],
-                "orgId": payload["orgId"],
+                "orgId": org_id,
                 "email": payload["email"],
                 "fullName": payload.get("fullName", ""),
                 "firstName": payload.get("firstName", ""),
@@ -694,6 +699,11 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
+            new_email = payload.get("email")
+            if new_email:
+                # the source accounts at an old address are not this user's any more; the ones at this one may be. Run even when the
+                # stored address already matches: a redelivery after a failed move finds it stored, and the move is idempotent.
+                await self._relink_source_accounts(org_id, new_email, user_key=user_id)
 
             # A node written before the field existed carries no `isActive`,
             # and the permission reads filter on `isActive == true`, so such a
@@ -752,8 +762,10 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
-            # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
+            # At once, before any awaited cleanup: until it moves, a scope read before the delete is still served.
             await notify_principals_changed(org_id)
+            await self._unlink_source_accounts(existing_user_id)
+            await notify_principals_changed(org_id)      # again, for what the unlink changed
             self.logger.info("Soft-deleted graph user %s", existing_user_id)
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
@@ -766,6 +778,42 @@ class EntityEventService(BaseEventService):
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.failed", e, target_user_id=payload.get("userId"))
             raise
+
+    async def _unlink_source_accounts(self, user_key: str) -> None:
+        """A deleted user reads nothing through the source accounts it was linked to. The accounts stay (they are the connector's and hold
+        its grants): a restore links them again (``_relink_source_accounts``). A failed delete raises, so the event is redelivered."""
+        async with self.graph_data_store.transaction() as tx_store:
+            await tx_store.delete_edges_between_collections(
+                user_key, CollectionNames.USERS.value, CollectionNames.AUTHENTICATED_AS.value, CollectionNames.SOURCE_ACCOUNTS.value,
+            )
+
+    async def _relink_source_accounts(self, org_id: str, email: str, user_key: str | None = None) -> None:
+        """Link the user with this address to the source accounts that hold it, in every connector that keeps its accounts in the graph
+        (the same rule as a user sync: one live account per connector, or none). With ``user_key`` (an address change), the connectors
+        the user is linked in now are relinked too, so a link made for its old address goes. A connector with the setting off is not
+        touched."""
+        from app.connectors.core.base.data_processor.source_accounts import (
+            SourceAccountGraph,
+            graph_mode_key,
+        )
+
+        address = email.lower()
+        found = await self.graph_provider.get_nodes_by_filters(
+            CollectionNames.SOURCE_ACCOUNTS.value, {"email": address, "orgId": org_id}, raise_on_error=True,
+        )
+        connectors = {a.get("connectorId") for a in found if a.get("connectorId")}
+        if user_key:
+            linked = await self.graph_provider.get_edges_from_node(
+                f"{CollectionNames.USERS.value}/{user_key}", CollectionNames.AUTHENTICATED_AS.value, raise_on_error=True,
+            )
+            connectors |= {e.get("connectorId") for e in linked if e.get("via") == "directory" and e.get("connectorId")}
+        config = self.app_container.config_service()
+        for connector_id in sorted(connectors):
+            mode = await config.get_config(graph_mode_key(connector_id), use_cache=False)
+            if not (isinstance(mode, dict) and mode.get("enabled") is True):
+                continue
+            async with self.graph_data_store.transaction() as tx_store:
+                await SourceAccountGraph(connector_id, org_id, self.logger).relink(tx_store, [address])
 
     async def _remove_mcp_data(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
         """MCP servers and credentials go with their user or org, so nothing keeps refreshing

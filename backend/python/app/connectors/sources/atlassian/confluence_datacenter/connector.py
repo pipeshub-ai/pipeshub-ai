@@ -157,6 +157,10 @@ CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
+# GET /rest/api/admin/users/list/active is in the published REST docs from 9.3.0 (absent from 9.0.0-9.2.1 and the
+# 8.x docs) to 11.1.0, the newest published; a newer release is asked too, and a refusal links nobody.
+ACTIVE_USER_LIST_SINCE = (9, 3)
+
 
 @ConnectorBuilder("Confluence Data Center")\
     .in_group("Atlassian")\
@@ -383,6 +387,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         # Cache for server version (fetched once during first space sync)
         self._server_version: Optional[tuple[int, ...]] = None
+        self._server_version_unreadable = False   # _server_version is the assumed fallback, not the server's
 
     async def init(self) -> bool:
         """Initialize the Confluence Data Center connector with credentials and client.
@@ -630,7 +635,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         """
         Sync users from Confluence using offset-based pagination.
 
-        DC (USE_DATA_CENTER_APIS = True):  GET /rest/api/user/list
+        DC (USE_DATA_CENTER_APIS = True):  GET /rest/api/admin/users/list/active
         Cloud (USE_DATA_CENTER_APIS = False): GET /rest/api/search/user?cql=type=user
 
         Filters out users without email addresses.
@@ -638,22 +643,50 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         try:
             self.logger.info("Starting user synchronization...")
 
+            active_list = False
+            if USE_DATA_CENTER_APIS:
+                if self._server_version_unreadable:
+                    self._server_version = None   # a version a past run could not read is asked for again
+                    self._server_version_unreadable = False
+                server_version = await self._get_server_version()
+                if self._server_version_unreadable:
+                    self.logger.error(
+                        "The Confluence Data Center version could not be read, so it is unknown whether the server "
+                        "can tell active users from disabled ones; no user is linked this run"
+                    )
+                    return
+                # /rest/api/user/list returns "Disabled users" too, and its Person entries carry no documented status
+                # (https://developer.atlassian.com/server/confluence/rest/v1110/api-group-user/). Data Center allows
+                # duplicate emails, so a linked disabled account would read as its address changing hands and take
+                # the active account's grants. The active list "will exclude users that are: anonymous, deactivated,
+                # externally deleted, shadowed, unlicensed"
+                # (https://developer.atlassian.com/server/confluence/rest/v1110/api-group-admin-users/).
+                # shortcut: the list "relies on search index and might not be accurate when site reindex is in
+                # progress": a sync during a reindex can still link a just-disabled account, or withdraw an active
+                # one it misses, until the next sync after the reindex.
+                active_list = server_version[:2] >= ACTIVE_USER_LIST_SINCE
+
             # Pagination variables
             batch_size = 200 if USE_DATA_CENTER_APIS else 100
             start = 0
             total_synced = 0
             total_skipped = 0
+            listed: set[str] = set()      # source ids of the active users listed, for the withdrawal below
+            keyless = False               # a known user listed without an id: who is listed is not fully known
+            read_complete = True
 
             # Paginate through all users
             while True:
                 datasource = await self._get_fresh_datasource()
 
-                if USE_DATA_CENTER_APIS:
-                    # DC: Use reliable /user/list endpoint (avoids truncation bug in /search/user)
-                    response = await datasource.get_user_list_v1(
-                        start=start,
-                        limit=batch_size
-                    )
+                if active_list:
+                    response = await datasource.get_active_users_v1(start=start, limit=batch_size)
+                elif USE_DATA_CENTER_APIS:
+                    # shortcut: before 9.3 the docs give no per-user status (https://docs.atlassian.com/ConfluenceServer/
+                    # rest/8.5.0/, https://developer.atlassian.com/server/confluence/rest/v900/ to v921): /user/list
+                    # lists "Disabled users" and the user status has no documented values. Its users are linked, so a
+                    # disabled account keeps the grants of a PipesHub user with its address; exact from 9.3.
+                    response = await datasource.get_user_list_v1(start=start, limit=batch_size)
                 else:
                     # Cloud: Use CQL search
                     response = await datasource.search_users(
@@ -665,20 +698,39 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
+                    read_complete = False
                     break
 
                 response_data = response.json()
-                users_data = response_data.get("results", [])
+                users_data = response_data.get("results") if isinstance(response_data, dict) else None
+                if not isinstance(users_data, list):
+                    self.logger.error("Failed to fetch users: the user listing is not a page of results")
+                    read_complete = False
+                    break
 
                 if not users_data:
+                    # An empty page that still links a next one is not the end: the rest was not read.
+                    links = response_data.get("_links")
+                    if isinstance(links, dict) and links.get("next"):
+                        read_complete = False
                     break
 
                 # Transform users (skip users without email)
                 app_users = []
                 for user_result in users_data:
-                    # DC /user/list returns flat user objects; Cloud /search/user wraps in 'user' key
+                    # DC returns flat user objects; Cloud /search/user wraps in 'user' key
                     if USE_DATA_CENTER_APIS:
                         user_data = user_result
+                        if active_list:
+                            # "`type`: The type of user (e.g., `known`, `anonymous`)" (same page as above); any other
+                            # or missing value is not a user we can vouch for, so it is not linked.
+                            if user_data.get("type") != "known":
+                                total_skipped += 1
+                                continue
+                            if source_id := user_data.get("userKey") or user_data.get("key"):
+                                listed.add(source_id)
+                            else:
+                                keyless = True
                     else:
                         # Flatten: merge nested 'user' dict with top-level fields
                         user_data = {**user_result.get("user", {}), **{k: v for k, v in user_result.items() if k != "user"}}
@@ -717,14 +769,26 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                 )
                                 continue
 
-                # Move to next page
-                start += batch_size
-
-                # Check if we've reached the end
-                if len(users_data) < batch_size:
+                # The active list documents no maximum page size, so a page shorter than asked for may not be the last.
+                next_start = v1_next_start(response_data, start, len(users_data), batch_size, use_link_offset=False)
+                if next_start is None:
                     break
+                start = next_start
 
-            self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
+            # A linked account the complete active list no longer shows was disabled, unlicensed or deleted since: it
+            # loses the connector, as it is not linked either. A cut or empty list withdraws nobody. Enabled again, it
+            # is linked on the next read. ``creator_`` ids are the stand-in the connector's creator is linked with.
+            # The 9.3-10.0 docs list no fields for an entry: one without a key could be a linked user, so then
+            # nobody is withdrawn rather than everyone the list seems to leave out.
+            if active_list and read_complete and listed and not keyless:
+                gone = [
+                    u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
+                    if u.source_user_id not in listed and not u.source_user_id.startswith("creator_")
+                ]
+                if gone:
+                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+
+            self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email or not a known user): {total_skipped}")
 
         except Exception as e:
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
@@ -779,9 +843,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         self.logger.debug(f"  Processing group: {group_name} ({group_id})")
 
                         # Fetch members: name-based (DC) or ID-based (Cloud) based on flag
+                        member_ids: dict[str, set[str]] = {}
                         member_emails = await self._fetch_group_members(
                             group_name=group_name,
-                            group_id=group_id
+                            group_id=group_id,
+                            ids_by_email=member_ids,
                         )
                         if member_emails is None:
                             # Saving the group now would replace its members with an empty list.
@@ -797,7 +863,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                         # Get AppUser objects for members
                         try:
-                            app_users = await self._get_app_users_by_emails(member_emails)
+                            app_users = await self._get_app_users_by_emails(member_emails, member_ids)
                         except Exception as lookup_error:
                             # Saving the group now would replace its members with an empty list.
                             self.logger.warning(
@@ -3136,6 +3202,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 "Failed to probe Confluence server version, assuming modern (>= 9.1)"
             )
             self._server_version = (9, 1, 0)
+            self._server_version_unreadable = True
             return self._server_version
 
         except Exception as e:
@@ -3143,6 +3210,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 f"Error probing Confluence server version: {e}, assuming modern (>= 9.1)"
             )
             self._server_version = (9, 1, 0)
+            self._server_version_unreadable = True
             return self._server_version
 
     async def _fetch_space_permissions(
@@ -3341,6 +3409,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 if user:
                     return Permission(
                         email=user.email,
+                        external_id=principal_id,
                         type=permission_type,
                         entity_type=entity_type
                     )
@@ -4234,7 +4303,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         )
 
     async def _fetch_group_members(
-        self, group_name: str, group_id: Optional[str] = None
+        self, group_name: str, group_id: Optional[str] = None, ids_by_email: Optional[dict[str, set[str]]] = None,
     ) -> Optional[list[str]]:
         """Fetch all members of a group and return their email addresses.
 
@@ -4351,6 +4420,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                     if email:
                         member_emails.append(email)
+                        # The account the group names, as users are linked (Data Center userKey, Cloud accountId).
+                        sid = (member_data.get("userKey") or member_data.get("key") if USE_DATA_CENTER_APIS
+                               else member_data.get("accountId"))
+                        if ids_by_email is not None and sid:
+                            ids_by_email.setdefault(email, set()).add(str(sid))
                     else:
                         self.logger.debug(
                             "Skipping group member '%s' in group '%s': no email found",
@@ -4411,7 +4485,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             return None
         return ""
 
-    async def _get_app_users_by_emails(self, emails: list[str]) -> list[AppUser]:
+    async def _get_app_users_by_emails(
+        self, emails: list[str], ids_by_email: Optional[dict[str, set[str]]] = None,
+    ) -> list[AppUser]:
         """
         Get AppUser objects by their email addresses from database.
 
@@ -4438,8 +4514,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         # Create email lookup map
         email_set = set(emails)
 
-        # Filter users by email
-        filtered_users = [user for user in all_app_users if user.email in email_set]
+        # Filter users by email, and by the account the group named where it named one: an old account the group still
+        # lists must not hand its membership to the new account linked to the same address.
+        ids_by_email = ids_by_email or {}
+        filtered_users = [
+            user for user in all_app_users
+            if user.email in email_set and (user.email not in ids_by_email or user.source_user_id in ids_by_email[user.email])
+        ]
 
         if len(filtered_users) < len(emails):
             missing_count = len(emails) - len(filtered_users)

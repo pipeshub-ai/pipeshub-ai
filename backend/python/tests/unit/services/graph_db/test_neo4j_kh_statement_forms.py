@@ -86,7 +86,31 @@ def test_each_grant_test_takes_its_own_grantee_variable() -> None:
     for i, node in enumerate(("a", "b", "start")):
         assert f"({node})<-[kh_gp{i}:PERMISSION]-(kh_gr{i}) WHERE (kh_gr{i}:User OR" in out
         assert f"OR (kh_gr{i}:Organization AND kh_gp{i}.type IN {ORG_SHARE_TYPES}))" in out
-        assert f"AND kh_gr{i}.id IN $kh_grantees" in out
+        assert f"AND kh_gr{i}.id IN $kh_grantees }}" in out
+
+
+async def test_a_viewer_linked_to_no_source_account_runs_the_probe_without_the_account_test() -> None:
+    """The source-account half of each probe is sent only for a viewer linked to one, by its bare id: every other viewer's statement is the
+    one without source accounts, so it plans as it did before they existed."""
+    provider = Neo4jProvider.__new__(Neo4jProvider)
+    sent: list[tuple[str, dict]] = []
+
+    async def run(query: str, parameters: dict, txn_id: str | None) -> list:
+        sent.append((query, parameters))
+        return []
+
+    provider._kh_run = run
+    probe = Neo4jProvider._kh_grants_by_probe("MATCH (ca) WHERE ca.id IN $grantedIds RETURN ca")
+    await provider._kh_query(probe, {"kh_conn": "c", "kh_grantees": ["u", "g"]})
+    await provider._kh_query(probe, {"kh_conn": "c", "kh_grantees": ["u", "sourceAccounts/u"]})
+    (alone, alone_params), (linked, linked_params) = sent
+    assert alone == Neo4jProvider._kh_grants_cross(probe).replace("$kh_grantees", "$kh_lists.kh_grantees").replace(
+        "$kh_cross", "$kh_lists.kh_cross") and "kh_sa" not in alone_params[Neo4jProvider._KH_LISTS]
+    assert ("WHERE (kh_gr0:User|Group|Role|Teams OR (kh_gr0:Organization AND kh_gp0.type IN ['ORG', 'ORGANIZATION']))"
+            " AND kh_gr0.id IN $kh_lists.kh_grantees OR kh_gr0:SourceAccount AND kh_gr0.id IN $kh_lists.kh_sa }") in linked
+    # the account shares the viewer's id: each is tested under its own label, a User never against the prefixed name
+    assert {k: linked_params[Neo4jProvider._KH_LISTS][k] for k in ("kh_grantees", "kh_sa")} == {
+        "kh_grantees": ["u", "sourceAccounts/u"], "kh_sa": ["u"]}
 
 
 def test_a_grant_test_of_another_shape_is_refused_not_dropped() -> None:
@@ -126,7 +150,7 @@ def test_the_grantees_of_the_probe_are_the_grantees_of_the_grant_list() -> None:
     for fragment in (
         "(u)-[:PERMISSION {{type: 'USER'}}]->(kh_b:Group|Role|Teams)",
         "(u)-[:BELONGS_TO]->(kh_org:Organization)",
-        "(u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User)",
+        "(u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User|SourceAccount)",
         "WHERE kh_link.connectorId = $connector_id",
         "(kh_src)-[kh_e:PERMISSION]->(kh_b)",
     ):

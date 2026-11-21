@@ -86,6 +86,27 @@ class KeyValueStore(ABC, Generic[T]):
         pass
 
     @abstractmethod
+    async def compare_and_set(self, key: str, expected: Optional[T], new: T) -> bool:
+        """
+        Atomically set ``key`` to ``new`` only if its current value equals ``expected``.
+
+        ``expected=None`` means the key must be absent (an expired key counts as absent).
+        The comparison is on the value, not its stored bytes, and the write is made only
+        if the stored bytes are still the ones that value was read from, so a concurrent
+        writer between the read and the write makes this return False (one that wrote the
+        same bytes back is not noticed). The new value has no TTL, as with ``create_key``
+        without one.
+
+        Returns:
+            True if this call wrote ``new``, False if the current value was not ``expected``.
+
+        Raises:
+            ConnectionError: If the store is unavailable; never answered as False.
+            ValueError: If the stored value cannot be decoded.
+        """
+        pass
+
+    @abstractmethod
     async def delete_key(self, key: str) -> bool:
         """
         Delete a key-value pair from the store.
@@ -199,3 +220,15 @@ class KeyValueStore(ABC, Generic[T]):
     async def unsubscribe_changes(self, handle: Any) -> None:  # noqa: ANN401
         """Cancel a subscription returned by :meth:`subscribe_changes`. No-op by default."""
         return None
+
+
+def decode_for_compare(deserializer: Callable[[bytes], Any], raw: bytes) -> Any:  # noqa: ANN401
+    """The value ``raw`` holds, for ``compare_and_set``.
+
+    The store deserializers answer None for bytes they cannot decode; read as "absent",
+    a compare against None would then overwrite a value nobody could read.
+    """
+    value = deserializer(raw)
+    if value is None and raw:
+        raise ValueError("Stored value could not be decoded")
+    return value

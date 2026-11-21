@@ -19,6 +19,7 @@ on:
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/**'
       - 'backend/python/tests/unit/services/permissions/**'
+      - 'backend/python/tests/support/in_memory_config.py'
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'scripts/assert_no_skips.py'
@@ -261,6 +262,25 @@ jobs:
           args=()
           for a in "${allows[@]}"; do args+=(--allow "$a"); done
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-junit.xml" --collected "$RUNNER_TEMP/graph.collected" "${args[@]}"
+
+      # The connector write-path suites again, with every connector keeping its accounts as SourceAccount nodes (PERM_SOURCE_ACCOUNTS=1,
+      # tests/support/in_memory_config.py): what anyone reads must not change. A few minutes in the shard that already runs this folder.
+      # Only the designed skips pass (the address registry's immediate hand-over, the case of the setting off): a store that could not be
+      # reached skips its cases, and that fails the step, as in the shard steps above.
+      - name: Write-path suites with the source-account writers on
+        if: ${{ matrix.shard == 2 }}
+        env:
+          KH_PERM_ARANGO_DB: kh_perm_conformance
+          PERM_SOURCE_ACCOUNTS: '1'
+        run: |
+          cd backend/python
+          sel=(tests/integration/graph_permissions/connectors -m integration)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/accounts.collected" "${sel[@]}"
+          pytest "${sel[@]}" -q --timeout=300 -rs -p no:logging --junitxml="$RUNNER_TEMP/accounts-junit.xml"
+          python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/accounts-junit.xml" --collected "$RUNNER_TEMP/accounts.collected" \
+            --allow 'test_source_account_reuse_write_path::test_a_reread_writes_the_grant_only_for_the_account_that_holds_the_address' \
+            --allow 'test_source_account_reuse_write_path::test_a_group_lists_the_new_account_and_not_the_deleted_one' \
+            --allow 'test_source_account_writers::test_with_the_setting_off_nothing_new_is_written_and_everyone_reads_what_they_did'
 
       - name: Upload the regressions the generator filed
         if: failure()

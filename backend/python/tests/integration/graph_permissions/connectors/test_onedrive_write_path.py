@@ -9,7 +9,7 @@ specific-people link grants only the person it lists.
 
 import logging
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from msgraph.generated.models.identity import Identity
@@ -26,6 +26,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType
+from tests.support.in_memory_config import InMemoryConfigService
 
 from ..processor_harness import build_processor
 from ..write_path_support import ORG, _seed_app, _seed_user, _suffix
@@ -42,7 +43,7 @@ async def test_an_organization_link_grants_no_one_and_a_link_grants_the_people_i
     listed_email, colleague_email = f"ana-{_suffix()}@acme.com", f"ben-{_suffix()}@acme.com"
     listed_id = await _seed_user(backend, listed_email)
     colleague_id = await _seed_user(backend, colleague_email)
-    connector = OneDriveConnector(logging.getLogger("onedrive-it"), processor, MagicMock(), AsyncMock(),
+    connector = OneDriveConnector(logging.getLogger("onedrive-it"), processor, MagicMock(), InMemoryConfigService(),
                                   connector_id, "team", "admin")
 
     listed = SharePointIdentitySet(user=Identity(id="u-ana", additional_data={"email": listed_email}))

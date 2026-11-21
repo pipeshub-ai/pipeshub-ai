@@ -49,6 +49,8 @@ def make_mock_connector() -> MagicMock:
     dep = MagicMock()
     dep.org_id = "org-1"
     dep.on_new_app_users = AsyncMock()
+    dep.get_app_user_links = AsyncMock(return_value=[])
+    dep.withdraw_app_user_access = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()

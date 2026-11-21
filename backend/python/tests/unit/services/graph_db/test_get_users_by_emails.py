@@ -92,8 +92,8 @@ async def test_the_query_is_org_scoped_and_lowercased(make) -> None:
     p = make(ROWS)
     await p.get_users_by_emails(["ANN@acme.com"], org_id="o1")
     assert _args(p)["emails"] == ["ann@acme.com"] and _args(p)["org_id"] == "o1"
-    await p.get_users_by_emails(["ann@acme.com"])
-    assert "org_id" not in _args(p)
+    with pytest.raises(TypeError):      # no unscoped read: an address is unique only within an org
+        await p.get_users_by_emails(["ann@acme.com"])  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
@@ -102,7 +102,7 @@ async def test_postgres_reads_only_the_ambient_org() -> None:
     with for_org("o1", job="t"):
         assert await p.get_users_by_emails(["ann@acme.com"], org_id="o2") == {}
         p._id_rows.assert_not_awaited()
-        await p.get_users_by_emails(["ANN@acme.com"])
+        await p.get_users_by_emails(["ANN@acme.com"], org_id="o1")
     sql, args, _tx = p._id_rows.await_args.args
     assert "/* pipeshub:graph.principals_by_email */" in sql and "graph.principals_by_email(" in sql      # the vetted read: the function takes the ambient org itself
     assert args == [["users"], ["ann@acme.com"]]

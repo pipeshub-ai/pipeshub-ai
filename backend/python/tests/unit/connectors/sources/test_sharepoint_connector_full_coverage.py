@@ -32,6 +32,9 @@ from app.models.entities import (
     SharePointPageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 
 def _make_mock_deps():
@@ -62,7 +65,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id")
+    return stub_source_accounts(SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id"))
 
 
 def _make_file_record(**overrides):

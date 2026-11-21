@@ -239,7 +239,7 @@ class IdentityMixin(PgBase):
 
     @_soft(dict, flag=True)
     async def get_users_by_emails(self, emails: list[str], transaction: str | None = None, *, raise_on_error: bool = False,
-                                  org_id: str | None = None) -> dict[str, User]:
+                                  org_id: str) -> dict[str, User]:
         org = current_org_id()
         wanted = list(dict.fromkeys(e.lower() for e in emails if e))
         if not wanted or not self._mine(org_id):
@@ -446,11 +446,11 @@ class IdentityMixin(PgBase):
         """Every user of the org linked to the app with a source user id, guests included; a failed read raises."""
         if not self._mine(org_id):
             return []
-        rows = await self._id_rows("""/* pipeshub:graph.get_app_user_links */ SELECT r.from_id AS id, r.doc->>'sourceUserId' AS sid
+        rows = await self._id_rows("""/* pipeshub:graph.get_app_user_links */ SELECT r.from_id AS id, r.doc->>'sourceUserId' AS sid, u.doc->>'email' AS email
             FROM graph.edges r JOIN graph.nodes u ON u.org_id = r.org_id AND u.coll = 'users' AND u.id = r.from_id
             WHERE r.org_id = $1 AND r.coll = 'userAppRelation' AND r.from_coll = 'users' AND r.to_id = $2
               AND r.doc->>'sourceUserId' IS NOT NULL""", [current_org_id(), connector_id], transaction)
-        return [{"id": r["id"], "sourceUserId": r["sid"]} for r in rows]
+        return [{"id": r["id"], "sourceUserId": r["sid"], "email": r["email"]} for r in rows]
 
     async def batch_upsert_app_users(self, users: list, transaction: str | None = None, *, org_id: str) -> None:
         if not users:
@@ -565,7 +565,9 @@ class IdentityMixin(PgBase):
                 AND p.to_coll = 'groups' AND p.doc->>'type' = 'USER'
               UNION
               SELECT p.to_id FROM u JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = u.id
-                JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = l.to_id AND p.to_coll = 'groups' AND p.doc->>'type' = 'USER'
+                AND l.to_coll IN ('users', 'sourceAccounts')
+                AND NOT EXISTS (SELECT 1 FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id AND s.doc->>'state' = 'withdrawn')
+                JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = l.to_coll AND p.from_id = l.to_id AND p.to_coll = 'groups' AND p.doc->>'type' = 'USER'
                 JOIN graph.nodes sg ON sg.org_id = $1 AND sg.coll = 'groups' AND sg.id = p.to_id AND sg.doc->>'connectorId' = l.doc->>'connectorId')
             SELECT g.id AS "id", coalesce(g.doc->>'externalGroupId', '') AS "externalId", coalesce(g.doc->>'name', '') AS "name",
                    coalesce(g.doc->>'connectorId', '') AS "connectorId", coalesce(g.doc->>'connectorName', '') AS "appName"
@@ -629,30 +631,71 @@ class IdentityMixin(PgBase):
                 VALUES ($1, 'userAppRelation', 'teams', $2, 'apps', $3, '', $4::jsonb) ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, team, connector_id, _j(props))
         await self._q(go, transaction, write=True)
 
-    async def upsert_authenticated_as(self, creator_key: str, source_user_key: str, connector_id: str, org_id: str, transaction: str | None = None) -> None:
-        """One link per connector: a stale one (other ends) is dropped, the right one is created or touched."""
+    async def upsert_authenticated_as(self, creator_key: str, source_user_key: str, connector_id: str, org_id: str, transaction: str | None = None, *,
+                                      target_collection: str = CollectionNames.USERS.value) -> None:
+        """One link per connector: a stale one (other ends) is dropped, the right one is created or touched. A link to a source account carries
+        ``via: authenticator`` (its own edge key, apart from a directory link of the same pair); the connector's directory links are left alone."""
         self._require_org(org_id)
         org, ts = current_org_id(), get_epoch_timestamp_in_ms()
-        link = {"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}
+        to_account = target_collection == CollectionNames.SOURCE_ACCOUNTS.value
+        link = {"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts, **({"via": "authenticator"} if to_account else {})}
         _VALIDATOR.validate_edge(CollectionNames.AUTHENTICATED_AS.value, link)
+        ekey = _ekey(CollectionNames.AUTHENTICATED_AS.value, link)
 
         async def go(tx: Any) -> None:  # noqa: ANN401
-            if await tx.fetchval("""/* pipeshub:graph.authenticated_as_ends */ SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id IN ($2, $3)""",
-                                 org, creator_key, source_user_key) < len({creator_key, source_user_key}):
+            # locked as a delete writes it: a deactivated user (isActive false; a missing field is a live user) keeps no authenticator link
+            if await tx.fetchval("""/* pipeshub:graph.authenticated_as_creator */ SELECT doc->>'isActive' = 'false' FROM graph.nodes
+                WHERE org_id = $1 AND coll = 'users' AND id = $2 FOR UPDATE""", org, creator_key):
+                await tx.execute("""/* pipeshub:graph.authenticated_as_drop_deactivated */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
+                    AND doc->>'connectorId' = $2 AND coalesce(doc->>'via', 'authenticator') = 'authenticator'""", org, connector_id)
+                return
+            if await tx.fetchval("""/* pipeshub:graph.authenticated_as_ends */ SELECT count(*) FROM graph.nodes WHERE org_id = $1
+                AND ((coll = 'users' AND id = $2) OR (coll = $4 AND id = $3))""", org, creator_key, source_user_key, target_collection) < len({("users", creator_key), (target_collection, source_user_key)}):
+                self.logger.warning("Connector %s: the authenticated-as link is not written, its user or its %s node is not stored", connector_id, target_collection)
                 return
             await tx.execute("""/* pipeshub:graph.authenticated_as_drop_stale */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
-                AND doc->>'connectorId' = $2 AND NOT (from_id = $3 AND to_id = $4)""", org, connector_id, creator_key, source_user_key)
+                AND doc->>'connectorId' = $2 AND coalesce(doc->>'via', 'authenticator') = 'authenticator'
+                AND NOT (from_id = $3 AND to_coll = $5 AND to_id = $4 AND ekey = $6)""", org, connector_id, creator_key, source_user_key, target_collection, ekey)
             await tx.execute("""/* pipeshub:graph.authenticated_as_upsert */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
-                VALUES ($1, 'authenticatedAs', 'users', $2, 'users', $3, $6, $4::jsonb)
+                VALUES ($1, 'authenticatedAs', 'users', $2, $7, $3, $6, $4::jsonb)
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc || jsonb_build_object('orgId', $1::text, 'updatedAtTimestamp', $5::bigint)""",
                              org, creator_key, source_user_key,
-                             _j(link), ts, connector_id)
+                             _j(link), ts, ekey, target_collection)
+        await self._q(go, transaction, write=True)
+
+    async def set_directory_link(self, user_key: str, connector_id: str, email: str, org_id: str, transaction: str | None = None) -> None:
+        """Directory links only (``via: directory``, their own edge key): an authenticator link of the same pair is another edge and stays. The
+        accounts with the address and the user are locked (``FOR UPDATE``) before the choice, as a withdrawal or a delete writes them."""
+        self._require_org(org_id)
+        org, ts = current_org_id(), get_epoch_timestamp_in_ms()
+        link = {"connectorId": connector_id, "orgId": org, "via": "directory", "createdAtTimestamp": ts, "updatedAtTimestamp": ts}
+        _VALIDATOR.validate_edge(CollectionNames.AUTHENTICATED_AS.value, link)
+        ekey = _ekey(CollectionNames.AUTHENTICATED_AS.value, link)
+
+        async def go(tx: Any) -> None:  # noqa: ANN401
+            user = await tx.fetchrow("""/* pipeshub:graph.directory_link_user */ SELECT doc->>'isActive' AS active, lower(doc->>'email') = lower($3) AS holds
+                FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2 FOR UPDATE""", org, user_key, email)
+            if user is not None and not user["holds"]:
+                return      # the address changed since the caller read it: the relink of the new address decides
+            live = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.directory_link_accounts */ SELECT id, doc->>'state' AS state FROM graph.nodes
+                WHERE org_id = $1 AND coll = 'sourceAccounts' AND doc->>'connectorId' = $2 AND doc->>'email' = $3 ORDER BY id FOR UPDATE""",
+                                                    org, connector_id, email) if r["state"] != "withdrawn"]
+            want = live[0] if user is not None and user["active"] != "false" and len(live) == 1 else None
+            await tx.execute("""/* pipeshub:graph.directory_link_drop */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
+                AND from_coll = 'users' AND from_id = $2 AND ekey = $3 AND NOT (to_coll = 'sourceAccounts' AND to_id IS NOT DISTINCT FROM $4)""",
+                             org, user_key, ekey, want)
+            if want is None:
+                return
+            await tx.execute("""/* pipeshub:graph.directory_link_upsert */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+                VALUES ($1, 'authenticatedAs', 'users', $2, 'sourceAccounts', $3, $4, $5::jsonb)
+                ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc || jsonb_build_object('updatedAtTimestamp', $6::bigint)""",
+                             org, user_key, want, ekey, _j(link), ts)
         await self._q(go, transaction, write=True)
 
     async def remove_authenticated_as(self, connector_id: str, transaction: str | None = None) -> bool:
         org = current_org_id()
         n = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_authenticated_as */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
-            AND doc->>'connectorId' = $2 RETURNING 1) SELECT count(*) FROM d""", org, connector_id), transaction, write=True)
+            AND doc->>'connectorId' = $2 AND coalesce(doc->>'via', 'authenticator') = 'authenticator' RETURNING 1) SELECT count(*) FROM d""", org, connector_id), transaction, write=True)
         return bool(n)
 
     # ---- apps and connector instances ----------------------------------------------------------------------------
@@ -671,7 +714,8 @@ class IdentityMixin(PgBase):
               SELECT e.to_id AS app FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'apps'
               UNION SELECT t.to_id FROM graph.edges p JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = p.to_id AND t.to_coll = 'apps'
                 WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2 AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
-              UNION SELECT l.doc->>'connectorId' FROM graph.edges l WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $2)
+              UNION SELECT l.doc->>'connectorId' FROM graph.edges l WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $2
+                AND NOT EXISTS (SELECT 1 FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = l.to_coll AND s.id = l.to_id AND s.doc->>'state' = 'withdrawn'))
             SELECT DISTINCT a.id FROM ids JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'apps' AND a.id = ids.app
             WHERE NOT coalesce((a.doc->>'isHidden')::boolean, false)""", [current_org_id(), user_key], transaction)
         return [r["id"] for r in rows]

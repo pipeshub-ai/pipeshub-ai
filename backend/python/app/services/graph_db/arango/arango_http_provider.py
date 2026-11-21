@@ -132,6 +132,7 @@ from app.schema.arango.documents import (
     project_record_schema,
     pull_request_record_schema,
     record_group_schema,
+    source_account_schema,
     record_schema,
     sql_column_record_schema,
     sql_table_record_schema,
@@ -348,6 +349,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.COMMENTS.value, comment_record_schema),
     (CollectionNames.PEOPLE.value, people_schema),
     (CollectionNames.USERS.value, user_schema),
+    (CollectionNames.SOURCE_ACCOUNTS.value, source_account_schema),
     (CollectionNames.GROUPS.value, None),
     (CollectionNames.ROLES.value, app_role_schema),
     (CollectionNames.ORGS.value, orgs_schema),
@@ -1959,6 +1961,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.PEOPLE.value, ["orgId", "sourceKey"], unique=True, sparse=True,
         )
+
+        # One source account per (org, connector, source user id); its key is derived from the same three. By address for
+        # linking, by connector for deletion.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.SOURCE_ACCOUNTS.value, ["orgId", "connectorId", "sourceUserId"], unique=True,
+        )
+        await self.http_client.ensure_persistent_index(CollectionNames.SOURCE_ACCOUNTS.value, ["email"])
+        await self.http_client.ensure_persistent_index(CollectionNames.SOURCE_ACCOUNTS.value, ["connectorId"])
 
         # UNIQUE: entityRelations (_from, _to, edgeType) closes the UPSERT race of
         # _upsert_entity_relations. Not sparse: edgeType is required by the schema.
@@ -7861,9 +7871,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             FILTER edge._to == vertex._id
                                 AND edge.role == 'OWNER'
                                 AND edge.type == 'USER'
-                            LET user_key = SPLIT(edge._from, '/')[1]
-                            LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
-                            FILTER user.userId == @user_id
+                            // the owner is the user, or a source account the user is linked to in this connector
+                            LET holder = DOCUMENT(edge._from)
+                            FILTER holder != null AND (
+                                (IS_SAME_COLLECTION('{CollectionNames.USERS.value}', holder) AND holder.userId == @user_id)
+                                OR (IS_SAME_COLLECTION('{CollectionNames.SOURCE_ACCOUNTS.value}', holder) AND holder.state != 'withdrawn' AND LENGTH(
+                                    FOR l IN {CollectionNames.AUTHENTICATED_AS.value}
+                                        FILTER l._to == holder._id AND l.connectorId == @connector_id
+                                        LET me = DOCUMENT(l._from)
+                                        FILTER me != null AND me.userId == @user_id
+                                        LIMIT 1
+                                        RETURN 1) > 0))
                             LIMIT 1
                         RETURN record
             """
@@ -8380,21 +8398,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> dict[str, User]:
         """See :meth:`IGraphDBProvider.get_users_by_emails`."""
         wanted = list(dict.fromkeys(e.lower() for e in emails if e))
         if not wanted:
             return {}
-        scoped = org_id is not None
-        org_filter = "FILTER user.orgId == @org_id" if scoped else ""
-        bind_vars = {"emails": wanted, **({"org_id": org_id} if scoped else {})}
+        bind_vars = {"emails": wanted, "org_id": org_id}
         # LOWER(user.email) keeps matching case-insensitive, which no index on
         # users.email can serve; one scan per call instead of one per address.
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
             FILTER LOWER(user.email) IN @emails
-            {org_filter}
+            FILTER user.orgId == @org_id
             RETURN user
         """
         try:
@@ -8960,7 +8976,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER edge.sourceUserId != null
                 LET user = DOCUMENT(edge._from)
                 FILTER user != null AND user.orgId == @org_id
-                RETURN {{ id: user._key, sourceUserId: edge.sourceUserId }}
+                RETURN {{ id: user._key, sourceUserId: edge.sourceUserId, email: user.email }}
         """
         return await self.http_client.execute_aql(
             query, bind_vars={"connector_id": connector_id, "org_id": org_id}, txn_id=transaction
@@ -9036,6 +9052,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         LET linked = caller == null ? [] : (
             FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
                 FILTER link._from == caller._id
+                FILTER DOCUMENT(link._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                 FOR g, edge IN 1..1 OUTBOUND link._to {CollectionNames.PERMISSION.value}
                     FILTER edge.type == 'USER'
                     FILTER IS_SAME_COLLECTION("{CollectionNames.GROUPS.value}", g)
@@ -10861,15 +10878,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR vertex IN 0..8 OUTBOUND @node_key @@inherit_collection
                 FOR edge IN @@edge_collection
                     FILTER edge._to == vertex._id
-                    FOR user IN @@user_collection
-                        FILTER user._id == edge._from
-                        LIMIT 1
-                        RETURN user
+                    // a source account the connector acts as holds a grant like a synced user
+                    LET user = DOCUMENT(edge._from)
+                    FILTER user != null AND (IS_SAME_COLLECTION("users", user) OR (IS_SAME_COLLECTION("sourceAccounts", user) AND user.state != "withdrawn"))
+                    LIMIT 1
+                    RETURN user
             """
             bind_vars = {
                 "@inherit_collection": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@edge_collection": CollectionNames.PERMISSION.value,
-                "@user_collection": CollectionNames.USERS.value,
                 "node_key": node_key
             }
 
@@ -10910,14 +10927,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR vertex IN 0..8 OUTBOUND @node_key @@inherit_collection
                 FOR edge IN @@edge_collection
                     FILTER edge._to == vertex._id
-                    FOR user IN @@user_collection
-                        FILTER user._id == edge._from
-                        RETURN DISTINCT user
+                    LET user = DOCUMENT(edge._from)
+                    FILTER user != null AND (IS_SAME_COLLECTION("users", user) OR (IS_SAME_COLLECTION("sourceAccounts", user) AND user.state != "withdrawn"))
+                    RETURN DISTINCT user
             """
             bind_vars = {
                 "@inherit_collection": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@edge_collection": CollectionNames.PERMISSION.value,
-                "@user_collection": CollectionNames.USERS.value,
                 "node_key": node_key
             }
 
@@ -10980,8 +10996,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER edge._to == vertex._id
                     FILTER edge.role == 'OWNER'
                     FILTER edge.type == 'USER'
-                    LET user_key = SPLIT(edge._from, '/')[1]
-                    LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                    LET user = DOCUMENT(edge._from)
+                    FILTER user != null AND (IS_SAME_COLLECTION('{CollectionNames.USERS.value}', user)
+                        OR IS_SAME_COLLECTION('{CollectionNames.SOURCE_ACCOUNTS.value}', user))
                     LIMIT 1
                     RETURN user.email
             """
@@ -11495,30 +11512,85 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         connector_id: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        target_collection: str = CollectionNames.USERS.value,
     ) -> None:
-        # _key = connector_id keeps exactly one link per connector instance; UPSERT repoints on re-auth.
+        # _key = connector_id keeps exactly one link per connector instance; UPSERT repoints on re-auth. A directory link
+        # has a key of its own, so neither this nor remove_authenticated_as touches one. The empty update writes the user, so a
+        # concurrent delete conflicts instead of being missed: a deactivated user (isActive false; a missing field is a live user)
+        # keeps no authenticator link and gets none.
         ts = get_epoch_timestamp_in_ms()
+        users = CollectionNames.USERS.value
+        # One statement: the user stays written until the link write commits, so a delete between the two cannot be missed.
         query = f"""
-        UPSERT {{ _key: @connectorId }}
-        INSERT {{
-            _key: @connectorId, _from: @from, _to: @to,
-            connectorId: @connectorId, orgId: @orgId,
-            createdAtTimestamp: @ts, updatedAtTimestamp: @ts
-        }}
-        UPDATE {{ _from: @from, _to: @to, orgId: @orgId, updatedAtTimestamp: @ts }}
-        IN {CollectionNames.AUTHENTICATED_AS.value}
+        LET user = FIRST(FOR x IN {users} FILTER x._key == @creatorKey UPDATE x WITH {{}} IN {users} RETURN NEW)
+        LET live = user == null OR user.isActive != false
+        FOR i IN (live ? [1] : [])
+            UPSERT {{ _key: @connectorId }}
+            INSERT MERGE({{
+                _key: @connectorId, _from: @from, _to: @to,
+                connectorId: @connectorId, orgId: @orgId,
+                createdAtTimestamp: @ts, updatedAtTimestamp: @ts
+            }}, @via == null ? {{}} : {{ via: @via }})
+            UPDATE {{ _from: @from, _to: @to, orgId: @orgId, via: @via, updatedAtTimestamp: @ts }}
+            IN {CollectionNames.AUTHENTICATED_AS.value} OPTIONS {{ keepNull: false }}
+        RETURN live
         """
-        await self.execute_query(
+        written = await self.execute_query(
             query,
             bind_vars={
+                "creatorKey": creator_key,
                 "connectorId": connector_id,
                 "from": f"{CollectionNames.USERS.value}/{creator_key}",
-                "to": f"{CollectionNames.USERS.value}/{source_user_key}",
+                "to": f"{target_collection}/{source_user_key}",
+                "via": "authenticator" if target_collection == CollectionNames.SOURCE_ACCOUNTS.value else None,
                 "orgId": org_id,
                 "ts": ts,
             },
             transaction=transaction,
         )
+        if not written:      # a deactivated user: no row, and its authenticator link goes
+            await self.remove_authenticated_as(connector_id, transaction=transaction)
+
+    async def set_directory_link(
+        self,
+        user_key: str,
+        connector_id: str,
+        email: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        # The empty updates write the user and the accounts, so a concurrent withdrawal or delete conflicts with this one instead of being
+        # missed. Directory links only: the authenticator link (keyed by the connector) and links without via are never touched.
+        links, users, accounts = CollectionNames.AUTHENTICATED_AS.value, CollectionNames.USERS.value, CollectionNames.SOURCE_ACCOUNTS.value
+        frm = f"{users}/{user_key}"
+        rows = await self.execute_query(f"""
+        LET user = FIRST(FOR x IN {users} FILTER x._key == @userKey AND x.orgId == @orgId UPDATE x WITH {{}} IN {users} RETURN NEW)
+        LET live = (FOR s IN {accounts}
+            FILTER s.orgId == @orgId AND s.connectorId == @connectorId AND s.email == @email
+            UPDATE s WITH {{}} IN {accounts}
+            FILTER NEW.state != 'withdrawn'
+            RETURN NEW._id)
+        // a user whose address changed since the caller read it is left as it is: the relink of its new address decides
+        LET holds = user != null AND LOWER(user.email) == LOWER(@email)
+        LET want = (holds AND user.isActive != false AND LENGTH(live) == 1) ? live[0] : null
+        LET gone = (FOR link IN {links}
+            FILTER holds AND link._from == @from AND link.connectorId == @connectorId AND link.via == 'directory' AND link._to != want
+            REMOVE link IN {links} RETURN 1)
+        RETURN want
+        """, bind_vars={"userKey": user_key, "orgId": org_id, "connectorId": connector_id, "email": email, "from": frm},
+            transaction=transaction)
+        want = rows[0] if rows else None
+        if not want:
+            return
+        ts = get_epoch_timestamp_in_ms()
+        await self.execute_query(f"""
+        UPSERT {{ _from: @from, _to: @to, connectorId: @connectorId, via: 'directory' }}
+        INSERT {{ _from: @from, _to: @to, connectorId: @connectorId, via: 'directory', orgId: @orgId,
+                  createdAtTimestamp: @ts, updatedAtTimestamp: @ts }}
+        UPDATE {{ updatedAtTimestamp: @ts }}
+        IN {links}
+        """, bind_vars={"from": frm, "to": want, "connectorId": connector_id, "orgId": org_id, "ts": ts}, transaction=transaction)
 
     async def remove_authenticated_as(
         self,
@@ -13327,6 +13399,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.SOLD_IN.value,
                 CollectionNames.MEMBER_OF.value,
                 CollectionNames.AGENT_KNOWLEDGE.value,
+                CollectionNames.SOURCE_ACCOUNTS.value,
             ]
 
             # Blocks are the bulk of a code connector. Deleted inside the
@@ -13434,6 +13507,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         agent_knowledge_keys or [],
                         CollectionNames.AGENT_KNOWLEDGE.value,
                         transaction=transaction,
+                    )
+
+                    # The connector's source accounts name it by connectorId; their grants and links go with them.
+                    account_keys = await self.http_client.execute_aql(
+                        f"""
+                        FOR a IN {CollectionNames.SOURCE_ACCOUNTS.value}
+                            FILTER a.connectorId == @connector_id
+                            RETURN a._key
+                        """,
+                        bind_vars={"connector_id": connector_id},
+                        txn_id=transaction,
+                    )
+                    await self.delete_nodes_and_edges(
+                        account_keys or [], CollectionNames.SOURCE_ACCOUNTS.value, transaction=transaction,
                     )
 
                     # Step 13: Delete the app itself. Gone is gone, whoever removed it.
@@ -15189,13 +15276,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         user_key: str,
         transaction: str | None = None
     ) -> str | None:
-        """Check user's permission role on a record."""
+        """Check user's permission role on a record: their own grant, or that of a source account they are linked to in the record's connector."""
         try:
             query = f"""
+            LET rec = DOCUMENT(@record_to)
+            LET principals = APPEND([@user_from], (
+                FOR l IN {CollectionNames.AUTHENTICATED_AS.value}
+                    FILTER l._from == @user_from AND rec != null AND l.connectorId == rec.connectorId
+                        AND STARTS_WITH(l._to, "{CollectionNames.SOURCE_ACCOUNTS.value}/")
+                    FILTER DOCUMENT(l._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
+                    RETURN l._to
+            ))
             FOR edge IN {CollectionNames.PERMISSION.value}
                 FILTER edge._to == @record_to
-                    AND edge._from == @user_from
+                    AND edge._from IN principals
                     AND edge.type == 'USER'
+                // the strongest of the user's and the linked accounts' grants, not whichever is read first
+                SORT NOT_NULL(@role_rank[UPPER(edge.role)], 0) DESC
                 LIMIT 1
                 RETURN edge.role
             """
@@ -15204,7 +15301,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query,
                 bind_vars={
                     "record_to": f"records/{record_id}",
-                    "user_from": f"users/{user_key}"
+                    "user_from": f"users/{user_key}",
+                    "role_rank": PERMISSION_ROLE_RANK,
                 },
                 txn_id=transaction
             )
@@ -15228,13 +15326,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             drive_permission_query = """
             LET user_from = CONCAT('users/', @user_key)
             LET record_from = CONCAT('records/', @record_id)
+            LET rec = DOCUMENT(record_from)
+            // the user, and a source account they are linked to in the record's connector
+            LET principals = APPEND([user_from], (
+                FOR l IN @@authenticated_as
+                    FILTER l._from == user_from AND rec != null AND l.connectorId == rec.connectorId AND STARTS_WITH(l._to, "sourceAccounts/")
+                    FILTER DOCUMENT(l._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
+                    RETURN l._to
+            ))
 
             // 1. Check direct user permissions on the record
             LET direct_permission = FIRST(
                 FOR perm IN @@permission
                     FILTER perm._to == record_from
-                    FILTER perm._from == user_from
+                    FILTER perm._from IN principals
                     FILTER perm.type == "USER"
+                    SORT NOT_NULL(@role_rank[UPPER(perm.role)], 0) DESC
                     RETURN perm.role
             )
 
@@ -15263,6 +15370,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "user_key": user_key,
                     "@permission": CollectionNames.PERMISSION.value,
                     "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
+                    "role_rank": PERMISSION_ROLE_RANK,
                 },
                 txn_id=transaction
             )
@@ -15313,12 +15422,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         RETURN is_sender ? "OWNER" : "WRITER"
             ) : null
 
-            // 2. Check direct permissions
+            // 2. Check direct permissions: the user's, or a source account's they are linked to in the record's connector
+            LET rec = DOCUMENT(record_from)
+            LET principals = APPEND([user_from], (
+                FOR l IN @@authenticated_as
+                    FILTER l._from == user_from AND rec != null AND l.connectorId == rec.connectorId AND STARTS_WITH(l._to, "sourceAccounts/")
+                    FILTER DOCUMENT(l._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
+                    RETURN l._to
+            ))
             LET direct_permission = FIRST(
                 FOR perm IN @@permission
                     FILTER perm._to == record_from
-                    FILTER perm._from == user_from
+                    FILTER perm._from IN principals
                     FILTER perm.type == "USER"
+                    SORT NOT_NULL(@role_rank[UPPER(perm.role)], 0) DESC
                     RETURN perm.role
             )
 
@@ -15334,6 +15451,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "@records": CollectionNames.RECORDS.value,
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     "@permission": CollectionNames.PERMISSION.value,
+                    "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
+                    "role_rank": PERMISSION_ROLE_RANK,
                 },
                 txn_id=transaction
             )
@@ -20134,6 +20253,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         LET kh_linked_apps = (
             FOR kh_link IN {CollectionNames.AUTHENTICATED_AS.value}
                 FILTER kh_link._from == u._id
+                FILTER DOCUMENT(kh_link._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                 LET linked = DOCUMENT("{CollectionNames.APPS.value}", kh_link.connectorId)
                 FILTER linked != null AND linked.orgId == {org}
                 RETURN linked._key
@@ -20232,6 +20352,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         LET linked_grants = (
             FOR kh_link IN {CollectionNames.AUTHENTICATED_AS.value}
                 FILTER kh_link._from == u._id
+                FILTER DOCUMENT(kh_link._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                 LET src_grantees = APPEND([kh_link._to], (
                     FOR p IN {CollectionNames.PERMISSION.value}
                         FILTER p._from == kh_link._to AND p.type == "USER"
@@ -20318,7 +20439,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }
         rows = await self._kh_v3_check_stage(
             "targets",
-            {**bind, "kh_ids": ids, "kh_vrids": vrids, "grantee_ids": access["grantee_ids"]},
+            {**bind, "kh_ids": ids, "kh_vrids": vrids, "grantee_ids": access["grantee_ids"], "user_key": user_key},
             transaction,
         )
         admitted = await self._kh_v3_admitted_by_walks(
@@ -20550,11 +20671,24 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET kh_attachment = kh_ok ? false
                 : (kh_is_record AND t.origin != null AND t.origin != "CONNECTOR"
                     ? (LENGTH(FOR kh_a IN {apps} FILTER kh_a._key == t.connectorId LIMIT 1 RETURN 1) == 0
-                       AND LENGTH(FOR kh_g IN {CollectionNames.PERMISSION.value}
-                                    FILTER kh_g._to == t._id
-                                        AND PARSE_IDENTIFIER(kh_g._from).key IN @grantee_ids
-                                        AND {_aql_grant_edge("kh_g._from", "kh_g")}
-                                    LIMIT 1 RETURN 1) > 0)
+                       AND LENGTH(
+                           // the grantees by collection and key, as the access check reads them: a holder of another
+                           // collection that shares a grantee's key (a SourceAccount) holds nothing
+                           LET kh_me = CONCAT("{CollectionNames.USERS.value}/", @user_key)
+                           LET kh_holders = APPEND([kh_me], UNION(
+                               (FOR kh_m IN {CollectionNames.PERMISSION.value}
+                                   FILTER kh_m._from == kh_me AND kh_m.type == "USER"
+                                       AND PARSE_IDENTIFIER(kh_m._to).collection IN
+                                           ["{CollectionNames.GROUPS.value}", "{CollectionNames.ROLES.value}", "{CollectionNames.TEAMS.value}"]
+                                   RETURN kh_m._to),
+                               (FOR kh_o IN {CollectionNames.BELONGS_TO.value}
+                                   FILTER kh_o._from == kh_me AND STARTS_WITH(kh_o._to, "{CollectionNames.ORGS.value}/")
+                                   RETURN kh_o._to)))
+                           FOR kh_g IN {CollectionNames.PERMISSION.value}
+                               FILTER kh_g._to == t._id AND kh_g._from IN kh_holders
+                                   AND PARSE_IDENTIFIER(kh_g._from).key IN @grantee_ids
+                                   AND {_aql_grant_edge("kh_g._from", "kh_g")}
+                               LIMIT 1 RETURN 1) > 0)
                     : false)
             LET kh_walk = kh_app != null AND NOT kh_is_app AND NOT kh_ok
             FILTER kh_ok OR kh_attachment OR kh_walk
@@ -23717,6 +23851,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LET linked = (
                     FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
                         FILTER link._from == @user_from
+                        FILTER DOCUMENT(link._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                         LET app = DOCUMENT("{CollectionNames.APPS.value}", link.connectorId)
                         FILTER app != null
                         RETURN app
@@ -24331,6 +24466,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principals = APPEND([caller], (
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER caller != null AND linked._from == caller._id
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     FILTER linked.connectorId == recordDoc.connectorId
                     RETURN DOCUMENT(linked._to)
             ))
@@ -24370,6 +24506,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Hop 2: Group -> RecordGroup
                 FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 FILTER groupToRecordGroupEdge.type == 'GROUP' or groupToRecordGroupEdge.type == 'ROLE'
+                FILTER userDoc._id == caller._id OR recordGroup.connectorId == recordDoc.connectorId      // a linked account's, in its connector only
 
                 // Hop 3: RecordGroup -> Record
                 FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -24390,6 +24527,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Hop 2: Group -> Parent RecordGroup (permission)
                 FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                     FILTER groupToRgEdge.type == 'GROUP' or groupToRgEdge.type == 'ROLE'
+                    FILTER userDoc._id == caller._id OR parentRecordGroup.connectorId == recordDoc.connectorId      // a linked account's, in its connector only
 
                 // Hop 3: Parent RecordGroup -> Child RecordGroup (inherit_permissions)
                 FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -24409,6 +24547,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Direct user -> record_group permission (with nested record groups support)
                 FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                    FILTER userDoc._id == caller._id OR recordGroup.connectorId == recordDoc.connectorId      // a linked account's, in its connector only
 
                     // Record group -> nested record groups (0 to 5 levels) -> record
                     FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -24428,6 +24567,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             LET orgAccessPermissionEdge = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER userDoc._id == caller._id      // the caller's organisation only, never a linked account's
                 FOR record, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 FILTER permEdge.type IN @org_share_types
                 FILTER record._key == @recordId
@@ -24440,11 +24580,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             LET orgRecordGroupAccess = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FILTER userDoc._id == caller._id      // the caller's organisation only, never a linked account's
                     FILTER belongsEdge.entityType == 'ORGANIZATION'
 
                     FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                         FILTER orgToRgEdge.type == 'ORG'
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                        FILTER userDoc._id == caller._id OR recordGroup.connectorId == recordDoc.connectorId      // a linked account's, in its connector only
 
                         FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER record._key == @recordId
@@ -24986,6 +25128,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principal_ids = APPEND([{user_var}._id], (
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER linked._from == {user_var}._id AND linked.connectorId == {node_var}.connectorId
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN linked._to
             ), true)
 
@@ -25021,6 +25164,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Build permission targets: [record] + ancestor RGs/Apps
             LET permission_targets = kh_needs_own ? [{node_var}._id] : APPEND([{node_var}._id], parent_rgs_all, true)
+            // a grant held through the link counts only on a target in the link's connector (an App is its own), so not on what
+            // the node inherits from another connector
+            LET kh_in_connector = (
+                FOR kh_t IN permission_targets
+                    FILTER (IS_SAME_COLLECTION("apps", kh_t) ? PARSE_IDENTIFIER(kh_t).key : DOCUMENT(kh_t).connectorId) == {node_var}.connectorId
+                    RETURN kh_t
+            )
 
             // Step 2: Check all 10 permission paths across all targets
             // Note: All 10 paths are covered by checking paths 1,3,5,7,9 on all targets:
@@ -25039,7 +25189,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path1_roles = (
                 FOR target_id IN permission_targets
                     FOR perm IN permission
-                        FILTER perm._from IN principal_ids
+                        FILTER perm._from IN (target_id IN kh_in_connector ? principal_ids : [{user_var}._id])
                         AND perm._to == target_id
                         AND perm.type == "USER"
                         AND perm.role != null
@@ -25051,7 +25201,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path3_roles = (
                 FOR target_id IN permission_targets
                     FOR user_group_perm IN permission
-                        FILTER user_group_perm._from IN principal_ids
+                        FILTER user_group_perm._from IN (target_id IN kh_in_connector ? principal_ids : [{user_var}._id])
                         AND user_group_perm.type == "USER"
                         AND STARTS_WITH(user_group_perm._to, "groups/")
                         AND user_group_perm.role != null
@@ -25072,7 +25222,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path5_roles = (
                 FOR target_id IN permission_targets
                     FOR user_role_perm IN permission
-                        FILTER user_role_perm._from IN principal_ids
+                        FILTER user_role_perm._from IN (target_id IN kh_in_connector ? principal_ids : [{user_var}._id])
                         AND user_role_perm.type == "USER"
                         AND STARTS_WITH(user_role_perm._to, "roles/")
                         AND user_role_perm.role != null
@@ -25093,7 +25243,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path7_roles = (
                 FOR target_id IN permission_targets
                     FOR team_member IN permission
-                        FILTER team_member._from IN principal_ids
+                        FILTER team_member._from IN (target_id IN kh_in_connector ? principal_ids : [{user_var}._id])
                         AND team_member.type == "USER"
                         AND STARTS_WITH(team_member._to, "teams/")
                         FOR team_grant IN permission
@@ -25109,7 +25259,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path9_roles = (
                 FOR target_id IN permission_targets
                     FOR belongs_edge IN belongsTo
-                        FILTER belongs_edge._from IN principal_ids
+                        // the viewer's organisation only: a linked account adds its own and its groups' grants, never its organisation's
+                        FILTER belongs_edge._from == {user_var}._id
                         AND belongs_edge.entityType == "ORGANIZATION"
                         LET org_id = belongs_edge._to
                         FOR org_target_perm IN permission
@@ -25179,6 +25330,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principal_ids = APPEND([{user_var}._id], (
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER linked._from == {user_var}._id AND linked.connectorId == {node_var}.connectorId
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN linked._to
             ), true)
 
@@ -25195,6 +25347,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // inherits from is not access to it, and never raises the role its own grants give.
             LET kh_needs_own = NOT_NULL({node_var}.accessRule, "OPEN") IN ["RESTRICTED", "PARENT_AND_GRANT"]
             LET permission_targets = kh_needs_own ? [{node_var}._id] : APPEND([{node_var}._id], parent_rgs, true)
+            // a grant held through the link counts only on a target in the link's connector (an App is its own), so not on what
+            // the node inherits from another connector
+            LET kh_in_connector = (
+                FOR kh_t IN permission_targets
+                    FILTER (IS_SAME_COLLECTION("apps", kh_t) ? PARSE_IDENTIFIER(kh_t).key : DOCUMENT(kh_t).connectorId) == {node_var}.connectorId
+                    RETURN kh_t
+            )
 
             // Step 2: Check all permission paths across all targets
             // Direct paths (1, 2, 3, 4, 5):
@@ -25202,7 +25361,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path1_roles = (
                 FOR target_id IN permission_targets
                     FOR perm IN permission
-                        FILTER perm._from IN principal_ids
+                        FILTER perm._from IN (target_id IN kh_in_connector ? principal_ids : [{user_var}._id])
                         AND perm._to == target_id
                         AND perm.type == "USER"
                         AND perm.role != null
@@ -25214,7 +25373,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path2_roles = (
                 FOR target_id IN permission_targets
                     FOR user_group_perm IN permission
-                        FILTER user_group_perm._from IN principal_ids
+                        FILTER user_group_perm._from IN (target_id IN kh_in_connector ? principal_ids : [{user_var}._id])
                         AND user_group_perm.type == "USER"
                         AND STARTS_WITH(user_group_perm._to, "groups/")
                         AND user_group_perm.role != null
@@ -25235,7 +25394,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path3_roles = (
                 FOR target_id IN permission_targets
                     FOR user_role_perm IN permission
-                        FILTER user_role_perm._from IN principal_ids
+                        FILTER user_role_perm._from IN (target_id IN kh_in_connector ? principal_ids : [{user_var}._id])
                         AND user_role_perm.type == "USER"
                         AND STARTS_WITH(user_role_perm._to, "roles/")
                         AND user_role_perm.role != null
@@ -25256,7 +25415,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path4_roles = (
                 FOR target_id IN permission_targets
                     FOR team_member IN permission
-                        FILTER team_member._from IN principal_ids
+                        FILTER team_member._from IN (target_id IN kh_in_connector ? principal_ids : [{user_var}._id])
                         AND team_member.type == "USER"
                         AND STARTS_WITH(team_member._to, "teams/")
                         FOR team_grant IN permission
@@ -25272,7 +25431,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET path5_roles = (
                 FOR target_id IN permission_targets
                     FOR belongs_edge IN belongsTo
-                        FILTER belongs_edge._from IN principal_ids
+                        // the viewer's organisation only: a linked account adds its own and its groups' grants, never its organisation's
+                        FILTER belongs_edge._from == {user_var}._id
                         AND belongs_edge.entityType == "ORGANIZATION"
                         LET org_id = belongs_edge._to
                         FOR org_target_perm IN permission
@@ -25350,6 +25510,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET linked_app_rel = FIRST(
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER linked._from == {user_var}._id AND linked.connectorId == {node_var}._key
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN linked
             )
             LET user_app_rel = own_app_rel != null ? own_app_rel : linked_app_rel
@@ -26202,6 +26363,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET principal_ids = APPEND([userDoc._id], (
                 FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
                     FILTER linked._from == userDoc._id AND linked.connectorId == @connectorId
+                    FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                     RETURN linked._to
             ))
 
@@ -26234,7 +26396,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             LET orgGrants = (
+                // the caller's organisation only, never a linked account's
                 FOR principal_id IN principal_ids
+                FILTER principal_id == userDoc._id
                 FOR org IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
                     FOR granted, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                         FILTER orgPerm.type IN @org_share_types
@@ -26891,6 +27055,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         LET links = (
             FOR linked IN {authenticated_as}
                 FILTER linked._from == user_from
+                FILTER DOCUMENT(linked._to).state != 'withdrawn'      // a withdrawn SourceAccount links nobody
                 RETURN {{ from: linked._to, connectorId: linked.connectorId }}
         )
         LET principals = APPEND([{{ from: user_from, connectorId: null }}], links, true)

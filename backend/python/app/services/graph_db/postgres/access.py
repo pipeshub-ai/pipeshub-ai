@@ -21,7 +21,11 @@ if TYPE_CHECKING:
 MAX_HOPS = 50  # ACCESS_WALK_MAX_DEPTH of the interface
 PAG = "PARENT_AND_GRANT"
 # The nodes a PERMISSION edge can come from and grant to a user: Neo4j matches a grantee by these labels, so an edge out of any other node is not one.
+# A SourceAccount's edge grants only through a link, so it is read by collection and id (``granted_targets(nodes=...)``), never by a bare id.
 PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
+# What an authenticatedAs link may point at: a User (the account a connector was authenticated as) or a SourceAccount (one account of a source
+# directory). Either one's grants and badges reach the linked user inside the link's connector only.
+SOURCE_ACCOUNT_COLLS = ("users", "sourceAccounts")
 
 
 
@@ -66,15 +70,21 @@ async def _info(tx: Tx, org: str, nodes: list[tuple[str, str]]) -> dict[tuple[st
     return out
 
 
-async def granted_targets(tx: Tx, org: str, from_ids: list[str], org_types: list[str]) -> dict[str, list[str]]:
+async def granted_targets(tx: Tx, org: str, from_ids: list[str], org_types: list[str], *, nodes: list[tuple[str, str]] | None = None) -> dict[str, list[str]]:
     """connectorId -> ids of the live records and groups that ``from_ids`` hold a permission edge to (an edge from an organization counts when its
-    type is in ``org_types``): the edges by the key, then the nodes by primary key."""
+    type is in ``org_types``): the edges by the key, then the nodes by primary key. ``nodes`` names the holders by (collection, id) instead, so a node
+    of another collection that happens to share an id holds nothing here."""
+    if nodes is not None:
+        from_ids = list({i for _, i in nodes})
     if not from_ids:
         return {}
+    wanted = set(nodes) if nodes is not None else None
     targets: set[tuple[str, str]] = set()
-    for r in await tx.fetch("""/* pipeshub:graph.access_grant_edges */ SELECT e.from_coll, e.to_coll, e.to_id, e.doc->>'type' AS t FROM graph.edges e WHERE e.org_id = $1
+    for r in await tx.fetch("""/* pipeshub:graph.access_grant_edges */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, e.doc->>'type' AS t FROM graph.edges e WHERE e.org_id = $1
         AND e.coll = 'permission' AND e.from_id = ANY($2::text[]) AND e.from_coll = ANY($3::text[]) AND e.to_coll IN ('records', 'recordGroups')""",
-                              org, from_ids, PRINCIPALS):
+                              org, from_ids, PRINCIPALS if nodes is None else [*PRINCIPALS, "sourceAccounts"]):
+        if wanted is not None and (r["from_coll"], r["from_id"]) not in wanted:
+            continue
         if r["from_coll"] != "organizations" or r["t"] in org_types:
             targets.add((r["to_coll"], r["to_id"]))
     out: dict[str, list[str]] = {}
@@ -436,7 +446,8 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
         if cand:
             for r in await tx.fetch("""/* pipeshub:graph.access_orphan */ SELECT DISTINCT e.to_id FROM graph.edges e
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_coll = 'records' AND e.to_id = ANY($2::text[]) AND e.from_id = ANY($3::text[])
-                  AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], list(ORG_SHARE_PERMISSION_TYPES)):
+                  AND e.from_coll = ANY($5::text[])      -- the grantees' collections: a SourceAccount sharing a grantee's id holds nothing
+                  AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], list(ORG_SHARE_PERMISSION_TYPES), PRINCIPALS):
                 ok.add(r["to_id"])
     return await _shape(tx, org, targets, ok)
 

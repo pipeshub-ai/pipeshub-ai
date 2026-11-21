@@ -146,6 +146,13 @@ class _Graph:
     async def get_document(self, key: str, collection: str, *, raise_on_error: bool = False) -> dict | None:
         return {"_key": key} if collection == CollectionNames.ORGS.value else None
 
+    async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+                                   transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
+        """Every field must match, the org included, as in the providers. Users are the only nodes this store keeps, so any other
+        collection (the source accounts the user-added relink looks up) holds none."""
+        rows = self.users.values() if collection == CollectionNames.USERS.value else ()
+        return [dict(r) for r in rows if all(r.get(k) == v for k, v in filters.items())]
+
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
         if collection == CollectionNames.USERS.value:
             for n in nodes:
@@ -160,6 +167,10 @@ class _Graph:
 
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
         return True
+
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str, transaction: str | None = None, *,
+                                  raise_on_error: bool = False) -> list[dict]:
+        return []      # this store keeps no edges
 
 
 async def test_any_number_of_writers_of_one_new_user_write_one_node() -> None:
@@ -399,6 +410,24 @@ async def test_a_user_readded_under_a_new_address_keeps_their_one_node(key: str)
     assert list(graph.users) == [key]
     assert (graph.users[key]["email"], graph.users[key]["isActive"]) == ("new@example.com", True)
     svc._get_or_create_knowledge_base.assert_awaited_once_with(key, USER, ORG, name="Admin's Private")
+
+
+async def test_a_user_readded_under_a_new_address_has_the_links_of_its_old_one_relinked() -> None:
+    """Relinked with the user's key, as an address change is: a connector linked for the old address has no account at the new one,
+    so only the user's own links name it."""
+    graph = _Graph()
+    graph.users["older-random-key"] = {"id": "older-random-key", "userId": USER, "orgId": ORG, "email": "old@example.com", "isActive": False}
+    svc = _service(graph)
+    svc._adopt_existing_person = AsyncMock()  # type: ignore[method-assign]
+    svc._get_or_create_knowledge_base = AsyncMock()  # type: ignore[method-assign]
+    svc._get_or_create_all_team_and_add_user = AsyncMock()  # type: ignore[method-assign]
+    svc._relink_source_accounts = AsyncMock()  # type: ignore[method-assign]
+    event = {"orgId": ORG, "userId": USER, "email": "new@example.com", "fullName": "Admin", "syncAction": "none"}
+
+    with patch("app.services.messaging.kafka.handlers.entity.notify_principals_changed", AsyncMock()):
+        assert await svc.process_event("userAdded", event) is True
+
+    svc._relink_source_accounts.assert_awaited_once_with(ORG, "new@example.com", user_key="older-random-key")
 
 
 

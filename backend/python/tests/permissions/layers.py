@@ -8,6 +8,7 @@ under different id prefixes, so a whole corpus costs one load per backend.
 from __future__ import annotations
 
 import itertools
+import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
 
@@ -22,7 +23,10 @@ from tests.integration.graph_permissions.loaders import (
     load_into_neo4j,
 )
 
-from .graph import Graph, Namespace, compile_world
+from .graph import VARIANTS, Graph, Namespace, compile_world
+
+# Several processes (pytest-xdist workers, two runs) may share a store: a prefix carries this process's token, so no release deletes another's.
+_RUN = uuid.uuid4().hex[:6]
 
 if TYPE_CHECKING:
     from .model import World
@@ -53,8 +57,9 @@ def _same(graph: Graph) -> Graph:
 class GraphCheckLayer:
     """`check_access` of a live provider (Neo4j or Arango) as an access layer."""
 
-    def __init__(self, name: str, provider: object, load: LoadFn, unload: UnloadFn, narrow: bool) -> None:
-        self.name = name
+    def __init__(self, name: str, provider: object, load: LoadFn, unload: UnloadFn, narrow: bool, *, variant: str = "") -> None:
+        self.name = f"{name}+{variant}" if variant else name
+        self._variant = variant
         self._provider = provider
         self._load = load
         self._unload = unload
@@ -63,6 +68,8 @@ class GraphCheckLayer:
         self._counter = itertools.count()  # never reused, so a released prefix cannot collide with a later load
 
     def shape(self, graph: Graph) -> Graph:
+        """The graph as this store keeps it, in the layer's ``variant`` (`graph.VARIANTS`)."""
+        graph = VARIANTS[self._variant](graph)
         return arango_graph(graph) if self._narrow else _same(graph)
 
     def _compiled(self, world: World) -> Graph:
@@ -72,7 +79,8 @@ class GraphCheckLayer:
         """Load every not yet loaded world in one batch."""
         fresh = [w for w in dict.fromkeys(worlds) if w not in self._prefix]
         for w in fresh:
-            self._prefix[w] = f"w{next(self._counter)}"
+            # the layers of one store share it in a module: a prefix of each variant's own keeps the copies of a world apart
+            self._prefix[w] = f"{self._variant[:2] or 'w'}{_RUN}{next(self._counter)}"
         nodes = [n for w in fresh for n in self._compiled(w)["nodes"]]
         edges = [e for w in fresh for e in self._compiled(w)["edges"]]
         if nodes:
@@ -111,7 +119,7 @@ class GraphCheckLayer:
         return {v: (None if by_vrid.get(s) is None else ns.local(by_vrid[s])) for v, s in zip(vrids, stored, strict=True)}
 
 
-def neo4j_layer(provider: object, settings: dict) -> GraphCheckLayer:
+def neo4j_layer(provider: object, settings: dict, *, variant: str = "") -> GraphCheckLayer:
     async def load(nodes: list, edges: list) -> None:
         await load_into_neo4j(settings, nodes, edges)
 
@@ -124,10 +132,10 @@ def neo4j_layer(provider: object, settings: dict) -> GraphCheckLayer:
         finally:
             await driver.close()
 
-    return GraphCheckLayer("neo4j", provider, load, unload, narrow=False)
+    return GraphCheckLayer("neo4j", provider, load, unload, narrow=False, variant=variant)
 
 
-def arango_layer(provider: object, settings: dict) -> GraphCheckLayer:
+def arango_layer(provider: object, settings: dict, *, variant: str = "") -> GraphCheckLayer:
     async def load(nodes: list, edges: list) -> None:
         await load_into_arango(settings, nodes, edges)
 
@@ -144,4 +152,4 @@ def arango_layer(provider: object, settings: dict) -> GraphCheckLayer:
                     if resp.status not in (200, 201, 404):  # 404: the edge collection was never created
                         raise RuntimeError(f"unload from {collection} failed: {resp.status} {await resp.text()}")
 
-    return GraphCheckLayer("arango", provider, load, unload, narrow=True)
+    return GraphCheckLayer("arango", provider, load, unload, narrow=True, variant=variant)

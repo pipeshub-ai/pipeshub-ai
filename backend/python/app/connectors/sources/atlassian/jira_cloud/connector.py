@@ -3323,9 +3323,11 @@ class JiraConnector(BaseConnector):
                     "redirect_link": f"{self.site_url}/plugins/servlet/project-config/{project_key}/permissions",
                 },
             )
+            # the account id too, so the grant reaches that account's own node where the connector keeps one
             return [Permission(
                 entity_type=EntityType.USER,
                 email=jira_email,
+                external_id=self._authenticated_jira_account_id,
                 type=PermissionType.READ,
             )]
 
@@ -3585,6 +3587,7 @@ class JiraConnector(BaseConnector):
                     grant_permissions.append(Permission(
                         entity_type=EntityType.USER,
                         email=jira_email,
+                        external_id=self._authenticated_jira_account_id,
                         type=PermissionType.READ,
                     ))
                     self.logger.info(
@@ -3630,9 +3633,11 @@ class JiraConnector(BaseConnector):
                 resolved_email = user_email
 
             if resolved_email:
+                # The account id lets the processor tell a re-used address's new holder from the deleted account.
                 grant_permissions.append(Permission(
                     entity_type=EntityType.USER,
                     email=resolved_email,
+                    external_id=holder_param,
                     type=PermissionType.READ
                 ))
             else:

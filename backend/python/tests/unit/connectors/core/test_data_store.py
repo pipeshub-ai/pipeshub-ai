@@ -216,10 +216,13 @@ class ConcreteTransactionStore(TransactionStore):
     async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
         pass
 
-    async def upsert_authenticated_as(self, creator_key, source_user_key, connector_id, org_id) -> None:
+    async def upsert_authenticated_as(self, creator_key, source_user_key, connector_id, org_id, *, target_collection="users") -> None:
         pass
 
     async def remove_authenticated_as(self, connector_id) -> None:
+        pass
+
+    async def set_directory_link(self, user_key, connector_id, email, org_id) -> None:
         pass
 
     async def find_slack_burst_record_by_ts(self, connector_id, channel_id, ts):

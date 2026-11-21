@@ -157,8 +157,8 @@ class TestSecuredIssues:
         assert (record.access_rule, record.access_group_external_id) == (AccessRule.STRICT, "level:p-1:10102")
         assert record.rewrite_permissions is True
         assert {(p.entity_type, p.external_id, p.email) for p in perms} == {
-            (EntityType.USER, None, "rep@x.com"),
-            (EntityType.USER, None, "asg@x.com"),
+            (EntityType.USER, "acc-1", "rep@x.com"),
+            (EntityType.USER, "acc-2", "asg@x.com"),
         }
         await c._write_level_groups(PROJECT_ID, "PROJ", _present(), ["10102"],
                                     {u.source_user_id: u for u in _users()})
@@ -167,7 +167,7 @@ class TestSecuredIssues:
             "level:p-1:10102", PROJECT_ID, AccessRule.RESTRICTED, True)
         assert {(p.entity_type, p.external_id, p.email) for p in grants} == {
             (EntityType.GROUP, "group-1", None),
-            (EntityType.USER, None, "mia@x.com"),
+            (EntityType.USER, "acc-9", "mia@x.com"),
             (EntityType.ROLE, "PROJ_projectLead", None),
             (EntityType.ROLE, "PROJ_10003", None),
         }

@@ -436,6 +436,25 @@ class ConfigurationService:
             self.logger.debug("Config key %s already exists; leaving it untouched", key)
         return created
 
+    async def compare_and_set_config(
+        self, key: str, expected: str | int | float | bool | dict | list | None, new: str | int | float | bool | dict | list,  # noqa: FBT001
+    ) -> bool:
+        """Atomically replace ``key`` with ``new`` only if it still holds ``expected`` (None: the key is absent).
+
+        For read-modify-write across processes: read with ``get_config(key, use_cache=False, raise_on_error=True)``,
+        change it, then call this; False means another writer got there first, so read again and retry. Like
+        :meth:`create_config_if_absent` a store failure raises instead of answering False, which a retry loop
+        would read as "lost the race" forever.
+        """
+        swapped = await self.store.compare_and_set(key, expected, new)
+        # Evicted either way. On a win, ``new`` is not cached: a later writer's invalidation can arrive while the
+        # store call is still returning, and caching after it would serve ``new`` over that writer's value.
+        # On a loss, the value is not what the caller last read, so the cached one may be stale too.
+        self._evict(key)
+        if swapped:
+            await self._publish_cache_invalidation(key)
+        return swapped
+
     async def update_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
         """Update configuration value with optional encryption"""
         try:

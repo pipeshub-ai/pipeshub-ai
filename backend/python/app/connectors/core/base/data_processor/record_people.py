@@ -84,7 +84,7 @@ class PersonLink:
 
 class PeopleStore(Protocol):
     async def get_users_by_emails(
-        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str,
     ) -> dict[str, User]: ...
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,

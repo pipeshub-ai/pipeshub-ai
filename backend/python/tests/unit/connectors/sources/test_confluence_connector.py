@@ -74,6 +74,7 @@ def _make_mock_deps():
     data_entities_processor.get_placeholder_records = AsyncMock(return_value=[])
     data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
     data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+    data_entities_processor.holds_source_account = AsyncMock(return_value=False)
     data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_all_user_groups = AsyncMock(return_value=[])
     data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
@@ -1498,6 +1499,7 @@ class TestSyncContentPermissionsByTitles:
 def _make_mock_deps_cov():
     logger = logging.getLogger("test.confluence.coverage")
     dep = MagicMock()
+    dep.holds_source_account = AsyncMock(return_value=False)
     dep.org_id = "org-cov-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
@@ -2025,6 +2027,21 @@ class TestCreatePermissionFromPrincipal:
         )
         assert perm is not None
         assert perm.entity_type == EntityType.GROUP
+
+    @pytest.mark.asyncio
+    async def test_a_stored_source_account_without_a_user_holds_the_grant_itself(self) -> None:
+        """Two accounts can share an address, so a stored account may have no PipesHub user: the grant names it, not an empty pseudo-group."""
+        c = _conn()
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.holds_source_account = AsyncMock(return_value=True)
+        c._create_pseudo_group = AsyncMock()
+
+        perm = await c._create_permission_from_principal(
+            "user", "acc-1", PermissionType.READ, create_pseudo_group_if_missing=True
+        )
+        assert (perm.entity_type, perm.external_id, perm.email) == (EntityType.USER, "acc-1", None)
+        c._create_pseudo_group.assert_not_awaited()
+        c.data_entities_processor.holds_source_account.assert_awaited_once_with("conn-cov-1", "acc-1")
 
     @pytest.mark.asyncio
     async def test_user_not_found_existing_pseudo(self):
@@ -3452,6 +3469,7 @@ def _make_mock_deps_fullcov():
     logger = logging.getLogger("test.confluence.full")
     dep = MagicMock()
     dep.org_id = "org-1"
+    dep.holds_source_account = AsyncMock(return_value=False)
     dep.on_new_app_users = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()

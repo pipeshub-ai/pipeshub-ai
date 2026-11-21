@@ -78,6 +78,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_roles_to_permission_type,
 )
+from app.connectors.sources.microsoft.common.msgraph_client import list_deleted_users
 from app.connectors.sources.microsoft.common.sharepoint_permission_scope import (
     ListUniquePermissions,
     SharePointAccessError,
@@ -573,6 +574,9 @@ class OneDriveConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(
+            connector_id, deleted_users=lambda: list_deleted_users(self.msgraph_client.client)
+        )
 
         # Batch processing configuration
         self.batch_size = 100
@@ -1052,7 +1056,14 @@ class OneDriveConnector(BaseConnector):
                 if unresolved_access is not None:
                     unresolved_access.append(item.id)
 
-            new_permissions = await self._convert_to_permissions(permission_result)
+            try:
+                new_permissions = await self._convert_to_permissions(permission_result)
+            except Exception as state_error:
+                # The account state could not be read, so no grant can be judged: the page is read again rather than
+                # moved past an item it did not save, which an unchanged item never brings back.
+                if hold_page_on_incomplete_walk:
+                    raise DrivePageIncompleteError(f"account state for item {item.id} could not be read") from state_error
+                raise
 
             if permission_failure is None:
                 # Graph's list is the item's whole effective access and does not say which
@@ -1128,18 +1139,24 @@ class OneDriveConnector(BaseConnector):
             self._queue_unknown_inheritance(item.parent_reference.drive_id if item.parent_reference else None, item.id)
             return None
 
+    def _names_current_account(self, user: object) -> bool:
+        """Whether a Graph identity is the account that holds its address now (see SourceAccounts)."""
+        email = (getattr(user, 'additional_data', None) or {}).get("email")
+        return not isinstance(email, str) or self.source_accounts.may_grant(email, getattr(user, 'id', None))
+
     async def _convert_to_permissions(self, msgraph_permissions: List) -> List[Permission]:
         """
         Convert Microsoft Graph permissions to our Permission model.
         Handles both user and group permissions.
         """
+        await self.source_accounts.ensure_loaded()     # a reindex or a webhook reaches here before any user sync
         permissions = []
 
         for perm in msgraph_permissions:
             try:
                 # Handle user permissions
                 if hasattr(perm, 'granted_to_v2') and perm.granted_to_v2:
-                    if hasattr(perm.granted_to_v2, 'user') and perm.granted_to_v2.user:
+                    if hasattr(perm.granted_to_v2, 'user') and perm.granted_to_v2.user and self._names_current_account(perm.granted_to_v2.user):
                         user = perm.granted_to_v2.user
                         permissions.append(Permission(
                             external_id=user.id,
@@ -1168,7 +1185,7 @@ class OneDriveConnector(BaseConnector):
                                 type=map_msgraph_roles_to_permission_type(perm.roles),
                                 entity_type=EntityType.GROUP
                             ))
-                        elif hasattr(identity, 'user') and identity.user:
+                        elif hasattr(identity, 'user') and identity.user and self._names_current_account(identity.user):
                             user = identity.user
                             permissions.append(Permission(
                                 external_id=user.id,
@@ -2071,8 +2088,10 @@ class OneDriveConnector(BaseConnector):
                             description=f"OneDrive for {display_name or user_email}",
                         )
 
+                        # The object id lets a re-used address's new holder keep their own drive (see SourceAccounts).
                         owner_permission = Permission(
                             email=user_email,
+                            external_id=user_id,
                             type=PermissionType.OWNER,
                             entity_type=EntityType.USER
                         )
@@ -2817,7 +2836,10 @@ class OneDriveConnector(BaseConnector):
             if getattr(users, "complete", True):
                 await self._withdraw_unlisted_app_users(users)
             else:
-                self.logger.warning("User listing is incomplete; no user loses access this run")
+                # Nobody is taken for gone, but an account the read pages showed disabled is withdrawn.
+                self.logger.warning("User listing is incomplete; only accounts it lists disabled lose access this run")
+                await self.data_entities_processor.withdraw_reported_unusable(
+                    self.connector_id, {u.source_user_id for u in users if u.is_active is False})
             self.logger.info(f"✅ Successfully synced {len(users)} users")
             return users
         except ODataError as e:
@@ -2882,7 +2904,7 @@ class OneDriveConnector(BaseConnector):
                     if record_update.permissions_changed:
                         await self.data_entities_processor.on_updated_record_permissions(
                             record_update.record,
-                            record_update.new_permissions
+                            await self.source_accounts.recheck(record_update.new_permissions or []),
                         )
 
             self.logger.info(f"Completed reindex for record {record_id}")
@@ -3143,6 +3165,8 @@ class OneDriveConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
+                # judged while the batch was read; an account admitted meanwhile must not be handed them
+                updated_records = [(r, await self.source_accounts.recheck(p)) for r, p in updated_records]
                 await self.data_entities_processor.on_new_records(updated_records)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 

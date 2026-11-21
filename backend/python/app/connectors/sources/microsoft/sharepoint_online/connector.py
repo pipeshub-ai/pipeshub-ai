@@ -105,6 +105,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_roles_to_permission_type,
 )
+from app.connectors.sources.microsoft.common.msgraph_client import list_deleted_users
 from app.connectors.sources.microsoft.sharepoint_online.container_tracker import (
     ContainerTracker,
 )
@@ -665,6 +666,9 @@ class SharePointConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(
+            connector_id, deleted_users=lambda: list_deleted_users(self.client)
+        )
 
         self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": False}
         # Batch processing configuration
@@ -2687,6 +2691,7 @@ class SharePointConnector(BaseConnector):
         and role assignments.
         """
         self._require_known_disabled_set()
+        await self.source_accounts.ensure_loaded()     # a member written by address must be the account holding it now
         group = self.client.groups.by_group_id(group_id)
         builder = group.owners if is_owner else group.transitive_members
         users: list[dict] = []
@@ -2701,7 +2706,7 @@ class SharePointConnector(BaseConnector):
         while response:
             for item in response.value or []:
                 user = self._graph_member_user(item)
-                if user and user['email'].lower() not in self._inactive_emails:
+                if user and user['email'].lower() not in self._inactive_emails and self._names_current_holder(user):
                     users.append(user)
             next_link = getattr(response, 'odata_next_link', None)
             if not next_link:
@@ -2792,6 +2797,7 @@ class SharePointConnector(BaseConnector):
         Handles user, group and SharePoint site group permissions; site groups
         need the ``site_id`` they were synced under.
         """
+        await self.source_accounts.ensure_loaded()     # a reindex reaches here before any user sync
         permissions = []
 
 
@@ -2853,12 +2859,13 @@ class SharePointConnector(BaseConnector):
 
         return permissions
 
-    def _user_may_be_granted(self, email: str) -> bool:
-        """Whether a grant naming this user is written. Never for an account the tenant has disabled or deleted.
-        While no disabled set is known, only for a user the listing showed as active: the others are withheld
-        without failing the item, and the next run writes them once the set is known."""
+    def _user_may_be_granted(self, email: str, object_id: str | None = None) -> bool:
+        """Whether a grant naming this user is written. Never for an account the tenant has disabled or deleted,
+        nor for an earlier account that held the same address (``object_id``: the Entra id the grant names, None
+        for a SharePoint principal). While no disabled set is known, only for a user the listing showed as active:
+        the others are withheld without failing the item, and the next run writes them once the set is known."""
         email = email.lower()
-        if email in self._inactive_emails:
+        if email in self._inactive_emails or not self.source_accounts.may_grant(email, object_id):
             return False
         if self._disabled_set_unknown and email not in self._confirmed_active_emails:
             self._withheld_unknown_user = True
@@ -2869,7 +2876,7 @@ class SharePointConnector(BaseConnector):
         """A Graph identity whose grant is not written (see _user_may_be_granted)."""
         email = (getattr(user, 'additional_data', None) or {}).get("email")
         if isinstance(email, str):
-            return not self._user_may_be_granted(email)
+            return not self._user_may_be_granted(email, getattr(user, 'id', None))
         if self._disabled_set_unknown:
             # No email, so the listing cannot have shown this account active: withheld like an unlisted one.
             self._withheld_unknown_user = True
@@ -2948,15 +2955,22 @@ class SharePointConnector(BaseConnector):
         return permissions
 
     async def _m365_owner_permissions(self, group_id: str, role: PermissionType) -> list[Permission]:
+        await self.source_accounts.ensure_loaded()
         if group_id not in self._m365_group_owners:
             self._m365_group_owners[group_id] = await self._fetch_graph_group_members(group_id, is_owner=True)
         return [
             Permission(external_id=owner['id'], email=owner['email'], type=role, entity_type=EntityType.USER)
-            for owner in self._m365_group_owners[group_id]
+            for owner in self._m365_group_owners[group_id] if self._names_current_holder(owner)
         ]
+
+    def _names_current_holder(self, member: dict) -> bool:
+        """An expanded Graph member (``id``, ``email``) whose address its account still holds (see SourceAccounts)."""
+        email = member.get('email')
+        return isinstance(email, str) and self.source_accounts.may_grant(email, member.get('id'))
 
     async def _sharepoint_principal_permissions(self, principal: dict, role: PermissionType, site_id: str) -> list[Permission]:
         """Grants for one SharePoint principal: a role assignment's Member, or a user of an associated site group."""
+        await self.source_accounts.ensure_loaded()     # a reindex reaches here before any user sync
         login_name = principal.get('LoginName') or ''
         principal_type = principal.get('PrincipalType')
 
@@ -2996,9 +3010,10 @@ class SharePointConnector(BaseConnector):
             return []
         object_id = match.group(1)
         if await self._get_directory_object_type(object_id) == DIRECTORY_ROLE_ODATA_TYPE:
+            await self.source_accounts.ensure_loaded()
             return [
                 Permission(external_id=member['id'], email=member['email'], type=role, entity_type=EntityType.USER)
-                for member in await self._get_directory_role_member_users(object_id)
+                for member in await self._get_directory_role_member_users(object_id) if self._names_current_holder(member)
             ]
         return [Permission(external_id=object_id, email=None, type=role, entity_type=EntityType.GROUP)]
 
@@ -3023,6 +3038,7 @@ class SharePointConnector(BaseConnector):
         if role_id in self._directory_role_members:
             return self._directory_role_members[role_id]
         self._require_known_disabled_set()
+        await self.source_accounts.ensure_loaded()
         users: list[dict] = []
         members = self.client.directory_roles.by_directory_role_id(role_id).members
         async with self.rate_limiter:
@@ -3031,7 +3047,7 @@ class SharePointConnector(BaseConnector):
             for member in response.value or []:
                 user = self._graph_member_user(member)
                 if user:
-                    if user['email'].lower() not in self._inactive_emails:
+                    if user['email'].lower() not in self._inactive_emails and self._names_current_holder(user):
                         users.append(user)
                 elif 'group' in (getattr(member, 'odata_type', None) or '').lower() and getattr(member, 'id', None):
                     users.extend(await self._fetch_graph_group_members(member.id))
@@ -3359,6 +3375,7 @@ class SharePointConnector(BaseConnector):
     async def _site_group_member_users(self, site_id: str, group_id: str, principals: list[dict]) -> list[AppUser]:
         """The enabled people a SharePoint group's members stand for. Raises when a member group can't be read.
         A tenant-wide claim is noted for the group (see _site_group_permissions), not expanded."""
+        await self.source_accounts.ensure_loaded()     # a reindex reaches here before any user sync
         users: list[dict] = []
         for principal in principals:
             login_name = principal.get('LoginName', '') or ''
@@ -3383,7 +3400,7 @@ class SharePointConnector(BaseConnector):
                         users.extend(await self._fetch_graph_group_members(claim_id))
             else:
                 email = principal.get('Email') or principal.get('UserPrincipalName')
-                if email and email.lower() not in self._inactive_emails:
+                if email and email.lower() not in self._inactive_emails and self.source_accounts.may_grant(email, None):
                     users.append({'id': str(principal.get('Id')), 'email': email, 'name': principal.get('Title')})
         return [
             AppUser(source_user_id=user['id'], email=user['email'], full_name=user.get('name'),
@@ -3646,9 +3663,9 @@ class SharePointConnector(BaseConnector):
 
     async def _withdraw_unlisted_app_users(self, listed: list[AppUser]) -> bool:
         """Take the connector away from stored users (guest accounts included) the complete
-        user read no longer lists and that Microsoft confirms are gone (a 404 on the user
-        itself): a stale listing cannot withdraw anyone, nor can a failed or throttled read
-        of the user. Only called after a complete read; an empty list withdraws nobody (the
+        user read lists disabled, or no longer lists and that Microsoft confirms are gone (a 404
+        on the user itself): a stale listing cannot withdraw anyone unlisted, nor can a failed or
+        throttled read of the user. Only called after a complete read; an empty list withdraws nobody (the
         directory always has users), and so does a failed read of the stored users.
         Restoring the account saves the user again.
 
@@ -3662,11 +3679,17 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
             return False
-        kept = {u.source_user_id for u in listed}
+        # A disabled account ("`true` if the account is enabled; otherwise, `false`", accountEnabled,
+        # https://learn.microsoft.com/en-us/graph/api/resources/user) is withdrawn as in OneDrive: the listing says so.
+        kept = {u.source_user_id for u in listed if u.is_active is not False}
+        disabled = {u.source_user_id for u in listed} - kept
         gone = []
         trusted = True
         for u in stored:
             if not u.source_user_id or u.source_user_id in kept:
+                continue
+            if u.source_user_id in disabled:
+                gone.append(u)
                 continue
             try:
                 if await self.msgraph_client.get_user_status(u.source_user_id) != "gone":
@@ -3678,7 +3701,14 @@ class SharePointConnector(BaseConnector):
                 continue
             gone.append(u)
         if gone:
-            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            try:
+                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            except Exception as e:
+                # The run goes on to its group and grant rewrites; the listing is not trusted, so nothing else is
+                # taken as withdrawn, and the next sync tries again.
+                self.logger.error(f"Withdrawing deleted or disabled accounts failed; tried again next sync: {e}",
+                                  exc_info=True)
+                return False
         return trusted
 
     async def _sync_users(self) -> None:
@@ -3701,8 +3731,20 @@ class SharePointConnector(BaseConnector):
                 recipient_user_ids=[self.created_by],
             )
             raise
-        await self.data_entities_processor.on_new_app_users(users)
+        # A disabled account is not linked, as in OneDrive: Entra keeps the UPN and the proxy addresses each unique
+        # ("These two attributes are required to be unique across all User, Group, or Contact objects",
+        # https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-syncservice-duplicate-attribute-resiliency)
+        # but says nothing of one account's mail against another's UPN, and the address here is either. Linked, a
+        # disabled account sharing an enabled one's address reads as that address changing hands. Enabled again, it
+        # is linked on the next listing; one linked before is withdrawn after a complete listing.
+        enabled = [u for u in users if u.is_active is not False]
+        if enabled:
+            await self.data_entities_processor.on_new_app_users(enabled)
         self._confirmed_active_emails = {u.email.lower() for u in users if u.email and u.is_active is not False}
+        if not getattr(users, "complete", True):
+            # A cut listing takes nobody for gone, but an account it lists disabled is withdrawn.
+            await self.data_entities_processor.withdraw_reported_unusable(
+                self.connector_id, {u.source_user_id for u in users if u.is_active is False})
         trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
         stored_emails = set((stored or {}).get("emails") or [])
@@ -3848,7 +3890,13 @@ class SharePointConnector(BaseConnector):
                 # A warning about the app's permissions must not stop the sync it is about.
                 self.logger.warning(f"⚠️ Could not check the app's Microsoft Graph permissions: {e}")
             await self._sync_users()
-            if self._disabled_set_unknown:
+            # The saved marker, read now: a listing that admits and withdraws nobody never reads it, and deleted_pending
+            # would stay at its default while the items still withhold grants.
+            await self.source_accounts.ensure_loaded([])
+            # While the deleted accounts are unread, a SharePoint principal (no Entra id) is withheld too (may_grant).
+            # Taken once: a later ensure_loaded may clear deleted_pending after earlier items already withheld grants.
+            withheld = self._disabled_set_unknown or self.source_accounts.deleted_pending
+            if withheld:
                 # A grant may be withheld this run (_user_may_be_granted), and an item's grants and the drives' delta
                 # tokens are saved as the run goes. Mark every item for reading again before any of that, so a run
                 # that stops anywhere after this point still leaves the next run to write what was withheld. If this
@@ -3898,7 +3946,8 @@ class SharePointConnector(BaseConnector):
                 except Exception as site_error:
                     self._health.skipped(f"site {site_record_group.name}", site_error)
 
-            if self._health.complete and self._rewrite_all_items:
+            # While the deleted accounts are unread, some grants were withheld: the items stay marked for reading again.
+            if self._health.complete and self._rewrite_all_items and not withheld:
                 await self.drive_delta_sync_point.update_sync_point(
                     PERMISSION_MODEL_SYNC_POINT_KEY, sync_point_data={"version": PERMISSION_MODEL_VERSION}
                 )
@@ -4281,6 +4330,8 @@ class SharePointConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
+                # judged while the batch was read; an account admitted meanwhile must not be handed them
+                updated_records = [(r, await self.source_accounts.recheck(p)) for r, p in updated_records]
                 await self.data_entities_processor.on_new_records(updated_records)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 

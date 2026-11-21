@@ -317,6 +317,25 @@ async def test_mail_message_file_and_duplicate_lookups(g: G) -> None:
     assert owned is not None and owned.id == mail.id
     assert await g.graph.get_record_by_conversation_index(g.conn, "ci1", "t1", g.org, "someone-else") is None
 
+    # a mail owned by a source account the user is linked to in this connector is the user's, and nobody else's
+    other = MailRecord(id=str(uuid.uuid4()), org_id=g.org, record_name="m2", external_record_id="ext-m2", version=1, origin=OriginTypes.CONNECTOR,
+                       connector_name=Connectors.GOOGLE_MAIL, connector_id=g.conn, record_type=RecordType.MAIL, thread_id="t2", conversation_index="ci2")
+    await g.graph.batch_upsert_records([other])
+    g.ids.append(other.id)
+    account = f"acct-{uuid.uuid4().hex[:6]}"
+    await g.graph.batch_upsert_nodes([{"id": account, "orgId": g.org, "connectorId": g.conn, "sourceUserId": "s1", "state": "listed",
+                                       "createdAtTimestamp": 1, "updatedAtTimestamp": 1}], CollectionNames.SOURCE_ACCOUNTS.value)
+    await g.graph.batch_create_edges([{"from_id": account, "from_collection": CollectionNames.SOURCE_ACCOUNTS.value, "to_id": other.id,
+                                       "to_collection": RECORDS, "type": "USER", "role": "OWNER"}], CollectionNames.PERMISSION.value)
+    assert await g.graph.get_record_by_conversation_index(g.conn, "ci2", "t2", g.org, user_id) is None
+    await g.graph.batch_create_edges([{"from_id": user_key, "from_collection": CollectionNames.USERS.value, "to_id": account,
+                                       "to_collection": CollectionNames.SOURCE_ACCOUNTS.value, "connectorId": g.conn, "via": "directory",
+                                       "createdAtTimestamp": 1}], CollectionNames.AUTHENTICATED_AS.value)
+    owned = await g.graph.get_record_by_conversation_index(g.conn, "ci2", "t2", g.org, user_id)
+    assert owned is not None and owned.id == other.id
+    assert await g.graph.update_node(account, CollectionNames.SOURCE_ACCOUNTS.value, {"state": "withdrawn"})
+    assert await g.graph.get_record_by_conversation_index(g.conn, "ci2", "t2", g.org, user_id) is None, "a withdrawn account links nobody"
+
     await g.graph.update_node(f.id, RECORDS, {"duplicateReconcilePending": True, "duplicateReconcileDueAt": 5, "duplicateReconcileAttempts": 2})
     rows = await g.graph.get_records_pending_duplicate_reconcile(due_before_ms=10, limit=100)
     assert {"_key": f.id, "orgId": g.org, "duplicateReconcileAttempts": 2, "duplicateReconcileDueAt": 5} in rows

@@ -23,6 +23,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "batch_update_connector_status": (NO_PROJECTION, "isActive and isAgentActive of an app are not projected"),
     "batch_update_nodes": (PROJECTED, ""),
     "batch_upsert_app_users": (PROJECTED, ""),
+    "set_directory_link": (PROJECTED, ""),
     "batch_upsert_node_relations": (NO_PROJECTION, _CODE),
     "batch_upsert_nodes": (PROJECTED, ""),
     "batch_upsert_records": (PROJECTED, ""),

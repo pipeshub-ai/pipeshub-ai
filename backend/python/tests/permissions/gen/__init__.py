@@ -34,3 +34,13 @@ def seeds() -> list[int]:
 def generate(kind: str, seed: int, count: int) -> list[World]:
     rng = random.Random(seed)
     return [GENERATORS[kind](rng) for _ in range(count)]
+
+
+def linked(count: int) -> list[tuple[str, World]]:
+    """Up to ``count`` generated worlds of each generator (first seed) that link a user to a source account, named ``<kind>-<seed>-<index>``."""
+    seed = seeds()[0]
+    out: list[tuple[str, World]] = []
+    for kind in sorted(GENERATORS):
+        found = [(f"{kind}-{seed}-{i}", w) for i, w in enumerate(generate(kind, seed, world_count())) if w.links]
+        out += found[:count]
+    return out

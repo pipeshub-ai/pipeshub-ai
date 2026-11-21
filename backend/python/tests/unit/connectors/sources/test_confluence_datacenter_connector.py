@@ -336,13 +336,15 @@ class TestSyncUsers:
         user_response = {
             "results": [
                 {
-                    "userKey": "user-1",
+                    "type": "known", "userKey": "user-1",
                     "displayName": "User One",
                     "email": "user1@example.com",
                 }
             ],
         }
-        mock_ds.get_user_list_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_app_user = MagicMock(return_value=AppUser(
             app_name=Connectors.CONFLUENCE,
@@ -364,13 +366,15 @@ class TestSyncUsers:
         user_response = {
             "results": [
                 {
-                    "userKey": "user-no-email",
+                    "type": "known", "userKey": "user-no-email",
                     "displayName": "No Email",
                     "email": "",
                 }
             ],
         }
-        mock_ds.get_user_list_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         await connector._sync_users()
@@ -382,7 +386,9 @@ class TestSyncUsers:
     async def test_sync_users_handles_api_failure(self):
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_user_list_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         # Should not raise, just stop
@@ -397,13 +403,15 @@ class TestSyncUsers:
         user_response = {
             "results": [
                 {
-                    "userKey": "user-1",
+                    "type": "known", "userKey": "user-1",
                     "displayName": "Alice",
                     "email": "alice@example.com",
                 }
             ],
         }
-        mock_ds.get_user_list_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_app_user = MagicMock(return_value=AppUser(
             app_name=Connectors.CONFLUENCE,
@@ -425,7 +433,7 @@ class TestSyncUsers:
 
         page1_users = [
             {
-                "userKey": f"u{i}",
+                "type": "known", "userKey": f"u{i}",
                 "displayName": f"User {i}",
                 "email": f"u{i}@example.com",
             }
@@ -433,7 +441,7 @@ class TestSyncUsers:
         ]
         page2_users = [
             {
-                "userKey": "u200",
+                "type": "known", "userKey": "u200",
                 "displayName": "User 200",
                 "email": "u200@example.com",
             }
@@ -448,7 +456,9 @@ class TestSyncUsers:
                 return _make_mock_response(200, {"results": page1_users})
             return _make_mock_response(200, {"results": page2_users})
 
-        mock_ds.get_user_list_v1 = AsyncMock(side_effect=mock_user_list)
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(side_effect=mock_user_list)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_app_user = MagicMock(return_value=AppUser(
             app_name=Connectors.CONFLUENCE,
@@ -2405,6 +2415,15 @@ class TestGetAppUsersByEmails:
         assert result[0].email == "a@t.com"
 
     @pytest.mark.asyncio
+    async def test_a_group_naming_the_old_account_does_not_reach_the_new_one_at_its_address(self) -> None:
+        """The group lists account A; the address is linked to account B now. B must not get A's membership."""
+        c = _conn()
+        b = MagicMock(email="a@t.com", source_user_id="key-b")
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[b])
+        assert await c._get_app_users_by_emails(["a@t.com"], {"a@t.com": {"key-a"}}) == []
+        assert await c._get_app_users_by_emails(["a@t.com"], {"a@t.com": {"key-b"}}) == [b]
+
+    @pytest.mark.asyncio
     async def test_exception_propagates(self):
         c = _conn()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
@@ -3381,7 +3400,9 @@ class TestSyncUsersCoverage:
     async def test_no_response(self):
         c = _conn()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=None)
+        c._server_version = (10, 2, 0)
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=None)
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
 
@@ -3389,7 +3410,9 @@ class TestSyncUsersCoverage:
     async def test_error_response(self):
         c = _conn()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(500))
+        c._server_version = (10, 2, 0)
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
 
@@ -3397,7 +3420,9 @@ class TestSyncUsersCoverage:
     async def test_empty_results(self):
         c = _conn()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(200, {"results": []}))
+        c._server_version = (10, 2, 0)
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(200, {"results": []}))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
 

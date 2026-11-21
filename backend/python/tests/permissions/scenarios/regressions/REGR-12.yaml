@@ -1,0 +1,41 @@
+- id: REGR-12
+  title: 'Linked account: a grant it holds on a node of another connector gives no role, also on a record that inherits from that node'
+  source: review of the source-account readers
+  rule: linked-account
+  world:
+    principals:
+      - {id: u}
+      - {id: acct}
+      - {id: g:b, kind: group}
+      - {id: t:b, kind: team}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: B, kind: app, app_type: JIRA}
+      - {id: SA, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: SB, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [SA], inherits: [SA, SB]}
+      - {id: SA2, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: h, kind: record, connector: A, rule: OPEN, parents: [SA2], inherits: [SA2]}
+    grants:
+      - [u, f, USER, READER]
+      - [acct, SB, USER, OWNER]
+      - [g:b, SB, GROUP, OWNER]
+      - [t:b, SB, TEAM, WRITER]
+      - [acct, SA2, USER, WRITER]
+    memberships:
+      - [acct, g:b]
+      - [acct, t:b]
+    gates:
+      - [u, A]
+    links:
+      - [u, acct, A]
+  expect:
+    verdicts:
+      u: {f: admit, h: admit, SA2: admit, SA: deny, SB: deny}
+  tags: [regression, linked-account]
+  comment: >-
+    u is linked to acct for A only. f (in A) inherits from SB (in B), on which acct holds OWNER itself, through its group and WRITER through
+    its team. The access check reads acct's grants inside A only, so u reads f by its own READER grant, and every reader must give u READER
+    on f: the link's connector bounds the grant, on what a node inherits from too. acct's WRITER on SA2 (in A) still reaches h, which
+    inherits from it, as WRITER. No connector writes an inherit edge across connectors (each resolves the group by the record's own
+    connector); the readers fail closed anyway.

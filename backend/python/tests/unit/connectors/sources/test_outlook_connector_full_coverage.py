@@ -10,16 +10,24 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.connectors.sources.microsoft.outlook.connector import (
-    OutlookConnector,
-    OutlookCredentials,
-    OutlookUserListing,
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
 )
 from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookAPIFields,
     OutlookFolders,
     OutlookThreadDetection,
+)
+from app.connectors.sources.microsoft.outlook.connector import (
+    OutlookConnector,
+    OutlookCredentials,
+    OutlookUserListing,
+)
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
 )
 
 # Backwards compatibility aliases for tests
@@ -67,7 +75,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "test-user-id")
+    return stub_source_accounts(OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "test-user-id"))
 
 
 def _make_graph_response(success=True, data=None, error=None):
