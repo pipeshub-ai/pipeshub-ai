@@ -221,8 +221,11 @@ class TestTheRootInATurnOthersRead:
     """Listing the root names only the sources the run's prompts name; the rest are counted."""
 
     @pytest.mark.asyncio
-    async def test_a_source_it_may_not_name_is_left_out_and_counted(self):
-        from app.modules.agents.context.named_sources import NAMED_SOURCES_KEY, NamedSources
+    async def test_a_source_it_may_not_name_is_left_out_and_counted(self) -> None:
+        from app.modules.agents.context.named_sources import (
+            NAMED_SOURCES_KEY,
+            NamedSources,
+        )
 
         state = _make_state(**{NAMED_SOURCES_KEY: NamedSources(knowledge=({"connectorId": "app-board"},), limited=True)})
         graph_provider = state["graph_provider"]

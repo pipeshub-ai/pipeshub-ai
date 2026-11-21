@@ -47,6 +47,7 @@ from .versioning import (
 if TYPE_CHECKING:
     from app.modules.agents.context.told_files import ToldFiles
     from app.modules.authz.chat_content_access import ChatContentAccess
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
     from .models import ArtifactProvenance
 
@@ -149,7 +150,9 @@ def _note_read(artifact_id: str | None, doc: dict | None, version: int = 1, reco
     )
 
 
-async def _note_read_by_id(graph_provider: Any, artifact_id: str, version: int, record: dict | None = None) -> None:
+async def _note_read_by_id(
+    graph_provider: IGraphDBProvider, artifact_id: str, version: int, record: dict | None = None,
+) -> None:
     """`_note_read` for a read that authorized against the record alone. The
     artifact's document is read only while a request is labelled. One that can't
     be read names no run, so the artifact counts as an earlier run's: the answer

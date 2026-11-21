@@ -44,16 +44,16 @@ class Graph:
         self.most = 0
         self.fail_on_chunk: int | None = None
 
-    async def get_user_by_user_id(self, *_a: Any, **_k: Any) -> dict[str, Any] | None:
+    async def get_user_by_user_id(self, *_a: object, **_k: object) -> dict[str, Any] | None:
         self.user_reads += 1
         return self.user
 
-    async def get_knowledge_hub_access_v3(self, user_key: str, org_id: str, **_k: Any) -> dict[str, Any]:
+    async def get_knowledge_hub_access_v3(self, user_key: str, org_id: str, **_k: object) -> dict[str, Any]:
         self.grant_reads += 1
         return {"grantee_ids": [user_key]}
 
     async def check_access(self, user_key: str, org_id: str, *, node_ids: list[str], access: dict[str, Any] | None = None,
-                           **_k: Any) -> AccessCheck:
+                           **_k: object) -> AccessCheck:
         assert access == {"grantee_ids": [user_key]}, "every chunk reuses the grants read once"
         self.in_flight += 1
         self.most = max(self.most, self.in_flight)
@@ -68,14 +68,14 @@ class Graph:
         finally:
             self.in_flight -= 1
 
-    async def get_nodes_by_field_in(self, collection: str, field: str, values: list[str], **_k: Any) -> list[dict]:
+    async def get_nodes_by_field_in(self, collection: str, field: str, values: list[str], **_k: object) -> list[dict]:
         assert field == "id"
         if collection == "records":
             return [{"id": v, "isDeleted": self.records[v]} for v in values if v in self.records]
         pool = self.groups if collection == "recordGroups" else self.apps
         return [{"id": v} for v in values if v in pool]
 
-    async def get_records_by_weburls(self, *_a: Any, **_k: Any) -> list[dict]:
+    async def get_records_by_weburls(self, *_a: object, **_k: object) -> list[dict]:
         return []
 
 

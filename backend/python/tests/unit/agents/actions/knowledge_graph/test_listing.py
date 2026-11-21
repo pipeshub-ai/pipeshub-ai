@@ -361,7 +361,10 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_in_a_turn_others_read_a_source_it_may_not_name_is_left_out_and_counted(self) -> None:
-        from app.modules.agents.context.named_sources import NAMED_SOURCES_KEY, NamedSources
+        from app.modules.agents.context.named_sources import (
+            NAMED_SOURCES_KEY,
+            NamedSources,
+        )
 
         scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         record = _item_with_enum("record", "rec-1")
