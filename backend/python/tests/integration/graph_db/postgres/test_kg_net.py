@@ -3,10 +3,12 @@ direction (kg admitting what the walk denies, and kg denying what it admits), an
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import secrets
 import time
+from typing import Any
 
 import asyncpg
 import pytest
@@ -16,8 +18,10 @@ from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import bootstrap, drainer, net, restamp
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg import verify as verify_mod
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kg.worker import KgWorker
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support import plan_gate
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, prov
@@ -586,6 +590,56 @@ async def test_the_statements_of_the_chunked_verify_are_index_ranges(pg_db) -> N
             assert "Seq Scan" not in plan, (state, name, plan)
         assert "records_app" in plans["ghosts"] or "records_pkey" in plans["ghosts"], plans["ghosts"]
         assert "Index Scan using scope_members" in plans["grants"] or "Index Only Scan using scope_members" in plans["grants"], plans["grants"]
+
+
+async def test_the_verify_checks_seek_every_key_on_an_org_the_statistics_do_not_know(pg_db) -> None:
+    """The statistics know two orgs of 10,000 records and links each and not this one (its first load into kg, before the maintenance worker's ANALYZE),
+    so the planner puts it at a row. Each check of verify_app reads the connector's records once and every other row by its key: written as joins,
+    verify_orphan_links crossed the org's links with its records on org_id alone (over 120 s at 47,000 links) and verify_sk read the org's node keys
+    once per record. Plans as the connectors service runs them (custom plans; the orphan links under reader.seeks)."""
+    org, others, n, m = new_org(), [new_org(), new_org()], 10_000, 2_000
+    keyed = {"records": r"\b(sk >= |app_sk = )", "links": r"\bparent_sk >= ", "node_keys": r"\bid >= "}
+    try:
+        for i, o in enumerate(others):
+            await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, parent_sk) SELECT $1, $2 + g, 3, 'b' || g, 3, g % 50, g / 20 FROM generate_series(1, $3) g", o, i * n, n)
+            await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, $2 + g, 1 + g % 3, $2 + g + 1 FROM generate_series(1, $3) g", o, i * n, n)
+            await _admin("INSERT INTO kg.node_keys (org_id, coll, id, sk) SELECT $1, 3, 'b' || g, $2 + g FROM generate_series(1, $3) g", o, i * n, n)
+        await _admin("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys; ANALYZE kg.scopes; ANALYZE kg.scope_members")
+        await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk) SELECT $1, g, 3, 'r' || g, 3, 7 FROM generate_series(1, $2) g", org, m)
+        await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, g, 1, g + 1 FROM generate_series(1, $2) g", org, m)
+        await _admin("INSERT INTO kg.node_keys (org_id, coll, id, sk) SELECT $1, 3, 'r' || g, g FROM generate_series(1, $2) g", org, m)
+        await _admin("INSERT INTO kg.scopes (org_id, sk, kind, app_sk, restricted, rule_restricted, needs_grant, deleted) SELECT $1, g, 3, 7, false, false, false, false "
+                     "FROM generate_series(1, $2) g", org, m)
+        await _admin("INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype) SELECT $1, 0, g, 'USER' FROM generate_series(1, $2) g", org, m)
+        # what each check must still find: a link and an access list and a grant whose node is gone, a record whose key row holds another sk, one without a key row
+        await _admin("INSERT INTO kg.scopes (org_id, sk, kind, app_sk, restricted, rule_restricted, needs_grant, deleted) VALUES ($1, $2, 3, 7, false, false, false, false)", org, m + 5)
+        await _admin("INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype) VALUES ($1, 0, $2, 'USER')", org, m + 5)
+        await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk) VALUES ($1, $2, 3, 'moved', 3, 7), ($1, $3, 3, 'keyless', 3, 7)", org, m + 10, m + 11)
+        await _admin("INSERT INTO kg.node_keys (org_id, coll, id, sk) VALUES ($1, 3, 'moved', $2)", org, m + 99)
+
+        async def go(tx) -> dict[str, Any]:
+            plans = {}
+            for name, sql, args in (("sk", verify_mod.VERIFY_SK, (org, 7, 100)), ("links", verify_mod.ORPHAN_LINKS, (org, 7, 100)),
+                                    ("grants", verify_mod.ORPHAN_GRANTS, (org, 100)), ("scopes", verify_mod.ORPHAN_SCOPES, (org, 7, 100))):
+                async with seeks(tx) if name == "links" else contextlib.nullcontext():
+                    plans[name] = await tx.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args)
+            return plans
+        with ctx(org):
+            plans = await pg_db.run(go, custom_plan=True)
+        assert not (bad := {name: v for name, plan in plans.items() if (v := plan_gate.violations(plan, keyed))}), bad
+
+        async def found(tx) -> list[list[tuple]]:
+            async with seeks(tx):
+                links = await tx.fetch(verify_mod.ORPHAN_LINKS, org, 7, 100)
+            return [[tuple(r) for r in rows] for rows in (await tx.fetch(verify_mod.VERIFY_SK, org, 7, 100), links,
+                                                          await tx.fetch(verify_mod.ORPHAN_GRANTS, org, 100), await tx.fetch(verify_mod.ORPHAN_SCOPES, org, 7, 100))]
+        with ctx(org):
+            assert await pg_db.run(found) == [[(m + 10, 3, "moved", m + 99), (m + 11, 3, "keyless", None)], [(m, 1, m + 1)], [(0, m + 5, "USER")], [(m + 5,)]]
+    finally:
+        for o in (org, *others):
+            for t in ("records", "links", "node_keys", "scopes", "scope_members", "counts"):
+                await _admin(f"DELETE FROM kg.{t} WHERE org_id = $1", o)
+        await _admin("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys; ANALYZE kg.scopes; ANALYZE kg.scope_members")
 
 
 # ---- the request row, the verify's restart and its immediate demotion ------------------------------------------------------------------------------
