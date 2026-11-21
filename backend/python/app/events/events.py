@@ -878,7 +878,9 @@ class EventProcessor:
             provider=provider,
             file_path=file_path,
         )
-        # The parsing service has the file; the blocks are what is left to index.
+        # The parsing service has the file; the blocks are what is left to index. The bytes are kept only until the page limit has
+        # decided, when it still has to (a parser that reports no page count is counted by pdfium on them).
+        held_for_count = file_content if late_page_limit is not None else None
         file_content = None
         block_container = parse_result.block_container
         if block_container is None:
@@ -901,6 +903,15 @@ class EventProcessor:
         )
 
         parsed_pages = (parse_result.metadata or {}).get("page_count")
+        if late_page_limit is not None and not isinstance(parsed_pages, int) and held_for_count:
+            # The parser gave no count (pdfplumber leaves it out for a file it cannot open): the decision is not final yet, so
+            # pdfium counts the bytes, as it does in process. Only when every counter fails is "proceed" the final decision.
+            parsed_pages = (
+                await _with_page_count(
+                    InspectedPdf(content=bytes(held_for_count), needs_ocr=False, repaired=False, page_count=None), record_name
+                )
+            ).page_count
+        held_for_count = None
         if late_page_limit is not None and isinstance(parsed_pages, int) and await late_page_limit(
             InspectedPdf(content=b"", needs_ocr=False, repaired=False, page_count=parsed_pages)
         ):
@@ -910,7 +921,8 @@ class EventProcessor:
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
             return
         if leave_old_copy is not None:
-            # The page limit let the file through (or could not count it): only now does the record leave its old copy.
+            # The page limit let the file through, or no counter could count it (the documented hole): only now does the record
+            # leave its old copy.
             await leave_old_copy()
 
         record_doc = await self.graph_provider.get_document(

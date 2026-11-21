@@ -137,3 +137,37 @@ async def test_the_in_process_route_leaves_the_old_copy_once_or_not_at_all(settl
             with pytest.raises(RuntimeError, match="stop after"):
                 await run()
             leave.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("pdfium", "settles"), [(600, True), (500, False), (None, False)])
+async def test_a_service_path_with_no_parser_count_is_counted_by_pdfium_before_the_old_copy_is_left(
+    pdfium: int | None, settles: bool
+) -> None:
+    """The parser reports no page count: pdfium counts the bytes, and over the limit the record settles with its old copy intact.
+    Only when every counter fails is proceeding the final decision (the documented hole), and then the old copy is left once."""
+    from app.modules.parsers.pdf.page_count import Unreadable
+
+    ep, leave, late = _service_event(settles, deferred=True, parsed_pages=None)
+    counted = AsyncMock(return_value=pdfium if pdfium is not None else Unreadable())
+    with patch("app.modules.parsers.pdf.page_count.count_pdf_pages", new=counted), patch.object(
+        ep, "_persist_parsing_completed", AsyncMock()
+    ):
+        [
+            e async for e in ep._orchestrate_via_services(
+                record_id="rec-1", org_id="org-1", virtual_record_id="v-1", record_name="a.pdf", mime_type="application/pdf",
+                extension="pdf", event_type="newRecord", prev_virtual_record_id=None, file_content=b"%PDF",
+                late_page_limit=late, leave_old_copy=leave,
+            )
+        ]
+    counted.assert_awaited_once()
+    if pdfium is None:
+        late.assert_not_awaited()
+        leave.assert_awaited_once()
+    else:
+        late.assert_awaited_once()
+        assert late.await_args.args[0].page_count == pdfium
+        if settles:
+            leave.assert_not_awaited()
+        else:
+            leave.assert_awaited_once()
