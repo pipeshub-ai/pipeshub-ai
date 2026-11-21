@@ -84,6 +84,9 @@ fields:
   created_at:
     required: false
     type: integer
+  edition_fields:
+    required: false
+    type: object
   external_record_group_id:
     required: false
     type: string

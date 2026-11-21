@@ -17,8 +17,9 @@ import { SourceReport, prepareSource, toNeutral } from '../../../src/scripts/doc
 import { decodeDoc } from '../../../src/scripts/docstore-migrate/decode';
 import { readDecoded } from '../../../src/scripts/docstore-migrate/pg-read';
 import { compareDocs } from '../../../src/scripts/docstore-migrate/compare';
+import { compareSlackLinks } from '../../../src/scripts/docstore-migrate/slack-links';
 import { copyAgainInserts, copyAndCompare, jobsUnit, oid } from './roundtrip';
-import { ORG_A, ORG_B, SESSION_1, SESSION_2, USER_1, contentDocs, ids } from './fixtures/content';
+import { ORG_A, ORG_B, SESSION_1, SESSION_2, USER_1, USER_2, contentDocs, ids } from './fixtures/content';
 
 const suite = haveStack ? describe : describe.skip;
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
@@ -118,10 +119,13 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     });
 
     it('copies every other collection and reads back identical documents (zero diffs)', async () => {
-      const r = await copyAndCompare(withoutOutbox(), MAPPINGS);
-      for (const m of CONTENT_MAPPINGS.filter((x) => x.collection !== 'outbox_events' && !INSTALL_WIDE.includes(x.collection))) expect(r.diffs[m.collection], m.collection).to.deep.equal([]);
+      // the verifier reads a Slack link without orgId as holding its conversation's organisation (R45MIGR-FU-3)
+      const r = await copyAndCompare(withoutOutbox(), MAPPINGS, { chatSessions: [{ _id: SESSION_1, orgId: ORG_A }, { _id: SESSION_2, orgId: ORG_B }] });
+      // a custom mapping is compared by its own verifier (Slack account links: the test below)
+      for (const m of CONTENT_MAPPINGS.filter((x) => x.collection !== 'outbox_events' && !INSTALL_WIDE.includes(x.collection) && !x.custom)) expect(r.diffs[m.collection], m.collection).to.deep.equal([]);
       // the listed transforms the report carries
       expect(r.report.skipped.get('mail log entry without an organisation (the table is per organisation)')).to.equal(1);
+      expect(r.report.applied.get("absent orgId read as its conversation's organisation")).to.equal(2);
       expect([...r.report.nul.keys()].some((k) => k.startsWith('documents.documentName'))).to.equal(true);
     });
 
@@ -221,6 +225,53 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const st = await jobsUnit((tx) => repo.importBatch('slack_conversations', [orphan], tx));
       expect(st.skipped).to.have.length(1);
       expect(st.inserted['integrations.slack_threads']).to.equal(0);
+    });
+
+    it("R45-MIGR, R45MIGR-FU-3: a Slack link's orgId is its conversation's organisation: the same one is copied and verified as org_id, another one is refused", async () => {
+      const org = (await stack.admin((c) => c.query('SELECT org_id FROM conversation.chat_sessions WHERE id = $1', [String(SESSION_1)]))).rows[0]?.org_id as string;
+      expect(org, 'the fixture conversation was copied').to.be.a('string');
+      const m = MAPPINGS.find((x) => x.collection === 'slack_conversations')!;
+      const repo = REPOSITORIES[m.repository]!() as Importable;
+      const link = (threadId: string, orgId: string) => ({ _id: oid(), threadId, botId: 'B7', email: 'o@example.test', conversationId: SESSION_1, orgId, createdAt: new Date('2026-11-01T10:00:00.000Z'), updatedAt: new Date('2026-11-01T10:00:00.000Z'), __v: 0 });
+      const same = link('1700000000.000700', org);
+      const other = link('1700000000.000800', 'f'.repeat(24));
+      const st = await jobsUnit((tx) => repo.importBatch(m.collection, [same, other].map((d) => toNeutral(d, new SourceReport(), m.collection)), tx));
+      expect(st.inserted['integrations.slack_threads']).to.equal(1);
+      expect(st.skipped).to.deep.equal([{ id: String(other._id), reason: 'Slack link whose orgId names another organisation than its conversation' }]);
+      const rep = new SourceReport();
+      const src = prepareSource(m, same, rep)!;
+      const decoded = await jobsUnit((_tx, k) => readDecoded(k, m, [String(src._id)]));
+      expect(compareDocs([src], decoded)).to.deep.equal([]);
+      // carried as org_id (a rollback writes it back), no longer dropped
+      expect(src.orgId).to.equal(org);
+      expect(decoded[0]?.orgId).to.equal(org);
+      expect(rep.applied.get('dropped orgId')).to.equal(undefined);
+    });
+
+    it('Slack account links (R40SLACK-FU-1): each organisation keeps its own, a link to another organisation\'s person is reported, a second copy writes nothing, verify reads them back equal', async () => {
+      await stack.admin(async (c) => {
+        for (const [org, domain] of [[ORG_A, 'a.example'], [ORG_B, 'b.example']] as const)
+          await c.query("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES ($1, $2, 'o@' || $2, 'business', now(), now()) ON CONFLICT DO NOTHING", [String(org), domain]);
+        for (const [org, user, slug] of [[ORG_A, USER_1, 'user-71'], [ORG_B, USER_2, 'user-72']] as const)
+          await c.query("INSERT INTO identity.users (org_id, id, slug, email, role, is_deleted, created_at, updated_at) VALUES ($1, $2, $3, $3 || '@example.test', 'member', false, now(), now()) ON CONFLICT DO NOTHING", [String(org), String(user), slug]);
+      });
+      const m = MAPPINGS.find((x) => x.collection === 'slack_user_links')!;
+      const repo = REPOSITORIES[m.repository]!() as Importable;
+      const link = (over: Record<string, unknown>) => ({ _id: oid(), orgId: String(ORG_A), workspaceId: 'E1', slackUserId: 'U1', teamId: 'T1', userId: String(USER_1), email: 'a@example.test', slackName: 'ada', linkedAt: new Date('2026-11-01T10:00:00.000Z'), createdAt: new Date('2026-11-01T10:00:00.000Z'), updatedAt: new Date('2026-11-01T10:00:00.000Z'), __v: 0, ...over });
+      const good = [link({}), link({ orgId: String(ORG_B), userId: String(USER_2), email: 'b@example.test' })];
+      const foreign = link({ slackUserId: 'U9', userId: String(USER_2) });
+      const neutral = [...good, foreign].map((d) => toNeutral(d, new SourceReport(), m.collection));
+      const st = await jobsUnit((tx) => repo.importBatch(m.collection, neutral, tx));
+      expect(st.inserted['integrations.slack_user_links']).to.equal(2);
+      expect(st.skipped.map((x) => x.id)).to.deep.equal([String(foreign._id)]);
+      expect((await jobsUnit((tx) => repo.importBatch(m.collection, neutral, tx))).inserted['integrations.slack_user_links']).to.equal(0);
+      const rows = (await stack.admin((c) => c.query('SELECT to_jsonb(l) AS r FROM integrations.slack_user_links l ORDER BY org_id'))).rows.map((x: { r: Record<string, unknown> }) => x.r);
+      expect(rows.map((r: Record<string, unknown>) => [r.org_id, r.user_id])).to.have.deep.members([[String(ORG_A), String(USER_1)], [String(ORG_B), String(USER_2)]]);
+      expect(compareSlackLinks(m, good, rows).diffs).to.deep.equal([]);
+      // the follower replaces a link in place when MongoDB changes it
+      const renamed = neutral.slice(0, 1).map((d) => ({ ...d, slackName: 'ada l.' }));
+      await jobsUnit((tx) => withUpsert(['integrations.slack_user_links'], () => repo.importBatch(m.collection, renamed, tx)));
+      expect((await stack.admin((c) => c.query('SELECT slack_name FROM integrations.slack_user_links WHERE org_id = $1', [String(ORG_A)]))).rows[0].slack_name).to.equal('ada l.');
     });
   });
 }

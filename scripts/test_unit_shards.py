@@ -93,6 +93,17 @@ class UnitShardsTest(unittest.TestCase):
         stale = set(unit_shards.load_durations()) - set(unit_shards.test_files())
         self.assertLess(len(stale), 50, f"refresh unit_shard_durations.json: {sorted(stale)[:10]}")
 
+    def test_almost_every_test_file_has_measured_minutes(self):
+        self.assertEqual(unit_shards.unmeasured_problems(unit_shards.load_durations()), [])
+
+    def test_a_shard_mostly_unmeasured_is_reported(self):
+        durations = unit_shards.load_durations()
+        harness = [f for f in unit_shards.test_files() if f.startswith("tests/unit/harness/")]
+        without = {f: m for f, m in durations.items() if f not in set(harness)}
+        problems = unit_shards.unmeasured_problems(without)
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("harness: "))
+
     def test_a_lopsided_split_is_reported(self):
         totals = dict.fromkeys(unit_shards.SHARDS, 5.0)
         totals["core"] = 20.0

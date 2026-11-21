@@ -1,4 +1,9 @@
 import 'reflect-metadata'
+import http from 'http'
+import net from 'net'
+import { once } from 'events'
+import { AddressInfo } from 'net'
+import express from 'express'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { envGuard } from '../../helpers/env-guard'
@@ -11,6 +16,7 @@ import {
   NotFoundError,
   InternalServerError,
   ServiceUnavailableError,
+  ExpectedRefusalError,
 } from '../../../src/libs/errors/http.errors'
 import { ValidationError } from '../../../src/libs/errors/validation.error'
 import { markClientSafe } from '../../../src/libs/errors/reader-friendly'
@@ -326,6 +332,27 @@ describe('ErrorMiddleware', () => {
       handler(error, req, res, next)
 
       expect(res.status.calledWith(404)).to.be.true
+    })
+
+    it('logs an expected refusal at info with its code, not as an error with a stack', () => {
+      const res = createMockResponse()
+      handler(
+        new ExpectedRefusalError('AGENT_HARNESS_RUN_NOT_CLAIMABLE', 'Run is not claimable', 409),
+        createMockRequest({ method: 'POST', path: '/runs/r-1/claim', context: { requestId: 'req-9' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(409)).to.be.true
+      expect(res.json.firstCall.args[0].error.code).to.equal('HTTP_AGENT_HARNESS_RUN_NOT_CLAIMABLE')
+      expect(loggerErrorStub.called).to.be.false
+      const info = (ErrorMiddleware as any).logger.info as sinon.SinonStub
+      expect(info.calledOnce).to.be.true
+      // The one line of a failed request (main #5516), at info: the request id comes from the request context.
+      const [message, meta] = info.firstCall.args
+      expect(message).to.equal('http.request.error')
+      expect(meta).to.include({ method: 'POST', status: 409, error_class: 'conflict', outcome: 'failure' })
+      expect(meta.error.code).to.equal('HTTP_AGENT_HARNESS_RUN_NOT_CLAIMABLE')
     })
 
     it('should respond with 500 for InternalServerError', () => {
@@ -926,5 +953,75 @@ describe('ErrorMiddleware', () => {
         expect(JSON.stringify({ ...calls[0]!.args[1], error: undefined })).to.not.contain('mocha')
       })
     }
+  })
+})
+
+describe('ErrorMiddleware with a client that aborts its own request', () => {
+  let logged: Array<{ level: string; message: string }>
+  let originalLogger: any
+  let server: http.Server
+  let port: number
+  let handled: Promise<void>
+
+  beforeEach(async () => {
+    logged = []
+    originalLogger = (ErrorMiddleware as any).logger
+    const record = (level: string) => (message: string) => {
+      logged.push({ level, message })
+    }
+    ;(ErrorMiddleware as any).logger = {
+      error: record('error'),
+      warn: record('warn'),
+      info: record('info'),
+      debug: record('debug'),
+    }
+    let done!: () => void
+    handled = new Promise((resolve) => {
+      done = resolve
+    })
+    const app = express()
+    app.use(express.json())
+    app.post('/renew', (_req, res) => {
+      res.json({ ok: true })
+    })
+    const handle = ErrorMiddleware.handleError()
+    app.use((error: Error, req: any, res: any, next: any) => {
+      handle(error, req, res, next)
+      done()
+    })
+    server = app.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    port = (server.address() as AddressInfo).port
+  })
+
+  afterEach(async () => {
+    ;(ErrorMiddleware as any).logger = originalLogger
+    server.close()
+  })
+
+  it('logs the abort below ERROR: the client left, the server did not fail', async () => {
+    // A worker killed mid-renew: the headers promise a body that never arrives.
+    const socket = net.connect(port, '127.0.0.1')
+    await once(socket, 'connect')
+    socket.write(
+      'POST /renew HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 86\r\n\r\n{"fence":',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    socket.destroy()
+    await handled
+
+    expect(logged.filter((l) => l.level === 'error')).to.deep.equal([])
+    expect(logged.map((l) => l.message)).to.include('Request aborted by the client')
+  })
+
+  it('answers a client that stays with a malformed body, and does not take it for an abort', async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/renew`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"fence":',
+    })
+    await handled
+    expect(logged.some((l) => l.message === 'Request aborted by the client')).to.equal(false)
+    expect(response.status).to.be.greaterThanOrEqual(400)
   })
 })

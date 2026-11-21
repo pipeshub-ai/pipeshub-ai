@@ -103,6 +103,27 @@ describe('AnswerContent — streaming block-split vs single-instance render equi
   });
 });
 
+// CHAT-TL R2: an answer may link only what resolves; a sandbox path became a link to /chat/out/<file>.
+describe('AnswerContent — links that do not resolve', () => {
+  function renderContent(content: string) {
+    return render(h(Theme, null, h(AnswerContent, { content, citationMaps: makeCitationMaps(), isStreaming: false })));
+  }
+
+  it('renders a relative sandbox path as text, not a link', () => {
+    const { container } = renderContent('Created [out/12_jokes.pdf](out/12_jokes.pdf) for you.');
+    expect(container.querySelectorAll('a')).toHaveLength(0);
+    expect(container.textContent).toContain('out/12_jokes.pdf');
+  });
+
+  it('keeps web links, app routes and in-page anchors', () => {
+    const { container } = renderContent(
+      'See [the site](https://example.com/a), [the file](/record/rec-1) and [mail](mailto:a@example.com).',
+    );
+    const hrefs = Array.from(container.querySelectorAll('a')).map((a) => a.getAttribute('href'));
+    expect(hrefs).toEqual(['https://example.com/a', '/record/rec-1', 'mailto:a@example.com']);
+  });
+});
+
 describe('AnswerContent — link labels', () => {
   function renderContent(content: string) {
     return render(h(Theme, null, h(AnswerContent, { content, citationMaps: makeCitationMaps(), isStreaming: false })));

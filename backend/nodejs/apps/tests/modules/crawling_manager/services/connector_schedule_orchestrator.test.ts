@@ -45,8 +45,8 @@ const resultLog = (logger: ReturnType<typeof makeLogger>) => {
   const infos = matching(logger.info);
   expect(errors.length + infos.length).to.equal(1);
   return errors.length
-    ? { level: 'error', fields: errors[0].args[1] }
-    : { level: 'info', fields: infos[0].args[1] };
+    ? { level: 'error', fields: errors[0]!.args[1] }
+    : { level: 'info', fields: infos[0]!.args[1] };
 };
 
 describe('reconcileConnectorSchedule', () => {
@@ -242,7 +242,7 @@ describe('reconcileConnectorSchedule', () => {
       const outcome = await reconcileConnectorSchedule(scheduler, makeLogger() as any, input(), NO_WAIT);
 
       expect(outcome).to.equal('unchanged');
-      expect(schedules().map((r) => r.key)).to.deep.equal([before.key]);
+      expect(schedules().map((r) => r.key)).to.deep.equal([before!.key]);
     });
 
     it('replaces a schedule whose interval changed, leaving one', async () => {

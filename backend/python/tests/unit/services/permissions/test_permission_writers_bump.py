@@ -17,6 +17,7 @@ import fakeredis
 from app.services.cache import invalidation_hooks as hooks
 from app.services.messaging.kafka.handlers import entity as entity_events
 from app.services.permissions.cache import ViewerScopeCache
+from tests.edition_overlay import extended
 
 APP = Path(__file__).resolve().parents[4] / "app"
 BUMPS = {"notify_principals_changed", "notify_connector_permissions_changed", "notify_connector_sync_completed",
@@ -148,7 +149,6 @@ AGENT = "agent and skill edges, not records: no viewer scope reads them"
 NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::_sync_relation_edges": AGENT,
     "agents/agent_loop/skills/graph_store.py::detach_from_agents": AGENT,
-    "api/routes/agent.py::update_agent": "agent sharing edges, not records: no viewer scope reads them",
     "connectors/core/base/data_processor/data_source_entities_processor.py::_drop_shared_groups": SYNC,
     "connectors/core/base/data_processor/pr_links.py::write_modifies":
         "replaces a PR's MODIFIES links to the code files it changed: record links, not permission edges",
@@ -162,6 +162,14 @@ NO_BUMP = {
     "connectors/core/base/data_store/graph_data_store.py::delete_edges_to_groups": STORE,
     "connectors/core/base/data_store/graph_data_store.py::delete_inherit_permissions_relation_record": STORE,
     "agents/agent_loop/skills/graph_store.py::delete_skill": AGENT,
+    "agents/agent_loop/skills/graph_store.py::erase_session_learned_skills": AGENT,
+    "agents/agent_loop/skills/graph_store.py::erase_skill_author": AGENT,
+    # The harness's versioned agents (update_agent writes through the draft).
+    "api/routes/agent.py::_write_draft": "agent sharing edges, not records: no viewer scope reads them",
+    "harness/knowledge/directory.py::_erase": (
+        "publication edges of a container being deleted or an org being erased; no viewer scope reads publications "
+        "(retrieval reads them on every search)"
+    ),
     "api/routes/chatbot.py::_rollback_attachment_records":
         "rolls back attachment records the same request just created: nothing could have been cached for them",
     "connectors/core/base/data_store/graph_data_store.py::delete_nodes_and_edges": STORE,
@@ -185,13 +193,18 @@ NO_BUMP = {
 }
 
 
+def _in_a_provider(rel: str) -> bool:
+    """A graph provider's module: under ``services/graph_db/``, here or in a package that subclasses the providers."""
+    return rel.startswith("services/graph_db/") or "/services/graph_db/" in rel
+
+
 def _flagged_delete_functions() -> dict[str, bool]:
     """Functions outside the graph providers that call an edge delete on PERMISSION or USER_APP_RELATION, or with a
     collection that is not a `CollectionNames.X` literal (a variable could be either). Value: whether it bumps."""
     flagged: dict[str, bool] = {}
     for path in APP.rglob("*.py"):
         rel = str(path.relative_to(APP))
-        if rel.startswith("services/graph_db/"):
+        if _in_a_provider(rel):
             continue
         source = path.read_text(encoding="utf-8-sig")
         if not any(name in source for name in (*DELETE_CALLS, *COMPOUND_DELETES, "delete_nodes_and_edges")):
@@ -215,9 +228,11 @@ def _flagged_delete_functions() -> dict[str, bool]:
 
 def test_every_permission_edge_delete_outside_the_providers_bumps_or_is_listed_with_a_reason() -> None:
     flagged = _flagged_delete_functions()
-    unlisted = sorted(k for k, bumps in flagged.items() if not bumps and k not in NO_BUMP)
+    # An edition overlay's entries (``tests/edition_overlay.py``, ``permission_writers.json``) are listed too.
+    listed = extended(NO_BUMP, "permission_writers", "no_bump")
+    unlisted = sorted(k for k, bumps in flagged.items() if not bumps and k not in listed)
     assert unlisted == [], f"bump (notify_principals_changed) or list with a reason in NO_BUMP: {unlisted}"
-    stale = sorted(k for k in NO_BUMP if k not in flagged or flagged[k])
+    stale = sorted(k for k in listed if k not in flagged or flagged[k])
     assert stale == [], f"stale NO_BUMP entries (not flagged any more, or they bump now): {stale}"
 
 
@@ -231,7 +246,7 @@ def _flagged_create_functions() -> dict[str, bool]:
     flagged: dict[str, bool] = {}
     for path in APP.rglob("*.py"):
         rel = str(path.relative_to(APP))
-        if rel.startswith("services/graph_db/") or not any(name in (source := path.read_text(encoding="utf-8-sig")) for name in CREATE_CALLS):
+        if _in_a_provider(rel) or not any(name in (source := path.read_text(encoding="utf-8-sig")) for name in CREATE_CALLS):
             continue
         for fn in _enclosing_functions(ast.parse(source)):
             for call in (n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
@@ -247,11 +262,11 @@ HELPER = "helper: every route or method that calls it bumps (checked by the guar
 CREATE_NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::_create_owner_permission_edge": AGENT,
     "api/routes/agent.py::clone_agent_template": AGENT,
-    "api/routes/agent.py::create_agent": AGENT,
+    "api/routes/agent.py::_create_agent": AGENT,
+    "api/routes/agent.py::_write_draft": AGENT,
     "api/routes/agent.py::create_agent_template": AGENT,
-    "api/routes/agent.py::update_agent": AGENT,
     "api/routes/agent.py::write_agent": AGENT,
-    "api/routes/chatbot.py::_upload_chat_attachments": NEW_RECORD,
+    "services/chat_attachments/uploads.py::write_attachment_graph": NEW_RECORD,
     "api/routes/entity.py::write_team": HELPER,
     "services/artifact_registry/versioning.py::create": NEW_RECORD,
     "services/artifact_registry/versioning.py::create_from_existing_document": NEW_RECORD,
@@ -268,9 +283,10 @@ CREATE_NO_BUMP = {
 
 def test_every_grant_creator_outside_the_providers_bumps_or_is_listed_with_a_reason() -> None:
     flagged = _flagged_create_functions()
-    unlisted = sorted(k for k, bumps in flagged.items() if not bumps and k not in CREATE_NO_BUMP)
+    listed = extended(CREATE_NO_BUMP, "permission_writers", "create_no_bump")
+    unlisted = sorted(k for k, bumps in flagged.items() if not bumps and k not in listed)
     assert unlisted == [], f"bump (notify_principals_changed) or list with a reason in CREATE_NO_BUMP: {unlisted}"
-    stale = sorted(k for k in CREATE_NO_BUMP if k not in flagged or flagged[k])
+    stale = sorted(k for k in listed if k not in flagged or flagged[k])
     assert stale == [], f"stale CREATE_NO_BUMP entries: {stale}"
 
 

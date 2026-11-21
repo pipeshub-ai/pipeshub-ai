@@ -3,8 +3,23 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
 import { ServiceAccountsService } from '../../../../src/modules/user_management/services/service-accounts.service';
+import { principalErasers } from '../support/principal-erasers';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
+import { setUserRepository } from '../../../../src/libs/repositories/user';
+import { setGroupRepository } from '../../../../src/libs/repositories/group';
+
+/** The account as main's user and group repositories hold it: removal marks it deleted there. */
+const storesHold = (account: { isDeleted: boolean }): void => {
+  setUserRepository({
+    getServiceAccount: async () => account,
+    markDeleted: async () => {
+      account.isDeleted = true;
+      return account;
+    },
+  } as never);
+  setGroupRepository({ removeFromAll: async () => undefined } as never);
+};
 
 function makeService() {
   const logger = {
@@ -31,7 +46,11 @@ describe('ServiceAccountsService', () => {
   const orgId = new mongoose.Types.ObjectId().toString();
   const id = new mongoose.Types.ObjectId().toString();
 
-  afterEach(() => sinon.restore());
+  afterEach(() => {
+    sinon.restore();
+    setUserRepository();
+    setGroupRepository();
+  });
 
   describe('create', () => {
     it('rejects a name that would not make a valid address, before touching the database', async () => {
@@ -232,7 +251,7 @@ describe('ServiceAccountsService', () => {
       ).to.equal(true);
       // And it comes back disabled, so no pre-deletion token can authenticate
       // in the interval before revocation finishes.
-      expect(restore.firstCall.args[1].$set.isDisabled).to.equal(true);
+      expect(restore.firstCall.args[1]!.$set.isDisabled).to.equal(true);
     });
 
     it('puts the account back to deleted if revocation fails after the restore', async () => {
@@ -502,6 +521,112 @@ describe('ServiceAccountsService', () => {
 
       expect(account.isDeleted).to.equal(true);
       expect(revoker.revokeAllForServiceAccount.calledOnce).to.equal(true);
+    });
+
+    it('QA15-10: every principal store listed for a service account removal is erased before it is marked deleted', async () => {
+      const account: any = {
+        _id: id,
+        orgId,
+        email: `svc-x-${orgId}@service.pipeshub.internal`,
+        isDeleted: false,
+        save: sinon.stub().resolvesThis(),
+      };
+      const erasers = principalErasers(
+        'modules/user_management/services/service-accounts.service.ts#remove',
+        () => account.isDeleted,
+      );
+      expect(erasers.stores).to.deep.equal(['modelAccounts', 'agentMemories', 'personalInstances']);
+      const { modelAccounts, memories, personalInstances } = erasers.byField as Record<string, any>;
+      const logger = { info: sinon.stub(), debug: sinon.stub(), warn: sinon.stub(), error: sinon.stub() };
+      const events = { start: sinon.stub().resolves(), stop: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() };
+      const service = new ServiceAccountsService(logger as any, events as any, modelAccounts, memories, null, personalInstances, null);
+      storesHold(account);
+
+      await service.remove(orgId, id);
+
+      expect(erasers.calls.map((c) => c.store)).to.deep.equal(erasers.stores);
+      for (const call of erasers.calls) {
+        expect(call, call.store).to.deep.include({ hook: 'eraseUser', principalDeleted: false });
+        expect(call.args.map(String)).to.deep.equal([orgId, id]);
+      }
+      expect(account.isDeleted).to.equal(true);
+    });
+
+    it("FOLLOWUPS1-2: the account's own toolset instances and MCP servers go, and a failure leaves it undeleted to retry", async () => {
+      const account: any = {
+        _id: id,
+        orgId,
+        email: `svc-x-${orgId}@service.pipeshub.internal`,
+        isDeleted: false,
+        save: sinon.stub().resolvesThis(),
+      };
+      const erasers = principalErasers(
+        'modules/user_management/services/service-accounts.service.ts#remove',
+        () => account.isDeleted,
+        { failing: 'personalInstances' },
+      );
+      const { modelAccounts, memories, personalInstances } = erasers.byField as Record<string, any>;
+      const logger = { info: sinon.stub(), debug: sinon.stub(), warn: sinon.stub(), error: sinon.stub() };
+      const events = { start: sinon.stub().resolves(), stop: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() };
+      const service = new ServiceAccountsService(logger as any, events as any, modelAccounts, memories, null, personalInstances);
+      storesHold(account);
+
+      let failed: unknown;
+      try {
+        await service.remove(orgId, id);
+      } catch (error) {
+        failed = error;
+      }
+
+      expect(String(failed)).to.include('personalInstances unavailable');
+      const call = erasers.calls.find((c) => c.store === 'personalInstances');
+      expect(call?.args.map(String)).to.deep.equal([orgId, id]);
+      expect(account.isDeleted).to.equal(false);
+      expect(account.save.called).to.equal(false);
+      expect(events.publishEvent.called).to.equal(false);
+    });
+
+    it('CLEANUP-G2: removing a service account hands its conversations over, as the remover, before it is marked deleted', async () => {
+      const account: any = { _id: id, orgId, email: `svc-y-${orgId}@service.pipeshub.internal`, isDeleted: false, save: sinon.stub().resolvesThis() };
+      const handOverUser = sinon.stub().callsFake(async () => {
+        expect(account.isDeleted).to.equal(false);
+        return { erased: 0, transferred: 0 };
+      });
+      const logger = { info: sinon.stub(), debug: sinon.stub(), warn: sinon.stub(), error: sinon.stub() };
+      const events = { start: sinon.stub().resolves(), stop: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() };
+      const service = new ServiceAccountsService(logger as any, events as any, null, null, { handOverUser } as any);
+      storesHold(account);
+
+      await service.remove(orgId, id, 'admin-1');
+
+      expect(handOverUser.calledOnceWith(orgId, id, 'admin-1')).to.be.true;
+      expect(account.isDeleted).to.equal(true);
+    });
+
+    it("ER-3: erases the account's model keys before it is marked deleted", async () => {
+      const account: any = {
+        _id: id,
+        orgId,
+        email: `svc-x-${orgId}@service.pipeshub.internal`,
+        isDeleted: false,
+        save: sinon.stub().resolvesThis(),
+      };
+      const eraser = {
+        eraseOrg: sinon.stub(),
+        eraseUser: sinon.stub().callsFake(async () => {
+          expect(account.isDeleted).to.equal(false);
+          return 1;
+        }),
+      };
+      const logger = { info: sinon.stub(), debug: sinon.stub(), warn: sinon.stub(), error: sinon.stub() };
+      const events = { start: sinon.stub().resolves(), stop: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() };
+      const service = new ServiceAccountsService(logger as any, events as any, eraser);
+      storesHold(account);
+
+      await service.remove(orgId, id);
+
+      expect(eraser.eraseUser.calledOnceWith(orgId, id)).to.equal(true);
+      expect(account.isDeleted).to.equal(true);
     });
   });
 

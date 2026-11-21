@@ -173,7 +173,7 @@ describe('OAuthProviderController', () => {
 
       expect(mockRes.json.firstCall.args[0].consentData.app.registeredBy).to.equal('Mallory')
       // Looked up in the signed-in person's org.
-      const filter = usersFind.firstCall.args[0] as Record<string, unknown>
+      const filter = usersFind.firstCall.args[0] as unknown as Record<string, unknown>
       expect(String(filter.orgId)).to.equal('507f1f77bcf86cd799439012')
     })
 
@@ -602,7 +602,7 @@ describe('OAuthProviderController', () => {
 
       const events = eventBuffer.drain().filter((e) => e.event === 'oauth_token_issued')
       expect(events).to.have.length(1)
-      expect(events[0].props).to.deep.equal({
+      expect(events[0]!.props).to.deep.equal({
         grant_type: 'authorization_code', client_id: 'cid', user_agent: 'cursor/1.2', channel: 'docs',
       })
       expect(JSON.stringify(events[0])).to.not.include('secret-at')

@@ -10,6 +10,7 @@ from app.services.vector_db.pgvector import dense, fusion, validate
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.services.vector_db.pgvector.tuning import Tuning
 from app.services.vector_db.pgvector.visibility import Scope
+from tests.support.settle import settle
 
 T = Tuning()
 N = T.n_e0
@@ -480,7 +481,7 @@ class _SlowPoolDb:
     and the statements together (a wait longer than it is a timeout). The checked org has one connector and no unconnected point."""
 
     def __init__(self, wait_s: float, *, fail: Exception | None = None) -> None:
-        self.wait_s, self.fail, self.runs, self.budgets = wait_s, fail, 0, []
+        self.wait_s, self.fail, self.runs, self.budgets, self.waited = wait_s, fail, 0, [], 0
 
     async def run(self, fn, **opts: object) -> object:
         import asyncio
@@ -489,6 +490,7 @@ class _SlowPoolDb:
 
         self.runs += 1
         await asyncio.sleep(self.wait_s)
+        self.waited += 1
         timeout_ms = opts.get("timeout_ms")
         if timeout_ms is not None and self.wait_s * 1000 >= timeout_ms:
             raise DbTimeout("the statement ran out of the budget the pool wait used up")
@@ -520,7 +522,8 @@ async def test_a_search_never_waits_for_the_connector_check_and_a_slow_pool_does
     db = _SlowPoolDb(0.3)                                                             # longer than connector_check_ms (150 ms by default)
     sizer = dense.Sizer(db, dataclasses.replace(T, connector_check_ms=150))
     with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
-        assert await asyncio.wait_for(sizer.connectors(ORG, 1), 0.05) is None         # the search goes on with the arms
+        assert await settle(sizer.connectors(ORG, 1)) is None                         # the search goes on with the arms
+        assert db.waited == 0                                                          # before the check has its connection
         await asyncio.sleep(0.4)
         assert await sizer.connectors(ORG, 1) == frozenset({"c1"})                     # the check finished despite the wait
         assert db.runs == 1 and db.budgets == [(150,)]

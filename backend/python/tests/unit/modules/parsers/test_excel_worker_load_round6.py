@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -45,11 +44,11 @@ def _load_model(data: bytes, seconds: float | None) -> WorkbookModel:
 
 def test_a_load_past_its_cpu_limit_is_refused_as_too_large() -> None:
     data = _links_on_merges()
-    started = time.monotonic()
     with pytest.raises(WorkbookRefused) as raised:
         _load_model(data, 2)
     assert raised.value.too_large
-    assert time.monotonic() - started < 30  # the limit plus slack; unbounded this runs about 80 s
+    # the CPU limit ended it; unbounded this runs about 80 s and loads
+    assert raised.value.detail == "the load used more than 2 s of CPU"
 
 
 def test_a_normal_workbook_loads_within_the_limit() -> None:
@@ -69,11 +68,12 @@ def test_the_pool_timeout_ends_a_load_in_a_worker_as_too_large(monkeypatch: pyte
     # through the real path: a worker process, the job timeout, and the parser's mapping to EXCEL_TOO_LARGE
     monkeypatch.setattr(module, "EXCEL_LOAD_MAX_SECONDS", 3)
     parser = module.ExcelParser(logging.getLogger("excel-test"), MagicMock())
-    started = time.monotonic()
     with pytest.raises(ParseError) as raised:
         parser.load_workbook_from_binary(_links_on_merges())
     assert raised.value.message == user_errors.EXCEL_TOO_LARGE
-    assert time.monotonic() - started < 30
+    # Unbounded the load runs about 80 s and loads. The job timeout normally ends it; the worker's own CPU limit
+    # (2 s above it) wins only when this process is held off the CPU past it, as a collection of a large heap can.
+    assert raised.value.details["reason"] in {"the load ran past 3 s", "the load used more than 3 s of CPU"}
 
 
 def test_the_default_load_limit_is_above_measured_legitimate_loads(monkeypatch: pytest.MonkeyPatch) -> None:

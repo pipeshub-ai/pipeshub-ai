@@ -15,6 +15,7 @@ import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers.image_parser import svg_worker
+from tests.unit.modules.parsers.test_svg_worker import watch_deadlines
 
 NS = 'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
 GOOD = f'<svg {NS} width="20" height="20"><rect width="20" height="20" fill="red"/></svg>'
@@ -55,12 +56,14 @@ def _state(pid: int) -> str:
 def test_the_deadline_also_holds_for_a_renderer_that_has_just_started(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _fresh_pool(monkeypatch)
+    pool = _fresh_pool(monkeypatch)
     _fake_child(monkeypatch, tmp_path, "import time\ntime.sleep(60)\n")
-    start = time.monotonic()
-    with pytest.raises(DocumentProcessingError):
+    watch = watch_deadlines(monkeypatch, pool)
+    # the child never answers (it sleeps 60 s): only the parent's deadline ends the call
+    with pytest.raises(DocumentProcessingError, match="timed out"):
         svg_worker.run_bounded(_b64(GOOD), timeout=1.0)
-    assert time.monotonic() - start < 3.0  # the first SVG of a renderer gets 1 s + 5 s today
+    watch.assert_waited_only_until(1.0)  # no start-up grace: the first SVG of a renderer once got 1 s + 5 s
+    assert not watch.renderers[-1].alive()
 
 
 def test_the_renderer_does_not_inherit_the_service_secrets(monkeypatch: pytest.MonkeyPatch) -> None:

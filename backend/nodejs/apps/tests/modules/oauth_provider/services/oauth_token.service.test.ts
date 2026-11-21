@@ -471,8 +471,8 @@ describe('OAuthTokenService', () => {
       // The prefix must never leak into the hash lookup — a phpat_-prefixed
       // token has to resolve to the same stored hash as its bare JWT.
       const bareResult = await service.verifyAccessToken(token)
-      expect(findOneStub.firstCall.args[0].tokenHash).to.deep.equal(
-        findOneStub.secondCall.args[0].tokenHash,
+      expect(findOneStub.firstCall.args[0]!.tokenHash).to.deep.equal(
+        findOneStub.secondCall.args[0]!.tokenHash,
       )
       expect(bareResult.userId).to.equal('user-1')
     })
@@ -809,7 +809,7 @@ describe('OAuthTokenService', () => {
       const tokens = await service.listTokensForApp('client-1')
       expect(tokens).to.have.lengthOf(2)
       // Should be sorted by createdAt desc
-      expect(tokens[0].tokenType).to.equal('refresh')
+      expect(tokens[0]!.tokenType).to.equal('refresh')
     })
   })
 
@@ -909,8 +909,8 @@ describe('OAuthTokenService', () => {
         clientId: { $eq: 'client-1' },
       })
       expect(tokens).to.have.lengthOf(1)
-      expect(tokens[0].name).to.equal('ci token')
-      expect(tokens[0].lastUsedAt).to.equal(now)
+      expect(tokens[0]!.name).to.equal('ci token')
+      expect(tokens[0]!.lastUsedAt).to.equal(now)
     })
   })
 

@@ -61,6 +61,45 @@ describe('MCP Controller — handleMCPRequest', () => {
     sinon.restore()
   })
 
+  it('pins the public tools instead of trusting future SDK defaults', async () => {
+    const create = sinon.stub().returns({ server: { connect: sinon.stub().resolves() } })
+    mcpServerExports.createMCPServer = create
+    await handleMCPRequest(appConfig)(
+      createMockRequest({ headers: { authorization: 'Bearer test' }, body: {} }),
+      createMockResponse() as any,
+      createMockNext(),
+    )
+    expect(create.firstCall.args[0].allowedTools).to.deep.equal([
+      'pipeshub_sources', 'pipeshub_chat', 'pipeshub_search',
+      'pipeshub_download_record', 'pipeshub_get_record_content',
+      'pipeshub_directory', 'pipeshub_agents',
+      // What @pipeshub-ai/mcp 4.10.0 (main's version) adds: its tool-names.js lists these.
+      'pipeshub_add_web_source', 'pipeshub_connect_source', 'pipeshub_create_collection',
+      'pipeshub_indexing_status', 'pipeshub_preview_record', 'pipeshub_show_citations', 'pipeshub_upload',
+    ])
+    expect(create.firstCall.args[0].dynamic).to.equal(false)
+  })
+
+  it('C-5: marks the SDK\'s requests as the MCP surface; the caller\'s bearer is unchanged', async () => {
+    const create = sinon.stub().returns({ server: { connect: sinon.stub().resolves() } })
+    mcpServerExports.createMCPServer = create
+    let options: any
+    mcpCoreExports.PipeshubCore = function PipeshubCore(opts: any) {
+      options = opts
+    }
+    await handleMCPRequest(appConfig)(
+      createMockRequest({ headers: { authorization: 'Bearer caller-pat' }, body: {} }),
+      createMockResponse() as any,
+      createMockNext(),
+    )
+    create.firstCall.args[0].getSDK()
+    expect(options.security).to.deep.equal({ bearerAuth: 'caller-pat' })
+    // The SDK builds on its server URL; the hook may point the request back at the loopback API (main #5581's public links).
+    let request = new Request(`${String(options.serverURL)}/conversations/stream`, { method: 'POST' })
+    for (const hook of options.httpClient.hooks) request = hook(request) ?? request
+    expect(request.headers.get('x-pipeshub-surface')).to.equal('mcp')
+  })
+
   // =========================================================================
   // Activation events
   // =========================================================================
@@ -94,8 +133,8 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(servedBeforeRecorded).to.be.true
       const events = eventBuffer.drain()
       expect(events).to.have.length(1)
-      expect(events[0].event).to.equal('mcp_connected')
-      expect(events[0].props).to.deep.equal({
+      expect(events[0]!.event).to.equal('mcp_connected')
+      expect(events[0]!.props).to.deep.equal({
         orgId: 'org-1', userId: 'user-1', domain: 'example.com',
         auth_type: 'pat', client_name: 'claude-code', client_version: '2.1.0',
       })
@@ -141,9 +180,9 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       const events = eventBuffer.drain()
       expect(events).to.have.length(1)
-      expect(events[0].event).to.equal('mcp_tool_called')
-      expect(events[0].props?.tool).to.equal('pipeshub_search')
-      expect(events[0].props?.auth_type).to.equal('oauth')
+      expect(events[0]!.event).to.equal('mcp_tool_called')
+      expect(events[0]!.props?.tool).to.equal('pipeshub_search')
+      expect(events[0]!.props?.auth_type).to.equal('oauth')
       expect(JSON.stringify(events[0])).to.not.include('confidential plan')
     })
 
@@ -154,7 +193,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = { ...createMockResponse(), statusCode: 200 }
       await handleMCPRequest(appConfig)(req, res as any, createMockNext())
 
-      expect(eventBuffer.drain()[0].props).to.include({
+      expect(eventBuffer.drain()[0]!.props).to.include({
         oauth_client_id: 'some-oauth-app',
         user_agent: 'claude-code/2.1.0',
         channel: 'claude-code-plugin',
@@ -168,7 +207,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = { ...createMockResponse(), statusCode: 200 }
       await handleMCPRequest(appConfig)(req, res as any, createMockNext())
 
-      const props = eventBuffer.drain()[0].props ?? {}
+      const props = eventBuffer.drain()[0]!.props ?? {}
       expect(props).to.not.have.any.keys('user_agent', 'channel', 'oauth_client_id')
     })
 
@@ -179,7 +218,7 @@ describe('MCP Controller — handleMCPRequest', () => {
         req.headers = { 'user-agent': ua }
         const res = { ...createMockResponse(), statusCode: 200 }
         await handleMCPRequest(appConfig)(req, res as any, createMockNext())
-        expect(eventBuffer.drain()[0].props).to.not.have.property('user_agent')
+        expect(eventBuffer.drain()[0]!.props).to.not.have.property('user_agent')
       }
     })
 
@@ -189,7 +228,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       req.user = { ...patUser, oauthClientId: 'svc-system:org-1' }
       const res = { ...createMockResponse(), statusCode: 200 }
       await handleMCPRequest(appConfig)(req, res as any, createMockNext())
-      const props = eventBuffer.drain()[0].props ?? {}
+      const props = eventBuffer.drain()[0]!.props ?? {}
       expect(props.auth_type).to.equal('oauth')
       expect(props).to.not.have.property('oauth_client_id')
     })
@@ -1574,7 +1613,7 @@ describe('MCP Controller — handleMCPRequest', () => {
         )
         const tools = served._registeredTools as Record<string, { enabled: boolean }>
         await served.close()
-        return Object.keys(tools).filter((name) => tools[name].enabled)
+        return Object.keys(tools).filter((name) => tools[name]!.enabled)
       }
       const WRITE_TOOLS = ['pipeshub_create_collection', 'pipeshub_upload', 'pipeshub_add_web_source']
 

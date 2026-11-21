@@ -21,16 +21,18 @@ from app.agent_loop_lib.hooks.middleware.context import (
 from app.agent_loop_lib.hooks.middleware.decisions import PostDecision, PreDecision
 from app.agent_loop_lib.hooks.middleware.routing import path_match
 from app.agent_loop_lib.hooks.registry import HookRegistry
+from app.agent_loop_lib.sandbox.coding.base import SandboxContext
 from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
 from app.agent_loop_lib.sandbox.coding.local import LocalCodingSandbox
-from app.agent_loop_lib.sandbox.coding.base import SandboxContext
 from app.agent_loop_lib.sandbox.coding.settings import SandboxUnavailableError
 from app.agent_loop_lib.sandbox.governor import reset_default_governor
-from app.agent_loop_lib.sandbox.manager import SandboxManager, SandboxType, UnknownSandboxError
+from app.agent_loop_lib.sandbox.manager import SandboxManager, SandboxType
 from app.agent_loop_lib.tools.base import ToolOutput
 from app.agent_loop_lib.tools.builtin.sandbox import input_staging
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
-from app.agent_loop_lib.tools.builtin.sandbox.input_staging import peek_staged_input_files
+from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
+    peek_staged_input_files,
+)
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.actions.util.attachments import AttachmentBundle
 from app.agents.agent_loop.context import AgentContext
@@ -44,10 +46,17 @@ from app.agents.agent_loop.sandbox_bridge import (
     coding_sandbox_artifact_staging,
     coding_sandbox_package_policy,
     coding_sandbox_result_propagation,
+    coding_sandbox_workspace_staging,
     register_coding_sandbox_hooks,
     register_coding_sandbox_tools,
     sandbox_network_enabled,
 )
+from app.harness.adapters.memory_workspace import (
+    InMemoryBinaryObjectStore,
+    InMemoryWorkspaceManifestStore,
+)
+from app.harness.contracts.workspace import ObjectScope, WorkspaceFile
+from app.harness.workspace.virtual_fs import VirtualFileSystem, WorkspaceMount
 from app.models.entities import ArtifactType, LifecycleStatus
 from app.services.artifact_registry import ArtifactMetadata
 from app.services.artifact_registry.access import ArtifactNotFoundError
@@ -164,8 +173,8 @@ class TestBuildCodingSandboxManager:
         assert isinstance(backend, DockerCodingSandbox)
         assert backend._image == "custom/sandbox:v2"
         assert backend._egress_network == "custom_egress"
-        assert backend._pip_index_url == "https://pip.example.com/simple"
-        assert backend._npm_registry == "https://npm.example.com"
+        assert backend._pip.url == "https://pip.example.com/simple"
+        assert backend._npm.url == "https://npm.example.com"
         assert "pandas" in backend._allowlist
 
     async def test_docker_mode_uses_pipeshub_defaults(self, monkeypatch) -> None:
@@ -422,7 +431,10 @@ class TestCodingSandboxArtifactStaging:
                 raise ArtifactNotFoundError(f"No artifact named {ref!r} in this conversation")
             return _make_metadata(artifact_id=f"art-{ref}", name=ref, logical_name=ref)
 
-        async def _get_content(*, actor: Any, artifact_id: str) -> bytes:
+        async def _get_content(
+            *, actor: Any, artifact_id: str, version: int | None = None,
+        ) -> bytes:
+            assert version == 1
             return files[artifact_id[len("art-"):]]
 
         registry.resolve = AsyncMock(side_effect=_resolve)
@@ -644,6 +656,46 @@ class TestCodingSandboxArtifactStaging:
 
 
 class TestCodingSandboxArtifactBridge:
+    async def test_durable_workspace_staging_survives_pre_tool_middleware(self) -> None:
+        token = input_staging._staged_workspace_files.set(None)
+        objects = InMemoryBinaryObjectStore()
+        manifests = InMemoryWorkspaceManifestStore()
+        workspace = await manifests.commit("session-1", 0, {})
+        skill = await manifests.commit(
+            "skill-1",
+            0,
+            {
+                "assets/logo.png": WorkspaceFile(
+                    path="assets/logo.png",
+                    content=await objects.put(ObjectScope("org-1"), b"\x89PNG\x00"),
+                ),
+            },
+        )
+        vfs = VirtualFileSystem(
+            mounts=[
+                WorkspaceMount("/workspace", workspace, writable=True),
+                WorkspaceMount("/skills/report/1.0.0", skill),
+            ],
+            object_store=objects,
+            object_scope=ObjectScope("org-1"),
+            manifest_store=manifests,
+        )
+        context = _make_context(virtual_filesystem=vfs)
+        ctx = ToolCallContext(
+            tool_path="/toolsets/coding_sandbox/run_code",
+            tool_input={"code": "print(1)"},
+        )
+        try:
+            await coding_sandbox_workspace_staging(context)(ctx, _noop_next)
+
+            # PRE middleware has returned; tool.execute() reads this next on
+            # the same task.
+            assert input_staging.peek_staged_workspace_files() == {
+                "skills/report/1.0.0/assets/logo.png": b"\x89PNG\x00",
+            }
+        finally:
+            input_staging._staged_workspace_files.reset(token)
+
     async def test_redacts_stdout_stderr_and_error_analysis(self) -> None:
         context = _make_context()
         manager = SandboxManager()
@@ -670,6 +722,53 @@ class TestCodingSandboxArtifactBridge:
         assert ctx.tool_response.data["stderr"] == "warn: <workdir>/script.py"
         assert ctx.tool_response.data["error_analysis"]["message"] == "at <output>/x.pdf"
 
+    async def test_exports_durable_workspace_before_artifact_delivery(self) -> None:
+        context = _make_context(virtual_filesystem=MagicMock())
+        manager = SandboxManager()
+        manager.register_backend_factory(SandboxType.CODING, lambda: _FakeBackend({}))
+        sandbox_id, backend = await manager.get_or_create(SandboxType.CODING)
+        ctx = ToolResultContext(
+            tool_path="/toolsets/coding_sandbox/run_code",
+            tool_use_id=uuid4(),
+            tool_response=ToolOutput(
+                success=True,
+                data={"artifacts": [], "sandbox_id": sandbox_id},
+            ),
+        )
+        committed = MagicMock(revision=2)
+
+        with patch(
+            "app.agents.agent_loop.sandbox_bridge.SandboxWorkspaceExporter.export",
+            new=AsyncMock(return_value=committed),
+        ) as export:
+            await coding_sandbox_artifact_bridge(context, manager)(ctx, _noop_next)
+
+        export.assert_awaited_once_with(context.virtual_filesystem, backend)
+        assert context.workspace_manifest is committed
+
+    async def test_workspace_export_failure_blocks_successful_tool_result(self) -> None:
+        context = _make_context(virtual_filesystem=MagicMock())
+        manager = SandboxManager()
+        manager.register_backend_factory(SandboxType.CODING, lambda: _FakeBackend({}))
+        sandbox_id, _ = await manager.get_or_create(SandboxType.CODING)
+        ctx = ToolResultContext(
+            tool_path="/toolsets/coding_sandbox/run_code",
+            tool_use_id=uuid4(),
+            tool_response=ToolOutput(
+                success=True,
+                data={"artifacts": [], "sandbox_id": sandbox_id},
+            ),
+        )
+
+        with patch(
+            "app.agents.agent_loop.sandbox_bridge.SandboxWorkspaceExporter.export",
+            new=AsyncMock(side_effect=RuntimeError("blob unavailable")),
+        ):
+            await coding_sandbox_artifact_bridge(context, manager)(ctx, _noop_next)
+
+        assert ctx.decision == PostDecision.BLOCK
+        assert ctx.tool_response.success is False
+        assert ctx.tool_response.error == "Sandbox output could not be committed"
     @pytest.mark.parametrize(
         ("tool", "response", "field"),
         [
@@ -1129,6 +1228,20 @@ class TestPartitionSandboxOutputs:
 
     def test_staged_input_artifacts_excluded_from_both(self) -> None:
         deliverables, scratch = _partition_sandbox_outputs(["input/artifacts/x.png"])
+        assert deliverables == []
+        assert scratch == []
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "workspace/intermediate.bin",
+            "skills/report/SKILL.md",
+            "artifacts/private.json",
+            "system/policy.txt",
+        ],
+    )
+    def test_harness_mounts_are_excluded_from_user_artifact_fallback(self, path: str) -> None:
+        deliverables, scratch = _partition_sandbox_outputs([path])
         assert deliverables == []
         assert scratch == []
 
@@ -1645,3 +1758,44 @@ class TestRegisterCodingSandboxHooksIntegration:
         )
         result = await hooks.on(HookEvent.POST_TOOL_USE).dispatch(ctx)
         assert result.tool_response.data["stdout"] == "Saved at: /tmp/pipeshub_sandbox/x/output/a.pdf"
+
+
+def _image_sources() -> tuple[str, str, dict[str, object]]:
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[6]
+    dockerfile = (root / "deployment" / "sandbox" / "Dockerfile").read_text()
+    requirements = (root / "deployment" / "sandbox" / "requirements.in").read_text()
+    package = json.loads((root / "deployment" / "sandbox" / "package.json").read_text())
+    return dockerfile, requirements, package
+
+
+def test_rc12_the_preinstalled_lists_are_the_images() -> None:
+    """P5.11 RC-12: the lists `run_code` names equal what the sandbox image installs."""
+    import re
+
+    from app.agents.agent_loop.sandbox_bridge import (
+        IMAGE_NODE_PACKAGES,
+        IMAGE_PYTHON_PACKAGES,
+    )
+
+    dockerfile, requirements, package = _image_sources()
+    # The image installs exactly requirements.lock, resolved from requirements.in (SEC-SC-07).
+    assert re.search(r"--require-hashes [^\n]*-r /tmp/requirements\.lock", dockerfile)
+    python = re.findall(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*$", requirements, flags=re.MULTILINE)
+    assert list(IMAGE_PYTHON_PACKAGES) == python
+    node = sorted(name for name in package["dependencies"] if not name.startswith("@types/"))  # type: ignore[union-attr]
+    assert sorted(IMAGE_NODE_PACKAGES) == node
+
+
+def test_rc12_run_code_names_the_preinstalled_packages() -> None:
+    from app.agents.agent_loop.sandbox_bridge import (
+        IMAGE_NODE_PACKAGES,
+        IMAGE_PYTHON_PACKAGES,
+        PipesHubCodingSandboxTool,
+    )
+
+    tool = PipesHubCodingSandboxTool(MagicMock())
+    assert all(name in tool.description for name in (*IMAGE_PYTHON_PACKAGES, *IMAGE_NODE_PACKAGES))
+    assert "do not list them in packages" in tool.description

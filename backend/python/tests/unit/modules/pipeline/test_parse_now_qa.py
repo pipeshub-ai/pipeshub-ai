@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +15,7 @@ import pytest
 from app.modules.indexing import parse_now_marker as marker
 from app.modules.pipeline import parse_now as parse_now_module
 from app.modules.pipeline.parse_now import ParseNow
+from harness_core.testing.virtual_time import run_on_virtual_time
 from tests.unit.utils.test_fetch_record_resolution import (
     MODULE,
     _Docs,
@@ -26,9 +26,6 @@ from tests.unit.utils.test_fetch_record_resolution import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 def _quick(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
@@ -54,7 +51,7 @@ async def _hang(*_a, **_k) -> None:
     await asyncio.sleep(3600)
 
 
-async def test_dead_broker_for_three_records_costs_one_producer_timeout_not_three(monkeypatch) -> None:
+def test_dead_broker_for_three_records_costs_one_producer_timeout_not_three(monkeypatch) -> None:
     monkeypatch.setattr(parse_now_module, "_PRODUCER_TIMEOUT_SECONDS", 0.2)
     docs = _Docs({f"r{i}": [_row("QUEUED")] for i in range(3)})
     in_flight, peak = 0, 0
@@ -70,16 +67,20 @@ async def test_dead_broker_for_three_records_costs_one_producer_timeout_not_thre
 
     asker = _asker(AsyncMock(side_effect=hang_counting), wait=20)
 
-    t0 = time.monotonic()
-    result = await _fetch([f"r{i}" for i in range(3)], graph_provider=_provider(docs), parse_now=asker)
-    elapsed = time.monotonic() - t0
+    async def main() -> tuple[dict, float]:
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        result = await _fetch([f"r{i}" for i in range(3)], graph_provider=_provider(docs), parse_now=asker)
+        return result, loop.time() - t0
+
+    result, elapsed = run_on_virtual_time(main)
 
     assert peak == 3  # the three requests ran together, so they cost one producer timeout
-    assert elapsed < 10  # nothing waited out the 20 s budget for a parse that was never asked for
+    assert elapsed == pytest.approx(0.2)  # one producer timeout; nothing waited out the 20 s budget
     assert result["ok"] is False and "being prepared" not in result["error"]  # R12: today's reply
 
 
-async def test_slow_broker_then_slow_graph_never_exceeds_the_one_budget(monkeypatch) -> None:
+def test_slow_broker_then_slow_graph_never_exceeds_the_one_budget(monkeypatch) -> None:
     monkeypatch.setattr(parse_now_module, "_PRODUCER_TIMEOUT_SECONDS", 2)
 
     async def slow_send(*_a, **_k) -> bool:
@@ -89,11 +90,14 @@ async def test_slow_broker_then_slow_graph_never_exceeds_the_one_budget(monkeypa
     docs = _Docs({f"r{i}": [_row("QUEUED")] for i in range(3)})
     asker = _asker(slow_send, wait=3)
 
-    t0 = time.monotonic()
-    await _fetch([f"r{i}" for i in range(3)], graph_provider=_provider(docs), parse_now=asker)
+    async def main() -> float:
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        await _fetch([f"r{i}" for i in range(3)], graph_provider=_provider(docs), parse_now=asker)
+        return loop.time() - t0
 
     # budget is wait_seconds in total, publish time included: 3 s, where adding the publish would be 4.5 s
-    assert time.monotonic() - t0 < 4
+    assert run_on_virtual_time(main) <= 3 + 0.05
 
 
 # (wait, first read delay): the second row spends the whole budget before the wait starts, as a loaded runner can, so no marker read is made

@@ -16,8 +16,13 @@ trap 'rm -rf "$TMP"' EXIT
 render() {
   local file="$1" out="$2"; shift 2
   local envf="$TMP/render.env"
-  : > "$envf"
-  (( $# )) && printf '%s\n' "$@" > "$envf"
+  # SEC-D-05, ADR-KEY-02 D6: the build files refuse to render without a SECRET_KEY and the legacy proxy's token;
+  # any random ones do here.
+  printf 'SECRET_KEY=%s\nDOCKER_PROXY_TOKEN=%s\n' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
+    "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$envf"
+  # SEC-D-06: every store's credential is required to render.
+  printf 'REDIS_PASSWORD=ci\nQDRANT_API_KEY=ci\nMONGO_PASSWORD=ci\nKAFKA_PASSWORD=ci\nNEO4J_PASSWORD=ci-password\n' >> "$envf"
+  (( $# )) && printf '%s\n' "$@" >> "$envf"
   env -i PATH="$PATH" HOME="$HOME" $DOCKER compose -f "$COMPOSE_DIR/$file" ${EXTRA_FILE:+-f "$EXTRA_FILE"} \
     --env-file "$envf" --profile graph-neo4j config --format json > "$out"
 }
@@ -55,7 +60,7 @@ for f in docker-compose.yml docker-compose.build.neo4j.yml; do
   want="NEO4J_dbms_memory_heap_initial__size 1G
 NEO4J_dbms_memory_heap_max__size 2G
 NEO4J_dbms_memory_pagecache_size 1G
-neo4j limit $((3*GiB)) reservation $((2*GiB))
+neo4j limit $((4*GiB)) reservation $((2*GiB))
 qdrant limit $(( $( [[ $f == docker-compose.yml ]] && echo 6 || echo 4 ) *GiB)) reservation $((2*GiB))"
   check "$f defaults" "$want" "$got"
   if [[ $f == docker-compose.yml ]]; then
@@ -82,7 +87,7 @@ qdrant limit $(( $( [[ $f == docker-compose.yml ]] && echo 6 || echo 4 ) *GiB)) 
   # An empty value means unset: it falls back to the default instead of rendering an invalid size.
   render "$f" "$TMP/empty.json" NEO4J_MEMORY_LIMIT= NEO4J_HEAP_MAX=
   check "$f empty value uses the default" "NEO4J_dbms_memory_heap_max__size 2G
-neo4j limit $((3*GiB)) reservation $((2*GiB))" \
+neo4j limit $((4*GiB)) reservation $((2*GiB))" \
     "$(summarize "$TMP/empty.json" | grep -E '^(NEO4J_dbms_memory_heap_max|neo4j)')"
 
   # An override file using the existing key names still wins over the base file.

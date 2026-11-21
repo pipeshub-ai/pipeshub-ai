@@ -456,8 +456,7 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
   describe('an organization server', () => {
     it('lists its tools read-only, grouped, and says organization rules are in the Enterprise Edition', async () => {
       renderEditing(entry({ createdBy: '' }));
-      // Radix draws a tab's label twice: "Tools Tools".
-      expect(screen.getByRole('tab', { name: /^Tools Tools$/ })).toBeTruthy();
+      expect(screen.getByRole('tab', { name: 'Tools' })).toBeTruthy();
       openTools();
 
       const list = await screen.findByTestId('mcp-tool-list');

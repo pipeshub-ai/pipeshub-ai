@@ -713,7 +713,7 @@ class TestM8WarmupAndHealthAreReachable:
         )
 
         health = await build_default_registry().available()
-        assert set(health) == {"local", "docker", "e2b"}
+        assert set(health) == {"local", "docker", "e2b", "broker"}
         # A backend that cannot answer must report why, not vanish.
         for name, result in health.items():
             assert result.available or result.reason, name
@@ -788,14 +788,13 @@ class TestReconnectPreservesTheProviderClock:
         )
 
     def test_expiry_is_measured_from_the_original_creation(self) -> None:
-        import time
-
-        created = time.time() - 280          # VM is 280s into a 300s life
+        created = 1_700_000_000.0
+        now = created + 280                  # VM is 280s into a 300s life
         sandbox = self._attached(created_at=created, timeout=300)
 
-        remaining = sandbox.expires_at - time.time()
-        assert 0 < remaining < 30, (
-            f"reports {remaining:.0f}s left on a VM with ~20s to live"
+        remaining = sandbox.expires_at - now
+        assert remaining == 20, (
+            f"reports {remaining:.0f}s left on a VM with 20s to live"
         )
 
     def test_ref_round_trips_the_creation_time(self) -> None:

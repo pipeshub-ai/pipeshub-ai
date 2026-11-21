@@ -18,6 +18,7 @@ from app.connectors.sources.web.address_guard import (
     start_guard_proxy,
 )
 from app.utils.url_fetcher import PublicTarget
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 PUBLIC = ipaddress.ip_address("93.184.215.14")
 
@@ -179,18 +180,22 @@ class TestGuardProxy:
         assert answer.startswith(b"HTTP/1.1 403")
         assert received == []
 
-    async def test_all_connect_attempts_share_one_deadline(self, monkeypatch) -> None:
+    def test_all_connect_attempts_share_one_deadline(self, monkeypatch) -> None:
         async def never_answers(*_: object, **__: object) -> None:
             await asyncio.sleep(3600)
 
         monkeypatch.setattr(address_guard, "_PROXY_CONNECT_TIMEOUT", 0.2)
         monkeypatch.setattr(asyncio, "open_connection", never_answers)
         pin = PublicTarget("http", "public.example", 80, (PUBLIC, ipaddress.ip_address("93.184.215.15")))
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        with pytest.raises(TimeoutError):
-            await address_guard._connect_checked(pin)
-        assert loop.time() - started < 1
+
+        async def main() -> None:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            with pytest.raises(TimeoutError):
+                await address_guard._connect_checked(pin)
+            assert loop.time() - started == pytest.approx(0.2)
+
+        run_on_virtual_time(main)
 
     async def test_relays_a_public_request_to_the_checked_address_only(self, site, proxy_port, monkeypatch) -> None:
         port, received = site

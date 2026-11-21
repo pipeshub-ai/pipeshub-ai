@@ -29,7 +29,7 @@ from app.services.vector_db.strategy_resolver import (
 from app.utils.encryption.encryption_service import DecryptionError, EncryptionService
 
 ENDPOINTS_KEY = config_node_constants.ENDPOINTS.value
-SECRET_KEY = "encstore-throwaway-test-secret"
+SECRET_KEY = "fd4753a4ed0d0b07b2764602695947595e35caf128486cfe1235561112cfb9d5"
 OTHER_HEX_KEY = "22" * 32
 REDIS_PREFIX = "t:"
 REDIS_PROVIDER = "app.config.providers.redis.redis_store.get_redis_provider"

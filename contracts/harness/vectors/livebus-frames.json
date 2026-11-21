@@ -1,0 +1,127 @@
+{
+  "description": "LiveBus wire shape (REPORT 6.2.4): Python app.harness.livebus writes, Node projection/livebus reads. One Redis stream per run at key, capped and expiring. After each frame the publisher also publishes an empty message on notifyChannel, so a reader wakes at once instead of at its next poll. A text_delta may also carry `answer`, the worker's numbering of the attempt's text so far, and `citations` when they changed (CITESTREAM).",
+  "keys": [
+    {
+      "runId": "run_1",
+      "namespace": "",
+      "key": "harness:live:run_1",
+      "notifyChannel": "harness:live-notify:run_1"
+    },
+    {
+      "runId": "run_1",
+      "namespace": "tenant-a",
+      "key": "tenant-a:harness:live:run_1",
+      "notifyChannel": "tenant-a:harness:live-notify:run_1"
+    }
+  ],
+  "frames": [
+    {
+      "frame": {
+        "runId": "7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11",
+        "fence": 1,
+        "modelAttempt": 1,
+        "n": 1,
+        "kind": "text_delta",
+        "data": {
+          "text": "You get 25 days "
+        }
+      },
+      "frameId": "d:7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11:1:1:1",
+      "fields": {
+        "v": "1",
+        "f": "1",
+        "a": "1",
+        "n": "1",
+        "k": "text_delta",
+        "d": "{\"text\":\"You get 25 days \"}"
+      }
+    },
+    {
+      "frame": {
+        "runId": "7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11",
+        "fence": 2,
+        "modelAttempt": 3,
+        "n": 14,
+        "kind": "text_delta",
+        "data": {
+          "text": "line\n\"quoted\" é中😀 ::artifact[x](y)"
+        }
+      },
+      "frameId": "d:7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11:2:3:14",
+      "fields": {
+        "v": "1",
+        "f": "2",
+        "a": "3",
+        "n": "14",
+        "k": "text_delta",
+        "d": "{\"text\":\"line\\n\\\"quoted\\\" é中😀 ::artifact[x](y)\"}"
+      }
+    },
+    {
+      "frame": {
+        "runId": "run_1",
+        "fence": 1,
+        "modelAttempt": 1,
+        "n": 2,
+        "kind": "reasoning_delta",
+        "data": {
+          "text": "thinking"
+        }
+      },
+      "frameId": "d:run_1:1:1:2",
+      "fields": {
+        "v": "1",
+        "f": "1",
+        "a": "1",
+        "n": "2",
+        "k": "reasoning_delta",
+        "d": "{\"text\":\"thinking\"}"
+      }
+    },
+    {
+      "frame": {
+        "runId": "run_1",
+        "fence": 1,
+        "modelAttempt": 1,
+        "n": 3,
+        "kind": "text_delta",
+        "data": {
+          "text": "[source](ref1).",
+          "answer": "Leave is 25 days [1](https://example.com/leave).",
+          "citations": [
+            {
+              "chunkIndex": 1,
+              "content": "25 days",
+              "citationType": "web|url",
+              "metadata": {
+                "webUrl": "https://example.com/leave"
+              }
+            }
+          ]
+        }
+      },
+      "frameId": "d:run_1:1:1:3",
+      "fields": {
+        "v": "1",
+        "f": "1",
+        "a": "1",
+        "n": "3",
+        "k": "text_delta",
+        "d": "{\"text\":\"[source](ref1).\",\"answer\":\"Leave is 25 days [1](https://example.com/leave).\",\"citations\":[{\"chunkIndex\":1,\"content\":\"25 days\",\"citationType\":\"web|url\",\"metadata\":{\"webUrl\":\"https://example.com/leave\"}}]}"
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "description": "unknown wire version",
+      "fields": {
+        "v": "2",
+        "f": "1",
+        "a": "1",
+        "n": "1",
+        "k": "text_delta",
+        "d": "{\"text\":\"x\"}"
+      }
+    }
+  ]
+}

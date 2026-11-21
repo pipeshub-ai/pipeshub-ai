@@ -1,12 +1,15 @@
 """Integration tests against real PostgreSQL (every version in MIGRATE_TEST_PG_BINS). See conftest.py."""
+import re
 import textwrap
 import time
+from pathlib import Path
 
 import psycopg
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.exc import DBAPIError
 
+from db import locations
 from db.lib import ddl
 
 from .conftest import _free_port, run_migrate, start_migrate
@@ -69,18 +72,39 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (17, 11), "platform": (5, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
-         "graph": (13, 0), "kg": (15, 14), "retrieval": (3, 0)}
+HEADS = {"kernel": (17, 11), "platform": (5, 0), "content": (3, 0), "conversation": (4, 0), "identity": (6, 0), "integrations": (3, 0), "oauth": (4, 0), "platform_data": (8, 0),
+         "graph": (13, 0), "kg": (15, 14), "retrieval": (3, 0), "harness": (11, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0005", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0015", "retrieval_0003", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0005", "identity_0006", "content_0003", "oauth_0004", "platform_data_0008", "kg_0015", "retrieval_0003", "graph_0013", "conversation_0004"}      # kg depends on kernel_0017 and graph_0002, platform_data_0005 on integrations_0003, platform_data_0006 and 0007 on harness_0011: no longer heads (0008 is)
+
+
+def _edition_heads() -> tuple[dict[str, tuple[int, int]], set[str]]:
+    """The branches the running edition adds (``EXTRA_MIGRATION_LOCATIONS``): each one's newest epoch and contract
+    epoch, and its newest revision, which nothing in this tree depends on. Empty when the edition adds none."""
+    heads, revisions = {}, set()
+    for loc in map(Path, locations.extra_locations()):
+        files = sorted(f for f in loc.glob("*.py") if re.match(r"\d{4}_", f.name))
+        if not files:
+            continue
+        newest = int(files[-1].name[:4])
+        contract = max((int(m[1]) for f in files if (m := re.search(r"^min_code_epoch = (\d+)", f.read_text(), re.M))), default=0)
+        heads[loc.name] = (newest, contract)
+        revisions.add(f"{loc.name}_{newest:04d}")
+    return heads, revisions
+
+
+EDITION_HEADS, EDITION_REVISION_HEADS = _edition_heads()
+# What a run of this tree's migrations leaves with the running edition's file (a test that sets its own edition file
+# compares with HEADS)
+BUILT_HEADS = {**HEADS, **EDITION_HEADS}
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "epoch kernel=17 min_code=11" in r.stdout and "epoch platform_data=4 min_code=0" in r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert "epoch kernel=17 min_code=11" in r.stdout and "epoch platform_data=8 min_code=0" in r.stdout
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \
             == {"pipeshub_owner"}
@@ -88,7 +112,7 @@ def test_fresh_install(db):
         assert c.execute("SELECT kernel.pg_major()").fetchone()[0] == cluster.major
         assert c.execute("SELECT kernel.has_extension('plpgsql'), kernel.has_extension('nope')").fetchone() == (True, False)
         assert {v for (v,) in c.execute("SELECT version_num FROM kernel.alembic_version")} \
-            == REVISION_HEADS
+            == REVISION_HEADS | EDITION_REVISION_HEADS
 
 
 def test_service_role_grants(db):
@@ -135,7 +159,7 @@ def test_bare_database_as_superuser(bare_db):
     skip = {"PG_MIGRATE_SURFACE_CHECK": "skip"}                   # a bare database has a different (migration-made) role layout
     assert run_migrate(url, **skip).returncode == 0
     assert run_migrate(url, **skip).returncode == 0                                            # second run: ownership is consistent
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 18
         assert c.execute("SELECT count(*) FROM pg_tables WHERE schemaname = 'kernel' AND tableowner <> 'pipeshub_owner'").fetchone()[0] == 0
@@ -162,7 +186,7 @@ def test_concurrent_runners_serialise(db):
         holder.close()
     out, _ = p.communicate(timeout=120)
     assert p.returncode == 0, out
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
 
 
 def test_two_runners_at_once_apply_once(db):
@@ -171,7 +195,7 @@ def test_two_runners_at_once_apply_once(db):
     procs = [start_migrate(url), start_migrate(url)]
     outs = [p.communicate(timeout=120)[0] for p in procs]
     assert [p.returncode for p in procs] == [0, 0], outs
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*) FROM platform.deployment_profile").fetchone()[0] == 1
 
@@ -207,7 +231,7 @@ def test_failed_revision_rolls_back_cleanly(db, tmp_path):
         assert c.execute("SELECT note FROM probe.t1 LIMIT 1").fetchone() is None
         versions = {v for (v,) in c.execute("SELECT version_num FROM kernel.alembic_version")}
         # the probe fails mid-run; the branches that ran before it (in an order Alembic does not fix) are complete revisions, never partial
-        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in (*MODULES, "graph", "kg")))) for v in versions)
+        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in (*MODULES, "graph", "kg", "harness")))) for v in versions)
     assert epochs(cluster, name)["probe"] == (1, 0)
     write_probe(tmp_path)                                                              # the fix is a plain re-run
     r = run_migrate(url, **env)
@@ -248,7 +272,7 @@ def test_one_module_down_and_up_leaves_a_clean_catalog(db):
             assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
 
 
 def test_violations_in_the_catalog_view_fail_the_run(db):
@@ -488,7 +512,7 @@ def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrade
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
 
 
 def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_the_revision_round_trips(db):
@@ -502,9 +526,9 @@ def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_th
             c.execute("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES (%s, 'x.test', 'a@x.test', 'business', now(), now())", (org,))
             c.execute("INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES (%s, %s, 'user-1', 'a@x.test', now(), now())", (org, "a" * 24))
             c.execute("INSERT INTO identity.org_auth_config (org_id, id, auth_steps, created_at, updated_at) VALUES (%s, %s, '[1]', now(), now())", (org, "a" * 24))
-        assert c.execute(policies).fetchone()[0] == 3      # this revision only adds the functions: the jobs role keeps its three tables
+        assert c.execute(policies).fetchone()[0] == 4      # the gauges revision adds only functions; identity_0006 gives the jobs role session_families for the expiry sweep
         tables = [r[0] for r in c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'").fetchall()]
-        assert len(tables) == 11
+        assert len(tables) == 12
         c.execute("SET ROLE pipeshub_jobs")      # no app.org_id: the system context of the gauges
         for fn, cols in gauges.items():
             cur = c.execute(f"SELECT * FROM identity.{fn}()")
@@ -513,6 +537,8 @@ def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_th
         for t in tables:
             if t in readable:
                 assert len(c.execute(f"SELECT 1 FROM identity.{t}").fetchall()) == 2
+            elif t == "session_families":
+                assert c.execute(f"SELECT 1 FROM identity.{t}").fetchall() == []
             else:
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     c.execute(f"SELECT 1 FROM identity.{t}")
@@ -533,10 +559,10 @@ def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_th
         c.execute("ALTER ROLE pipeshub_migrate SET search_path = identity, public")
     r = run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip")      # the surface lists the role setting; the asserts below check what the run left
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:      # the tables are found whatever the session's search_path is
-        assert c.execute(policies).fetchone()[0] == 3
-        assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 3
+        assert c.execute(policies).fetchone()[0] == 4
+        assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 5      # three SELECTs, and SELECT and DELETE on session_families
         assert c.execute("SELECT count(*) FROM information_schema.routine_privileges WHERE grantee = 'pipeshub_jobs' AND routine_schema = 'identity'").fetchone()[0] == 3
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
 
@@ -555,7 +581,7 @@ def test_the_one_running_job_index_comes_and_goes_with_the_platform_job_function
         assert c.execute(index).fetchone()[0] is False and c.execute("SELECT to_regclass('platform.jobs') IS NOT NULL").fetchone()[0] is True
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
     with connect(cluster, name) as c:
         assert c.execute(index).fetchone()[0] is True
 
@@ -585,7 +611,7 @@ def test_the_runtime_tables_come_and_go_with_platform_0003_to_0005(db):
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    assert epochs(cluster, name) == HEADS
+    assert epochs(cluster, name) == BUILT_HEADS
 
 
 def test_the_runtimes_read_the_profile_epoch_through_the_definer_reader(db):
@@ -676,7 +702,8 @@ def _grant_revision(tmp_path):
     '''))
     (d / "0001_grant.sql").write_text("GRANT USAGE ON SCHEMA kernel TO pipeshub_ext_reader;\n")
     ed = tmp_path / "edition.py"
-    ed.write_text(f"EXTRA_MIGRATION_LOCATIONS = {[str(d)]!r}\n")
+    # beside the running edition's own modules, so the only change the run sees is this one
+    ed.write_text(f"EXTRA_MIGRATION_LOCATIONS = {[*locations.extra_locations(), str(d)]!r}\n")
     return {"PIPESHUB_EDITION_FILE": str(ed)}
 
 
@@ -685,7 +712,7 @@ def test_a_refused_upgrade_leaves_the_revisions_and_epochs_as_they_were(db, tmp_
     url = cluster.url(name, MIGRATE)
     assert run_migrate(url).returncode == 0
     before = _applied(cluster, name)
-    assert before[0] and before[1] == HEADS
+    assert before[0] and before[1] == BUILT_HEADS
     with cluster.admin() as admin:
         admin.execute("CREATE ROLE pipeshub_ext_reader NOLOGIN")
     r = run_migrate(url, **_grant_revision(tmp_path))

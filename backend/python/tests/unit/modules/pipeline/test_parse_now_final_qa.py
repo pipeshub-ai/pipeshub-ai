@@ -19,6 +19,7 @@ from app.modules.pipeline.parse_now import (
     parse_outcome,
 )
 from app.services.messaging.config import StreamMessage
+from harness_core.testing.virtual_time import run_on_virtual_time
 from tests.unit.services.messaging.test_record_handler_parse_now import (
     Harness,
     _payload,
@@ -36,9 +37,6 @@ from tests.unit.utils.test_fetch_record_resolution import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 def _quick(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
@@ -90,19 +88,28 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-async def test_a_failed_marker_ends_the_wait_and_the_next_read_asks_again() -> None:
+def _clock() -> float:
+    return asyncio.get_running_loop().time()
+
+
+def test_a_failed_marker_ends_the_wait_and_the_next_read_asks_again() -> None:
     failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
     asker, send = _asker(wait=20)
-    t0 = time.monotonic()
-    first = await _fetch(
-        ["rec-1"], graph_provider=_provider(_Docs({"rec-1": [_row("AUTO_INDEX_OFF"), failed]})), parse_now=asker,
-    )
-    assert time.monotonic() - t0 < 10  # ended by the marker, far before the 20 s budget a busy runner cannot reach
+
+    async def main() -> tuple[dict, float]:
+        t0 = _clock()
+        first = await _fetch(
+            ["rec-1"], graph_provider=_provider(_Docs({"rec-1": [_row("AUTO_INDEX_OFF"), failed]})), parse_now=asker,
+        )
+        return first, _clock() - t0
+
+    first, elapsed = run_on_virtual_time(main)
+    assert elapsed < 1  # ended by the marker at the first poll, not by the 20 s budget
     assert first["not_indexed_records"]["rec-1"]["status"] == "FAILED"
     assert "preparing" not in first["not_indexed_records"]["rec-1"]
     # A later read of a record that still carries the FAILED marker asks again.
     second, send2 = _asker(wait=0.05)
-    await _fetch(["rec-1"], graph_provider=_provider(_Docs({"rec-1": [failed]})), parse_now=second)
+    run_on_virtual_time(lambda: _fetch(["rec-1"], graph_provider=_provider(_Docs({"rec-1": [failed]})), parse_now=second))
     assert send.await_count == 1 and send2.await_count == 1
 
 
@@ -120,7 +127,7 @@ async def test_a_stale_failed_marker_does_not_end_the_wait_of_a_run_just_asked_f
 # --- blob read grace: a hung read of what became ready is cut near the budget ----------------------
 
 
-async def test_a_hung_blob_read_after_ready_is_cut_near_the_budget(monkeypatch) -> None:
+def test_a_hung_blob_read_after_ready_is_cut_near_the_budget(monkeypatch) -> None:
     monkeypatch.setattr(f"{MODULE}._FINISH_GRACE_SECONDS", 0.2)
 
     async def hang(*_a, **_k) -> None:
@@ -128,12 +135,16 @@ async def test_a_hung_blob_read_after_ready_is_cut_near_the_budget(monkeypatch) 
 
     docs = _Docs({"rec-1": [_row("QUEUED"), _stored(_row("QUEUED"))]})
     asker, _ = _asker(wait=0.2)
-    with patch(f"{MODULE}.get_record", side_effect=hang):
-        t0 = time.monotonic()
-        result = await _fetch(["rec-1"], graph_provider=_provider(docs), parse_now=asker)
-        elapsed = time.monotonic() - t0
 
-    assert elapsed < 10  # cut near the 0.2 s budget plus grace, not after the 30 s hang
+    async def main() -> tuple[dict, float]:
+        t0 = _clock()
+        result = await _fetch(["rec-1"], graph_provider=_provider(docs), parse_now=asker)
+        return result, _clock() - t0
+
+    with patch(f"{MODULE}.get_record", side_effect=hang):
+        result, elapsed = run_on_virtual_time(main)
+
+    assert elapsed == pytest.approx(0.4)  # the 0.2 s budget plus the 0.2 s grace, not the 30 s hang
     assert result["ok"] is False and "being prepared" in result["error"]
 
 
@@ -201,19 +212,23 @@ async def test_store_only_never_writes_a_record_status(status) -> None:
     assert set(written) <= {"contentRev", "virtualRecordId", "parseNowStatus", "parseNowRev", "parseNowReason", "parseNowAt"}
 
 
-async def test_a_fast_failure_after_a_stale_one_ends_the_wait_in_about_one_poll(stored_content) -> None:
+def test_a_fast_failure_after_a_stale_one_ends_the_wait_in_about_one_poll(stored_content) -> None:
     stale = _row("FAILED", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=1)
     fresh = _row("FAILED", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
     docs = _Docs({"rec-1": [stale, fresh]})
     asker, send = _asker(wait=20)
-    t0 = time.monotonic()
 
-    result = await _fetch(["rec-1"], graph_provider=_provider(docs), parse_now=asker)
+    async def main() -> tuple[dict, float]:
+        t0 = _clock()
+        result = await _fetch(["rec-1"], graph_provider=_provider(docs), parse_now=asker)
+        return result, _clock() - t0
+
+    result, elapsed = run_on_virtual_time(main)
 
     send.assert_awaited_once()
     assert result["ok"] is False
     assert docs.reads["rec-1"] == 2  # ended at the first poll, by the fresh marker
-    assert time.monotonic() - t0 < 10  # far before the 20 s budget
+    assert elapsed < 1  # one 0.01 s poll, not the 20 s budget
 
 
 async def test_a_stale_failed_marker_alone_does_not_end_the_wait(stored_content) -> None:
@@ -306,16 +321,24 @@ def _asker_with_redis(wait: float) -> tuple[ParseNow, AsyncMock, _Redis]:
     return ParseNow(asker.config_service, logging.getLogger("qa"), asker._producer, provider), send, redis
 
 
-async def test_the_claim_is_freed_after_a_failed_outcome_so_a_repeat_read_asks_again() -> None:
+def test_the_claim_is_freed_after_a_failed_outcome_so_a_repeat_read_asks_again() -> None:
     failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
     asker, send, redis = _asker_with_redis(wait=20)
-    await _fetch(
+    run_on_virtual_time(lambda: _fetch(
         ["rec-1"], graph_provider=_provider(_Docs({"rec-1": [_row("AUTO_INDEX_OFF"), failed]})), parse_now=asker,
-    )
+    ))
     assert redis.keys == set()
-    t0 = time.monotonic()
-    await _fetch(["rec-1"], graph_provider=_provider(_Docs({"rec-1": [failed, _row("AUTO_INDEX_OFF"), failed]})), parse_now=asker)
-    assert send.await_count == 2 and time.monotonic() - t0 < 10  # ended by the marker, not the 20 s budget
+
+    async def main() -> float:
+        t0 = _clock()
+        await _fetch(
+            ["rec-1"], graph_provider=_provider(_Docs({"rec-1": [failed, _row("AUTO_INDEX_OFF"), failed]})),
+            parse_now=asker,
+        )
+        return _clock() - t0
+
+    elapsed = run_on_virtual_time(main)
+    assert send.await_count == 2 and elapsed < 1  # ended by the marker, not the 20 s budget
 
 
 async def test_the_claim_is_kept_when_the_wait_times_out() -> None:

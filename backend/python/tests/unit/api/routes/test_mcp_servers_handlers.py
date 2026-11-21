@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 import types
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -53,6 +54,7 @@ from app.api.routes.mcp_servers import (
     update_oauth_config,
 )
 from app.config.constants.service import DefaultEndpoints
+from tests.support.bound_org import bind_test_org
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1081,3 +1083,9 @@ class TestAgentMcpRoutes:
         assert build.await_args.args[3] == "agent-1"  # owner_id is agent key
         assert build.await_args.kwargs["owner_type"] == "agent"
         assert build.await_args.kwargs["initiated_by"] == "admin-1"
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

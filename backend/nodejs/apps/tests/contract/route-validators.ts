@@ -51,7 +51,7 @@ export interface ValidatorMount {
 export async function collectValidatorMounts(): Promise<ValidatorMount[]> {
   const captured = new Map<unknown, true>()
   const original = ValidationMiddleware.validate.bind(ValidationMiddleware)
-  process.env.SECRET_KEY = process.env.SECRET_KEY ?? 'route-validator-contract-key'
+  process.env.SECRET_KEY = process.env.SECRET_KEY ?? '37b9fd9507a9f825189657837c6338d81e12624a5af33941d1e7cd7604e040bf'
   const stub = sinon.stub(ValidationMiddleware, 'validate').callsFake((schema, options) => {
     const handler = original(schema, options)
     captured.set(handler, true)

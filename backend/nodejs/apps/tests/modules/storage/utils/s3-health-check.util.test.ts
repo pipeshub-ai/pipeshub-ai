@@ -135,8 +135,8 @@ describe('s3-health-check.util', () => {
 
       expect(result.success).to.be.false
       expect(result.checks).to.have.lengthOf(1)
-      expect(result.checks[0].capability).to.equal('bucketAccess')
-      expect(result.checks[0].passed).to.be.false
+      expect(result.checks[0]!.capability).to.equal('bucketAccess')
+      expect(result.checks[0]!.passed).to.be.false
     })
 
     it('should return bucketAccess failure when region fails format validation', async () => {
@@ -148,8 +148,8 @@ describe('s3-health-check.util', () => {
       })
 
       expect(result.success).to.be.false
-      expect(result.checks[0].capability).to.equal('bucketAccess')
-      expect(result.checks[0].passed).to.be.false
+      expect(result.checks[0]!.capability).to.equal('bucketAccess')
+      expect(result.checks[0]!.passed).to.be.false
     })
   })
 

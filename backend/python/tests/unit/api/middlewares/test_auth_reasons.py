@@ -30,7 +30,10 @@ SCOPED_SECRET = "scoped-secret-for-reason-tests"
 LOGGER = "test-auth-reasons"
 BEARER = {"WWW-Authenticate": "Bearer"}
 NOW = int(time.time())
-USER_CLAIMS = {"userId": "u1", "orgId": "o1", "role": "member", "iat": NOW, "exp": NOW + 600}
+# The tokens are minted when the module is collected; a shard runs for most of half an hour after that, and a
+# ten-minute token was expired by the time these tests ran.
+VALID_FOR = 24 * 3600
+USER_CLAIMS = {"userId": "u1", "orgId": "o1", "role": "member", "iat": NOW, "exp": NOW + VALID_FOR}
 
 
 def _token(claims: dict, secret: str = JWT_SECRET) -> str:
@@ -85,13 +88,14 @@ def _same_as_main(exc: AuthRejected, status: int, detail: str, headers: dict | N
          "invalid_token"),
         (f"Bearer {_token({**USER_CLAIMS, 'tokenType': 'oauth', 'scope': ''})}", 401, "Could not validate credentials",
          BEARER, "no_scopes"),
-        (f"Bearer {_token({'orgId': 'o1', 'scopes': ['not:accepted'], 'exp': NOW + 600}, SCOPED_SECRET)}", 401,
+        (f"Bearer {_token({'orgId': 'o1', 'scopes': ['not:accepted'], 'exp': NOW + VALID_FOR}, SCOPED_SECRET)}", 401,
          "Could not validate credentials", BEARER, "scope_not_accepted"),
-        (f"Bearer {_token({'scopes': [TokenScopes.FETCH_CONFIG.value], 'exp': NOW + 600}, SCOPED_SECRET)}", 401,
+        (f"Bearer {_token({'scopes': [TokenScopes.FETCH_CONFIG.value], 'exp': NOW + VALID_FOR}, SCOPED_SECRET)}", 401,
          "Token missing orgId", None, "missing_org"),
     ],
-    ids=["missing_header", "bad_scheme", "missing_token", "expired", "invalid_token", "no_scopes", "scope_not_accepted",
-         "missing_org"],  # the tokens hold the time they were made
+    # The tokens carry the clock: named by reason, every xdist worker collects the same ids.
+    ids=["missing_header", "bad_scheme", "missing_token", "expired", "invalid_token", "no_scopes",
+         "scope_not_accepted", "missing_org"],
 )
 async def test_token_refusals_carry_a_reason_and_answer_as_before(authorization, status, detail, headers, reason) -> None:
     _same_as_main(await _refusal(authorization), status, detail, headers, reason)
@@ -213,7 +217,7 @@ async def test_routine_refusals_log_no_warning_here(authorization, caplog: pytes
 async def test_control_a_refused_service_scope_still_names_the_scopes(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger=LOGGER)
 
-    await _refusal(f"Bearer {_token({'orgId': 'o1', 'scopes': ['not:accepted'], 'exp': NOW + 600}, SCOPED_SECRET)}")
+    await _refusal(f"Bearer {_token({'orgId': 'o1', 'scopes': ['not:accepted'], 'exp': NOW + VALID_FOR}, SCOPED_SECRET)}")
 
     warnings = [r.getMessage() for r in caplog.records if r.name == LOGGER and r.levelno == logging.WARNING]
     assert len(warnings) == 1 and "not:accepted" in warnings[0]

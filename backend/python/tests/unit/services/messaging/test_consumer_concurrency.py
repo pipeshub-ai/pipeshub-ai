@@ -4,8 +4,8 @@ gate-waiter tokens, and ceiling helpers."""
 from __future__ import annotations
 
 import asyncio
+import random
 import threading
-import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -289,6 +289,23 @@ def _lease_env(*, budget: int = 5, max_backoff: float = 0.04) -> Iterator[MagicM
         yield env
 
 
+@contextmanager
+def _sleeps_move_the_clock() -> Iterator[SimpleNamespace]:
+    """The module's monotonic clock advanced only by its own sleeps, so a deadline is checked on the delays slept."""
+    clock = SimpleNamespace(now=0.0)
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay: float) -> None:
+        clock.now += delay
+        await real_sleep(0)
+
+    with (
+        patch("app.services.messaging.consumer_concurrency.time", SimpleNamespace(monotonic=lambda: clock.now)),
+        patch.object(asyncio, "sleep", sleep),
+    ):
+        yield clock
+
+
 class TestAcquireDistributedSlot:
     @pytest.mark.asyncio
     async def test_no_manager_returns_true(self) -> None:
@@ -344,16 +361,14 @@ class TestAcquireDistributedSlot:
         deadline = 0.08
         # A backoff cap far larger than the deadline: unclamped, the first
         # sleep alone overruns it many times over.
-        with _lease_env(max_backoff=2.0):
-            start = time.monotonic()
+        with _lease_env(max_backoff=2.0), _sleeps_move_the_clock() as clock:
             result = await acquire_distributed_slot(
                 host, "record:r1", "owner", 1, deadline_seconds=deadline
             )
-            elapsed = time.monotonic() - start
 
         assert result is False
-        assert elapsed < deadline * 4, (
-            f"gave the permit back after {elapsed:.3f}s for a {deadline}s deadline"
+        assert clock.now == pytest.approx(deadline), (
+            f"gave the permit back after {clock.now:.3f}s for a {deadline}s deadline"
         )
 
     async def test_contention_backs_off_instead_of_hammering_redis(self) -> None:
@@ -368,17 +383,33 @@ class TestAcquireDistributedSlot:
             main_loop=asyncio.get_running_loop(),
         )
         # base 0.01s growing to a 0.2s cap, mirroring the shipped 0.5s->5s
-        # ratio at a scale a unit test can wait out. Jitter's floor is the base
-        # poll, so real draws only bound the attempts on average (about 1 run
-        # in 300 made 13); each draw is pinned to the middle of its range.
-        with _lease_env(max_backoff=0.2), patch(
-            "app.services.messaging.consumer_concurrency.random.uniform",
-            side_effect=lambda low, high: (low + high) / 2,
+        # ratio. The window is counted on a clock the sleeps advance and the
+        # jitter draws its mean: on the wall clock with real draws the count
+        # is a random variable (13 was seen), and a slow host adds to it.
+        now = 0.0
+        ceilings: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def sleep(delay: float) -> None:
+            nonlocal now
+            now += delay
+            await real_sleep(0)
+
+        def mean_draw(low: float, high: float) -> float:
+            ceilings.append(high)
+            return (low + high) / 2
+
+        with (
+            _lease_env(max_backoff=0.2),
+            patch("app.services.messaging.consumer_concurrency.time", SimpleNamespace(monotonic=lambda: now)),
+            patch.object(asyncio, "sleep", sleep),
+            patch.object(random, "uniform", mean_draw),
         ):
             result = await acquire_distributed_slot(
                 host, "parsing:light", "owner", 5, deadline_seconds=0.5
             )
         assert result is False
+        assert ceilings[:6] == pytest.approx([0.02, 0.04, 0.08, 0.16, 0.2, 0.2])
         # The old flat 0.01s poll would make ~50 attempts in this window.
         assert manager.try_acquire.await_count <= 12
 
@@ -394,16 +425,14 @@ class TestAcquireDistributedSlot:
             concurrency_manager=manager,
             main_loop=asyncio.get_running_loop(),
         )
-        started = time.monotonic()
-        with _lease_env(budget=1000, max_backoff=0.02):
+        with _lease_env(budget=1000, max_backoff=0.02), _sleeps_move_the_clock() as clock:
             result = await acquire_distributed_slot(
                 host, "record:abc", "owner", 1, deadline_seconds=0.05
             )
-        elapsed = time.monotonic() - started
 
         assert result is False
         # Bounded by the deadline, not by the (deliberately huge) budget.
-        assert elapsed < 1.0
+        assert clock.now == pytest.approx(0.05)
         assert manager.try_acquire.await_count < 1000
 
     async def test_capacity_lease_fails_open_once_the_budget_is_spent(self) -> None:

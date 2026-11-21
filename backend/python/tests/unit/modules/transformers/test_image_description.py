@@ -12,7 +12,6 @@ import asyncio
 import base64
 import io
 import logging
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +22,7 @@ from app.modules.transformers.image_description import (
     ImageDescriber,
     harvest_descriptions,
 )
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 
 def _png(width: int = 800, height: int = 600, seed: int = 0) -> str:
@@ -180,7 +180,7 @@ class TestPerRecordCap:
 
 
 class TestBudget:
-    async def test_a_stalled_call_is_skipped_when_the_budget_runs_out(self) -> None:
+    def test_a_stalled_call_is_skipped_when_the_budget_runs_out(self) -> None:
         """One stalled vision call held a chat upload for six minutes, long past
         the browser's 90s wait (PP-256). The caller's budget bounds the pass."""
         describer, vlm, patcher = _describer()
@@ -193,11 +193,16 @@ class TestBudget:
             return MagicMock(content="A bar chart of Q3 revenue")
 
         vlm.ainvoke = AsyncMock(side_effect=respond)
-        started = time.monotonic()
-        with patcher:
-            written = await describer.annotate(container, budget_s=0.5)
 
-        assert time.monotonic() - started < 5
+        async def main() -> tuple[int, float]:
+            started = asyncio.get_running_loop().time()
+            with patcher:
+                written = await describer.annotate(container, budget_s=0.5)
+            return written, asyncio.get_running_loop().time() - started
+
+        written, elapsed = run_on_virtual_time(main)
+
+        assert elapsed == pytest.approx(0.5)  # the budget, not the 30 s stall
         assert written == 2
         assert container.blocks[1].image_metadata is None
         assert container.blocks[0].image_metadata.description == "A bar chart of Q3 revenue"

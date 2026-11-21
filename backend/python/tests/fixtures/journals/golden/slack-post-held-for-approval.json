@@ -1,0 +1,763 @@
+{
+ "format": "pipeshub.harness.golden-trace/v1",
+ "manifest": {
+  "case": "slack-post-held-for-approval",
+  "run_id": "run-1",
+  "scrub_version": "1",
+  "incident": "EV-OPS-01-seed",
+  "source_events": 26
+ },
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run-1"
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:8b2bca3c64622cc19439f33533b696e38d5de7724aed3bd5b1d29daa3dce132b",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 1,
+     "runKind": "interactive",
+     "principalRef": "p_user-1",
+     "model": {
+      "policy": [
+       {
+        "provider": "openai",
+        "model": "scripted-model"
+       }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 0
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {
+      "x.pipeshub": {
+       "model": {
+        "modelKey": "<text:0b07c0b7:7>",
+        "modelName": "scripted-model"
+       },
+       "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": true
+       },
+       "mcp": [],
+       "skills": [],
+       "mounts": [],
+       "via": "session",
+       "agent": {
+        "agentKey": "agent-1",
+        "definitionVersion": 7,
+        "mode": "quick"
+       }
+      }
+     }
+    }
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 4,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "capabilities.observed": {}
+    }
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 5,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "pre_run.goal": {
+      "description": "<text:50cd27f2:71>",
+      "requirements": [],
+      "successCriteria": [
+       "<text:141bd0d5:51>"
+      ],
+      "constraints": [
+       "<text:f5642566:104>"
+      ],
+      "gaps": [],
+      "mode": "quick",
+      "loopKind": "react",
+      "composeDomainAgents": false,
+      "wholeDocument": true,
+      "clarifyingQuestions": []
+     }
+    }
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 6,
+   "type": "x.pipeshub.goal.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "description": "<text:50cd27f2:71>"
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 7,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:PHRleHQ6NTBjZDI3ZjI6NzE-",
+     "hash": "sha256:74c4b09f9e83c6da7a228673f38ab19e04904dd48fdd5c4b2fcd446502de2d29",
+     "size": 18
+    },
+    "isFinal": false
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 8,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 9,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "session.toolLists": {
+      "react": {
+       "ref": {
+        "ref": "inline:W3siZGVzY3JpcHRpb24iOiI8dGV4dDo2MWM5MjZlZDoxNzU1PiIsImlucHV0U2NoZW1hIjp7InByb3BlcnRpZXMiOnsicXVlc3Rpb25zIjp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6MzJjNzAxNWE6ODY-IiwiaXRlbXMiOnsicHJvcGVydGllcyI6eyJtdWx0aVNlbGVjdCI6eyJkZWZhdWx0IjpmYWxzZSwiZGVzY3JpcHRpb24iOiI8dGV4dDo5YzEwYWUxYTozMjc-IiwidHlwZSI6ImJvb2xlYW4ifSwib3B0aW9ucyI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OjNmYjhkYjUxOjI2Nz4iLCJpdGVtcyI6eyJwcm9wZXJ0aWVzIjp7ImlzVXNlcklucHV0Ijp7ImRlZmF1bHQiOmZhbHNlLCJkZXNjcmlwdGlvbiI6Ijx0ZXh0OjZmNDU3MDNmOjMwMz4iLCJ0eXBlIjoiYm9vbGVhbiJ9LCJsYWJlbCI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OmZlOTMzMzg1OjMyNz4iLCJtaW5MZW5ndGgiOjEsInR5cGUiOiJzdHJpbmcifX0sInJlcXVpcmVkIjpbIjx0ZXh0OjVlM2VkN2Y0OjU-Il0sInR5cGUiOiJvYmplY3QifSwibWF4SXRlbXMiOjcsIm1pbkl0ZW1zIjozLCJ0eXBlIjoiYXJyYXkifSwicXVlc3Rpb24iOnsiZGVzY3JpcHRpb24iOiI8dGV4dDpjM2MzYzVjNTozNT4iLCJtaW5MZW5ndGgiOjEsInR5cGUiOiJzdHJpbmcifX0sInJlcXVpcmVkIjpbIjx0ZXh0OmE5NTg2ZmU4Ojg-IiwiPHRleHQ6Yzk5NmI0YmU6Nz4iXSwidHlwZSI6Im9iamVjdCJ9LCJ0eXBlIjoiYXJyYXkifSwidXNlcl9pbnRlbnQiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDpkMzNlMTI4YjoxMDk-IiwidHlwZSI6InN0cmluZyJ9fSwicmVxdWlyZWQiOlsiPHRleHQ6YjYzODEwZGE6MTE-IiwiPHRleHQ6MzUyODdhZGI6OT4iXSwidHlwZSI6Im9iamVjdCJ9LCJuYW1lIjoiPHRleHQ6YjA5YTIzMGY6MzI-In0seyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OjkxY2Q3ZGY3OjQwPiIsImlucHV0U2NoZW1hIjp7InByb3BlcnRpZXMiOnsiZG9jX2lkIjp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6YmFiM2VmODI6MTE-IiwidHlwZSI6InN0cmluZyJ9fSwicmVxdWlyZWQiOlsiPHRleHQ6M2NlOTEwYzM6Nj4iXSwidHlwZSI6Im9iamVjdCJ9LCJuYW1lIjoiPHRleHQ6MjQzYTNkODE6MjQ-In0seyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OmUwNTg0Nzk3Ojg4PiIsImlucHV0U2NoZW1hIjp7InByb3BlcnRpZXMiOnsicXVlcnkiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDowNzMwMDJmMToxOD4iLCJ0eXBlIjoic3RyaW5nIn19LCJyZXF1aXJlZCI6WyI8dGV4dDpmMDI3NzlhYTo1PiJdLCJ0eXBlIjoib2JqZWN0In0sIm5hbWUiOiI8dGV4dDo2ZjIwN2NiMDoxNz4ifSx7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NTFkOWQ0Yzk6NTM-IiwiaW5wdXRTY2hlbWEiOnsicHJvcGVydGllcyI6eyJib2R5Ijp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NzI3NGFkOWM6MTI-IiwidHlwZSI6InN0cmluZyJ9LCJpc3N1ZV9rZXkiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDo0NWExZjIxZjo5PiIsInR5cGUiOiJzdHJpbmcifX0sInJlcXVpcmVkIjpbIjx0ZXh0OjA0Mjc4MzM2Ojk-IiwiPHRleHQ6ZmYyNjI5MTU6ND4iXSwidHlwZSI6Im9iamVjdCJ9LCJuYW1lIjoiPHRleHQ6NDkzZGM1Yjc6MTc-In0seyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OmE0NzIzODBjOjcyPiIsImlucHV0U2NoZW1hIjp7InByb3BlcnRpZXMiOnsiZGVzY3JpcHRpb24iOnsiZGVzY3JpcHRpb24iOiI8dGV4dDplYWNiMzk4Yjo0PiIsInR5cGUiOiJzdHJpbmcifSwiaXNzdWVfdHlwZV9uYW1lIjp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6ODg1YWFkNjQ6MzE-IiwidHlwZSI6InN0cmluZyJ9LCJwcmlvcml0eV9uYW1lIjp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NGM0NTFkZjQ6Mjk-IiwidHlwZSI6InN0cmluZyJ9LCJwcm9qZWN0Ijp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NjZiNTFhNzk6MTE-IiwidHlwZSI6InN0cmluZyJ9LCJzdW1tYXJ5Ijp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6ZmY3MGRkMjg6NT4iLCJ0eXBlIjoic3RyaW5nIn19LCJyZXF1aXJlZCI6WyI8dGV4dDo2NTQwOTBiMDo3PiIsIjx0ZXh0OjE5NzMyN2MwOjc-Il0sInR5cGUiOiJvYmplY3QifSwibmFtZSI6Ijx0ZXh0OjAyYmU5NDU0OjE4PiJ9LHsiZGVzY3JpcHRpb24iOiI8dGV4dDpkZmE0MDYyYjo1NT4iLCJpbnB1dFNjaGVtYSI6eyJwcm9wZXJ0aWVzIjp7Imlzc3VlX2tleSI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OjYxYjM4NDY3OjIyPiIsInR5cGUiOiJzdHJpbmcifX0sInJlcXVpcmVkIjpbIjx0ZXh0OjA0Mjc4MzM2Ojk-Il0sInR5cGUiOiJvYmplY3QifSwibmFtZSI6Ijx0ZXh0OjY1ZTZlNWMxOjE1PiJ9LHsiZGVzY3JpcHRpb24iOiI8dGV4dDoyNDk5Mzg4Zjo0ND4iLCJpbnB1dFNjaGVtYSI6eyJwcm9wZXJ0aWVzIjp7InF1ZXJ5Ijp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6MDNlM2ZhMzA6MTE-IiwidHlwZSI6InN0cmluZyJ9fSwicmVxdWlyZWQiOlsiPHRleHQ6ZjAyNzc5YWE6NT4iXSwidHlwZSI6Im9iamVjdCJ9LCJuYW1lIjoiPHRleHQ6MmI0YWMyYWI6MTk-In0seyJkZXNjcmlwdGlvbiI6Ijx0ZXh0Ojg4OGVlZDkxOjQyPiIsImlucHV0U2NoZW1hIjp7InByb3BlcnRpZXMiOnsiY2hhbm5lbCI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OjQ1Nzg0ZDg4OjI3PiIsInR5cGUiOiJzdHJpbmcifX0sInJlcXVpcmVkIjpbIjx0ZXh0OmY5NTM2ZjNmOjc-Il0sInR5cGUiOiJvYmplY3QifSwibmFtZSI6Ijx0ZXh0OjYwMGNmMTExOjE5PiJ9LHsiZGVzY3JpcHRpb24iOiI8dGV4dDpiZDNlMmY0MDo2MD4iLCJpbnB1dFNjaGVtYSI6eyJwcm9wZXJ0aWVzIjp7ImNoYW5uZWwiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDowZDJiMWNlZDoxNj4iLCJ0eXBlIjoic3RyaW5nIn0sInRleHQiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDphYjMyYzk4ZToxMj4iLCJ0eXBlIjoic3RyaW5nIn19LCJyZXF1aXJlZCI6WyI8dGV4dDpmOTUzNmYzZjo3PiIsIjx0ZXh0OjNlOGVhMjhhOjQ-Il0sInR5cGUiOiJvYmplY3QifSwibmFtZSI6Ijx0ZXh0OmFkNGVjYWVjOjE5PiJ9LHsiZGVzY3JpcHRpb24iOiI8dGV4dDoyNjBlMDc2MDo0MT4iLCJpbnB1dFNjaGVtYSI6eyJwcm9wZXJ0aWVzIjp7Im1lc3NhZ2VfaWQiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDpiMzFkOTVmZTo4PiIsInR5cGUiOiJzdHJpbmcifX0sInJlcXVpcmVkIjpbIjx0ZXh0Ojc3Y2U1ZGMyOjEwPiJdLCJ0eXBlIjoib2JqZWN0In0sIm5hbWUiOiI8dGV4dDo2ZDgxZGQ2NDoxNz4ifSx7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NGFhM2Q2ODA6MjY-IiwiaW5wdXRTY2hlbWEiOnsicHJvcGVydGllcyI6eyJxdWVyeSI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OjAzNzU0N2U2OjExPiIsInR5cGUiOiJzdHJpbmcifX0sInJlcXVpcmVkIjpbIjx0ZXh0OmYwMjc3OWFhOjU-Il0sInR5cGUiOiJvYmplY3QifSwibmFtZSI6Ijx0ZXh0Ojc3Njg1MWQxOjIwPiJ9LHsiZGVzY3JpcHRpb24iOiI8dGV4dDowNGY2YTIwNDo1Nj4iLCJpbnB1dFNjaGVtYSI6eyJwcm9wZXJ0aWVzIjp7ImJvZHkiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDplYWNiMzk4Yjo0PiIsInR5cGUiOiJzdHJpbmcifSwic3ViamVjdCI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OmJhMmMxNjU0Ojc-IiwidHlwZSI6InN0cmluZyJ9LCJ0byI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OmZmYTRhZmZiOjE3PiIsInR5cGUiOiJzdHJpbmcifX0sInJlcXVpcmVkIjpbIjx0ZXh0OjMxMWIyMGQ4OjI-IiwiPHRleHQ6YTYxMjE3YTA6Nz4iLCI8dGV4dDpmZjI2MjkxNTo0PiJdLCJ0eXBlIjoib2JqZWN0In0sIm5hbWUiOiI8dGV4dDo1NTE0MzNmNzoxNz4ifSx7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NTFkODgyYWE6NDA-IiwiaW5wdXRTY2hlbWEiOnsicHJvcGVydGllcyI6eyJmaWxlX2lkIjp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NTZjMWNkNzM6Nz4iLCJ0eXBlIjoic3RyaW5nIn19LCJyZXF1aXJlZCI6WyI8dGV4dDo4YTBkM2Y2YTo3PiJdLCJ0eXBlIjoib2JqZWN0In0sIm5hbWUiOiI8dGV4dDo4ZTY4NDUzNDoxNj4ifSx7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NWEwZGQ4ZGU6NjI-IiwiaW5wdXRTY2hlbWEiOnsicHJvcGVydGllcyI6eyJlbWFpbCI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OmFjMGQ4MGM2OjE3PiIsInR5cGUiOiJzdHJpbmcifSwiZmlsZV9pZCI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OjU2YzFjZDczOjc-IiwidHlwZSI6InN0cmluZyJ9fSwicmVxdWlyZWQiOlsiPHRleHQ6OGEwZDNmNmE6Nz4iLCI8dGV4dDplNWVlMmUyMDo1PiJdLCJ0eXBlIjoib2JqZWN0In0sIm5hbWUiOiI8dGV4dDoxMTFmNTQ5YzoxNz4ifSx7ImRlc2NyaXB0aW9uIjoiPHRleHQ6MjQxY2RjOGI6NDU-IiwiaW5wdXRTY2hlbWEiOnsicHJvcGVydGllcyI6eyJ1cmwiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDo5MTBlZTUwYToxMj4iLCJ0eXBlIjoic3RyaW5nIn19LCJyZXF1aXJlZCI6WyI8dGV4dDo2YTA3NmY2NTozPiJdLCJ0eXBlIjoib2JqZWN0In0sIm5hbWUiOiI8dGV4dDphYmVmY2FlYzoxND4ifSx7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NmJhYTlkOTQ6Njc4PiIsImlucHV0U2NoZW1hIjp7InByb3BlcnRpZXMiOnsibGltaXQiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDo4MjIzYzQyMzozMT4iLCJ0eXBlIjoiaW50ZWdlciJ9LCJxdWVyeSI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OmNkZDA3Njg1OjEyMz4iLCJ0eXBlIjoic3RyaW5nIn19LCJyZXF1aXJlZCI6WyI8dGV4dDpmMDI3NzlhYTo1PiJdLCJ0eXBlIjoib2JqZWN0In0sIm5hbWUiOiI8dGV4dDo5OTJmNTI3NToxMj4ifSx7ImRlc2NyaXB0aW9uIjoiPHRleHQ6OTUwNTFkOGY6MTU3PiIsImlucHV0U2NoZW1hIjp7InByb3BlcnRpZXMiOnsiYXJ0aWZhY3RfaWQiOnsiZGVzY3JpcHRpb24iOiI8dGV4dDphM2ViMGNjYToyOD4iLCJ0eXBlIjoic3RyaW5nIn0sIm1heF9saW5lcyI6eyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OjcwZjNiYmY0OjMwPiIsInR5cGUiOiJpbnRlZ2VyIn19LCJyZXF1aXJlZCI6WyI8dGV4dDpkNWNkOGEwMjoxMT4iXSwidHlwZSI6Im9iamVjdCJ9LCJuYW1lIjoiPHRleHQ6MjEyNmIwOTI6MjU-In0seyJkZXNjcmlwdGlvbiI6Ijx0ZXh0OmM5MWZhZmIzOjE5NjE-IiwiaW5wdXRTY2hlbWEiOnsicHJvcGVydGllcyI6eyJtYXhfYmxvY2tzIjp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6YzEwMTJhZmI6MTU2PiIsInR5cGUiOiJpbnRlZ2VyIn0sInF1ZXJ5Ijp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6MDQ1OWVhYmI6MjIwPiIsInR5cGUiOiJzdHJpbmcifSwicmVhc29uIjp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6Mjc0YTU1NWI6NTI-IiwidHlwZSI6InN0cmluZyJ9LCJyZWNvcmRfaWRzIjp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6NGUwZWM0NDI6MTU4PiIsIml0ZW1zIjp7InR5cGUiOiJzdHJpbmcifSwidHlwZSI6ImFycmF5In0sInN0YXJ0X2Jsb2NrIjp7ImRlc2NyaXB0aW9uIjoiPHRleHQ6ZTgxMmVkYzI6MzMyPiIsInR5cGUiOiJpbnRlZ2VyIn19LCJyZXF1aXJlZCI6WyI8dGV4dDo3YmM0ZjdhYzoxMD4iXSwidHlwZSI6Im9iamVjdCJ9LCJuYW1lIjoiPHRleHQ6NjFhYjZkYWM6Mjg-In1d",
+        "hash": "sha256:66163fd27d3767bedec323e8e1a6b0df4ff211e9ee3b7766e86b0372c9d18fe6",
+        "size": 5523
+       },
+       "digest": "sha256:bc2f40cb895a08b2c5487439108132e4586324e289bf96105e85b63c96ce5221",
+       "count": 18
+      }
+     }
+    }
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 10,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:0c62ac900ee1da028343a6a887fe474b65d6765aff8ae201f8ae0b236ec0bfed",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 1
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 11,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiPHRleHQ6MTU3ODkzYjk6MD4iLCJ0b29sQ2FsbHMiOlt7ImFyZ3MiOnsiY2hhbm5lbCI6IiNvcHMifSwiaWQiOiI8dGV4dDo3YjgxM2Y4Yjo2PiIsIm5hbWUiOiI8dGV4dDo2MDBjZjExMToxOT4ifV19",
+     "hash": "sha256:063c3ce3766d4e20b849b888dc3a0ceec17aeeece1526e327332b1b356771bd5",
+     "size": 123
+    },
+    "toolCalls": [
+     {
+      "callId": "call-1",
+      "modelName": "slack__read_channel",
+      "argsDigest": "sha256:63a46b59e8c44cc2ed478ddbd6f5d5f5c5fa4debdb45e253af105cdc3d4d4b7d"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJjb250ZW50IjpbXSwicm9sZSI6ImFzc2lzdGFudCIsInRvb2xfY2FsbHMiOlt7ImFyZ3VtZW50cyI6eyJjaGFubmVsIjoiI29wcyJ9LCJpZCI6Ijx0ZXh0OjdiODEzZjhiOjY-IiwibmFtZSI6Ijx0ZXh0OjYwMGNmMTExOjE5PiJ9XSwidHJ1bmNhdGVkIjpmYWxzZX0=",
+     "hash": "sha256:8dd7ecef689daa80b28dcec813bb6dded5bd0aa3481ad242a10efdd514617351",
+     "size": 152
+    }
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 12,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": "<text:157893b9:0>"
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 13,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-1",
+    "toolName": "slack__read_channel",
+    "argsJson": "<text:dce4cfcc:19>",
+    "argsSummary": "<text:cdd8aa13:20>"
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 14,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@slack/read_channel",
+    "argsDigest": "sha256:63a46b59e8c44cc2ed478ddbd6f5d5f5c5fa4debdb45e253af105cdc3d4d4b7d",
+    "effect": "read",
+    "sink": {
+     "egress": "self",
+     "argsLeaveBoundary": false
+    }
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 15,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50IjoiPHRleHQ6N2NhYmFkMzg6MjIwPiIsImlzRXJyb3IiOmZhbHNlfQ==",
+     "hash": "sha256:ea00566ba6b0584056c5dffa87717416a71da3152f8655f8fff903f0ec999330",
+     "size": 49
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 16,
+   "type": "x.pipeshub.tool.result_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-1",
+    "status": "completed",
+    "content": "<text:7cabad38:220>",
+    "resultSummary": "<text:06d811d0:22>"
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 17,
+   "type": "x.pipeshub.provenance.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@slack/read_channel",
+    "rule": "opaque",
+    "provenance": {
+     "readers": "unknown",
+     "integrity": "first_party",
+     "sources": []
+    }
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 18,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 19,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 20,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:eeeba639eaf66740d7beb09790c27f7bd833ccf445d9e256dbeea71be72d29c6",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 2
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 21,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiPHRleHQ6MTU3ODkzYjk6MD4iLCJ0b29sQ2FsbHMiOlt7ImFyZ3MiOnsiY2hhbm5lbCI6IiNlbmciLCJ0ZXh0IjoiPHRleHQ6ZThkYjA1YTE6ODA-In0sImlkIjoiPHRleHQ6ZTAzYmI5ZTA6Nj4iLCJuYW1lIjoiPHRleHQ6YWQ0ZWNhZWM6MTk-In1dfQ==",
+     "hash": "sha256:4d9d85182207b17305623c64b1474695c66321e24c1fe777b5e950b98dd78786",
+     "size": 151
+    },
+    "toolCalls": [
+     {
+      "callId": "call-2",
+      "modelName": "slack__send_message",
+      "argsDigest": "sha256:273dcaf7524b819ebb4d5bb9ccec7ffb3d68d130ba407a9a9afb6fcfc44e2dc2"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJjb250ZW50IjpbXSwicm9sZSI6ImFzc2lzdGFudCIsInRvb2xfY2FsbHMiOlt7ImFyZ3VtZW50cyI6eyJjaGFubmVsIjoiI2VuZyIsInRleHQiOiI8dGV4dDplOGRiMDVhMTo4MD4ifSwiaWQiOiI8dGV4dDplMDNiYjllMDo2PiIsIm5hbWUiOiI8dGV4dDphZDRlY2FlYzoxOT4ifV0sInRydW5jYXRlZCI6ZmFsc2V9",
+     "hash": "sha256:17de445260c86de790dcf7c8a1a459f184214610e4887fd6237b7d02b2daec81",
+     "size": 180
+    }
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 22,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": "<text:157893b9:0>"
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 23,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-2",
+    "toolName": "slack__send_message",
+    "argsJson": "<text:5c7ad77c:111>",
+    "argsSummary": "<text:79def2b9:96>"
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 24,
+   "type": "interaction.explained",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "rule": "flow_external_write",
+    "layer": "flow",
+    "toolId": "pipeshub@slack/send_message",
+    "sensitivity": "unknown",
+    "sources": [],
+    "moreSources": 0,
+    "conversationGrant": true,
+    "destination": {
+     "label": "<text:1cb97280:4>",
+     "key": "sha256:2ca4a736ae71245fb775b3e482ba80fc8b075418f6d7afc99f23b03c712bf224"
+    },
+    "editable": true,
+    "fieldOrder": [
+     "<text:f9536f3f:7>",
+     "<text:3e8ea28a:4>"
+    ],
+    "interactionId": "ix.approve.t2.0"
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 25,
+   "type": "interaction.requested",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "interactionId": "ix.approve.t2.0",
+    "kind": "approval",
+    "bindingDigest": "sha256:7ed10240f6abab26476c77a7b3b99ed14d35d529902a56d2a6bcddfdc62a9ad7"
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 26,
+   "type": "run.suspended",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "reason": "approval",
+    "interactionId": "ix.approve.t2.0"
+   },
+   "runId": "run-1",
+   "attemptId": "run-1.a1",
+   "fence": 1
+  }
+ ],
+ "expected": {
+  "status": "suspended",
+  "outcome": null,
+  "turn": 2,
+  "turnCompleted": 1,
+  "attempt": 1,
+  "ignoredEvents": 7,
+  "cursor": {
+   "nextAction": "suspended",
+   "turn": 2,
+   "pending": []
+  },
+  "suspension": "approval",
+  "responses": [
+   {
+    "turn": 1,
+    "provider": "openai",
+    "transport": "scripted",
+    "tools": [
+     "slack__read_channel"
+    ]
+   },
+   {
+    "turn": 2,
+    "provider": "openai",
+    "transport": "scripted",
+    "tools": [
+     "slack__send_message"
+    ]
+   }
+  ],
+  "invocations": [
+   {
+    "id": "t1.0",
+    "name": "slack__read_channel",
+    "toolId": "pipeshub@slack/read_channel",
+    "state": "completed",
+    "effect": "read",
+    "status": "ok",
+    "decision": null,
+    "deniedRule": null,
+    "child": false
+   },
+   {
+    "id": "t2.0",
+    "name": "slack__send_message",
+    "toolId": null,
+    "state": "awaiting_approval",
+    "effect": null,
+    "status": null,
+    "decision": null,
+    "deniedRule": null,
+    "child": false
+   }
+  ],
+  "interactions": [
+   {
+    "id": "ix.approve.t2.0",
+    "kind": "approval",
+    "purpose": "approve",
+    "decision": null
+   }
+  ],
+  "consumed": {
+   "turns": 2,
+   "model_requests": 2,
+   "model_responses": 2,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "cache_read_tokens": 0,
+   "cache_write_tokens": 0
+  },
+  "children": [],
+  "provenance": [
+   {
+    "invocationId": "t1.0",
+    "rule": "opaque",
+    "recorded": true,
+    "readers": "unknown",
+    "integrity": "first_party",
+    "sources": []
+   }
+  ]
+ }
+}

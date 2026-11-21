@@ -11,9 +11,14 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [Deployment types (slim vs. full vs. eval)](#deployment-types-slim-vs-full-vs-eval)
 - [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
 - [Upgrading an existing Compose install](#upgrading-an-existing-compose-install)
+- [MongoDB replica set](#mongodb-replica-set)
 - [A second instance on the same host](#a-second-instance-on-the-same-host)
 - [Manual deployment with Compose profiles](#manual-deployment-with-compose-profiles)
+- [Durable agent harness topology](#durable-agent-harness-topology)
+- [Code execution: sandbox broker and egress proxy](#code-execution-sandbox-broker-and-egress-proxy)
+- [Remote access and HTTPS](#remote-access-and-https)
 - [Secrets and configuration](#secrets-and-configuration)
+- [Store credentials](#store-credentials)
 - [OAuth dynamic registration and device grant](#oauth-dynamic-registration-and-device-grant)
 - [Runtime tuning (workers and query-service flags)](#runtime-tuning-workers-and-query-service-flags)
 - [Container outbound connectivity](#container-outbound-connectivity)
@@ -64,7 +69,7 @@ requires a full clone — see [Developer / local build](#developer--local-build)
 | Graph DB (default) | Neo4j | Neo4j | Neo4j (required) |
 | Broker (default) | Redis Streams | Kafka + Zookeeper | Redis Streams |
 | KV store (default) | Redis | Redis | Redis |
-| Coding sandbox | Pulled (`sandbox` profile) | Pulled | **Omitted** — `run_code` unavailable |
+| Coding sandbox | Sandbox broker + egress proxy (`sandbox` profile) | Same | **Omitted** — `run_code` unavailable |
 | Slack bot process | Starts | Starts | Skipped (`PIPESHUB_SKIP_SLACKBOT=true`) |
 | RAM class | 16 GB host / 8 GB Docker VM | 16 GB+ | 8 GB-class laptop |
 | Recommended for | Laptops, servers | Production, air-gapped | MCP search/ask demos |
@@ -103,6 +108,7 @@ All variables are optional. When set, they suppress the corresponding interactiv
 | `PIPESHUB_PORT` | host port | `3000` (`3200` for a second copy) |
 | `PIPESHUB_PROJECT` | Compose project name | `pipeshub-ai` |
 | `PIPESHUB_PUBLIC_URL` | public HTTPS URL | _(none)_ |
+| `PIPESHUB_GVISOR` | `auto` (ask; `--yes` skips) \| `install` (same as `--install-gvisor`) \| `skip` (same as `--skip-gvisor`) | `auto` |
 | `APP_MEMORY_LIMIT` | memory ceiling for the app container | derived from the machine (see below) |
 | `APP_MEMSWAP_LIMIT` | combined memory+swap ceiling | `APP_MEMORY_LIMIT` + 6G |
 | `QDRANT_MEMORY_LIMIT` | memory ceiling for the Qdrant container; size it from [vector DB sizing](../../docs/deployment/vector-db-sizing.md) | `6G` |
@@ -170,6 +176,79 @@ docker compose -p pipeshub-ai logs -f pipeshub-ai
 - Compose creates a new network (`pipeshub-ai_pipeshub`) and does not delete `pipeshub-ai_network`. If that old network is unused: `docker network rm pipeshub-ai_network`.
 
 The installer prints this when it detects the old pinned names.
+
+---
+
+## MongoDB replica set
+
+The `mongodb` service runs a single-node replica set named `rs0`, so the app can
+use multi-document transactions (`REPLICA_SET_AVAILABLE=true`, and `MONGO_URI`
+carries `replicaSet=rs0&w=majority`). The build, legacy, beta and hot-reload
+presets extend the same service. Memory is unchanged: the WiredTiger cache
+(`MONGO_CACHE_GB`, 1 GB) and container limit (`MONGO_MEMORY_LIMIT`, 2 GB) are
+the same flags as before; the oplog takes up to 1 GB of disk.
+
+How it starts:
+
+1. Before the image entrypoint runs, the container writes the internal-auth key
+   to the `mongodb_replset_key` volume if it is empty (from
+   `MONGO_REPLICA_SET_KEY` when set, otherwise random) and makes it owner-only.
+2. `mongod` starts with authentication, `--replSet rs0`, `--oplogSize 1024` and
+   the key file.
+3. The healthcheck runs `rs.initiate` when the member has no config yet, and
+   reports healthy only once it is a writable primary. The app waits for that.
+
+Host tools that connect through a published 27017 port (hot-reload presets)
+need `directConnection=true`: the member advertises `mongodb:27017`, which only
+resolves inside the Compose network. To use an external MongoDB instead, set
+`MONGO_URI`; if that server is standalone, also set `REPLICA_SET_AVAILABLE=false`.
+
+### Upgrading a standalone install
+
+Installs from before this change have a standalone data volume. `./install.sh`
+(any mode that starts the stack, including `--upgrade`) converts it in place
+before starting anything:
+
+1. Stops the app and the standalone `mongodb`, then opens the volume with a
+   throwaway `mongod` (no port, no credentials needed).
+2. Prints the backup command and asks `Back up MongoDB before converting? [Y/n]`.
+   With `--yes` it takes the backup without asking. The archive is written to
+   `deployment/docker-compose/backups/mongodb-<project>-<timestamp>.archive.gz`
+   (mode 600):
+
+   ```bash
+   docker exec <project>-mongodb-rs-migrate mongodump --archive --gzip > backups/mongodb-<project>-<timestamp>.archive.gz
+   ```
+
+3. Records the document count of every collection, starts `mongodb` as `rs0`,
+   waits for a writable primary, and compares the counts. A mismatch stops the
+   installer and prints the backup path.
+
+Re-running the installer is a no-op once the volume is a replica-set member.
+Starting the new compose file directly (`docker compose up -d`) also converts
+the volume, because the healthcheck initiates the set, but without the backup
+or the count check. Take a backup first in that case.
+
+To restore an archive into the running service:
+
+```bash
+docker compose -p pipeshub-ai exec -T mongodb mongorestore --archive --gzip --drop \
+  --username admin --password '<MONGO_PASSWORD from .env>' --authenticationDatabase admin \
+  < backups/mongodb-pipeshub-ai-<timestamp>.archive.gz
+```
+
+To go back to an older release, restore its compose file and start it: a
+standalone `mongod` opens a single-node replica-set volume (it logs a warning
+about the replica-set config and runs without transactions).
+
+### Backup
+
+- Use `mongodump --archive --gzip --oplog` against the service for a
+  point-in-time dump (`--oplog` needs the replica set).
+- Back up the `mongodb_replset_key` volume or keep `MONGO_REPLICA_SET_KEY` in
+  your secret store. A single-node set starts with a new key if the volume is
+  lost, but every member of a multi-node set must share the same key.
+- Back up `.env` (it holds `MONGO_PASSWORD`).
 
 ---
 
@@ -247,7 +326,7 @@ docker compose -p pipeshub-ai exec -T pipeshub-ai bash
 | `graph-neo4j` | Neo4j | `DATA_STORE=neo4j` |
 | `kv-etcd` | etcd | `KV_STORE_TYPE=etcd` |
 | `broker-kafka` | Kafka + Zookeeper | `MESSAGE_BROKER=kafka` |
-| `sandbox` | coding-sandbox image pull + `docker-socket-proxy` (the only container with the Docker socket) | slim/full; **eval omits this** |
+| `sandbox` | sandbox image pull, `docker-socket-proxy` (the only container with the Docker socket), `sandbox-broker`, `egress-proxy`; `-f docker-compose.sandbox-legacy.yml` (`SANDBOX_MODE=docker`) lets the app reach the same proxy | `SANDBOX_MODE=broker` (slim/full); **eval omits this** |
 
 Always-on services (no profile needed): `redis`, `mongodb`, `qdrant`.
 
@@ -271,7 +350,140 @@ Always-on services (no profile needed): `redis`, `mongodb`, `qdrant`.
 > from the installer's choice and is due to be aligned; until then, set the variable
 > explicitly whenever you drive Compose by hand.
 
+### Durable agent harness topology
+
+The agent harness (Beta) runs by default (ADR-OPS-06, amended 2026-11-20): with
+`AGENT_HARNESS_WORKER_ENABLED` unset or `true` the worker and its gateways start and
+stay idle until an org admin turns on **Agent harness** in Labs, which is off by
+default. `AGENT_HARNESS_WORKER_ENABLED=false` in `.env`
+(`PIPESHUB_AGENT_HARNESS=off ./install.sh` writes it) starts no worker or gateway
+and serves no harness route, Labs flag or screen. `./install.sh --upgrade` keeps
+the choice an `.env` already holds. What the switch
+covers, and what changed for every install whatever it says:
+[HARNESS-OFF.md](../../docs/agent-harness-v2/guides/HARNESS-OFF.md).
+
+Durable run admission needs MongoDB transactions, which the base file already
+provides (see [MongoDB replica set](#mongodb-replica-set)). The overlay
+starts the relay and trusted worker inside the app container:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.agent-harness.yml \
+  -p pipeshub-ai up -d
+```
+
+With the switch on, Labs' **Agent harness** then decides per organisation. The replica-set transaction path, including the Node
+admission store, is exercised by
+`deployment/docker-compose/tests/agent_harness_replset_test.sh`.
+
+## Code execution: sandbox broker and egress proxy
+
+With the `sandbox` profile (slim and full), three more containers start from the
+app image. None publishes a port.
+
+| Container | Role | Networks | Docker socket |
+|---|---|---|---|
+| `docker-socket-proxy` | The Docker API policy proxy: admits only the calls the broker makes on this install's sandboxes (no privileged, host-mount or host-network container, no exec outside a sandbox), with the broker's own credential (`DOCKER_PROXY_BROKER_TOKEN`, generated by `install.sh`). Runs as uid 1000 in the socket's group (`DOCKER_GID`) | `sandbox_docker` (internal: the broker alone) | **yes, the only one** |
+| `sandbox-broker` | Starts, runs and removes every code sandbox (`run_code`, agent engines). The app reaches it at `sandbox-broker:8095` with the per-deployment worker credential | `pipeshub`, `sandbox_plane`, `sandbox_docker` | no: through `docker-socket-proxy` |
+| `egress-proxy` | The only way out of a sandbox that has an egress allowlist: forwards to the model and tool gateways, swapping the sandbox's placeholder for a short-lived token | `sandbox_plane`, `sandbox_kv` (both internal: no route off the host) | no |
+
+The app container has **no Docker socket**. `SANDBOX_MODE=broker` selects this
+path; a blank `SANDBOX_MODE=` turns code execution off (eval).
+
+**Isolation.** On a Linux Docker Engine, `install.sh` installs gVisor (`runsc`)
+and registers it with Docker, so sandboxes get their own kernel; it asks first
+when interactive and is skipped with `--skip-gvisor` or `PIPESHUB_GVISOR=skip`.
+Installing it edits `/etc/docker/daemon.json` and reloads Docker, so `--yes` alone
+never does it: pass `--install-gvisor` (or `PIPESHUB_GVISOR=install`) to opt in.
+It does not run on macOS, Windows, WSL, Docker Desktop, rootless Docker or a
+remote daemon, and needs root or sudo. Without `runsc`, sandboxes run on
+hardened runc (read-only root, all capabilities dropped, no network by default),
+which shares the host kernel: the installer summary calls this **reduced
+isolation**. To install gVisor yourself, register the `runsc` runtime in
+`/etc/docker/daemon.json` (`sudo runsc install`) and reload Docker; the broker
+finds it on its own. **Coding engines (Codex, Claude Code, opencode) require
+gVisor**: without `runsc` they are refused, and only a dev or test install may
+run them on hardened runc with `PIPESHUB_ENGINES_WITHOUT_GVISOR=true`. See
+[GVISOR.md](./GVISOR.md).
+
+**Addresses.** The app tells Node where the broker, the proxy's control plane
+and the gateways are (`SANDBOX_BROKER_BACKEND`, `EGRESS_PROXY_CONTROL_BACKEND`,
+`MODEL_GATEWAY_BACKEND`, `TOOL_GATEWAY_BACKEND`); Node writes them into
+`/services/endpoints`. If `10.213.0.0/16` overlaps a network this host routes
+to, set `SANDBOX_EGRESS_SUBNETS` in `.env`; if `10.212.0.0/16` does (the bridge
+that sandboxes with open egress share), set `SANDBOX_OPEN_EGRESS_SUBNETS`.
+
+**Forward proxy and private hosts.** A sandbox still reaches only the hosts its own
+allowlist names (an MCP server's hosts, a repository). Two settings on the
+`egress-proxy` service change *how* it gets there; set them in `.env`:
+
+| Setting | What it does |
+|---|---|
+| `EGRESS_UPSTREAM_PROXY` | Your forward proxy, `http://host:port` (no credentials in it). Every public destination goes through it: plain HTTP as an absolute-form request, HTTPS as a `CONNECT`. The proxy is asked for the address PipesHub resolved and checked, never the name, so it cannot be steered somewhere PipesHub refuses; the name still travels in `Host` and in TLS. The model and tool gateways never go through it |
+| `EGRESS_UPSTREAM_PROXY_AUTH` | `user:password` for it (`Proxy-Authorization: Basic`). Only your proxy receives it; a sandbox never holds it and it is never logged |
+| `EGRESS_UPSTREAM_NO_PROXY` | Public hosts dialled direct: names, `.domain` suffixes, networks. `*` is refused |
+| `EGRESS_PRIVATE_ALLOW` | Private destinations, comma-separated: `git.corp.example:443`, `10.1.2.3:443`, `10.1.0.0/16:8443`, `[fd12::1]:443`. Private, CGNAT and other non-public addresses stay refused unless an entry names the host and port (or the address's network and port); listed ones are dialled direct, not through the upstream proxy |
+
+What no entry opens: loopback, link-local and cloud metadata addresses, and
+PipesHub's own (the egress proxy and the Docker host's address on each of its
+networks, the gateways, Node, the broker, Redis and etcd, both sandbox pools).
+The proxy cannot see this host's LAN address or a cluster's pod and service
+ranges from inside: list those in `EGRESS_BLOCKED_CIDRS`, which wins over every
+entry. A malformed setting stops the proxy at start, naming the setting.
+
+The proxy's own networks are internal, so to reach your forward proxy or a
+private host it needs a route off the host: add
+`-f docker-compose.egress-tunnels.yml` (it also turns on HTTPS tunnels).
+
+**Upgrading an install that used `SANDBOX_MODE=docker`** (or had no
+`SANDBOX_MODE`, which meant docker): `./install.sh --upgrade` pulls the new
+image, starts the broker and the proxy first, and switches to
+`SANDBOX_MODE=broker` once the broker is healthy. If it does not become healthy
+within 3 minutes, the app keeps creating sandboxes itself, through the Docker API policy proxy that
+`docker-compose.sandbox-legacy.yml` adds (never the socket), and code keeps running the old way; the
+installer says so, and the next run retries. Without the installer:
+
+```bash
+# keep the old path for now
+docker compose -f docker-compose.yml -f docker-compose.sandbox-legacy.yml -p pipeshub-ai up -d
+# switch: set SANDBOX_MODE=broker in .env (keep the sandbox profile), then
+docker compose -f docker-compose.yml -p pipeshub-ai up -d
+```
+
 ---
+
+## Remote access and HTTPS
+
+The app port is published on `127.0.0.1` by default: only this machine can reach `http://localhost:3000`. Docker
+publishes ports through its own NAT rules, which bypass `ufw` and `firewalld`, so the bind address is what keeps a
+port local. A host firewall does not.
+
+`APP_BIND_ADDRESS` in `.env` sets it. `install.sh` writes it once: `0.0.0.0` when you give it a public URL whose host
+is not `localhost`, otherwise `127.0.0.1`. `PIPESHUB_BIND_ADDRESS` (environment) or an existing value in `.env`
+always wins. An `.env` written before this setting existed is given the same rule on the next `./install.sh`, which
+says so when it closes a port that used to be open.
+
+The port speaks plain HTTP. Sign-in passwords and session tokens must not cross a network in the clear, so put HTTPS
+in front before anyone reaches the app from another machine:
+
+- **HTTPS proxy on this machine (recommended).** Keep `APP_BIND_ADDRESS=127.0.0.1` and point the proxy at
+  `localhost:${APP_PORT}`. With [Caddy](https://caddyserver.com), which gets and renews the certificate itself:
+
+  ```caddyfile
+  pipeshub.example.com {
+      reverse_proxy localhost:3000
+  }
+  ```
+
+  Then set `FRONTEND_PUBLIC_URL=https://pipeshub.example.com` and `TRUST_PROXY=1`, and run `./install.sh`.
+- **Cloudflare Tunnel.** `cloudflared` on this machine connects out, so no port is opened at all. Keep
+  `APP_BIND_ADDRESS=127.0.0.1` and route the tunnel's hostname to `http://localhost:3000`.
+- **A load balancer or proxy on another machine.** Set `APP_BIND_ADDRESS=0.0.0.0` (or the one interface it reaches
+  you on). Then restrict port `${APP_PORT}` to that machine where Docker cannot bypass it: a cloud security group,
+  or the `DOCKER-USER` iptables chain. `ufw` rules alone do not apply to published container ports.
+
+`install.sh` warns when the app listens on every interface, and warns again when the public URL is `http://`.
 
 ## Secrets and configuration
 
@@ -297,6 +509,32 @@ Worth knowing:
   equivalent to credential access.
 - `--reconfigure` saves timestamped `.env.bak.*` backups (also owner-only). These
   contain previous secrets — remove ones you no longer need.
+
+### Store credentials
+
+Every store starts only with its credential, and the app refuses to start against one that answers without it
+(SEC-D-06, ADR-OPS-03):
+
+| Store | Credential | Notes |
+|---|---|---|
+| Redis | `REDIS_PASSWORD` | `--requirepass` always; `docker compose exec redis redis-cli` signs in by itself (`REDISCLI_AUTH`). |
+| Qdrant | `QDRANT_API_KEY` | |
+| MongoDB | `MONGO_PASSWORD` | Kept on the volume: never change it in `.env` alone. |
+| Kafka (`broker-kafka`) | `KAFKA_PASSWORD` (user `KAFKA_USERNAME`, default `pipeshub`) | SCRAM-SHA-512. `kafka-init` writes the user at each start, so changing the password and restarting rotates it. ZooKeeper is reachable by Kafka alone. |
+| etcd (`kv-etcd`) | client certificates | TLS with `--client-cert-auth`. `etcd-tls` keeps a CA in its own volume and gives the app, the egress proxy and the sandbox broker one certificate each, renewed before expiry on any start. |
+
+Compose refuses to render with an empty `REDIS_PASSWORD`, `QDRANT_API_KEY`, `MONGO_PASSWORD` or `KAFKA_PASSWORD`.
+`KAFKA_PASSWORD` is required even with Redis Streams, because Compose renders every profile. `install.sh` generates all
+of them. `./install.sh --upgrade` fills in any that an older `.env` lacks and says which; MongoDB's and the graph
+database's passwords are the exception, because those stores keep theirs on their volume.
+
+**Upgrading a manual (`cp env.template .env`) install:** set the missing values, each from `openssl rand -hex 24`,
+then `docker compose up -d`. Redis, Qdrant and Kafka take the new value on restart, and no data is lost. etcd moves to
+TLS by itself.
+
+**An external store protected another way** (a private network with no login): the app refuses it by default and
+names what to set. If you accept that, set `STORE_AUTH_CHECK=warn`: the app then starts and logs each finding.
+For an external Kafka without SASL, also set `KAFKA_USERNAME=` (empty).
 
 ### Using an external secrets manager (optional, for stricter environments)
 

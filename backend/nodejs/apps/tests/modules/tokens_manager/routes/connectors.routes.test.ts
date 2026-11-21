@@ -4,6 +4,8 @@ import sinon from 'sinon'
 import http from 'http'
 import type { AddressInfo } from 'net'
 import axios from 'axios'
+import { readdirSync, readFileSync, statSync } from 'fs'
+import { join, relative } from 'path'
 import { Container } from 'inversify'
 import {
   createConnectorRouter,
@@ -15,6 +17,7 @@ import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware
 import type { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
+import { installConnectorRetryPolicy } from '../../../../src/modules/tokens_manager/utils/connector-retry-policy'
 
 describe('Connector Routes', () => {
   let container: Container
@@ -1675,11 +1678,11 @@ describe('Connector Routes - handler coverage', () => {
 
       const url: string = exec.firstCall.args[0]
       const identifierParams = url
-        .split('?')[1]
+        .split('?')[1]!
         .split('&')
         .filter((p: string) => p.startsWith('identifiers='))
       expect(identifierParams).to.have.lengthOf(1)
-      expect(decodeURIComponent(identifierParams[0].slice('identifiers='.length))).to.equal(target)
+      expect(decodeURIComponent(identifierParams[0]!.slice('identifiers='.length))).to.equal(target)
     })
 
     it('normalizes a single identifier string to an array', async () => {
@@ -1932,5 +1935,31 @@ describe('axios retry policy set by the connector routes', () => {
 
   it('still retries a 429 with no Retry-After', async () => {
     expect(await countRequests({})).to.equal(4)
+  })
+
+  type Interceptors = { handlers: Array<unknown> }
+  const interceptorCount = (): number =>
+    (axios.interceptors.response as unknown as Interceptors).handlers.filter((h) => h !== null).length
+
+  it('installing the policy again adds no second set of interceptors', () => {
+    const before = interceptorCount()
+    installConnectorRetryPolicy()
+    expect(interceptorCount()).to.equal(before)
+  })
+
+  // A router that installs a retry policy of its own stacks it on the same process-wide client, and that
+  // one retries on its own terms: every router of the build installs this one policy instead.
+  it('no source in src but the policy module installs an axios retry policy', () => {
+    const SRC = join(__dirname, '../../../../src')
+    const sources = (dir: string): string[] =>
+      readdirSync(dir).flatMap((name) => {
+        const path = join(dir, name)
+        if (statSync(path).isDirectory()) return sources(path)
+        return name.endsWith('.ts') ? [path] : []
+      })
+    const installers = sources(SRC)
+      .filter((file) => /from\s+['"]axios-retry['"]|require\(\s*['"]axios-retry['"]\s*\)/.test(readFileSync(file, 'utf8')))
+      .map((file) => relative(SRC, file))
+    expect(installers).to.deep.equal(['modules/tokens_manager/utils/connector-retry-policy.ts'])
   })
 })

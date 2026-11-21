@@ -13,12 +13,16 @@ Run explicitly with:
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import patch
 
 import pytest
 
 from app.agent_loop_lib.sandbox.coding.base import CodeRequest, SandboxContext
-from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
+from app.agent_loop_lib.sandbox.coding.docker import (
+    SANDBOX_OWNER_PID_LABEL,
+    DockerCodingSandbox,
+)
 from app.agent_loop_lib.sandbox.coding.docker_client import DockerClientProvider
 from app.agent_loop_lib.sandbox.governor import (
     GovernorLimits,
@@ -30,8 +34,23 @@ from app.agent_loop_lib.sandbox.manager import (
     SandboxManager,
     SandboxType,
 )
+from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
+from app.harness.adapters.memory_workspace import (
+    InMemoryBinaryObjectStore,
+    InMemoryWorkspaceManifestStore,
+)
+from app.harness.adapters.sandbox_workspace import (
+    SandboxWorkspaceExporter,
+    SandboxWorkspaceMaterializer,
+)
+from app.harness.contracts.workspace import (
+    ObjectScope,
+    WorkspaceFile,
+    WorkspaceManifest,
+)
+from app.harness.workspace.virtual_fs import VirtualFileSystem, WorkspaceMount
 
-from .contract.conftest import DOCKER_TEST_IMAGE, docker_available
+from .contract.conftest import DOCKER_TEST_IMAGE, skip_without_docker
 
 pytestmark = [
     pytest.mark.docker,
@@ -40,27 +59,26 @@ pytestmark = [
 
 
 def _require_docker() -> None:
-    available, reason = docker_available()
-    if not available:
-        pytest.skip(reason)
+    skip_without_docker()
 
 
 def _running_sandbox_containers() -> set[str]:
-    """Ids of containers started from the sandbox image, running or not.
+    """Ids of sandbox containers this process created, running or not.
 
     Compared before/after a test: the sandbox always removes its containers
     (`remove(force=True)` in a finally), so anything left behind is a leak.
+    Filtering by owner pid keeps parallel xdist workers from counting each
+    other's live containers.
     """
     import docker
 
     client = docker.from_env()
     try:
-        # Match on the image reference the container was created with. `c.image`
-        # re-fetches the image and 404s for any unrelated container whose image
-        # has since been deleted, which would fail every test on that machine.
         return {
-            c.id for c in client.containers.list(all=True)
-            if c.attrs.get("Config", {}).get("Image") == DOCKER_TEST_IMAGE
+            c.id
+            for c in client.containers.list(
+                all=True, filters={"label": f"{SANDBOX_OWNER_PID_LABEL}={os.getpid()}"}
+            )
         }
     finally:
         client.close()
@@ -129,6 +147,89 @@ class TestLiveExecution:
         finally:
             await sb.destroy()
             sb._provider.close()
+
+    async def test_durable_vfs_round_trip_through_real_container(
+        self, tmp_path, no_leaked_containers,
+    ) -> None:
+        """A durable checkout reaches Docker and only /workspace returns.
+
+        This exercises the production materialize -> staged tool upload ->
+        container execution -> workspace export path with binary object refs
+        and CAS manifests.  The read-only skill mount is available to code but
+        remains outside the committed writable workspace.
+        """
+        scope = ObjectScope("org-live")
+        objects = InMemoryBinaryObjectStore()
+        manifests = InMemoryWorkspaceManifestStore(clock_ms=lambda: 1_000)
+
+        async def _manifest(
+            workspace_id: str,
+            files: dict[str, bytes],
+        ) -> WorkspaceManifest:
+            entries = {
+                path: WorkspaceFile(path=path, content=await objects.put(scope, content))
+                for path, content in files.items()
+            }
+            return await manifests.commit(workspace_id, 0, entries)
+
+        workspace = await _manifest("workspace-live", {"state.txt": b"before"})
+        skills = await _manifest(
+            "skills-live",
+            {"report/SKILL.md": b"Use the durable workspace."},
+        )
+        vfs = VirtualFileSystem(
+            mounts=[
+                WorkspaceMount("/workspace", workspace, writable=True),
+                WorkspaceMount("/skills", skills, writable=False),
+            ],
+            object_store=objects,
+            object_scope=scope,
+            manifest_store=manifests,
+        )
+
+        provider = DockerClientProvider(max_workers=2)
+        manager = SandboxManager()
+        manager.register_backend_factory(
+            SandboxType.CODING,
+            lambda: _make_sandbox(tmp_path, "vfs", provider=provider),
+            limits=SandboxLimits(provision_timeout_s=120),
+        )
+        tool = CodingSandboxTool(manager)
+        try:
+            async with SandboxWorkspaceMaterializer().stage(vfs):
+                result = await tool.execute(
+                    code=(
+                        "from pathlib import Path\n"
+                        "state = Path('workspace/state.txt').read_text()\n"
+                        "skill = Path('skills/report/SKILL.md').read_text()\n"
+                        "Path('workspace/state.txt').write_text(state + ':after')\n"
+                        "Path('workspace/generated.bin').write_bytes(b'\\x00\\xff')\n"
+                        "print(state + '|' + skill)\n"
+                    ),
+                    language="python",
+                )
+
+            assert result.success, result.error
+            assert result.data is not None
+            assert result.data["exit_code"] == 0, result.data["stderr"]
+            assert "before|Use the durable workspace." in result.data["stdout"]
+            assert result.data["input_files"] == [
+                "skills/report/SKILL.md",
+                "workspace/state.txt",
+            ]
+
+            backend = manager.get(SandboxType.CODING, result.data["sandbox_id"])
+            committed = await SandboxWorkspaceExporter().export(vfs, backend)
+            assert committed.revision == 2
+            assert await vfs.read_bytes("/workspace/state.txt") == b"before:after"
+            assert await vfs.read_bytes("/workspace/generated.bin") == b"\x00\xff"
+            assert await vfs.read_bytes("/skills/report/SKILL.md") == (
+                b"Use the durable workspace."
+            )
+            assert "report/SKILL.md" not in committed.files
+        finally:
+            await manager.destroy_all()
+            provider.close()
 
     async def test_run_container_has_no_network_and_no_host_mounts(
         self, tmp_path, no_leaked_containers,

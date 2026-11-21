@@ -1,5 +1,5 @@
 import { expect } from 'chai';
-import { recordHttpRequest } from '../../../../../src/libs/services/telemetry/modules/http-metrics';
+import { recordHttpRequest, sessionApiSurface } from '../../../../../src/libs/services/telemetry/modules/http-metrics';
 import { metricsBackend } from '../../../../../src/libs/services/telemetry/metrics-backend';
 
 describe('telemetry modules/http-metrics', () => {
@@ -43,6 +43,36 @@ describe('telemetry modules/http-metrics', () => {
     expect(text).to.include(
       'pipeshub_http_requests_total{service="node_api",route="/api/v1/repeat",method="GET",status="200",org="org2",domain="x.io"} 2',
     );
+  });
+
+  it('C20.48: counts the session API by surface and outcome, without an org label', async () => {
+    recordHttpRequest('/api/v1/conversations/:conversationId/runs/:runId/stream', 'GET', 200, 'org1', 0.1, 'a.io');
+    recordHttpRequest('/api/v1/agents/:agentKey/conversations/stream', 'POST', 503, 'org1', 0.1, 'a.io');
+    recordHttpRequest('/api/v1/agent-harness/admin/dependencies', 'GET', 500, 'org1', 0.1, 'a.io');
+    recordHttpRequest('/api/v1/conversations/:conversationId', 'GET', 500, 'org1', 0.1, 'a.io');
+
+    const text = await metricsBackend.serialize();
+    expect(text).to.include(
+      'pipeshub_agent_harness_session_api_requests_total{surface="conversation_runs",outcome="ok"} 1',
+    );
+    expect(text).to.include(
+      'pipeshub_agent_harness_session_api_requests_total{surface="agent_conversations",outcome="server_error"} 1',
+    );
+    expect(text).to.include(
+      'pipeshub_agent_harness_session_api_requests_total{surface="agent_harness",outcome="server_error"} 1',
+    );
+    expect(text).to.not.match(/pipeshub_agent_harness_session_api_requests_total\{[^}]*org=/);
+  });
+
+  it('C20.48: names the session API surfaces only, never the internal routes', () => {
+    expect(sessionApiSurface('/api/v1/conversations/:id/runs')).to.equal('conversation_runs');
+    expect(sessionApiSurface('/api/v1/conversations/:id/runs/:runId/jobs')).to.equal('conversation_runs');
+    expect(sessionApiSurface('/api/v1/agents/:agentKey/conversations')).to.equal('agent_conversations');
+    expect(sessionApiSurface('/api/v1/agent-harness/admin/dependencies')).to.equal('agent_harness');
+    expect(sessionApiSurface('/api/v1/agent-harness/internal/metrics')).to.equal(null);
+    expect(sessionApiSurface('/api/v1/conversations/:id')).to.equal(null);
+    expect(sessionApiSurface('/api/v1/conversations/:id/runsx')).to.equal(null);
+    expect(sessionApiSurface('unmatched')).to.equal(null);
   });
 
   // Must run last: fills the module-level unique-route set up to the cap.

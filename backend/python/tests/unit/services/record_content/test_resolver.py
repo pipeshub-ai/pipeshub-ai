@@ -21,6 +21,7 @@ from app.services.record_content.models import (
     ResolvedRecordContent,
 )
 from app.services.record_content.resolver import RecordContentResolver
+from tests.support.record_access import InMemoryRecordAccess
 
 
 def _make_actor(org_id="org1", user_id="user1"):
@@ -62,7 +63,7 @@ def _make_resolved(record_id="rec1"):
 def graph():
     g = AsyncMock()
     g.get_record_by_id = AsyncMock(return_value=None)
-    g.check_record_access_with_details = AsyncMock(return_value={"ok": True})
+    InMemoryRecordAccess().readable("user1", "org1", "rec1").serve(g)
     g.get_edge = AsyncMock(return_value={"_id": "e"})
     return g
 

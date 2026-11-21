@@ -48,6 +48,9 @@ PARSE_POOL_ALLOWED = {
     "_pool", "submit", "shutdown_parse_pool", "pool_stats",  # mode branches, pinned by the branch tests
     "run_blocking",  # the optional cancel event, pinned by test_run_blocking_cancel_event_is_optional
     "_Job.kind", "_Job.covered", "_covered",  # the optional kind and covered fields: None and False leave the legacy pool untouched
+    # A worker wedged at its own RLIMIT_DATA is stopped (only the Excel load sets one), pinned by
+    # test_r47polish_fu2_excel_at_cap.test_a_load_wedged_in_c_at_the_cap_is_stopped_by_the_pool.
+    "_Lane._run", "_at_data_limit", "assign:_AT_DATA_LIMIT_MARGIN_KB", "assign:_AT_DATA_LIMIT_SECONDS",
 }
 TABLE_DETECTOR_ALLOWED = {
     "_session",  # reads _threads()

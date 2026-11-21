@@ -166,7 +166,7 @@ class TestEmbeddingModelCaching:
         vs.config_service.get_config = AsyncMock(return_value=self._config())
 
         with patch(
-            "app.modules.transformers.vectorstore.get_embedding_model",
+            "app.utils.llm.get_embedding_model",
             return_value=mock_embeddings,
         ) as build:
             await vs.get_embedding_model_instance()
@@ -184,7 +184,7 @@ class TestEmbeddingModelCaching:
         vs.config_service.get_config = AsyncMock(return_value=self._config())
 
         with patch(
-            "app.modules.transformers.vectorstore.get_embedding_model",
+            "app.utils.llm.get_embedding_model",
             return_value=mock_embeddings,
         ) as build:
             await vs.get_embedding_model_instance()
@@ -298,7 +298,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         with patch(
-            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            "app.utils.llm.get_default_embedding_model",
             return_value=mock_embeddings,
         ):
             result = await vs.get_embedding_model_instance()
@@ -331,7 +331,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         with patch(
-            "app.modules.transformers.vectorstore.get_embedding_model",
+            "app.utils.llm.get_embedding_model",
             return_value=mock_embeddings,
         ):
             result = await vs.get_embedding_model_instance()
@@ -352,7 +352,7 @@ class TestGetEmbeddingModelInstance:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            "app.utils.llm.get_default_embedding_model",
             return_value=mock_embeddings,
         ):
             with pytest.raises(IndexingError):

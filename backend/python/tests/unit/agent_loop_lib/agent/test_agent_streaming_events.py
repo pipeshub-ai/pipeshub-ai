@@ -66,6 +66,8 @@ class _TokenStream(ScriptedTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: object = None,
     ) -> AsyncIterator[StreamEvent]:
         for event in self._turns.pop(0):
             yield event

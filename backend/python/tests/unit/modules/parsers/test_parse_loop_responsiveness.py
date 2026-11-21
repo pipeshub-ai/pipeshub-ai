@@ -33,31 +33,6 @@ from tests.support.pdf_samples import blank_pdf
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-MAX_GAP_SECONDS = 0.2
-
-
-async def _worst_loop_gap(coro_factory: Callable[[], Awaitable[object]]) -> tuple[float, object]:
-    worst = 0.0
-    stop = False
-
-    async def heartbeat() -> None:
-        nonlocal worst
-        last = time.monotonic()
-        while not stop:
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            worst = max(worst, now - last)
-            last = now
-
-    task = asyncio.create_task(heartbeat())  # test-local task, awaited below
-    await asyncio.sleep(0.05)
-    try:
-        result = await coro_factory()
-    finally:
-        stop = True
-        await task
-    return worst, result
-
 
 def _strategy() -> VLMOCRStrategy:
     strategy = VLMOCRStrategy(logging.getLogger("test-loop"), MagicMock())
@@ -66,22 +41,26 @@ def _strategy() -> VLMOCRStrategy:
     return strategy
 
 
-@pytest.fixture
-def slow_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_open = pdfplumber.open
-
-    def slow(*args: object, **kwargs: object) -> object:
-        time.sleep(0.5)  # a scanned or damaged file makes the open this slow
-        return real_open(*args, **kwargs)
-
-    monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", slow)
-
-
 class TestVlmLoadDocument:
-    async def test_opening_the_pdf_does_not_block_the_loop(self, slow_open: None) -> None:
-        strategy = _strategy()
-        worst, _ = await _worst_loop_gap(lambda: strategy.load_document(blank_pdf(pages=2)))
-        assert worst < MAX_GAP_SECONDS, worst
+    async def test_opening_the_pdf_does_not_block_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The open finishes only once the loop has run a callback, which an open on the loop's thread
+        # would be blocking: what is checked is that the loop ran during the open, not how long it stalled.
+        loop = asyncio.get_running_loop()
+        loop_ran = threading.Event()
+        opened_on: list[int] = []
+        real_open = pdfplumber.open
+
+        def open_waiting_for_the_loop(*args: object, **kwargs: object) -> object:
+            opened_on.append(threading.get_ident())
+            loop.call_soon_threadsafe(loop_ran.set)
+            if not loop_ran.wait(5):
+                raise AssertionError("the loop did not run while the PDF was opening")
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", open_waiting_for_the_loop)
+        await _strategy().load_document(blank_pdf(pages=2))
+        assert opened_on and threading.get_ident() not in opened_on
+        assert loop_ran.is_set()
 
     async def test_the_temp_file_is_removed_and_state_cleared(self) -> None:
         strategy = _strategy()

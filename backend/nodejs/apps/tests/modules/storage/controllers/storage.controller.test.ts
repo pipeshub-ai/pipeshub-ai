@@ -608,7 +608,7 @@ describe('StorageController', () => {
       stubFind([{ _id: deleted, orgId, isDeleted: true }])
       const res = makeRes()
 
-      await controller.findMissingDocuments(serviceReq(orgId, [String(deleted)]), res, sinon.stub())
+      await controller.findMissingDocuments(serviceReq(orgId, [String(deleted)]), res, sinon.stub<unknown[]>())
 
       expect(res.body).to.deep.equal({ missing: [String(deleted)] })
     })
@@ -619,9 +619,9 @@ describe('StorageController', () => {
       const orgId = makeOrgId()
       const res = makeRes()
 
-      await controller.findMissingDocuments(serviceReq(orgId, [String(doc)]), res, sinon.stub())
+      await controller.findMissingDocuments(serviceReq(orgId, [String(doc)]), res, sinon.stub<unknown[]>())
 
-      expect(String(findStub.firstCall.args[0].orgId)).to.equal(orgId)
+      expect(String(findStub.firstCall.args[0]!.orgId)).to.equal(orgId)
       expect(res.body).to.deep.equal({ missing: [String(doc)] })
     })
 
@@ -630,7 +630,7 @@ describe('StorageController', () => {
       const findStub = stubFind([])
       const res = makeRes()
 
-      await controller.findMissingDocuments(serviceReq(orgId, ['not-an-id', 'not-an-id']), res, sinon.stub())
+      await controller.findMissingDocuments(serviceReq(orgId, ['not-an-id', 'not-an-id']), res, sinon.stub<unknown[]>())
 
       expect(findStub.called).to.be.false
       expect(res.body).to.deep.equal({ missing: ['not-an-id'] })
@@ -1930,7 +1930,7 @@ describe('StorageController.moveTree collision handling', () => {
       await controller.moveTree(
         makeReq({ orgId, body: { oldPath: 'records/kb/Folder', newPath: 'records/kb/Moved', virtualRecordIds: ['v1'] } }),
         res,
-        sinon.stub(),
+        sinon.stub<unknown[]>(),
       )
 
       expect(moveRemote.called).to.be.false
@@ -2013,7 +2013,7 @@ describe('StorageController.moveTree collision handling', () => {
       await controller.moveTree(
         makeReq({ orgId, body: { oldPath: 'records/kb/a_b', newPath: 'records/kb/HR/a_b', virtualRecordIds: [] } }),
         res,
-        sinon.stub(),
+        sinon.stub<unknown[]>(),
       )
 
       expect(moveRemote.called).to.be.false
@@ -2024,7 +2024,7 @@ describe('StorageController.moveTree collision handling', () => {
 
   it('scopes the tree lookup by orgId, not just the path prefix', async () => {
     const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
-    const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+    const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any, 'test-scoped-secret')
     sinon.stub(controller as any, 'getConfiguredStorageType').resolves('local')
     const orgId = makeOrgId()
     const find = sinon.stub(DocumentModel, 'find').returns({
@@ -2034,10 +2034,10 @@ describe('StorageController.moveTree collision handling', () => {
     await controller.moveTree(
       makeReq({ orgId, body: { oldPath: 'records/c1/Folder', newPath: 'records/c1/Renamed' } }),
       makeRes(),
-      sinon.stub(),
+      sinon.stub() as never,
     )
 
-    expect(String(find.firstCall.args[0].orgId)).to.equal(String(orgId))
+    expect(String(((find.firstCall.args as unknown[])[0] as { orgId?: unknown }).orgId)).to.equal(String(orgId))
   })
 
   it('allows folder names containing ".." but rejects a ".." segment', async () => {

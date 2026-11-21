@@ -16,11 +16,18 @@ import pytest
 
 import app.modules.retrieval.selection_scope as selection_scope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.agent_versions import versions_beside
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
 
 ORG = "o1"
+
+
+@pytest.fixture(autouse=True)
+def _agent_versions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The routes' agent versions (OWD-14) beside this file's mocked graph."""
+    versions_beside(monkeypatch, "app.api.routes.agent")
 
 
 @pytest.fixture(autouse=True)

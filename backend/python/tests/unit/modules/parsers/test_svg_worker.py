@@ -4,6 +4,9 @@ from __future__ import annotations
 import base64
 import contextlib
 import time
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -12,6 +15,10 @@ from app.modules.parsers import parse_pool
 from app.modules.parsers.image_parser import svg_worker
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.image_parser.svg_core import check_svg_budget
+from harness_core.testing.virtual_time import run_on_virtual_time
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 NS = 'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
 GOOD = f'<svg {NS} width="20" height="20"><rect width="20" height="20" fill="red"/></svg>'
@@ -30,16 +37,58 @@ def _slow_but_countable(n: int) -> str:
     )
 
 
+@dataclass
+class DeadlineWatch:
+    """The deadlines a render was given and waited on.
+
+    The render runs in another process, so its duration on this host's clock also holds whatever kept either
+    process off the CPU. What the parent waited until is the code's own decision, and exact.
+    """
+
+    asked: list[tuple[float, float]] = field(default_factory=list)  # (when acquire was called, its deadline)
+    waited: list[float] = field(default_factory=list)  # every deadline a pipe write or read waited until
+    renderers: list[svg_worker._Renderer] = field(default_factory=list)
+
+    def assert_waited_only_until(self, timeout: float) -> None:
+        """Every wait ended at the caller's deadline, which was set before the renderer was taken (or started)."""
+        assert self.asked and all(deadline <= called_at + timeout for called_at, deadline in self.asked), self.asked
+        assert set(self.waited) <= {deadline for _, deadline in self.asked}, (self.asked, self.waited)
+
+
+def watch_deadlines(monkeypatch: pytest.MonkeyPatch, pool: svg_worker._Renderers) -> DeadlineWatch:
+    watch = DeadlineWatch()
+    acquire = pool.acquire
+
+    def watched_acquire(deadline: float) -> svg_worker._Renderer:
+        watch.asked.append((time.monotonic(), deadline))
+        watch.renderers.append(acquire(deadline))
+        return watch.renderers[-1]
+
+    monkeypatch.setattr(pool, "acquire", watched_acquire)
+    for name in ("_read_line", "_write_all"):
+        real = getattr(svg_worker, name)
+
+        def watched(*args: object, _real: Callable[..., object] = real) -> object:
+            watch.waited.append(args[-1])  # type: ignore[arg-type]
+            return _real(*args)
+
+        monkeypatch.setattr(svg_worker, name, watched)
+    return watch
+
+
 def test_an_ordinary_svg_renders_in_the_child_process() -> None:
     assert ImageParser.svg_base64_to_png_base64(_b64(GOOD)).startswith("iVBOR")
 
 
 def test_a_child_that_runs_past_its_deadline_is_killed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(svg_worker, "SVG_DEADLINE_SECONDS", 1.0)
-    start = time.monotonic()
+    watch = watch_deadlines(monkeypatch, svg_worker._renderers)
+    # "timed out" is the parent giving up at its deadline with the renderer still rendering; a renderer that
+    # finished replies, and one its CPU limit stopped is "failed"
     with pytest.raises(DocumentProcessingError, match="timed out"):
         svg_worker.run_bounded(_b64(_slow_but_countable(15000)), timeout=1.0)
-    assert time.monotonic() - start < 4.0
+    watch.assert_waited_only_until(1.0)
+    assert not watch.renderers[-1].alive()
 
 
 def test_the_memory_cap_stops_an_allocation_and_is_lifted_afterwards() -> None:
@@ -161,16 +210,18 @@ def test_a_kill_leaves_a_warm_spare_and_the_deadline_holds_when_cold(monkeypatch
     pool = svg_worker._Renderers()
     monkeypatch.setattr(svg_worker, "_renderers", pool)
     hostile = _slow_but_countable(15000)
+    watch = watch_deadlines(monkeypatch, pool)
     try:
-        start = time.monotonic()
+        assert not pool._all
         with pytest.raises(DocumentProcessingError, match="timed out"):
             svg_worker.run_bounded(_b64(hostile), timeout=2.0)  # cold renderer
-        assert time.monotonic() - start < 4.5
+        watch.assert_waited_only_until(2.0)  # its start-up came out of the same 2 s
         assert len(pool._idle) == 1 and pool._idle[0].alive()  # the spare
-        start = time.monotonic()
+        spare = pool._idle[0]
         with pytest.raises(DocumentProcessingError, match="timed out"):
             svg_worker.run_bounded(_b64(hostile), timeout=2.0)
-        assert time.monotonic() - start < 4.5
+        watch.assert_waited_only_until(2.0)
+        assert watch.renderers == [watch.renderers[0], spare] and not any(r.alive() for r in watch.renderers)
     finally:
         pool.close_all()
 
@@ -210,11 +261,13 @@ def test_a_caller_that_finds_every_renderer_busy_gives_up_at_its_deadline(monkey
     pool = svg_worker._Renderers()
     monkeypatch.setattr(svg_worker, "_renderers", pool)
     held = [pool.acquire(time.monotonic() + 5) for _ in range(svg_worker._MAX_RENDERERS)]
+    watch = watch_deadlines(monkeypatch, pool)
     try:
-        start = time.monotonic()
+        # None of the held renderers is ever released: only the caller's own deadline ends its wait.
         with pytest.raises(DocumentProcessingError, match="busy"):
             svg_worker.run_bounded(_b64(GOOD), timeout=1.0)
-        assert time.monotonic() - start < 2.5
+        watch.assert_waited_only_until(1.0)
+        assert watch.renderers == [] and not pool._idle
     finally:
         pool.close_all()
         assert len(held) == svg_worker._MAX_RENDERERS
@@ -282,8 +335,7 @@ async def test_svg_waits_never_take_a_thread_of_the_default_executor() -> None:
     assert used == []
 
 
-@pytest.mark.asyncio
-async def test_calls_past_the_renderer_slots_wait_unqueued_and_give_up_at_their_deadline(
+def test_calls_past_the_renderer_slots_wait_unqueued_and_give_up_at_their_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every slot busy: further calls hold no queued work (and no SVG in the pool's
@@ -297,19 +349,25 @@ async def test_calls_past_the_renderer_slots_wait_unqueued_and_give_up_at_their_
     submitted: list[object] = []
     pool = waiters.get()
     monkeypatch.setattr(pool, "submit", lambda *a, **k: submitted.append(a))
-    try:
+
+    async def main() -> tuple[list[object], float]:
         loop = asyncio.get_running_loop()
+        # the admission wait polls with asyncio.sleep: on the loop's clock its deadline is exact
+        monkeypatch.setattr(svg_worker, "time", SimpleNamespace(monotonic=loop.time))
         start = loop.time()
         calls = [asyncio.ensure_future(ImageParser.svg_base64_to_png_base64_async(_b64(GOOD))) for _ in range(20)]
         outcomes = await asyncio.gather(*calls, return_exceptions=True)
-        elapsed = loop.time() - start
+        return outcomes, loop.time() - start
+
+    try:
+        outcomes, elapsed = run_on_virtual_time(main)
     finally:
         for _ in range(svg_worker._MAX_RENDERERS):
             waiters.slots.release()
     assert all(isinstance(o, DocumentProcessingError) for o in outcomes), outcomes
     assert all("waiting for a renderer" in str(o) for o in outcomes)
     assert submitted == []
-    assert elapsed < 1.0
+    assert 0.3 <= elapsed < 0.3 + 2 * svg_worker._ADMISSION_POLL_SECONDS
 
 
 @pytest.mark.asyncio
@@ -377,7 +435,9 @@ def test_closing_a_renderer_does_not_wait_for_a_process_that_will_not_exit(
     import subprocess
     import threading
 
-    reaped = threading.Event()
+    reaping = threading.Event()
+    exits = threading.Event()  # set only once close() has returned: the process "will not exit" until then
+    reapers: list[threading.Thread] = []
 
     class StuckProcess:
         pid = 2**22 + 7  # nothing to signal; killpg's error is suppressed
@@ -386,17 +446,21 @@ def test_closing_a_renderer_does_not_wait_for_a_process_that_will_not_exit(
         def wait(self, timeout: float | None = None) -> int:
             if timeout is not None:
                 raise subprocess.TimeoutExpired("renderer", timeout)
-            reaped.set()
+            reapers.append(threading.current_thread())
+            reaping.set()
+            exits.wait(10)
             return -9
 
     renderer = svg_worker._Renderer.__new__(svg_worker._Renderer)
     renderer.process = StuckProcess()  # type: ignore[assignment]
     renderer._closed = False
     monkeypatch.setattr(renderer, "release_pipes", lambda: None)
-    start = time.monotonic()
-    renderer.close()
-    assert time.monotonic() - start < 1.0
-    assert reaped.wait(2), "the stuck renderer is still reaped, in the background"
+    try:
+        renderer.close()
+        assert reaping.wait(2), "the stuck renderer is still reaped, in the background"
+        assert reapers and threading.current_thread() not in reapers  # close() did not wait for it
+    finally:
+        exits.set()
 
 
 def test_a_deadline_already_passed_is_refused_without_taking_a_renderer() -> None:

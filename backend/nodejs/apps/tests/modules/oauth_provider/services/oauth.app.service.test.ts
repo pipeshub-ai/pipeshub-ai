@@ -634,7 +634,7 @@ describe('OAuthAppService', () => {
       const first = findOne.firstCall.args[0] as Record<string, unknown>
       expect(first).to.not.have.property('createdBy')
       expect(first.orgId).to.deep.equal(new Types.ObjectId(fakeOrgId))
-      const write = findOne.secondCall.args[0] as Record<string, unknown>
+      const write = findOne.secondCall.args[0] as unknown as Record<string, unknown>
       expect(write.createdBy).to.deep.equal(new Types.ObjectId(creatorId))
       expect(app.status).to.equal(OAuthAppStatus.SUSPENDED)
       expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('member-app')).to.be.true
@@ -713,7 +713,7 @@ describe('OAuthAppService', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError)
       }
-      const filter = findOne.firstCall.args[0] as Record<string, unknown>
+      const filter = findOne.firstCall.args[0] as unknown as Record<string, unknown>
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -848,8 +848,8 @@ describe('OAuthAppService', () => {
       await service.listApps(fakeOrgId, fakeUserId, {})
 
       const expectedCreatedBy = new Types.ObjectId(fakeUserId)
-      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
-      const countFilter = countStub.firstCall.args[0] as Record<string, unknown>
+      const findFilter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
+      const countFilter = countStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(findFilter.createdBy).to.deep.equal(expectedCreatedBy)
       expect(countFilter.createdBy).to.deep.equal(expectedCreatedBy)
     })
@@ -866,7 +866,7 @@ describe('OAuthAppService', () => {
 
       await service.listApps(fakeOrgId, fakeUserId, {})
 
-      const findFilter = findStub.firstCall.args[0] as Record<string, unknown>
+      const findFilter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(findFilter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -1043,7 +1043,7 @@ describe('OAuthAppService', () => {
 
       await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, false, { name: 'X' })
 
-      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      const filter = findStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
   })
@@ -1466,7 +1466,7 @@ describe('OAuthAppService - branch coverage', () => {
       await service.listApps(VALID_ORG_ID, VALID_USER_ID, { status: OAuthAppStatus.ACTIVE })
       // Check the filter contains status
       const filterArg = findStub.firstCall.args[0]
-      expect(filterArg.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
+      expect(filterArg!.status).to.deep.equal({ $eq: OAuthAppStatus.ACTIVE })
     })
 
     it('should apply search filter with regex escaping when provided', async () => {
@@ -1480,8 +1480,8 @@ describe('OAuthAppService - branch coverage', () => {
       await service.listApps(VALID_ORG_ID, VALID_USER_ID, { search: 'test.app' })
       // Check the filter contains $or with regex
       const filterArg = findStub.firstCall.args[0]
-      expect(filterArg.$or).to.exist
-      expect(filterArg.$or).to.have.length(2)
+      expect(filterArg!.$or).to.exist
+      expect(filterArg!.$or).to.have.length(2)
     })
 
     it('should calculate totalPages correctly', async () => {
@@ -1865,7 +1865,7 @@ describe('OAuthAppService - branch coverage', () => {
         isConfidential: false,
       })
       expect(createStub.calledOnce).to.be.true
-      expect(createStub.firstCall.args[0].isDynamic).to.be.true
+      expect(createStub.firstCall.args[0]!.isDynamic).to.be.true
     })
   })
 

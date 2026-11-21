@@ -31,7 +31,7 @@ from app.agent_loop_lib.core.messages import (
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
-from app.agent_loop_lib.transport.openai import OpenAITransport, RequestDefaults
+from app.agent_loop_lib.transport.openai import OpenAITransport
 from app.agents.agent_loop.converters import MALFORMED_TOOL_CALL_ARGS_KEY
 
 
@@ -148,24 +148,20 @@ class TestFormatMessage:
             step_footer=" [footer]",
         )
 
-    def test_multipart_tool_message_formats_image_url_blocks_on_responses_api(self) -> None:
-        transport = _transport(defaults=RequestDefaults(use_responses_api=True))
-        formatted = transport._format_message(self._multipart_tool_message())
-        assert formatted["content"] == [
-            {"type": "text", "text": "[ref1] (image)"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
-            {"type": "text", "text": " [footer]"},
-        ]
-
-    def test_multipart_tool_message_drops_images_on_chat_completions(self) -> None:
+    def test_multipart_tool_message_sends_its_images_in_a_user_message_after_it(self) -> None:
         """Chat Completions 400s on an image block in a `role: "tool"` message
-        ("Image URLs are only allowed for messages with role 'user'"); the
-        agent factory re-delivers these through a user message instead."""
+        ("Image URLs are only allowed for messages with role 'user'"), so the
+        result keeps its text and the image follows it (FIX-P3-B1)."""
         transport = _transport()
-        formatted = transport._format_message(self._multipart_tool_message())
-        assert formatted["content"] == [
-            {"type": "text", "text": "[ref1] (image)"},
-            {"type": "text", "text": " [footer]"},
+        formatted = transport._format_messages([self._multipart_tool_message()], None)
+        assert formatted == [
+            {"role": "tool", "tool_call_id": "call_1", "content": "[ref1] (image) [footer]"},
+            # Loop-added, so a context note (main's TP-01).
+            {"role": "user", "content": [
+                {"type": "text", "text": '<context_note source="agent">\nImages returned by the tool results above (call_1):'},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+                {"type": "text", "text": "</context_note>"},
+            ]},
         ]
 
     def test_images_only_tool_message_on_chat_completions_still_answers_the_call(self) -> None:

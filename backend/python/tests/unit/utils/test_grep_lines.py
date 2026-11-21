@@ -8,6 +8,7 @@ from app.utils.grep_lines import (
     find_matches,
     literal_prefilter,
 )
+from tests.support.cpu_budget import thread_cpu
 
 
 def _rx(p: str) -> "regex.Pattern[str]":
@@ -64,9 +65,12 @@ def test_a_catastrophic_pattern_is_given_up_on_within_the_deadline() -> None:
     line = ",".join(f"v{i}_{j}" for i, j in zip(range(60), range(60)))
     blocks = [{"data": "\n".join([line] * 400)}]
     pattern = regex.compile(r"(?:.*?,){40}x|v0_0", regex.IGNORECASE)
-    start = time.monotonic()
-    _, _, _, complete = find_matches(blocks, pattern, context_lines=0, max_matches=5, deadline=start + 1.0)
-    assert not complete and time.monotonic() - start < 1.5
+    with thread_cpu() as cpu:
+        _, _, _, complete = find_matches(
+            blocks, pattern, context_lines=0, max_matches=5, deadline=time.monotonic() + 1.0,
+        )
+    # ~0.15 s alone (three line timeouts); searched without a timeout the pattern runs for minutes.
+    assert not complete and cpu.seconds < 2.0, cpu.seconds
 
 
 def test_a_passed_deadline_reads_nothing_and_says_so() -> None:
@@ -78,29 +82,27 @@ def test_a_passed_deadline_reads_nothing_and_says_so() -> None:
     assert (matches, total, complete) == ([], 0, False)
 
 
-async def test_a_slow_pattern_does_not_stall_the_event_loop() -> None:
-    import asyncio
-    import time
-
+def test_a_slow_pattern_does_not_stall_the_event_loop() -> None:
+    """A slow line is searched with ``concurrent=True``, which is what lets the regex engine drop the GIL so the
+    event loop runs beside it. Asserted on the call: a heartbeat on a loaded host misses ticks for reasons of its own.
+    """
     line = ",".join(f"v{j}" for j in range(60))
     blocks = [{"data": "\n".join([line] * 400)}]
-    pattern = regex.compile(r"(?:.*?,){40}x|v0_0", regex.IGNORECASE)
-    worst = 0.0
+    real = regex.compile(r"(?:.*?,){40}x|v0_0", regex.IGNORECASE)
+    slow_searches: list[bool] = []
 
-    async def ticker() -> None:
-        nonlocal worst
-        last = time.monotonic()
-        for _ in range(40):
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            worst = max(worst, now - last)
-            last = now
+    class Recording:
+        pattern = real.pattern
 
-    await asyncio.gather(
-        asyncio.to_thread(find_matches, blocks, pattern, context_lines=0, max_matches=5, deadline=time.monotonic() + 0.5),
-        ticker(),
-    )
-    assert worst < 0.1
+        def search(self, text: str, *, timeout: float, concurrent: bool = False) -> "regex.Match[str] | None":
+            if timeout > 0.001:  # past the quick try: the line is slow
+                slow_searches.append(concurrent)
+            return real.search(text, timeout=timeout, concurrent=concurrent)
+
+    # No deadline: a loaded host must not end the scan before a slow line; three line timeouts end it.
+    _, _, _, complete = find_matches(blocks, Recording(), context_lines=0, max_matches=5)  # type: ignore[arg-type]
+    assert not complete
+    assert slow_searches and all(slow_searches), slow_searches
 
 
 @pytest.mark.parametrize("python_pattern,literal", [

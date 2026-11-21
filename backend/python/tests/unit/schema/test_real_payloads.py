@@ -585,6 +585,7 @@ class TestNeo4jRoundTrip:
 # One realistic nested value per field the Neo4j path JSON-encodes (JSON_ENCODED_FIELDS).
 _NESTED_SAMPLES = {
     ("records", "recordProps"): {"owner": "ann", "tags": ["a", "b"], "score": 1.5, "flag": True},
+    ("records", "editionFields"): {"tag": "One", "score": 2, "gone": None},
     ("blocks", "typeTable"): {"a": {"t": "int", "n": [1, 2]}},
     ("blocks", "pendingEdges"): [{"to": "x", "kind": "CALLS", "meta": {"line": 3}}],
     # C/C++ function-like macro -> [line, names its body calls]; an over-cap macro keeps no callees.

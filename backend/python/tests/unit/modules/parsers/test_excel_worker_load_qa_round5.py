@@ -14,7 +14,6 @@ from __future__ import annotations
 import contextlib
 import io
 import signal
-import time
 import zipfile
 from typing import TYPE_CHECKING
 
@@ -114,12 +113,11 @@ def test_ordinary_merges_with_a_sheet_name_still_load() -> None:
 # ---------------------------------------------------------------------------
 
 LOAD_SECONDS = 3
-SLACK_SECONDS = 30
 
 
 def _refused_within_the_bound(body: str) -> None:
-    # Per the owner's scope for round 6, no per-path cap: the load's CPU/time bound ends it.
-    started = time.monotonic()
+    # Per the owner's scope for round 6, no per-path cap: the load's CPU/time bound ends it. The refusal
+    # names that bound; without it the load runs for minutes and then loads.
     with pytest.raises(WorkbookRefused) as refused:
         load_workbook_model(
             workbook_zip(body),
@@ -129,7 +127,7 @@ def _refused_within_the_bound(body: str) -> None:
             LOAD_SECONDS,
         )
     assert refused.value.too_large
-    assert time.monotonic() - started < LOAD_SECONDS + SLACK_SECONDS
+    assert refused.value.detail == f"the load used more than {LOAD_SECONDS} s of CPU"
 
 
 def test_hyperlinks_on_merged_cells_are_refused_within_the_time_bound() -> None:

@@ -5,14 +5,21 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import shutil
+import tempfile
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     CONTAINER_HARDENING,
+    DEFAULT_OPEN_EGRESS_POOL,
+    ensure_egress_network_sync,
     firewalled_container_kwargs,
+    limited,
 )
 from app.sandbox.docker_proxy import (
     MANAGED_LABEL,
@@ -57,35 +64,63 @@ def _sdk_create_body(**kwargs: object) -> dict[str, Any]:
     return json.loads(json.dumps(captured["body"]))
 
 
-# The kwargs each sandbox code path passes to containers.create today.
+# What legacy run_code sent before SEC-A-04: no pids limit, a writable root, Docker's default capabilities and the
+# image's own user. The proxy refuses it now (``test_sec_a_04_…``).
 _LEGACY_RUN: dict[str, Any] = {
     "image": IMAGE, "command": ["python3", "/src/main.py"], "environment": {"OUTPUT_DIR": "/output"},
     "working_dir": "/src", "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000,
     "network_mode": "none", "network_disabled": True, "read_only": False,
     "tmpfs": {"/tmp": "size=100M"}, "detach": True,
 }
+# An install with no firewall, as root by the image's default: refused too.
 _INSTALL: dict[str, Any] = {
     "image": IMAGE, "command": ["sh", "-c", "pip install x"], "environment": {},
     "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000,
     "network": EGRESS, "network_disabled": False, "detach": True,
 }
-_CODING_RUN_NETWORK: dict[str, Any] = {
-    "image": IMAGE, "command": ["python3", "main.py"], "environment": {"OUTPUT_DIR": "/output"},
-    "working_dir": "/src", "mem_limit": 1, "nano_cpus": 1, "tmpfs": {"/tmp": "size=100M"},
-    "detach": True, "network": EGRESS, "network_disabled": False,
+# The kwargs each sandbox code path passes to containers.create now, built with the executors' own helpers, so a
+# change there that the proxy would refuse fails here rather than in production.
+_RUN: dict[str, Any] = {
+    **{k: v for k, v in _LEGACY_RUN.items() if k not in ("read_only", "mem_limit")},
+    **limited(512 * 1024 * 1024), **CONTAINER_HARDENING,
 }
-# Built with the egress firewall's own helpers, so a change there that the
-# proxy would refuse fails here rather than in production.
 _FIREWALLED_INSTALL: dict[str, Any] = {
-    **_INSTALL,
+    **{k: v for k, v in _INSTALL.items() if k != "mem_limit"},
+    **limited(512 * 1024 * 1024),
+    **CONTAINER_HARDENING,
     **firewalled_container_kwargs(
         ["sh", "-c", "pip install x"], network_cidrs=["172.30.0.0/16"],
         allowed_cidrs=["10.20.0.0/16"], token="0" * 32,
     ),
 }
-_HARDENED_RUN: dict[str, Any] = {**_LEGACY_RUN, **CONTAINER_HARDENING}
+_CODING_RUN_NETWORK: dict[str, Any] = {
+    "image": IMAGE, "environment": {"OUTPUT_DIR": "/output"},
+    "working_dir": "/src", **limited(1 << 20), "nano_cpus": 1, "tmpfs": {"/tmp": "size=100M"},
+    "detach": True, "network": EGRESS, "network_disabled": False, **CONTAINER_HARDENING,
+    **firewalled_container_kwargs(["python3", "main.py"], network_cidrs=["172.30.0.0/16"], token="1" * 32),
+}
+_HARDENED_RUN: dict[str, Any] = _RUN
 # What create_sandbox_container sends when the daemon enforces a disk quota.
-_RUN_WITH_QUOTA: dict[str, Any] = {**_HARDENED_RUN, "storage_opt": {"size": "10g"}}
+_RUN_WITH_QUOTA: dict[str, Any] = {**_RUN, "storage_opt": {"size": "10g"}}
+# What the coding sandbox really sends: its own hardening (init, pids, /tmp, labels), read from the
+# code so a field it adds can never again reach the proxy unlisted (PR1: Init was refused).
+_CODING_SANDBOX_RUN: dict[str, Any] = {
+    **_RUN,
+    **DockerCodingSandbox._hardening(  # pyright: ignore[reportPrivateUsage]
+        SimpleNamespace(_pids_limit=128, _labels=lambda: {"pipeshub.sandbox": "coding"})  # type: ignore[arg-type]
+    ),
+}
+# Every caller sends the proxy's credential (SEC-A-04).
+TOKEN = "t" * 64
+# The smallest raw create the proxy admits: the sandbox floor and nothing else.
+_FLOORED_HOST: dict[str, Any] = {
+    "NetworkMode": "none", "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges:true"], "ReadonlyRootfs": True,
+    "PidsLimit": 64, "Memory": 1 << 26, "MemorySwap": 1 << 26, "NanoCpus": 100_000_000,
+}
+
+
+def _min_body(**host: Any) -> dict[str, Any]:  # noqa: ANN401
+    return {"Image": IMAGE, "User": "sandbox", "HostConfig": {**_FLOORED_HOST, **host}}
 
 
 class TestNormalizeImage:
@@ -158,11 +193,17 @@ class TestRouting:
 
 
 class TestContainerCreate:
-    @pytest.mark.parametrize("kwargs", [_LEGACY_RUN, _INSTALL, _CODING_RUN_NETWORK, _FIREWALLED_INSTALL, _HARDENED_RUN, _RUN_WITH_QUOTA],
-                             ids=["legacy-run", "install", "coding-run-network", "firewalled-install", "hardened-run", "run-with-quota"])
+    @pytest.mark.parametrize("kwargs", [_RUN, _CODING_RUN_NETWORK, _FIREWALLED_INSTALL, _RUN_WITH_QUOTA, _CODING_SANDBOX_RUN],
+                             ids=["run", "coding-run-network", "firewalled-install", "run-with-quota", "coding-sandbox-run"])
     def test_admits_what_the_sandbox_sends(self, policy: DockerApiPolicy, kwargs: dict[str, Any]) -> None:
         out = policy.check_container_create(_sdk_create_body(**kwargs))
         assert out["Labels"][MANAGED_LABEL] == "true"
+
+    def test_init_may_only_be_a_boolean(self, policy: DockerApiPolicy) -> None:
+        body = _sdk_create_body(**_HARDENED_RUN)
+        body["HostConfig"]["Init"] = "/host/bin/sh"
+        with pytest.raises(PolicyDenied, match="Init"):
+            policy.check_container_create(body)
 
     def test_storage_opt_may_only_set_size(self, policy: DockerApiPolicy) -> None:
         body = _sdk_create_body(**{**_HARDENED_RUN, "storage_opt": {"size": "10g", "foo": "bar"}})
@@ -170,7 +211,7 @@ class TestContainerCreate:
             policy.check_container_create(body)
 
     def test_label_cannot_be_spoofed_off(self, policy: DockerApiPolicy) -> None:
-        body = _sdk_create_body(**_LEGACY_RUN, labels={MANAGED_LABEL: "false", "keep": "1"})
+        body = _sdk_create_body(**_RUN, labels={MANAGED_LABEL: "false", "keep": "1"})
         out = policy.check_container_create(body)
         assert out["Labels"] == {MANAGED_LABEL: "true", "keep": "1"}
 
@@ -220,7 +261,7 @@ class TestContainerCreate:
 
             extra = {"log_config": LogConfig(**extra["log_config"])}
         with pytest.raises(PolicyDenied):
-            policy.check_container_create(_sdk_create_body(**{**_LEGACY_RUN, **extra}))
+            policy.check_container_create(_sdk_create_body(**{**_RUN, **extra}))
 
     @pytest.mark.parametrize("network_kwargs", [
         {"network_mode": "host"},
@@ -230,13 +271,13 @@ class TestContainerCreate:
         {},  # SDK default is NetworkMode=default (the docker0 bridge)
     ])
     def test_refuses_other_networks(self, policy: DockerApiPolicy, network_kwargs: dict[str, Any]) -> None:
-        base = {k: v for k, v in _LEGACY_RUN.items() if k not in ("network_mode", "network_disabled")}
+        base = {k: v for k, v in _RUN.items() if k not in ("network_mode", "network_disabled")}
         with pytest.raises(PolicyDenied):
             policy.check_container_create(_sdk_create_body(**base, **network_kwargs))
 
     def test_refuses_other_image(self, policy: DockerApiPolicy) -> None:
         with pytest.raises(PolicyDenied):
-            policy.check_container_create(_sdk_create_body(**{**_LEGACY_RUN, "image": "alpine"}))
+            policy.check_container_create(_sdk_create_body(**{**_RUN, "image": "alpine"}))
 
     @pytest.mark.parametrize("body", [
         {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", "MaskedPaths": []}},
@@ -291,10 +332,10 @@ class TestContainerCreate:
     def test_log_driver_is_local_or_pinned(
         self, policy: DockerApiPolicy, log_config: dict[str, Any] | None, driver: str,
     ) -> None:
-        host: dict[str, Any] = {"NetworkMode": "none"}
+        body = _min_body()
         if log_config is not None:
-            host["LogConfig"] = log_config
-        out = policy.check_container_create({"Image": IMAGE, "HostConfig": host})
+            body["HostConfig"]["LogConfig"] = log_config
+        out = policy.check_container_create(body)
         # An unset driver would fall back to the daemon default, which may ship logs off-host.
         assert out["HostConfig"]["LogConfig"] == {"Type": driver, "Config": {}}
 
@@ -303,7 +344,7 @@ class TestContainerCreate:
         assert out["HostConfig"]["LogConfig"] == {"Type": "local", "Config": {}}
 
     def test_label_keys_are_a_map_and_keep_their_case(self, policy: DockerApiPolicy) -> None:
-        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}, "Labels": {"a": "1", "A": "2"}}
+        body = {**_min_body(), "Labels": {"a": "1", "A": "2"}}
         assert policy.check_container_create(body)["Labels"]["A"] == "2"
 
 
@@ -326,12 +367,40 @@ def _sdk_network_body(**kwargs: object) -> dict[str, Any]:
 
 class TestNetworkCreate:
     def test_admits_what_the_egress_firewall_sends(self, policy: DockerApiPolicy) -> None:
-        body = _sdk_network_body(
-            name=EGRESS, driver="bridge", internal=False, enable_ipv6=False,
-            options={"com.docker.network.bridge.enable_icc": "false"},
-            labels={"pipeshub.sandbox": "egress"}, check_duplicate=True,
-        )
+        sent: dict[str, Any] = {}
+        client = MagicMock()
+        client.networks.list.return_value = []
+        client.networks.create.side_effect = lambda **kwargs: sent.update(kwargs)
+        ensure_egress_network_sync(client, EGRESS, {"pipeshub.sandbox": "egress"})
+        body = _sdk_network_body(**sent)
+        assert body["IPAM"]["Config"][0]["Subnet"] == "10.212.0.0/22"
         assert policy.check_network_create(body) == body
+
+    def test_the_default_pool_is_the_egress_firewalls(self) -> None:
+        assert str(DockerApiPolicy.from_env({}).egress_pool) == DEFAULT_OPEN_EGRESS_POOL
+        pool = DockerApiPolicy.from_env({"SANDBOX_OPEN_EGRESS_SUBNETS": "192.168.250.0/24"}).egress_pool
+        assert str(pool) == "192.168.250.0/24"
+
+    @pytest.mark.parametrize("ipam", [
+        {"Driver": "default", "Config": [{"Subnet": "192.168.1.0/24"}]},
+        {"Driver": "default", "Config": [{"Subnet": "10.0.0.0/8"}]},
+        {"Driver": "default", "Config": [{"Subnet": "10.212.0.0/22", "Gateway": "192.168.1.1"}]},
+        {"Driver": "default", "Config": [{"Subnet": "10.212.0.0/22", "IPRange": "10.212.0.0/24"}]},
+        {"Driver": "default", "Config": [{"Subnet": "10.212.0.0/22", "AuxiliaryAddresses": {"a": "10.212.0.9"}}]},
+        {"Driver": "default", "Config": [{"Subnet": "10.212.0.0/22", "subnet": "192.168.1.0/24"}]},
+        {"Driver": "default", "Config": [{"Subnet": "10.212.0.0/22"}, {"Subnet": "10.212.4.0/22"}]},
+        {"Driver": "default", "Config": [{"Subnet": "fd00::/64"}]},
+        {"Driver": "default", "Config": [{"Subnet": "10.212.0.1/22"}]},
+        {"Driver": "other", "Config": [{"Subnet": "10.212.0.0/22"}]},
+        {"Driver": "default", "Options": {"x": "y"}, "Config": [{"Subnet": "10.212.0.0/22"}]},
+        {"Driver": "default", "Config": [{"Subnet": "10.212.0.0/22"}], "Extra": 1},
+    ])
+    def test_refuses_addresses_outside_the_pool_or_anything_else(
+        self, policy: DockerApiPolicy, ipam: dict[str, Any],
+    ) -> None:
+        body = {"Name": EGRESS, "Driver": "bridge", "IPAM": ipam}
+        with pytest.raises(PolicyDenied):
+            policy.check_network_create(body)
 
     def test_refuses_ipv6(self, policy: DockerApiPolicy) -> None:
         with pytest.raises(PolicyDenied):
@@ -409,7 +478,11 @@ class _FakeDaemon:
         writer.close()
 
 
-async def _request(port: int, raw: bytes) -> bytes:
+async def _request(port: int, raw: bytes, *, token: str | None = TOKEN) -> bytes:
+    """``raw`` with the caller's credential after its request line (``token=None``: none)."""
+    if token is not None and b"\r\n" in raw:
+        line, rest = raw.split(b"\r\n", 1)
+        raw = line + f"\r\nAuthorization: Bearer {token}".encode() + b"\r\n" + rest
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(raw)
     await writer.drain()
@@ -419,21 +492,26 @@ async def _request(port: int, raw: bytes) -> bytes:
 
 
 @pytest.fixture
-async def proxied(tmp_path, policy: DockerApiPolicy) -> AsyncIterator[tuple[_FakeDaemon, int]]:
+async def proxied(policy: DockerApiPolicy) -> AsyncIterator[tuple[_FakeDaemon, int]]:
     owned = {"Id": "f" * 64, "Config": {"Labels": {MANAGED_LABEL: "true"}}}
     foreign = {"Id": "e" * 64, "Config": {"Labels": {}}}
     daemon = _FakeDaemon(
         {"owned": owned, "f" * 64: owned, "foreign": foreign},
         networks={"egressid": {"Name": EGRESS}, "appnetid": {"Name": "pipeshub-ai_pipeshub"}},
     )
-    sock = str(tmp_path / "d.sock")
+    # Under /tmp, not pytest's tmp_path: a long TMPDIR pushes the socket past AF_UNIX's 108-byte path limit.
+    sock_dir = tempfile.mkdtemp(prefix="dproxy-", dir="/tmp")
+    sock = f"{sock_dir}/d.sock"
     upstream = await asyncio.start_unix_server(daemon.handle, sock)
-    proxy = DockerSocketProxy(policy, sock)
+    proxy = DockerSocketProxy(policy, sock, caller_token=TOKEN)
     server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
-    yield daemon, port
-    server.close()
-    upstream.close()
+    try:
+        yield daemon, port
+    finally:
+        server.close()
+        upstream.close()
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 class TestRequestHead:
@@ -481,7 +559,7 @@ class TestProxyServer:
 
     async def test_create_is_rewritten_with_label(self, proxied) -> None:
         daemon, port = proxied
-        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}}).encode()
+        body = json.dumps(_min_body()).encode()
         resp = await _request(port, b"POST /v1.43/containers/create HTTP/1.1\r\nHost: x\r\n"
                               b"Content-Type: application/json\r\nContent-Length: "
                               + str(len(body)).encode() + b"\r\n\r\n" + body)
@@ -491,7 +569,7 @@ class TestProxyServer:
 
     async def test_chunked_create_body_is_read(self, proxied) -> None:
         daemon, port = proxied
-        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}}).encode()
+        body = json.dumps(_min_body()).encode()
         chunked = f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n"
         resp = await _request(port, b"POST /containers/create HTTP/1.1\r\nHost: x\r\n"
                               b"Transfer-Encoding: chunked\r\n\r\n" + chunked)
@@ -564,10 +642,11 @@ class TestProxyServer:
 
     async def test_expect_continue_on_create_does_not_stall(self, proxied) -> None:
         daemon, port = proxied
-        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}}).encode()
+        body = json.dumps(_min_body()).encode()
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(b"POST /containers/create HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
-                     b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n")
+                     + f"Authorization: Bearer {TOKEN}\r\n".encode()
+                     + b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n")
         await writer.drain()
         interim = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
         assert interim.startswith(b"HTTP/1.1 100")
@@ -609,3 +688,43 @@ class TestProxyServer:
         assert resp.startswith(b"HTTP/1.1 403")
         assert daemon.requests == []
 
+
+
+class TestDropRoot:
+    """R51-COMPAT (ADR-OPS-07): Compose without DOCKER_GID starts the proxy as root; it serves as uid 1000 with the
+    Docker socket's group, so an .env from a release without DOCKER_GID keeps code execution."""
+
+    class _Ops:
+        def __init__(self, uid: int, gid: int) -> None:
+            self.uid, self.gid, self.calls = uid, gid, []
+
+        def getuid(self) -> int:
+            return self.uid
+
+        def stat(self, path: str) -> object:
+            self.calls.append(("stat", path))
+            return type("St", (), {"st_gid": self.gid})()
+
+        def setgroups(self, groups: list[int]) -> None:
+            self.calls.append(("setgroups", groups))
+
+        def setgid(self, gid: int) -> None:
+            self.calls.append(("setgid", gid))
+
+        def setuid(self, uid: int) -> None:
+            self.calls.append(("setuid", uid))
+
+    def test_root_takes_the_socket_group_and_becomes_uid_1000(self) -> None:
+        from app.sandbox.docker_proxy import drop_root
+
+        ops = self._Ops(0, 998)
+        assert drop_root("/var/run/docker.sock", ops) == 998
+        assert ops.calls == [("stat", "/var/run/docker.sock"), ("setgroups", [998]), ("setgid", 1000),
+                             ("setuid", 1000)]
+
+    def test_an_unprivileged_start_changes_nothing(self) -> None:
+        from app.sandbox.docker_proxy import drop_root
+
+        ops = self._Ops(1000, 998)
+        assert drop_root("/var/run/docker.sock", ops) is None
+        assert ops.calls == []

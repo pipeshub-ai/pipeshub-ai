@@ -40,9 +40,9 @@ describe('Logger: call-site fields, the stack rule and LOG_FORMAT=json', () => {
   const winstonRoot = (): winston.Logger => (Logger.getInstance() as any).logger
   /** What the console transport prints for a record, under the current LOG_FORMAT. */
   const consoleLine = (r: Record<string, unknown>): string => {
-    const shaped = winstonRoot().format.transform({ ...r }, {}) as Record<string | symbol, unknown>
+    const shaped = winstonRoot().format.transform({ ...r } as any, {}) as Record<string | symbol, unknown>
     const console = winstonRoot().transports.find((t) => t instanceof winston.transports.Console)!
-    return String((console.format!.transform(shaped, {}) as Record<symbol, unknown>)[MESSAGE])
+    return String((console.format!.transform(shaped as any, {}) as Record<symbol, unknown>)[MESSAGE])
   }
   const inRequest = (fn: () => void) =>
     runWithRequestContext({ rootId: 'req-1' }, () => {

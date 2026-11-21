@@ -71,12 +71,12 @@ brew install mariadb-connector-c # Add to path
 
 **Redis:**
 ```bash
-docker run -d --name redis --restart always -p 6379:6379 redis:7.4-bookworm
+docker run -d --name redis --restart always -p 6379:6379 redis:7.4.12-bookworm
 ```
 
 **Qdrant:** (ה-API Key חייב להתאים ל-.env)
 ```bash
-docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15
+docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15.5
 ```
 
 **שרת ETCD:**
@@ -194,7 +194,7 @@ docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9
 ```bash
 cd backend/nodejs/apps
 cp ../../env.template .env  # Create .env file from template
-npm install
+npm ci
 npm run dev
 ```
 
@@ -206,11 +206,8 @@ cp ../env.template .env
 python3.12 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install uv
-pip install uv
-
 # Install dependencies
-uv pip install -e .
+PYTHON=venv/bin/python requirements/install.sh dev --project . --editable
 
 # Install additional language models
 python -m spacy download en_core_web_sm
@@ -227,7 +224,7 @@ python -m app.docling_main
 ```bash
 cd frontend
 cp env.template .env  # Modify port if Node.js backend uses a different one
-npm install
+npm ci
 PORT=3001 npm run dev
 ```
 
@@ -340,7 +337,7 @@ pytest -n auto
 1. התקינו את התלויות (כולל `@playwright/test`):
    ```bash
    cd frontend
-   npm install
+   npm ci
    ```
 
 2. התקינו את דפדפני Playwright:

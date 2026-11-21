@@ -25,6 +25,7 @@ class MockRedisClient extends EventEmitter {
   xack = sinon.stub().resolves(1);
   xgroup = sinon.stub().resolves();
   xautoclaim = sinon.stub().resolves(['0-0', [], []]);
+  xpending = sinon.stub().resolves([]);
   ping = sinon.stub().resolves('PONG');
   exists = sinon.stub().resolves(0);
   scan = sinon.stub().resolves(['0', []]);

@@ -8,6 +8,7 @@ Skipped unless a daemon and the sandbox image are present. Run with:
 from __future__ import annotations
 
 import asyncio
+import secrets
 import threading
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -18,7 +19,7 @@ from app.sandbox.docker_proxy import DockerApiPolicy, DockerSocketProxy
 
 from ..agent_loop_lib.sandbox.contract.conftest import (
     DOCKER_TEST_IMAGE,
-    docker_available,
+    skip_without_docker,
 )
 
 if TYPE_CHECKING:
@@ -31,15 +32,14 @@ EGRESS = "pipeshub_sandbox_egress"
 
 @pytest.fixture
 def proxy_host(monkeypatch) -> Iterator[str]:
-    available, reason = docker_available()
-    if not available:
-        pytest.skip(reason)
+    skip_without_docker()
 
     loop = asyncio.new_event_loop()
     policy = DockerApiPolicy(
         allowed_images=frozenset({DOCKER_TEST_IMAGE}), allowed_networks=frozenset({EGRESS}),
     )
-    proxy = DockerSocketProxy(policy, "/var/run/docker.sock")
+    token = secrets.token_hex(32)
+    proxy = DockerSocketProxy(policy, "/var/run/docker.sock", caller_token=token)
     server = loop.run_until_complete(asyncio.start_server(proxy.handle, "127.0.0.1", 0))
     port = server.sockets[0].getsockname()[1]
     thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -47,6 +47,7 @@ def proxy_host(monkeypatch) -> Iterator[str]:
 
     host = f"tcp://127.0.0.1:{port}"
     monkeypatch.setenv("DOCKER_HOST", host)
+    monkeypatch.setenv("DOCKER_PROXY_TOKEN", token)
     yield host
 
     loop.call_soon_threadsafe(server.close)

@@ -534,6 +534,21 @@ describe('AuthMiddleware', () => {
         oauthClientId: 'client123',
       })
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
+      expect(req.user).to.not.have.property('knowledgeLimit')
+    })
+
+    it('SYNCMAIN2: carries a limited token\'s knowledge limit (main #4451) on req.user', async () => {
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' })
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: [] }
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'client123', scope: 'kb:read', knowledgeLimit,
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', fullName: 'T', role: 'member' }))
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.user.knowledgeLimit).to.deep.equal(knowledgeLimit)
     })
 
     describe('a token bound to /mcp', () => {
@@ -1269,6 +1284,32 @@ describe('AuthMiddleware', () => {
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args).to.have.length(0)
       expect(req.tokenPayload).to.deep.equal(decoded)
+    })
+
+    it('passes an audience requirement to scoped token verification', async () => {
+      const decoded = {
+        orgId: 'org1',
+        workerId: 'worker1',
+        aud: 'pipeshub-agent-harness',
+        scopes: ['agent-run:claim'],
+      }
+      tokenService.verifyScopedToken.resolves(decoded)
+      const middleware = authMiddleware.scopedTokenValidator(
+        'agent-run:claim',
+        'pipeshub-agent-harness',
+      )
+      const req = createMockRequest({ headers: { authorization: 'Bearer scoped-token' } })
+      const next = createMockNext()
+
+      await middleware(req, createMockResponse(), next)
+
+      expect(tokenService.verifyScopedToken.calledOnceWithExactly(
+        'scoped-token',
+        'agent-run:claim',
+        'pipeshub-agent-harness',
+      )).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args).to.have.length(0)
     })
 
     it('should call next with error when no token provided', async () => {

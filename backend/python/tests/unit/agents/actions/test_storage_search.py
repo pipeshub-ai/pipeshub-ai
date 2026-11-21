@@ -19,7 +19,7 @@ import logging
 import os
 import platform
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -45,7 +45,10 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
+
+    import regex
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1576,6 +1579,7 @@ class TestReviewFindings:
             'find . -name "*.json" -print0 | xargs -0 cat', cwd=str(tmp_path), timeout=20,
         )
         assert success is True
+        # wall-clock-ok: a hang waits out the 20 s pipeline timeout (and then fails success); the fix takes ms
         assert loop.time() - started < 10
 
 
@@ -1784,43 +1788,52 @@ class TestXargsArgInjection:
         ]
 
 
+class _TimedPattern:
+    """A compiled pattern that records the timeout each match is given."""
+
+    def __init__(self, compiled: regex.Pattern[str]) -> None:
+        self._compiled = compiled
+        self.pattern = compiled.pattern
+        self.timeouts: list[float | None] = []
+
+    def finditer(self, text: str, *, timeout: float | None = None, **kwargs: Any) -> Iterator[regex.Match[str]]:  # noqa: ANN401
+        self.timeouts.append(timeout)
+        return self._compiled.finditer(text, timeout=timeout, **kwargs)
+
+
 class TestRankingIsBounded:
     """Ranking runs LLM-written patterns in Python; they must not hang a worker."""
 
     @pytest.mark.timeout(5)
     def test_catastrophic_pattern_finishes_and_keeps_the_file(self, tmp_path):
-        import time
-
         from app.agents.actions.storage_search.storage_search import (
+            _RANK_MATCH_TIMEOUT_SECS,
             _grep_search_regexes,
             _rank_candidates,
         )
 
         vrid = "cccccccc-0000-0000-0000-000000000000"
         (tmp_path / f"record_{vrid}.json").write_text("a" * 200_000)
-        regexes = _grep_search_regexes('grep -rci "a*a*a*a*a*b" .')
+        regexes = [_TimedPattern(rx) for rx in _grep_search_regexes('grep -rci "a*a*a*a*a*b" .')]
 
-        started = time.monotonic()
         ranked = _rank_candidates([(f"./record_{vrid}.json", vrid, 1)], str(tmp_path), regexes)
 
-        assert time.monotonic() - started < 1.0
+        timeouts = [t for rx in regexes for t in rx.timeouts]
+        assert timeouts and all(t is not None and 0 < t <= _RANK_MATCH_TIMEOUT_SECS for t in timeouts)
         assert [r[1] for r in ranked] == [vrid]
 
     @pytest.mark.timeout(5)
     def test_timed_out_match_scores_zero_but_reports_bytes_read(self, tmp_path):
-        import time
-
         import regex
 
         from app.agents.actions.storage_search.storage_search import _score_record_file
 
         path = tmp_path / "record_x.json"
         path.write_text("y" + "x" * 5000)
-        rx = regex.compile(r"(x+x+)+y", regex.IGNORECASE)
+        rx = _TimedPattern(regex.compile(r"(x+x+)+y", regex.IGNORECASE))
 
-        started = time.monotonic()
         assert _score_record_file(str(path), [rx], timeout=0.2) == (0, 0, "", 5001)
-        assert time.monotonic() - started < 1.0
+        assert rx.timeouts == [0.2]
 
     def test_alternatives_and_pattern_length_are_capped(self):
         from app.agents.actions.storage_search.storage_search import _grep_search_regexes

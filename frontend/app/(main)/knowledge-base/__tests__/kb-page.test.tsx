@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import '@/lib/__tests__/test-i18n';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUploadStore } from '@/lib/store/upload-store';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { clearSessionCache } from '@/lib/api/session-cache';
@@ -95,10 +95,10 @@ vi.mock('@/config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/config')>();
   return {
     ...actual,
-    // Keep the real collection views, but do not wire the real auth client.
-    // A live client calls /api/v1/connectors with no token, toasts that failure,
-    // and the reindex "Try again" test then clicks the wrong error toast.
-    useAuthStore: undefined,
+    // Keep the real collection views and the real auth store, but do not wire
+    // the real auth client. A live client calls /api/v1/connectors with no
+    // token, toasts that failure, and the reindex "Try again" test then clicks
+    // the wrong error toast.
     logoutAndRedirect: undefined,
     logoutFromWorkspaceMenu: undefined,
     apiClient: undefined,
@@ -148,6 +148,11 @@ vi.mock('@/app/components/share', () => ({
     <button onClick={onShareClick}>Share</button>
   ),
   ShareSidebar: ({ open }: { open: boolean }) => (open ? <aside aria-label="Share collection" /> : null),
+}));
+
+vi.mock('../publications/publications-panel', () => ({
+  PublicationsPanel: ({ open, kbId }: { open: boolean; kbId: string }) =>
+    open ? <aside aria-label={`Publications of ${kbId}`} /> : null,
 }));
 
 const share = vi.hoisted(() => ({ getSharedMembers: vi.fn() }));
@@ -379,6 +384,22 @@ describe('Knowledge base page — collections list', () => {
     await waitFor(() =>
       expect(toastTexts()).toContain('Failed to load Collections — Could not load collections. Please refresh the page.'),
     );
+  });
+});
+
+describe('Knowledge base page — the list to assistive tech (QAFINAL-FU-AXE)', () => {
+  it('KBAXE-1: is a table of rows of cells under named column headers, with every control named', async () => {
+    await openEngineering();
+    const table = screen.getByRole('table');
+    expect(within(table).getAllByRole('columnheader').length).toBeGreaterThan(1);
+    expect(within(row('spec.pdf')).getAllByRole('cell').length).toBeGreaterThan(1);
+    expect(within(row('spec.pdf')).getByRole('checkbox', { name: 'Select spec.pdf' })).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: 'Select all' })).toBeTruthy();
+    // The rules the UX captures' axe pass found broken here; colour contrast needs a browser, so the captures keep it.
+    const result = await axe.run(document.body, {
+      runOnly: { type: 'rule', values: ['aria-required-children', 'aria-required-parent', 'button-name', 'label', 'nested-interactive'] },
+    });
+    expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => `${n.html.slice(0, 120)} ${n.failureSummary}`).join(' | ')}`)).toEqual([]);
   });
 });
 
@@ -1557,6 +1578,24 @@ describe('Knowledge base page — folders and sharing', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Share' }));
 
     expect(await screen.findByRole('complementary', { name: 'Share collection' })).toBeTruthy();
+  });
+
+  it('U4 KP-1: with the Labs flag off, an owner sees no Publish', async () => {
+    useFeatureFlagsStore.setState({ flags: {}, agentHarness: null });
+    await openEngineering();
+    useKnowledgeBaseStore.getState().setNodes([ENGINEERING]);
+    await screen.findByRole('button', { name: 'Share' });
+    expect(screen.queryByRole('button', { name: 'Publish' })).toBeNull();
+  });
+
+  it('U4 KP-1: with the Labs flag on, the owner opens the publications panel', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_KNOWLEDGE_PUBLICATIONS: true }, agentHarness: null });
+    await openEngineering();
+    useKnowledgeBaseStore.getState().setNodes([ENGINEERING]);
+    await screen.findByRole('button', { name: 'Share' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Publish' }));
+    expect(await screen.findByRole('complementary', { name: 'Publications of kb-eng' })).toBeTruthy();
+    useFeatureFlagsStore.setState({ flags: {}, agentHarness: null });
   });
 
   it('shows sharing as locked for an owner without sharing permission', async () => {

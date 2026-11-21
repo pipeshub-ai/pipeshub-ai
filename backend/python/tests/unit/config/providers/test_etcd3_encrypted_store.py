@@ -19,7 +19,7 @@ from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyVal
 from app.utils.encryption.encryption_service import DecryptionError, EncryptionService
 
 ENDPOINTS_KEY = config_node_constants.ENDPOINTS.value
-SECRET_KEY = "etcdcov-throwaway-test-secret"
+SECRET_KEY = "d98199b9a509244a592d6b8e9aec6dcfd4a2951ce1af5dcf6d2d5a76b7557cb5"
 OTHER_HEX_KEY = "11" * 32
 ETCD3_CLIENT = "app.config.providers.etcd.etcd3_connection_manager.etcd3.client"
 
@@ -158,11 +158,15 @@ class TestConstruction:
         with pytest.raises(ValueError, match="ETCD_URL"):
             Etcd3EncryptedKeyValueStore(logging.getLogger("etcdcov-test"))
 
-    def test_url_scheme_is_dropped_and_host_port_timeout_parsed(
+    def test_https_url_parsed_with_the_client_certificate(
         self, env, monkeypatch, etcd_client_factory
     ) -> None:
+        """SEC-D-06: an https URL connects with TLS and this component's certificate; it used to drop to plaintext."""
         monkeypatch.setenv("ETCD_URL", "https://etcd.internal:12379")
         monkeypatch.setenv("ETCD_TIMEOUT", "2500")
+        monkeypatch.setenv("ETCD_CA_FILE", "/tls/ca.crt")
+        monkeypatch.setenv("ETCD_CERT_FILE", "/tls/tls.crt")
+        monkeypatch.setenv("ETCD_KEY_FILE", "/tls/tls.key")
 
         store = Etcd3EncryptedKeyValueStore(logging.getLogger("etcdcov-test"))
 
@@ -170,6 +174,15 @@ class TestConstruction:
         assert config.hosts == ["etcd.internal"]
         assert config.port == 12379
         assert config.timeout == 2.5
+        assert (config.ca_cert, config.cert_cert, config.cert_key) == ("/tls/ca.crt", "/tls/tls.crt", "/tls/tls.key")
+
+    def test_https_url_without_the_client_certificate_is_refused(self, env, monkeypatch) -> None:
+        monkeypatch.setenv("ETCD_URL", "https://etcd.internal:12379")
+        for name in ("ETCD_CA_FILE", "ETCD_CERT_FILE", "ETCD_KEY_FILE"):
+            monkeypatch.delenv(name, raising=False)
+
+        with pytest.raises(ValueError, match="ETCD_CA_FILE, ETCD_CERT_FILE, ETCD_KEY_FILE"):
+            Etcd3EncryptedKeyValueStore(logging.getLogger("etcdcov-test"))
 
     def test_timeout_defaults_to_five_seconds(self, env, etcd_client_factory) -> None:
         store = Etcd3EncryptedKeyValueStore(logging.getLogger("etcdcov-test"))

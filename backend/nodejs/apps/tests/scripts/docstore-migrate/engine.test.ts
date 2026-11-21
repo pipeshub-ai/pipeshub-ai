@@ -185,11 +185,16 @@ describe('docstore-migrate engine', () => {
   describe('runtime and state', () => {
     it('refuses one PostgreSQL URL without opening MongoDB', async () => {
       const cfg = { mongoUri: 'mongodb://127.0.0.1:1/', pgImportUrl: 'postgresql://j@127.0.0.1:1/db' } as never;
-      const t = Date.now();
       const store = process.env.DOC_STORE;
-      const err = await MigrationRuntime.open(cfg).then(() => undefined, (e: Error) => e);
+      const connect = sinon.stub(MongoClient.prototype, 'connect').rejects(new Error('must not connect'));
+      let err: Error | undefined;
+      try {
+        err = await MigrationRuntime.open(cfg).then(() => undefined, (e: Error) => e);
+      } finally {
+        connect.restore();
+      }
       expect(err?.message).to.include('both needed');
-      expect(Date.now() - t).to.be.lessThan(2000);
+      expect(connect.called, 'MongoDB was opened').to.equal(false);
       // a refused open must not switch the process to the PostgreSQL repositories (later tests in the same process would use them)
       expect(process.env.DOC_STORE).to.equal(store);
     });

@@ -29,7 +29,7 @@ STAGE_STATE_PROPERTIES = frozenset({
     "virtualRecordId", "workerId",
 })
 
-#: The record schema's property names as the previous release defined them.
+#: The record schema's property names: the previous release's, and the ones this release only accepts.
 RECORD_PROPERTIES = frozenset({
     "accessRule", "connectorId", "connectorName", "contentRev", "createdAtTimestamp", "definition",
     "deleteBatchId", "deleteSource", "deletedAtTimestamp", "deletedByUserId", "duplicateReconcileAttempts",
@@ -54,6 +54,11 @@ RECORD_PROPERTIES = frozenset({
     # only accepts them and writes none; the schema carries them first so a process on the older schema never
     # meets a key it rejects once a later release writes them.
     "failedAt", "firstQueuedAt", "indexingAttempts", "pageCount",
+}) | frozenset({
+    # Accepted from this release, so the next can write them; written only by features that are off by default (a
+    # chat upload's uploader and send state with the agent harness on, an edition's source metadata reader), so
+    # with them off a record still validates against the previous release's schema.
+    "awaitingSend", "editionFields", "uploadConversationId", "uploaderAgentKey", "uploaderKind", "uploaderUserId",
 })
 
 

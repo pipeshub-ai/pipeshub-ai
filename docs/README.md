@@ -20,6 +20,7 @@ In-repo design docs:
 - [Web search and fetch — providers, typed failures, address policy, metrics and QA checks](./web-search.md)
 - [Logging — levels, formats, line shape, field names and the conventions every log line follows](./logging.md)
 - [Query service profiling — one-command load test, flame graphs and resource usage](./query-profiling.md)
+- [Agent harness guides — user guide, builder guide, vendor DPA checklist, availability SLO and DR drill](./agent-harness-v2/guides/user-guide.md) (index: [agent-harness-v2/README.md](./agent-harness-v2/README.md))
 
 Upgrading:
 

@@ -24,6 +24,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphTransactionStore,
     UnclassifiedProviderWrite,
 )
+from tests.edition_overlay import extended
 from tests.unit.connectors import graph_provider_classes as classes
 
 if TYPE_CHECKING:
@@ -618,7 +619,15 @@ _OUTSIDE_THE_STORE: dict[tuple[str, str], str] = {
     ("app/api/routes/agent.py", "batch_create_edges"): "agent, toolset, tool and knowledge-link edges, and an agent's own permission edges",
     ("app/api/routes/chatbot.py", "batch_create_edges"): "permission and is-of-type edges of conversation attachments and conversations: no connector, never stamped",
     ("app/api/routes/chatbot.py", "batch_delete_edges"): "permission edges of conversations, as above",
-    ("app/api/routes/chatbot.py", "delete_nodes"): "the files node of a deleted attachment",
+    # The harness's skill erasure (FOLLOWUPS1-1, SLASH1 D4, CLEANUP-G1): skills, their versions and candidates, and a
+    # departed author's skill permission edges; skills are agent resources, never records or groups
+    ("app/agents/agent_loop/skills/graph_store.py", "delete_nodes"): "skill candidates and skill versions, not records",
+    ("app/agents/agent_loop/skills/graph_store.py", "delete_nodes_and_edges"): "a skill and its edges, not a record",
+    ("app/agents/agent_loop/skills/graph_store.py", "batch_delete_edges"): "user-to-skill permission edges",
+    # The chat upload, moved out of chatbot.py into the attachment service: conversation attachments as above
+    ("app/services/chat_attachments/uploads.py", "batch_create_edges"): (
+        "permission and is-of-type edges of conversation attachments: no connector, never stamped"
+    ),
     # the organisation-to-app edge of a new connector instance
     ("app/connectors/core/registry/connector_registry.py", "update_node"): "the permissionModel of a connector instance (an app), not of a record group",
     ("app/connectors/core/registry/connector_registry.py", "batch_create_edges"): "the organisation-to-app edge of a new connector instance",
@@ -770,6 +779,18 @@ def test_the_classes_hold_the_writers_that_were_missed() -> None:
             "delete_connector_instance", "link_record_to_group", "execute_query"} <= classes.STRUCTURAL
 
 
+def _listed_outside_the_store() -> dict[tuple[str, str], str]:
+    """The list here, with an edition overlay's ``"<file>::<call>": reason`` entries (``tests/edition_overlay.py``)."""
+    added = extended({}, "structural_writers", "outside_the_store")
+    listed = dict(_OUTSIDE_THE_STORE)
+    for key, reason in added.items():
+        rel, _, name = key.partition("::")
+        if (rel, name) in listed:
+            raise ValueError(f"structural_writers.json: outside_the_store already has {key}")
+        listed[(rel, name)] = reason
+    return listed
+
+
 # A transaction store's provider is the guarded proxy: anything but a read reached through it outside the store's classified methods is refused
 # at run time. This keeps app code from reaching for it at all. (file relative to app/, the line's text) -> why it is safe.
 _TX_PROVIDER = re.compile(r"\b(?:tx_store|tx|txn_store|transaction_store)\.graph_provider\b(?:\.(\w+))?")
@@ -807,19 +828,20 @@ def test_the_scan_finds_a_write_an_alias_and_a_bound_method_and_lets_a_read_thro
 
 
 def test_no_structural_provider_write_outside_the_store_is_unlisted() -> None:
-    unlisted = {k: v for k, v in _structural_calls_outside_the_store().items() if k not in _OUTSIDE_THE_STORE}
+    listed = _listed_outside_the_store()
+    unlisted = {k: v for k, v in _structural_calls_outside_the_store().items() if k not in listed}
     assert not unlisted, f"route these through GraphTransactionStore, or move the generation and list them with a reason: {unlisted}"
 
 
 def test_a_listed_caller_that_claims_to_mark_the_connector_does() -> None:
-    for (rel, _name), reason in _OUTSIDE_THE_STORE.items():
+    for (rel, _name), reason in _listed_outside_the_store().items():
         if reason.startswith("marks"):
             text = (_APP.parent / rel).read_text(encoding="utf-8")
             assert "note_structure_change(" in text or "note_org_structure_change(" in text or "mark_scope_dirty(" in text, rel
 
 
 def test_every_listed_caller_still_exists() -> None:
-    assert set(_OUTSIDE_THE_STORE) <= set(_structural_calls_outside_the_store()), "remove the entries of callers that are gone"
+    assert set(_listed_outside_the_store()) <= set(_structural_calls_outside_the_store()), "remove the entries of callers that are gone"
 
 
 async def test_mark_scope_dirty_moves_the_generation_then_falls_back_to_unsafe_then_raises(monkeypatch) -> None:

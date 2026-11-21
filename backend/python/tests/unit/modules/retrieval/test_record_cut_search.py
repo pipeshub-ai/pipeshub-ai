@@ -181,6 +181,8 @@ def _service(store: _FakeStore, graph: AsyncMock) -> mod.RetrievalService:
     service.get_embedding_model_instance = AsyncMock(return_value=embedder)
     service._excluded_demo_apps = AsyncMock(return_value=frozenset())
     service._container_filter_enabled = AsyncMock(return_value=False)
+    # Knowledge publications (off by default) are read before the search scope is built.
+    service.publications = MagicMock(enabled=AsyncMock(return_value=False))
     return service
 
 

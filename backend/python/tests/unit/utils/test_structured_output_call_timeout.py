@@ -17,6 +17,7 @@ from app.utils.streaming import (
     _ainvoke_throttled,
     invoke_with_structured_output_and_reflection,
 )
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
@@ -122,15 +123,20 @@ class TestStructuredOutputTimeout:
         )
         assert result is None
 
-    async def test_reflection_retry_is_timed_too(self, no_structured_output) -> None:
+    def test_reflection_retry_is_timed_too(self, no_structured_output) -> None:
         llm = _Llm(["not json", '{"value": 2}'], [0.0, 1.0])
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        result = await invoke_with_structured_output_and_reflection(
-            llm, [HumanMessage(content="q")], _Answer, max_retries=1, call_timeout=0.05,
-        )
-        assert result is None
-        assert loop.time() - started < 0.5
+
+        async def main() -> None:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            result = await invoke_with_structured_output_and_reflection(
+                llm, [HumanMessage(content="q")], _Answer, max_retries=1, call_timeout=0.05,
+            )
+            assert result is None
+            assert llm.calls == 2
+            assert loop.time() - started == pytest.approx(0.05)
+
+        run_on_virtual_time(main)
 
     async def test_without_timeout_behaviour_is_unchanged(self, no_structured_output) -> None:
         llm = _Llm(['{"value": 3}'], [0.05])

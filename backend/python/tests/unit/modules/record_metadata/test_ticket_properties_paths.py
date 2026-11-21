@@ -9,7 +9,6 @@ from the graph's record document, writes ``properties.json`` for it.
 
 import json
 import logging
-import time
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,6 +42,7 @@ from app.modules.record_metadata.builtin import (
 from app.modules.transformers import sink_orchestrator as sink_module
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.services.featureflag.platform_settings import ArtifactSettings
+from tests.support.cpu_budget import thread_cpu
 from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
 ORG = "org-1"
@@ -307,11 +307,11 @@ def _realistic(n: int) -> list[TicketRecord]:
 
 def test_ten_thousand_tickets_build_their_properties_within_budget() -> None:
     tickets = _realistic(10_000)
-    started = time.perf_counter()
-    sizes = [len(canonical_json(m.to_json_dict())) for m in map(ticket_metadata, tickets) if m is not None]
-    elapsed = time.perf_counter() - started
+    with thread_cpu() as cpu:
+        sizes = [len(canonical_json(m.to_json_dict())) for m in map(ticket_metadata, tickets) if m is not None]
+    elapsed = cpu.seconds
     assert len(sizes) == 10_000
-    # Budget: 0.5 ms per record (5 s for 10k), loose enough for a loaded CI worker.
+    # Budget: 0.5 ms of CPU per record (5 s for 10k), over ten times the ~0.35 s it takes.
     assert elapsed < 5.0, f"{elapsed:.2f}s for 10k tickets"
     print(f"\n10k tickets: {elapsed * 1000:.0f} ms ({elapsed / 10_000 * 1e6:.1f} us per record); "
           f"mean file {sum(sizes) / len(sizes):.0f} B")

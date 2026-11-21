@@ -112,6 +112,7 @@ async def test_first_use_removes_nothing_on_the_loop_and_the_timer_cleans_up_at_
     first pass, in a thread and without waiting for its interval, removes the dead runs and keeps this one."""
     import asyncio
     import os
+    import threading
     import time
     from pathlib import Path
 
@@ -130,20 +131,18 @@ async def test_first_use_removes_nothing_on_the_loop_and_the_timer_cleans_up_at_
             (d / f"f{j}.in").write_bytes(b"x" * 100)
         os.utime(d, (stale, stale))
     monkeypatch.setenv("PUSH_SPOOL_DIR", str(root))
-    gaps: list[float] = []
-    stop = asyncio.Event()
+    # By thread, not by timing the loop (as test_spool's sweep test): a gap also counts GC and a descheduled host.
+    loop_thread = threading.get_ident()
+    removed_on_loop: list[str] = []
+    real_rmtree = S.shutil.rmtree
 
-    async def ticker() -> None:
-        last = time.monotonic()
-        while not stop.is_set():
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
+    def rmtree(path: object, *a: object, **kw: object) -> object:
+        if threading.get_ident() == loop_thread:
+            removed_on_loop.append(str(path))
+        return real_rmtree(path, *a, **kw)
 
+    monkeypatch.setattr(S.shutil, "rmtree", rmtree)
     app = FastAPI()
-    t = asyncio.create_task(ticker())
-    await asyncio.sleep(0.02)
     runtime = push_api.runtime_for(app)
     try:
         assert len(list(root.glob("run-dead*"))) == 600, "runtime_for removed directories on the event loop"
@@ -154,10 +153,8 @@ async def test_first_use_removes_nothing_on_the_loop_and_the_timer_cleans_up_at_
         assert not list(root.glob("run-dead*")), "the first pass waited for the interval"
         assert Path(runtime.spool.dir, S.ALIVE).exists()
     finally:
-        stop.set()
-        await t
         await push_api.close_runtime(app)
-    assert max(gaps) < 0.25  # the margin is for a shared host
+    assert not [p for p in removed_on_loop if "run-dead" in p], "dead runs were removed on the event loop"
 
 
 async def test_close_runtime_stops_the_timer_and_removes_this_run(tmp_path, monkeypatch) -> None:

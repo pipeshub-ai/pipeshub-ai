@@ -895,7 +895,12 @@ class TestDeleteKnowledgeBase:
 
         assert (await service.delete_knowledge_base("kb1", "user1", "org1"))["success"] is True
         assert written["/services/lateWriteSweep/pending/kb1"]["recordGroupIds"] == ["kb1"]
-        assert service.graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {"connectorId": "kb1"}
+        # The harness also reads the KB's publications on delete; the group read is the one on record groups.
+        group_reads = [
+            c.kwargs for c in service.graph_provider.get_nodes_by_filters.await_args_list
+            if c.kwargs.get("collection") == CollectionNames.RECORD_GROUPS.value
+        ]
+        assert [r["filters"] for r in group_reads] == [{"connectorId": "kb1"}]
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service, mock_config_service) -> None:

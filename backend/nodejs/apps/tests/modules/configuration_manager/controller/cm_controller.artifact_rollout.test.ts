@@ -5,6 +5,7 @@ import sinon from 'sinon'
 import * as cmConfig from '../../../../src/modules/configuration_manager/config/config'
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
 import { setPlatformSettings } from '../../../../src/modules/configuration_manager/controller/cm_controller'
+import { testControlPlane } from '../../control-plane/support/in-memory'
 import {
   GENERATION_KEY,
   MEMBERSHIP_DIRECTORY,
@@ -12,6 +13,7 @@ import {
   nextGeneration,
   savePutsArtifactReadsAtRisk,
 } from '../../../../src/modules/configuration_manager/utils/artifactRollout'
+import { inRequestOrg } from '../../../helpers/request-org-context'
 
 const SETTINGS = '/services/platform/settings'
 const NOW = 1_700_000_000_000
@@ -29,6 +31,12 @@ function store(settings: unknown, entries: Record<string, unknown> = {}): any {
     get: sinon.stub().callsFake(async (k: string) => (k in data ? data[k] : null)),
     set: sinon.stub().callsFake(async (k: string, v: unknown) => {
       data[k] = v
+    }),
+    // The harness saves the settings as a compare-and-set (UX2): written only over the value it read.
+    compareAndSet: sinon.stub().callsFake(async (k: string, expected: unknown, v: unknown) => {
+      if ((k in data ? data[k] : null) !== expected) return false
+      data[k] = v
+      return true
     }),
     listKeysInDirectory: sinon.stub().callsFake(async (d: string) => Object.keys(data).filter((k) => k.startsWith(d))),
   }
@@ -48,7 +56,7 @@ function res(): any {
 async function save(kv: any, featureFlags: Record<string, boolean>): Promise<{ next: sinon.SinonStub; res: any }> {
   const next = sinon.stub()
   const r = res()
-  await setPlatformSettings(kv)({ body: { fileUploadMaxSizeBytes: 1, featureFlags }, user: {} } as any, r, next)
+  await inRequestOrg(setPlatformSettings(kv, testControlPlane()))({ body: { fileUploadMaxSizeBytes: 1, featureFlags }, user: {} } as any, r, next)
   return { next, res: r }
 }
 
@@ -164,7 +172,8 @@ describe('setPlatformSettings: the artifact rollout rules', () => {
       await save(kv, { ENABLE_ARTIFACT_READ: true })
       expect(saved(kv)[GENERATION_KEY]).to.equal(first)
 
-      await save(kv, {})
+      // A save carries only the flags it changes (UX1), so both are turned off by name.
+      await save(kv, { ENABLE_ARTIFACT_READ_SHADOW: false, ENABLE_ARTIFACT_READ: false })
       expect(saved(kv)[GENERATION_KEY]).to.equal(null)
       await save(kv, { ENABLE_ARTIFACT_READ: true })
       expect(saved(kv)[GENERATION_KEY]).to.not.equal(first)
@@ -173,7 +182,7 @@ describe('setPlatformSettings: the artifact rollout rules', () => {
     it('is never taken from the request body', async () => {
       const kv = store({ featureFlags: {} }, { [key('a')]: entry() })
       const next = sinon.stub()
-      await setPlatformSettings(kv)(
+      await inRequestOrg(setPlatformSettings(kv, testControlPlane()))(
         { body: { fileUploadMaxSizeBytes: 1, featureFlags: { ENABLE_ARTIFACT_READ: true }, [GENERATION_KEY]: 'chosen-by-caller' }, user: {} } as any,
         res(),
         next,

@@ -23,6 +23,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
+from tests.support.record_access import InMemoryRecordAccess
 
 RECORDS = CollectionNames.RECORDS.value
 APPS = CollectionNames.APPS.value
@@ -61,7 +62,10 @@ class Harness:
         graph = AsyncMock()
         graph.get_document = AsyncMock(side_effect=self._get)
         graph.update_node = AsyncMock(return_value=True)
-        graph.check_record_access_with_details = AsyncMock(return_value={"record": {}} if access else None)
+        self.access = InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1")
+        if access:
+            self.access.grant("rec-1", user="user-1")
+        self.access.serve(graph)
         event_processor.graph_provider = graph
         event_processor.stage_ingress = None
         event_processor.on_event = self._on_event
@@ -144,7 +148,7 @@ class TestRechecksBeforeParsing:
 
         await self._assert_dropped(harness)  # a user without access marks nothing
 
-        harness.graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+        assert harness.access.asked_about == [("user-1", "org-1", "rec-1")]
 
     async def test_an_event_naming_no_user_is_dropped(self) -> None:
         await self._assert_dropped(Harness(_record()), _payload(requestedByUserId=None))

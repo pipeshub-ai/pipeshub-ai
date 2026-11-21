@@ -70,7 +70,7 @@ class TestRegistryDispatchFromConfig:
         from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
 
         registry = build_default_registry()
-        assert set(registry.names()) == {"local", "docker", "e2b"}
+        assert set(registry.names()) == {"local", "docker", "e2b", "broker"}
 
     def test_uninstalled_backend_reports_the_real_reason(self) -> None:
         from app.agent_loop_lib.sandbox.coding.registry import build_default_registry

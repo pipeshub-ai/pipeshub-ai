@@ -22,6 +22,7 @@ from app.services.cache.interface import NoopAccessibleRecordsCache
 from app.services.redis.config import RedisConnectionConfig
 from app.services.redis.loop_clients import LoopBoundClients
 from app.services.redis.standalone_provider import StandaloneRedisProvider
+from harness_core.testing.virtual_time import run_on_virtual_time
 from tests.support.loop_topology import on_loop, redis_tcp_server, worker_loop
 
 ORG = "org-1"
@@ -887,27 +888,31 @@ class TestFailedInvalidationIsNotDropped:
         assert cache._pending_deletes == {}
         await cache.close()
 
-    async def test_an_open_breaker_queues_the_delete_without_waiting(self, monkeypatch) -> None:
+    def test_an_open_breaker_queues_the_delete_without_waiting(self, monkeypatch) -> None:
         """A dead Redis must cost the indexing handler nothing per record: with
         the breaker open the delete is handed to the retry and the call
         returns at once, and the retry still drops the key once Redis is back."""
         monkeypatch.setattr(
             AccessibleRecordsCache, "INVALIDATION_RETRY_DELAYS_SECONDS", (0.01,), raising=False
         )
-        redis = _UnresponsiveRedis()
-        cache = _cache(redis)
-        await cache.get_or_compute_kb(ORG, KB, _loader({"v": "r"}))
-        cache._down_until = time.monotonic() + AccessibleRecordsCache.DOWN_BACKOFF_SECONDS
 
-        started = time.monotonic()
-        await asyncio.gather(*(cache.invalidate_kb(ORG, KB) for _ in range(20)))
-        elapsed = time.monotonic() - started
+        async def main() -> None:
+            redis = _UnresponsiveRedis()
+            cache = _cache(redis)
+            await cache.get_or_compute_kb(ORG, KB, _loader({"v": "r"}))
+            cache._down_until = time.monotonic() + AccessibleRecordsCache.DOWN_BACKOFF_SECONDS
 
-        assert elapsed < AccessibleRecordsCache.OP_TIMEOUT_SECONDS / 4, elapsed
-        assert len(cache._retry_tasks) == 1, "concurrent invalidations must share one retry"
-        redis.responsive = True
-        await _wait_for(lambda: cache._kb_key(ORG, KB) not in redis.strings, timeout=10.0)
-        await cache.close()
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            await asyncio.gather(*(cache.invalidate_kb(ORG, KB) for _ in range(20)))
+            # The hung delete is OP_TIMEOUT_SECONDS on this clock; awaiting even one inline shows here exactly.
+            assert loop.time() - started < AccessibleRecordsCache.OP_TIMEOUT_SECONDS / 4
+            assert len(cache._retry_tasks) == 1, "concurrent invalidations must share one retry"
+            redis.responsive = True
+            await _wait_for(lambda: cache._kb_key(ORG, KB) not in redis.strings, timeout=10.0)
+            await cache.close()
+
+        run_on_virtual_time(main)
 
     async def test_retrying_stops_once_the_entries_have_expired(self, monkeypatch) -> None:
         monkeypatch.setattr(

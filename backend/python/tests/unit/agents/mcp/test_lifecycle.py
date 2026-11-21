@@ -157,6 +157,8 @@ class TestDeletionEventsCleanUp:
         graph = MagicMock()
         graph.get_entity_id_by_email = AsyncMock(return_value="user-key")
         graph.batch_upsert_nodes = AsyncMock()
+        # The harness also hands a deleted user's skills on (SLASH1); none here.
+        graph.get_nodes_by_filters = AsyncMock(return_value=[])
         container = MagicMock()
         container.config_service.return_value = store
         return EntityEventService(MagicMock(), graph, container)

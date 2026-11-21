@@ -640,6 +640,33 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(await groups.addMembers(await fx.newOrg(), [g1._id], [u1])).to.equal(0);
     });
 
+    it('holdLiveMembership holds a membership of one of the live groups named; false otherwise', async () => {
+      const org = await fx.newOrg();
+      const g1 = await groups.create(org, { name: uniq('g'), type: 'custom' });
+      const g2 = await groups.create(org, { name: uniq('g'), type: 'custom' });
+      const gone = await groups.create(org, { name: uniq('g'), type: 'custom' });
+      const [u, outsider] = [fx.newId(), fx.newId()];
+      await groups.addMembers(org, [g2._id, gone._id], [u]);
+      await groups.softDelete(org, gone._id);
+      const other = await fx.newOrg();
+      const held = await fx.uow.run(
+        async (tx) => [
+          await groups.holdLiveMembership(org, [g1._id, g2._id], u, tx),
+          await groups.holdLiveMembership(org, [g1._id], u, tx),
+          await groups.holdLiveMembership(org, [gone._id], u, tx),
+          await groups.holdLiveMembership(org, [g1._id, g2._id], outsider, tx),
+          await groups.holdLiveMembership(org, [], u, tx),
+          await groups.holdLiveMembership(org, ['not-an-id'], u, tx),
+        ],
+        { org },
+      );
+      expect(held).to.deep.equal([true, false, false, false, false, false]);
+      expect(
+        await fx.uow.run((tx) => groups.holdLiveMembership(other, [g2._id], u, tx), { org: other }),
+      ).to.equal(false);
+      expect((await groups.getLive(org, g2._id))!.users).to.deep.equal([u]);
+    });
+
     it('groupsOfUser returns id, name and type of live groups', async () => {
       const org = await fx.newOrg();
       const g = await groups.create(org, { name: uniq('g'), type: 'standard' });
@@ -649,6 +676,24 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       await groups.softDelete(org, gone._id);
       const r = await groups.groupsOfUser(org, u);
       expect(r).to.deep.equal([{ _id: g._id, name: g.name, type: 'standard' }]);
+    });
+
+    it('listLiveByIds returns id, name and type of the live groups among the ids, in one read', async () => {
+      const org = await fx.newOrg();
+      const g1 = await groups.create(org, { name: uniq('g'), type: 'custom' });
+      const g2 = await groups.create(org, { name: uniq('g'), type: 'standard' });
+      const gone = await groups.create(org, { name: uniq('g'), type: 'custom' });
+      await groups.softDelete(org, gone._id);
+      const other = await fx.newOrg();
+      const theirs = await groups.create(other, { name: uniq('g'), type: 'custom' });
+      const r = await groups.listLiveByIds(org, [g2._id, gone._id, theirs._id, 'not-an-id', g1._id, g2._id]);
+      expect([...r].sort((a, b) => a._id.localeCompare(b._id))).to.deep.equal(
+        [
+          { _id: g1._id, name: g1.name, type: 'custom' },
+          { _id: g2._id, name: g2.name, type: 'standard' },
+        ].sort((a, b) => a._id.localeCompare(b._id)),
+      );
+      expect(await groups.listLiveByIds(org, [])).to.deep.equal([]);
     });
 
     it('summariesForUsers returns live groups containing any of the people, with member ids as strings', async () => {
@@ -818,6 +863,29 @@ export function describeIdentityContract(fx: IdentityFixture): void {
         return users.countActiveAdmins(org, tx);
       }, { org });
       expect(seen).to.equal(1);
+    });
+
+    it('holdLiveAdmin holds a live human admin inside a unit of work; false for anyone else', async () => {
+      const org = await fx.newOrg();
+      const admin = await person(org, { role: 'admin' });
+      const member = await person(org);
+      const removed = await person(org, { role: 'admin' });
+      await users.markDeleted(org, removed._id);
+      const other = await fx.newOrg();
+      const held = await fx.uow.run(
+        async (tx) => [
+          await users.holdLiveAdmin(org, admin._id, tx),
+          await users.holdLiveAdmin(org, member._id, tx),
+          await users.holdLiveAdmin(org, removed._id, tx),
+          await users.holdLiveAdmin(org, fx.newId(), tx),
+          await users.holdLiveAdmin(org, 'not-an-id', tx),
+        ],
+        { org },
+      );
+      expect(held).to.deep.equal([true, false, false, false, false]);
+      expect(await fx.uow.run((tx) => users.holdLiveAdmin(other, admin._id, tx), { org: other })).to.equal(false);
+      // Holding writes nothing a reader sees: the account is unchanged.
+      expect((await users.getLive(org, admin._id))!.role).to.equal('admin');
     });
 
     it('updateProfile inside a failing unit of work rolls back only when transactional', async () => {
@@ -1037,6 +1105,25 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(await users.getAny(org, x._id)).to.equal(null);
       await users.deleteById(caller._id);
       expect(await users.getAny(org, caller._id)).to.equal(null);
+    });
+
+    it("an org deletion's accounts: disableEnabledAccounts answers whom it disabled; setAccountsDisabled turns them back", async () => {
+      const org = await fx.newOrg();
+      const on = await person(org);
+      const off = await person(org);
+      const gone = await person(org);
+      await users.setAccountsDisabled(org, [off._id], true);
+      await users.markDeleted(org, gone._id);
+      const other = await fx.newOrg();
+      const stranger = await person(other);
+      expect(await users.disableEnabledAccounts(org)).to.deep.equal([on._id]);
+      expect(await users.disableEnabledAccounts(org)).to.deep.equal([]);
+      expect((await users.getLive(other, stranger._id))!.isDisabled).to.equal(false);
+      expect(await users.setAccountsDisabled(org, [on._id, gone._id, stranger._id], false)).to.equal(1);
+      expect((await users.getLive(org, on._id))!.isDisabled).to.equal(false);
+      expect((await users.getLive(org, off._id))!.isDisabled).to.equal(true);
+      expect(await users.setAccountsDisabled(org, [on._id], false)).to.equal(0);
+      expect(await users.setAccountsDisabled(org, ['not-an-id'], true)).to.equal(0);
     });
 
     it('changeEmail moves the account; correctEmail rewrites the address', async () => {

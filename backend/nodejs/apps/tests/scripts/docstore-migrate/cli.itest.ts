@@ -724,20 +724,20 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           // (a request carries its organisation in the context; the shadow read, started inside it, inherits it)
           const inOrg = <T>(u: { org_id: string; id: string }, fn: () => T): T => runWithOrgContext(makeOrgContext({ orgId: u.org_id, userId: u.id, kind: 'user', source: 'jwt', requestId: 'shadow-test' }), fn);
           for (const u of users) answers.push(await inOrg(u, () => shadow.getLive(u.org_id, u.id)));
-          answers.forEach((a: any, i) => expect(String(a?._id), 'the caller gets MongoDB\'s answer').to.equal(users[i].id));
+          answers.forEach((a: any, i) => expect(String(a?._id), 'the caller gets MongoDB\'s answer').to.equal(users[i]!.id));
           await new Promise((r) => setTimeout(r, 500));
           expect(counts).to.deep.equal({ equal: users.length });
           // PostgreSQL drifts: counted once, logged without the value
-          await stack.admin((c) => c.query("UPDATE identity.users SET full_name = 'Secret Drift Name' WHERE id = $1", [users[0].id]));
-          await inOrg(users[0], () => shadow.getLive(users[0].org_id, users[0].id));
+          await stack.admin((c) => c.query("UPDATE identity.users SET full_name = 'Secret Drift Name' WHERE id = $1", [users[0]!.id]));
+          await inOrg(users[0], () => shadow.getLive(users[0]!.org_id, users[0]!.id));
           await new Promise((r) => setTimeout(r, 600));
           expect(counts.diff).to.equal(1);
           expect(JSON.stringify(warned)).to.not.match(/Secret Drift Name/);
           expect(warned[0]).to.include({ repo: 'user', method: 'getLive' });
-          expect((warned[0] as any).ids).to.deep.equal([users[0].id]);
+          expect((warned[0] as any).ids).to.deep.equal([users[0]!.id]);
           // the shadow runtime cannot write, whatever the method is called
           let refused = false;
-          await inOrg(users[0], () => new PgUserRepository().create(users[0].org_id, { email: 'shadow-write@example.test', fullName: 'x' })).catch(() => (refused = true));
+          await inOrg(users[0], () => new PgUserRepository().create(users[0]!.org_id, { email: 'shadow-write@example.test', fullName: 'x' })).catch(() => (refused = true));
           expect(refused).to.equal(true);
           expect((await stack.admin((c) => c.query("SELECT 1 FROM identity.users WHERE email = 'shadow-write@example.test'"))).rowCount).to.equal(0);
         } finally {

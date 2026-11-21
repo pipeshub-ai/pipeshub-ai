@@ -411,14 +411,15 @@ class TestAbandonedJobs:
         self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "1800")
-        await parse_pool.submit(os.getpid)
+        stuck_pid = await parse_pool.submit(os.getpid)
 
-        started = time.monotonic()
         with pytest.raises(parse_pool.ParseWorkerError) as raised:
             await parse_pool.submit(time.sleep, 600, label="slow.pdf", timeout=0.5)
 
+        # The job sleeps 600 s and the pool's own timeout is 1800 s: only the job's 0.5 s deadline can
+        # time it out (and stop its worker) inside the test's timeout.
         assert raised.value.cause == "timed_out"
-        assert time.monotonic() - started < 10
+        assert await _wait_until_gone(stuck_pid)
         assert await parse_pool.submit(len, b"abc", timeout=30) == len(b"abc")
 
     async def test_cancelling_the_caller_stops_its_running_parse(self, governor: MagicMock) -> None:

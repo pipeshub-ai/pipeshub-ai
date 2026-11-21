@@ -135,7 +135,7 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
   it('getAllScopesGroupedByCategory returns every category bucket', () => {
     const grouped = getAllScopesGroupedByCategory()
     expect(Object.keys(grouped).length).to.be.greaterThan(5)
-    expect(grouped.Identity.some((s) => s.name === 'openid')).to.be.true
+    expect(grouped.Identity!.some((s) => s.name === 'openid')).to.be.true
   })
 
   it('isValidScope and getScopeDefinition', () => {

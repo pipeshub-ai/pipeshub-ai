@@ -2,11 +2,14 @@
 import json
 import logging
 import uuid
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
 import pytest
 from fastapi import HTTPException
+
+from tests.support.bound_org import bind_test_org
 
 OAUTH_APP_SAVE_FAILED = "Failed to save the OAuth app. Please try again."
 
@@ -5547,6 +5550,8 @@ class TestUpdateToolsetInstanceRoute:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         instances = [{"_id": "i1", "orgId": "o1", "instanceName": "Old Name", "toolsetType": "jira", "authType": "API_TOKEN"}]
         req = _make_request(body_dict={"instanceName": "New Name"})
@@ -5565,6 +5570,8 @@ class TestUpdateToolsetInstanceRoute:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         instances = [
             {
@@ -5599,6 +5606,8 @@ class TestUpdateToolsetInstanceRoute:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         instances = [
             {
@@ -5644,6 +5653,8 @@ class TestUpdateToolsetInstanceRoute:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         instances = [{"_id": "i1", "orgId": "o1", "instanceName": "Google", "toolsetType": "google", "authType": "OAUTH", "oauthConfigId": "oc-old"}]
         req = _make_request(body_dict={"oauthConfigId": "oc-new"})
@@ -5681,6 +5692,8 @@ class TestUpdateToolsetInstanceRoute:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
 
         instances = [{"_id": "i1", "orgId": "o1", "instanceName": "Google", "toolsetType": "google", "authType": "OAUTH", "oauthConfigId": "oc-1"}]
         req = _make_request(body_dict={
@@ -5785,6 +5798,8 @@ class TestDeleteToolsetInstanceRoute:
         from app.api.routes.toolsets import delete_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
         cs.list_keys_in_directory = AsyncMock(return_value=[])
 
         instances = [{"_id": "i1", "orgId": "o1", "instanceName": "Jira", "toolsetType": "jira"}]
@@ -5808,6 +5823,8 @@ class TestDeleteToolsetInstanceRoute:
         from app.api.routes.toolsets import delete_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
         cs.list_keys_in_directory = AsyncMock(return_value=["/services/toolsets/i1/user-1", "/services/toolsets/i1/user-2"])
         cs.delete_config = AsyncMock(return_value=True)
 
@@ -5839,6 +5856,8 @@ class TestDeleteToolsetInstanceRoute:
         from app.api.routes.toolsets import delete_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
         cs.list_keys_in_directory = AsyncMock(return_value=[
             "/services/toolsets/i1/user-1",
             "/services/other/path",  # different prefix
@@ -5888,6 +5907,8 @@ class TestDeleteToolsetInstanceRoute:
         from app.api.routes.toolsets import delete_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
+        # The write replays its change onto a fresh read of the whole list (TSC-21).
+        cs.get_config = AsyncMock(side_effect=lambda *_a, **_k: list(instances))
         cs.list_keys_in_directory = AsyncMock(return_value=["/services/toolsets/i1/user-1"])
         cs.delete_config = AsyncMock(side_effect=Exception("fail"))
 
@@ -8068,3 +8089,9 @@ class TestIsActionsEnabled:
             side_effect=RuntimeError("unwired"),
         ):
             assert await is_actions_enabled(None) is True
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("o1")

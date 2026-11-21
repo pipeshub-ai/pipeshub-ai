@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import base64
-import time
 
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.modules.parsers.image_parser import svg_worker
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from tests.support.cpu_budget import thread_cpu
 
 
 def _b64(svg: str) -> str:
@@ -43,10 +44,9 @@ def test_a_hostile_svg_is_refused_quickly_by_the_static_checks(name: str) -> Non
     """The refusal itself, in this process: no renderer start-up in the timing.
     Half a second here; the bound is half the render deadline, so it still shows
     the refusal comes long before a render could, on a slow shared runner too."""
-    start = time.process_time()
-    with pytest.raises(DocumentProcessingError):
+    with thread_cpu() as cpu, pytest.raises(DocumentProcessingError):
         ImageParser._svg_to_png_in_process(_b64(HOSTILE[name]))
-    assert time.process_time() - start < 5.0
+    assert cpu.seconds < 5.0
 
 
 def test_refusing_too_many_elements_costs_the_same_however_many_there_are() -> None:
@@ -57,10 +57,9 @@ def test_refusing_too_many_elements_costs_the_same_however_many_there_are() -> N
         svg = _b64('<svg xmlns="http://www.w3.org/2000/svg">' + "<g/>" * n + "</svg>")
         best = float("inf")
         for _ in range(3):
-            start = time.process_time()
-            with pytest.raises(DocumentProcessingError):
+            with thread_cpu() as cpu, pytest.raises(DocumentProcessingError):
                 ImageParser._svg_to_png_in_process(svg)
-            best = min(best, time.process_time() - start)
+            best = min(best, cpu.seconds)
         return best
 
     at_limit, far_past = refuse(60_000), refuse(1_200_000)
@@ -68,14 +67,23 @@ def test_refusing_too_many_elements_costs_the_same_however_many_there_are() -> N
 
 
 @pytest.mark.parametrize("name", sorted(HOSTILE))
-def test_a_hostile_svg_is_refused_through_the_renderer(name: str) -> None:
-    # A warm renderer first, so the timed window is the refusal, not a cold
-    # start (each test process starts its own renderers).
-    ImageParser.svg_base64_to_png_base64(_b64(GOOD_SVG))
-    start = time.monotonic()  # wall-clock: the refusal happens in the child
-    with pytest.raises(DocumentProcessingError):
-        ImageParser.svg_base64_to_png_base64(_b64(HOSTILE[name]))
-    assert time.monotonic() - start < 2.0
+def test_a_hostile_svg_is_refused_through_the_renderer(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The refusal happens in the child, so it is told by its path, not its duration: the renderer's static
+    # checks answer with their own reason and the renderer stays; a render that ran into the deadline is
+    # "timed out" and kills it.
+    pool = svg_worker._Renderers()
+    monkeypatch.setattr(svg_worker, "_renderers", pool)
+    try:
+        ImageParser.svg_base64_to_png_base64(_b64(GOOD_SVG))
+        (warm,) = pool._idle
+        with pytest.raises(DocumentProcessingError) as in_process:
+            ImageParser._svg_to_png_in_process(_b64(HOSTILE[name]))
+        with pytest.raises(DocumentProcessingError) as through_renderer:
+            ImageParser.svg_base64_to_png_base64(_b64(HOSTILE[name]))
+        assert str(through_renderer.value) == f"DocumentProcessingError: {in_process.value}"
+        assert pool._idle == [warm] and warm.alive()
+    finally:
+        pool.close_all()
 
 
 def test_an_oversized_svg_is_refused_before_it_is_parsed() -> None:

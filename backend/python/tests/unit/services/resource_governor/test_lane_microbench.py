@@ -1,11 +1,11 @@
 """Cost of an uncontended lease against the existing heavy-slot cost (ratio gate)."""
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING
 
 from app.services.resource_governor.lanes import LaneBudget, plan_lanes
 from app.services.resource_governor.shared_slots import SharedSlots
+from tests.support.cpu_budget import thread_cpu
 from tests.unit.lane_gauge import Mem
 
 if TYPE_CHECKING:
@@ -13,12 +13,14 @@ if TYPE_CHECKING:
 
 
 def _quantile_ms(fn, q: float, rounds: int = 1500) -> float:
+    """The *q* quantile of one call's CPU time (its syscalls included): the locks are non-blocking, so a call's
+    cost is CPU, and a reading on the wall clock would add the time a busy host kept the thread off the CPU."""
     fn()
     samples = []
     for _ in range(rounds):
-        start = time.perf_counter()
-        fn()
-        samples.append(time.perf_counter() - start)
+        with thread_cpu() as cpu:
+            fn()
+        samples.append(cpu.seconds)
     samples.sort()
     return samples[int(q * (len(samples) - 1))] * 1000
 
@@ -33,12 +35,12 @@ def _paired_ms(a, b, q: float, rounds: int = 1500) -> tuple[float, float]:
     b()
     times_a, times_b = [], []
     for _ in range(rounds):
-        start = time.perf_counter()
-        a()
-        middle = time.perf_counter()
-        b()
-        times_a.append(middle - start)
-        times_b.append(time.perf_counter() - middle)
+        with thread_cpu() as cpu_a:
+            a()
+        with thread_cpu() as cpu_b:
+            b()
+        times_a.append(cpu_a.seconds)
+        times_b.append(cpu_b.seconds)
     times_a.sort()
     times_b.sort()
     k = int(q * (rounds - 1))

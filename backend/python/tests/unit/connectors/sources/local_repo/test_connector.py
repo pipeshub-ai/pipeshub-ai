@@ -329,7 +329,6 @@ async def test_a_failed_commit_indexes_nothing_of_it(env, monkeypatch):
 async def test_the_event_loop_stays_responsive_while_a_commit_holds_the_repository_lock(env):
     import asyncio
     import threading
-    import time
 
     push(env.repo, **{"a.py": "a = 1\n"})
     held, release = threading.Event(), threading.Event()
@@ -343,15 +342,13 @@ async def test_the_event_loop_stays_responsive_while_a_commit_holds_the_reposito
     holder.start()
     held.wait()
     sync = asyncio.create_task(env.c.run_sync())  # pinning a generation waits for that lock
-    gaps, last = [], time.monotonic()
     for _ in range(15):
         await asyncio.sleep(0.02)
-        now = time.monotonic()
-        gaps.append(now - last)
-        last = now
+    # The loop kept running while the pin waited: blocked for the whole commit (as before), these sleeps would have
+    # run only once the holder gave up its 10 s wait and let go of the lock.
+    assert holder.is_alive() and not sync.done()
     release.set()
     holder.join()
-    assert max(gaps) < 0.5  # the loop kept running while the pin waited (it was blocked for the whole commit before)
     await sync
     assert "a.py" in env.graph.records
 

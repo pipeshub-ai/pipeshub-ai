@@ -1,6 +1,7 @@
 """Save-time and OAuth-callback SSRF checks in `app.api.routes.mcp_servers`."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
@@ -20,6 +21,7 @@ from app.api.routes.mcp_servers import (
     update_instance,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from tests.support.bound_org import bind_test_org
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 if TYPE_CHECKING:
@@ -133,3 +135,9 @@ class TestOAuthCallbackUsesTheInstancePolicy:
             await handle_oauth_callback(route_request(store), code="c", state="s1", error=None)
 
         assert exchange.await_args.kwargs["allow_private"] is expected
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

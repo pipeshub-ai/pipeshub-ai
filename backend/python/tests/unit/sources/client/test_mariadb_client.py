@@ -7,14 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# We must install a mock 'mariadb' module into sys.modules BEFORE importing
-# the source module, because the source does `import mariadb` at module level
-# and sets it to None if the import fails.
-_mock_mariadb_module = MagicMock()
-_mock_mariadb_module.Error = type("MariaDBError", (Exception,), {})
-sys.modules["mariadb"] = _mock_mariadb_module
-
-from app.sources.client.mariadb.mariadb import (  # noqa: E402
+import app.sources.client.mariadb.mariadb as _mariadb_mod
+from app.sources.client.mariadb.mariadb import (
+    DEFAULT_CONNECT_TIMEOUT_S,
     AuthConfig,
     MariaDBClient,
     MariaDBClientBuilder,
@@ -23,9 +18,7 @@ from app.sources.client.mariadb.mariadb import (  # noqa: E402
     MariaDBResponse,
 )
 
-import app.sources.client.mariadb.mariadb as _mariadb_mod  # noqa: E402
-
-_mariadb_mod.mariadb = _mock_mariadb_module
+_mock_mariadb_module = MagicMock()
 
 
 # ---------------------------------------------------------------------------
@@ -84,9 +77,12 @@ def mock_config_service():
     return AsyncMock()
 
 
-@pytest.fixture
-def mariadb_module():
-    """Return the mock mariadb module and reset state between tests."""
+@pytest.fixture(autouse=True)
+def mariadb_module(monkeypatch: pytest.MonkeyPatch):
+    """The driver double, for this test only: the client module's ``mariadb`` and ``sys.modules`` are restored after
+    it, so no later test (SAFE-RETRY's real-driver cases among them) sees the double."""
+    monkeypatch.setattr(_mariadb_mod, "mariadb", _mock_mariadb_module)
+    monkeypatch.setitem(sys.modules, "mariadb", _mock_mariadb_module)
     _mock_mariadb_module.reset_mock()
     _mock_mariadb_module.Error = type("MariaDBError", (Exception,), {})
     _mock_mariadb_module.create_async_pool = AsyncMock(return_value=_make_pool_mock())
@@ -371,7 +367,7 @@ class TestMariaDBConfig:
         cfg = MariaDBConfig(host="localhost", user="root")
         assert cfg.port == 3306
         assert cfg.password == ""
-        assert cfg.timeout == 30
+        assert cfg.timeout == DEFAULT_CONNECT_TIMEOUT_S
         assert cfg.charset == "utf8mb4"
 
     def test_all_options(self):
@@ -406,7 +402,7 @@ class TestMariaDBConnectorConfig:
             "auth": {"host": "localhost", "user": "root"},
         })
         assert cfg.auth.port == 3306
-        assert cfg.timeout == 30
+        assert cfg.timeout == DEFAULT_CONNECT_TIMEOUT_S
 
 
 # ---------------------------------------------------------------------------

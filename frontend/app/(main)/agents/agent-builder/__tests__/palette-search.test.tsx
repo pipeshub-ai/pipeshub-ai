@@ -100,7 +100,7 @@ describe('palette search helpers', () => {
   });
 });
 
-function renderSidebar() {
+function renderSidebar(extra: Partial<React.ComponentProps<typeof AgentBuilderSidebar>> = {}) {
   return renderInTheme(
     <AgentBuilderSidebar
       open
@@ -118,6 +118,7 @@ function renderSidebar() {
       refreshMcpServers={async () => {}}
       onNotify={vi.fn()}
       webSearchAttached={null}
+      {...extra}
     />,
   );
 }
@@ -198,5 +199,44 @@ describe('palette search box', () => {
     renderSidebar();
     typeQuery('serper');
     expect(screen.queryByText('No results found')).toBeNull();
+  });
+});
+
+describe('R30-LAT-FU-1: the palette pages and searches the catalogs on the server', () => {
+  const paging = (overrides: Partial<{ hasMore: boolean; total: number | null }> = {}) => ({
+    hasMore: false,
+    total: null,
+    loadingMore: false,
+    more: vi.fn(async () => {}),
+    ...overrides,
+  });
+
+  it('asks the server once per pause in typing, with the trimmed query, and clears it when the box empties', async () => {
+    vi.useFakeTimers();
+    try {
+      const onSearchCatalogs = vi.fn(async () => {});
+      renderSidebar({ onSearchCatalogs, catalogs: { knowledgeBases: paging(), connectors: paging(), toolsets: paging() } });
+      await vi.advanceTimersByTimeAsync(0);
+      onSearchCatalogs.mockClear();
+      typeQuery('pla');
+      typeQuery('playbook ');
+      await vi.advanceTimersByTimeAsync(299);
+      expect(onSearchCatalogs).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onSearchCatalogs.mock.calls).toEqual([['playbook']]);
+      typeQuery('');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onSearchCatalogs).toHaveBeenLastCalledWith('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Show more on Collections reads the catalog's next page once the rows read are all shown, and counts what the org holds", () => {
+    const collections = paging({ hasMore: true, total: 250 });
+    renderSidebar({ catalogs: { knowledgeBases: collections, connectors: paging(), toolsets: paging() } });
+    const more = screen.getByRole('button', { name: 'Show more (248)' });
+    fireEvent.click(more);
+    expect(collections.more).toHaveBeenCalledTimes(1);
   });
 });

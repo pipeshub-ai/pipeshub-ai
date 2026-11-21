@@ -201,6 +201,7 @@ def test_excel_batch_through_the_pool_is_not_throttled_by_spawn_allowance(
     started = time.monotonic()
     jobs = [submit(pool, quick, kind=ParseKind.EXCEL_LOAD, covered=True, size=MIB) for _ in range(20)]
     assert [j.future.result(timeout=15) for j in jobs] == [1] * 20
+    # wall-clock-ok: a throttled load waits out the 60 s warm-up window the budget is opened with; these take ms
     assert time.monotonic() - started < 10, "the loads waited for the spawn window"
     assert budget.stats()["spawns_in_window"] == 1, "only the layout worker's cold start is counted"
 
@@ -632,16 +633,13 @@ def test_waiting_excel_loads_do_not_stall_the_event_loop(
     blocker = submit(pool, hold, release, kind=ParseKind.EXCEL_LOAD, covered=True, size=MIB)
     assert wait_for(lambda: pool.stats()["busy"] == 1)
 
-    async def scenario() -> float:
-        lag = 0.0
+    async def scenario() -> None:
         loops = 0
 
         async def beat() -> None:
-            nonlocal lag, loops
+            nonlocal loops
             while True:
-                t = time.monotonic()
                 await asyncio.sleep(0.01)
-                lag = max(lag, time.monotonic() - t - 0.01)
                 loops += 1
 
         heartbeat = asyncio.create_task(beat())
@@ -652,16 +650,18 @@ def test_waiting_excel_loads_do_not_stall_the_event_loop(
             return job.future.result(timeout=30)
 
         waiting = [asyncio.create_task(asyncio.to_thread(load)) for _ in range(5)]
+        await asyncio.sleep(0.05)
+        before = loops
         await asyncio.sleep(0.6)
+        # By order, not by the loop's lag: the heartbeat kept ticking while every load was still waiting. A wait on
+        # the loop thread would have held it until the release below.
         assert not any(w.done() for w in waiting), "they are waiting"
+        assert loops - before >= 2, "the loop stalled while loads waited"
         release.set()
         await asyncio.wait_for(asyncio.gather(*waiting), 30)
         heartbeat.cancel()
-        assert loops > 20
-        return lag
 
-    lag = asyncio.run(scenario())
-    assert lag <= 0.1, f"the loop lagged {lag * 1000:.0f} ms while loads waited"
+    asyncio.run(scenario())
     blocker.future.result(timeout=10)
 
 
@@ -685,7 +685,7 @@ def test_waiting_excel_loads_do_not_exhaust_the_default_executor(
     blocker = submit(pool, hold, release, kind=ParseKind.EXCEL_LOAD, covered=True, size=MIB)
     assert wait_for(lambda: pool.stats()["busy"] == 1)
 
-    async def scenario() -> float:
+    async def scenario() -> None:
         def load() -> object:
             job = _Job(quick, (), "xlsx", MIB, kind=ParseKind.EXCEL_LOAD, covered=True)
             pool.enqueue(job)
@@ -693,17 +693,16 @@ def test_waiting_excel_loads_do_not_exhaust_the_default_executor(
 
         waiting = [asyncio.create_task(asyncio.to_thread(load)) for _ in range(permits)]
         await asyncio.sleep(0.3)
-        started = time.monotonic()
+        # By order: the other work ran while every waiter still held its thread. With the executor exhausted it
+        # would wait for the release below, which comes only after it, and the 5 s guard would end it.
         assert await asyncio.wait_for(asyncio.to_thread(lambda: "other work"), 5) == "other work"
-        took = time.monotonic() - started
+        assert not any(w.done() for w in waiting)
         release.set()
         await asyncio.wait_for(asyncio.gather(*waiting), 30)
-        return took
 
-    took = asyncio.run(scenario())
+    asyncio.run(scenario())
     default_size = min(32, (os.cpu_count() or 1) + 4)
     assert permits < default_size, "waiters (one per heavy permit) fit in the loop's default executor"
-    assert took < 1.0
     blocker.future.result(timeout=10)
     governor.close()
 
@@ -729,6 +728,7 @@ def test_excel_wait_is_cancellable_and_bounded_by_the_record_deadline(
     with pytest.raises(ParseWorkerError) as raised:
         late.future.result(timeout=10)
     assert raised.value.cause == "unavailable"
+    # wall-clock-ok: unbounded, the wait lasts the load's own 240 s timeout; bounded, it ends at 0.4 s
     assert time.monotonic() - started < 5
     release.set()
     blocker.future.result(timeout=10)

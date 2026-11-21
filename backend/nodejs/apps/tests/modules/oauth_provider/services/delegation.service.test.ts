@@ -351,8 +351,8 @@ describe('DelegationService', () => {
 
       const [entry] = await service.listDelegations(orgId, accountId);
 
-      expect(entry.inactive).to.equal(true);
-      expect(entry.inactiveReason).to.contain('administrator');
+      expect(entry!.inactive).to.equal(true);
+      expect(entry!.inactiveReason).to.contain('administrator');
     });
   });
 

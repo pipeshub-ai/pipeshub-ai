@@ -7,24 +7,24 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 
 | Connector | Group | Rule | Container where | Writer evidence | Classified by |
 |---|---|---|---|---|---|
-| `atlassian/confluence_cloud` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_cloud/connector.py:4847` | writer read |
+| `atlassian/confluence_cloud` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_cloud/connector.py:4864` | writer read |
 | `atlassian/confluence_datacenter` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_datacenter/connector.py:1080` | writer read |
 | `atlassian/confluence_datacenter_personal` | container | container | the whole app | `app/connectors/sources/atlassian/confluence_datacenter_personal/connector.py:133` | writer read |
-| `atlassian/jira_cloud` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_cloud/connector.py:5318` | writer read |
+| `atlassian/jira_cloud` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_cloud/connector.py:5324` | writer read |
 | `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py:4869` | writer read |
-| `atlassian/jira_cloud_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_cloud_personal/connector.py:97` | writer read |
+| `atlassian/jira_cloud_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_cloud_personal/connector.py:103` | writer read |
 | `atlassian/jira_data_center_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_data_center_personal/connector.py:66` | writer read |
-| `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1690` | writer read |
-| `microsoft/onedrive` | onedrive | override | - | `app/connectors/sources/microsoft/onedrive/connector.py:1060` | writer read |
+| `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1710` | writer read |
+| `microsoft/onedrive` | onedrive | override | - | `app/connectors/sources/microsoft/onedrive/connector.py:1089` | writer read |
 | `google/drive/team` | drive | union | shared drives whose items are neither shared nor limited | `app/connectors/sources/google/drive/team/drive_access.py:64` | writer read |
-| `google/drive/individual` | container | container | the whole app | `app/connectors/sources/google/drive/individual/connector.py:185` | writer read |
+| `google/drive/individual` | container | container | the whole app | `app/connectors/sources/google/drive/individual/connector.py:201` | writer read |
 | `linear` | linear | container | teams | `app/connectors/sources/linear/connector.py:1190` | writer read |
-| `slack/team` | container | container | channels (threads inherit the channel) | `app/connectors/sources/slack/team/connector.py:1655` | writer read |
-| `slack/individual` | container | container | the whole app | `app/connectors/sources/slack/individual/connector.py:332` | writer read |
-| `google/gmail/team` | container | container | mailboxes (labels inherit the mailbox) | `app/connectors/sources/google/gmail/team/connector.py:1787` | writer read |
-| `google/gmail/individual` | container | container | the whole app | `app/connectors/sources/google/gmail/individual/connector.py:131` | writer read |
-| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py:1190` | writer read |
-| `microsoft/outlook_individual` | container | container | the whole app | `app/connectors/sources/microsoft/outlook_individual/connector.py:167` | writer read |
+| `slack/team` | container | container | channels (threads inherit the channel) | `app/connectors/sources/slack/team/connector.py:1662` | writer read |
+| `slack/individual` | container | container | the whole app | `app/connectors/sources/slack/individual/connector.py:339` | writer read |
+| `google/gmail/team` | container | container | mailboxes (labels inherit the mailbox) | `app/connectors/sources/google/gmail/team/connector.py:1797` | writer read |
+| `google/gmail/individual` | container | container | the whole app | `app/connectors/sources/google/gmail/individual/connector.py:138` | writer read |
+| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py:1195` | writer read |
+| `microsoft/outlook_individual` | container | container | the whole app | `app/connectors/sources/microsoft/outlook_individual/connector.py:175` | writer read |
 | `github_teams` | container | container | repositories and projects | `app/connectors/sources/github_teams/projects.py:526` | writer read |
 | `github` | container | container | the whole app | `app/connectors/sources/github/connector.py:178` | writer read |
 | `gitlab` | container | container | projects | `app/connectors/sources/gitlab/projects.py:538` | writer read |
@@ -49,7 +49,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `snowflake` | container | container | the whole app | `app/connectors/sources/snowflake/connector.py:399` | writer read |
 | `rss` | container | container | the whole app | `app/connectors/sources/rss/connector.py:106` | writer read |
 | `web` | container | container | the whole app | `app/connectors/sources/web/connector.py:351` | writer read |
-| `box` | item-acl | override | - | `app/connectors/sources/box/connector.py:522` | grep, to confirm |
+| `box` | item-acl | override | - | `app/connectors/sources/box/connector.py:534` | grep, to confirm |
 | `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py:115` | grep, to confirm |
 | `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3751` | grep, to confirm |
 | `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py:3765` | grep, to confirm |

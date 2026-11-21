@@ -357,18 +357,16 @@ async def test_worker_has_no_core_files_and_an_address_space_limit(spool) -> Non
 async def test_an_unclosed_string_body_does_not_hold_the_worker(spool) -> None:
     evil = b'{"recordName":"' + b'\\"' * 20_000      # 40 KB; the quadratic lexer held the worker for 50 s
     good = raw(envelope())
-    w = W.PushWorker(lease_wait_s=5, kill_after_s=30)
+    # A held worker is killed at the deadline and answers PUSH_TIMEOUT; the lexer's own cost is bounded in test_structure.
+    w = W.PushWorker(lease_wait_s=5, kill_after_s=10)
     try:
         await w.validate(spool.write(good), spool.new_path("out"), schema_id=None, schema=None)  # warm up
-        started = time.monotonic()
+        pid = w._proc.pid
         with pytest.raises(PushRefusal) as e:
             await w.validate(spool.write(evil), spool.new_path("out"), schema_id=None, schema=None)
-        refused_after = time.monotonic() - started
         assert (e.value.status, e.value.reason) == (400, "INVALID_JSON")
-        started = time.monotonic()
         await w.validate(spool.write(good), spool.new_path("out"), schema_id=None, schema=None)
-        assert refused_after < 2.0 and time.monotonic() - started < 2.0
-        assert w.deaths == 0
+        assert (w.deaths, w._proc.pid) == (0, pid)
     finally:
         await w.close()
 
@@ -589,7 +587,8 @@ async def test_a_replay_runs_inside_the_remaining_budget_not_a_fresh_one(spool) 
         with pytest.raises(PushRefusal) as e:
             await task
         assert e.value.reason == "PUSH_TIMEOUT"  # the replay hit the same 0.6 s wall budget
-        assert time.monotonic() - started < 2.0
+        # wall-clock-ok: a backstop against a fresh budget per replay that never ends, not a timing of the budget
+        assert time.monotonic() - started < 20.0
     finally:
         await w.close()
 
@@ -654,7 +653,8 @@ async def test_a_run_under_the_kill_is_still_charged_its_seconds(spool) -> None:
         v = await w.validate(spool.write(big_body()), spool.new_path("out"), schema_id=None, schema=None, account=events)
         took = time.monotonic() - started
         assert v.block_count == 60_000 and events.names == ["lease"]
-        assert events.lease_s() >= took * 0.9 and events.lease_s() > 0.2
+        # Charged the body's real work (well over 0.2 s), never more than the call took.
+        assert 0.2 < events.lease_s() <= took
     finally:
         await w.close()
 

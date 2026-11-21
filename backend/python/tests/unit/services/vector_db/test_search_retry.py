@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +17,8 @@ from app.services.vector_db.search_retry import (
     query_nearest_points_with_retry,
 )
 from app.telemetry.backend import METRICS_BACKEND
+from app.utils import request_deadline
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 pytestmark = pytest.mark.asyncio
 
@@ -45,6 +48,14 @@ def _retries(provider: str, outcome: str) -> float:
         ):
             return float(line.rsplit(" ", 1)[1])
     return 0.0
+
+
+@pytest.fixture
+def on_the_loop_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The retry budget and the request deadline read the running loop's clock, the one their waits run on."""
+    clock = SimpleNamespace(monotonic=lambda: asyncio.get_running_loop().time())
+    monkeypatch.setattr(search_retry, "time", clock)
+    monkeypatch.setattr(request_deadline, "time", clock)
 
 
 @pytest.fixture(autouse=True)
@@ -117,7 +128,7 @@ async def test_no_retry_when_the_first_attempt_used_up_the_budget() -> None:
     assert _retries("p-budget", "skipped_budget") == 1
 
 
-async def test_the_retry_is_cut_off_at_what_is_left_of_the_budget(monkeypatch) -> None:
+def test_the_retry_is_cut_off_at_what_is_left_of_the_budget(monkeypatch, on_the_loop_clock) -> None:
     monkeypatch.setattr(search_retry, "MIN_RETRY_SECONDS", 0.0)
     calls = 0
 
@@ -129,25 +140,29 @@ async def test_the_retry_is_cut_off_at_what_is_left_of_the_budget(monkeypatch) -
         # Not asyncio.sleep: the fixture stubs it out to skip the backoff.
         await asyncio.Event().wait()
 
-    service = _service(_first_fails_then_hangs)
-    loop = asyncio.get_running_loop()
-    started = loop.time()
+    async def main() -> None:
+        service = _service(_first_fails_then_hangs)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
 
-    with pytest.raises(VectorSearchUnavailableError) as raised:
-        await query_nearest_points_with_retry(
-            service, "records", ["req"], logger=_LOGGER, budget_seconds=0.5,
-        )
+        with pytest.raises(VectorSearchUnavailableError) as raised:
+            await query_nearest_points_with_retry(
+                service, "records", ["req"], logger=_LOGGER, budget_seconds=0.5,
+            )
 
-    assert raised.value.kind is SearchFailureKind.TIMEOUT
-    assert calls == 2
-    assert loop.time() - started < 5
+        assert raised.value.kind is SearchFailureKind.TIMEOUT
+        assert calls == 2
+        assert loop.time() - started == pytest.approx(0.5)
+
+    run_on_virtual_time(main)
 
 
-async def test_a_first_attempt_that_hangs_is_cut_off_with_room_left_to_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_first_attempt_that_hangs_is_cut_off_with_room_left_to_retry(
+    monkeypatch: pytest.MonkeyPatch, on_the_loop_clock: None
+) -> None:
     """The clients wait 300 s by default; waiting that out would leave no
     budget for the retry, so the first attempt stops early enough for one."""
     monkeypatch.setattr(search_retry, "MIN_RETRY_SECONDS", 0.2)
-    loop = asyncio.get_running_loop()
     results = [[MagicMock()]]
     calls = 0
 
@@ -159,18 +174,22 @@ async def test_a_first_attempt_that_hangs_is_cut_off_with_room_left_to_retry(mon
             await asyncio.Event().wait()
         return results
 
-    service = _service(_hangs_then_answers, name="p-hang")
-    started = loop.time()
+    async def main() -> None:
+        loop = asyncio.get_running_loop()
+        service = _service(_hangs_then_answers, name="p-hang")
+        started = loop.time()
 
-    got = await query_nearest_points_with_retry(
-        service, "records", ["req"], logger=_LOGGER, budget_seconds=1.0,
-    )
+        got = await query_nearest_points_with_retry(
+            service, "records", ["req"], logger=_LOGGER, budget_seconds=1.0,
+        )
 
-    assert got is results
-    assert calls == 2
-    # Cut at the budget less the 0.45 s reserve (0.2 s retry + 0.25 s delay).
-    assert 0.4 < loop.time() - started < 1.0
-    assert _retries("p-hang", "recovered") == 1
+        assert got is results
+        assert calls == 2
+        # Cut at the budget less the 0.45 s reserve (0.2 s retry + 0.25 s delay).
+        assert loop.time() - started == pytest.approx(0.55)
+        assert _retries("p-hang", "recovered") == 1
+
+    run_on_virtual_time(main)
 
 
 async def test_a_budget_too_small_for_two_attempts_gives_the_first_all_of_it() -> None:
@@ -213,22 +232,25 @@ async def _hang(**_: Any) -> list[list[Any]]:  # noqa: ANN401
     return []
 
 
-async def test_under_a_request_deadline_the_budget_is_cut_to_fit_it() -> None:
+def test_under_a_request_deadline_the_budget_is_cut_to_fit_it(on_the_loop_clock: None) -> None:
     from app.utils.request_deadline import deadline_after
 
-    service = _service(None, name="p-deadline")
-    service.query_nearest_points = AsyncMock(side_effect=_hang)
-    loop = asyncio.get_running_loop()
+    async def main() -> None:
+        service = _service(None, name="p-deadline")
+        service.query_nearest_points = AsyncMock(side_effect=_hang)
+        loop = asyncio.get_running_loop()
 
-    with deadline_after(search_retry.DEADLINE_RESERVE_SECONDS + 1.5):
-        started = loop.time()
-        with pytest.raises(VectorSearchUnavailableError) as raised:
-            await query_nearest_points_with_retry(service, "records", ["req"], logger=_LOGGER)
+        with deadline_after(search_retry.DEADLINE_RESERVE_SECONDS + 1.5):
+            started = loop.time()
+            with pytest.raises(VectorSearchUnavailableError) as raised:
+                await query_nearest_points_with_retry(service, "records", ["req"], logger=_LOGGER)
 
-    # Not the 60 s budget: what the deadline left after the reserve.
-    assert loop.time() - started < 5
-    assert raised.value.kind is SearchFailureKind.TIMEOUT
-    assert service.query_nearest_points.await_count == 1
+        # Not the 60 s budget: what the deadline left after the reserve.
+        assert loop.time() - started == pytest.approx(1.5)
+        assert raised.value.kind is SearchFailureKind.TIMEOUT
+        assert service.query_nearest_points.await_count == 1
+
+    run_on_virtual_time(main)
 
 
 async def test_with_too_little_left_it_fails_at_once_without_asking_the_store(caplog) -> None:

@@ -231,8 +231,8 @@ describe('PatService', () => {
       const tokens = await service.listTokens(orgId, userId)
 
       expect(tokens).to.have.lengthOf(2)
-      expect(tokens[0].name).to.equal('named token')
-      expect(tokens[1].name).to.equal('(unnamed token)')
+      expect(tokens[0]!.name).to.equal('named token')
+      expect(tokens[1]!.name).to.equal('(unnamed token)')
       expect(mockOAuthTokenService.listAccessTokensForUser.firstCall.args).to.deep.equal([
         patClientId,
         userId,
@@ -418,8 +418,8 @@ describe('PatService', () => {
 
       const result = await service.listAllTokens(orgId)
 
-      expect(result.data[0].ownerDeleted).to.be.true
-      expect(result.data[0].ownerEmail).to.be.undefined
+      expect(result.data[0]!.ownerDeleted).to.be.true
+      expect(result.data[0]!.ownerEmail).to.be.undefined
     })
   })
 

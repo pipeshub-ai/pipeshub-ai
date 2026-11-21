@@ -9,6 +9,7 @@ from collections import defaultdict
 from typing import Any
 
 from app.schema.node_validator import NodeSchemaValidator
+from tests.support.record_access import InMemoryRecordAccess
 
 _PRIMITIVES = (str, int, float, bool, type(None))
 _VALIDATOR = NodeSchemaValidator()
@@ -64,16 +65,35 @@ class FakeGraphProvider:
         self.nodes: dict[str, dict[str, dict]] = defaultdict(dict)
         self.edges: dict[str, list[dict]] = defaultdict(list)
         self.users: dict[str, dict] = {}
+        # Shares the records collection so a source deleted or trashed here stops being readable, as on a real graph.
+        self.access = InMemoryRecordAccess(records=self.nodes["records"])
+        self.access.serve(self)
         # Method names that raise, to test failure part-way through a delete.
         self.failing: set[str] = set()
 
     def add_user(self, user_id: str, *, key: str | None = None) -> None:
         self.users[user_id] = {"_key": key or user_id, "userId": user_id}
 
-    async def get_user_by_user_id(self, user_id: str) -> dict | None:
+    def add_record(self, record_id: str, *, org_id: str, readers: tuple[str, ...] = ()) -> None:
+        """A knowledge record (a source an artifact can be derived from) and who may read it."""
+        self.nodes["records"][record_id] = {
+            "_key": record_id, "id": record_id, "orgId": org_id, "recordType": "FILE", "recordName": record_id,
+        }
+        for user_id in readers:
+            if user_id not in self.access.users:
+                self.access.user(user_id, org_id)
+            self.access.grant(record_id, user=user_id)
+
+    async def get_typed_records_batch(self, record_ids: list[str]) -> dict[str, dict]:
+        records = self.nodes["records"]
+        return {rid: records[rid] for rid in record_ids if rid in records}
+
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
         return self.users.get(user_id)
 
-    async def get_document(self, doc_id: str, collection: str) -> dict | None:
+    async def get_document(
+        self, doc_id: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> dict | None:
         return self.nodes[collection].get(doc_id)
 
     async def batch_upsert_nodes(self, docs: list[dict], collection: str) -> bool:
@@ -82,6 +102,13 @@ class FakeGraphProvider:
             key = doc.get("_key") or doc.get("id")
             self.nodes[collection][key] = dict(doc)
         return True
+
+    async def ensure_nodes(self, docs: list[dict], collection: str, transaction: str | None = None) -> None:
+        """Creates each node whose key is new; an existing one is left as it is, as on both providers."""
+        for doc in docs:
+            assert_valid_write(collection, doc)
+            key = doc.get("_key") or doc.get("id")
+            self.nodes[collection].setdefault(key, {**doc, "_key": key})
 
     async def batch_create_edges(self, edges: list[dict], collection: str) -> bool:
         self.edges[collection].extend(dict(e) for e in edges)
@@ -116,6 +143,16 @@ class FakeGraphProvider:
             if after_key is not None:
                 matches = [d for d in matches if (d.get("_key") or d.get("id")) > after_key]
         return matches[skip:skip + limit]
+
+    async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], **_ignored: object) -> list[dict]:
+        self._raise_if_failing("get_nodes_by_filters")
+        return [dict(doc) for doc in self.nodes[collection].values() if all(doc.get(k) == v for k, v in filters.items())]
+
+    async def get_records_by_virtual_record_id(self, virtual_record_id: str, **_ignored: object) -> list[str]:
+        return [
+            key for key, doc in self.nodes["records"].items()
+            if doc.get("virtualRecordId") == virtual_record_id and not doc.get("isDeleted")
+        ]
 
     async def get_edges_from_node(self, node_ref: str, collection: str) -> list[dict]:
         node_id = node_ref.split("/", 1)[1]
@@ -184,14 +221,6 @@ class FakeBlobStore:
         # Raised by `purge_document` while set, like storage refusing the delete.
         self.purge_error: BaseException | None = None
 
-    async def purge_document(self, org_id: str, document_id: str) -> int:
-        """Mirrors Node's purge: every version goes, and a document that is
-        already gone counts as 0 removed rather than an error."""
-        self.purge_calls.append((org_id, document_id))
-        if self.purge_error is not None:
-            raise self.purge_error
-        return 1 if self.documents.pop(document_id, None) is not None else 0
-
     def _new_document_id(self) -> str:
         self._next_id += 1
         return f"doc-{self._next_id}"
@@ -229,6 +258,34 @@ class FakeBlobStore:
             "storageVersion": storage_version,
             "priorStorageVersion": prior_storage_version,
         }
+
+    async def purge_document(self, org_id: str, document_id: str) -> int:
+        """Node's purge: every version gone; an absent or another org's document counts as 0 removed, not an error."""
+        self.purge_calls.append((org_id, document_id))
+        if self.purge_error is not None:
+            raise self.purge_error
+        document = self.documents.get(document_id)
+        if document is None or document["org_id"] != org_id:
+            return 0
+        del self.documents[document_id]
+        return 1
+
+    def store(self, org_id: str, content: bytes, *, virtual_record_id: str | None = None) -> str:
+        """A plain stored document (an upload, or a virtual record's blocks when filed under its id)."""
+        document_id = self._new_document_id()
+        self.documents[document_id] = {
+            "org_id": org_id, "content": content, "versions": [content], "virtual_record_id": virtual_record_id,
+        }
+        return document_id
+
+    async def purge_virtual_record_documents(self, org_id: str, virtual_record_id: str) -> int:
+        filed = [
+            document_id for document_id, document in self.documents.items()
+            if document.get("virtual_record_id") == virtual_record_id and document["org_id"] == org_id
+        ]
+        for document_id in filed:
+            del self.documents[document_id]
+        return len(filed)
 
     async def get_document_version_history(self, org_id: str, document_id: str) -> list[dict]:
         version_history = self.documents[document_id].get("version_history") or []

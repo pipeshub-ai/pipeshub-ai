@@ -1,6 +1,7 @@
 """Extended tests for app.api.routes.skills — covers lines 207-641."""
 
 import json
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,6 +25,7 @@ from app.api.routes.skills import (
     _handle_registry_error,
     _require_skills_enabled,
 )
+from tests.support.bound_org import another_request, bind_test_org
 
 MODULE = "app.api.routes.skills"
 
@@ -55,6 +57,19 @@ def _mock_metadata():
     m.pack_name = None
     m.pack_version = None
     return m
+
+
+def _caller_ctx(**extra: object) -> dict:
+    """What `_build_manager` adds for SLASH1 S4: a store that sees no shared skill, and no shared-skill rights."""
+    from app.agents.agent_loop.skills.graph_store import SharedSkillRights
+
+    store = MagicMock()
+    store.sharing = AsyncMock(return_value=None)
+    store.sharings = AsyncMock(return_value={})
+    store.label = AsyncMock(return_value=None)
+    store.labels = AsyncMock(return_value={})
+    store.get_provenance = AsyncMock(return_value=None)
+    return {"store": store, "rights": SharedSkillRights(), "teams": {}, "userKey": "uk1", **extra}
 
 
 def _mock_skill():
@@ -102,6 +117,7 @@ def _mock_manager_and_ctx():
         "email": "test@example.com",
         "domain": "example.com",
         "userKey": "uk1",
+        **_caller_ctx(),
     }
     return manager, ctx
 
@@ -127,7 +143,7 @@ class TestGetUserContext:
     def test_missing_org_id_raises_401(self):
         req = _mock_request()
         req.state.user = {"userId": "u1"}
-        with pytest.raises(HTTPException) as exc:
+        with another_request(None), pytest.raises(HTTPException) as exc:
             _get_user_context(req)
         assert exc.value.status_code == 401
 
@@ -819,11 +835,14 @@ class TestListVersions:
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
         manager.list_versions = AsyncMock(return_value=[_mock_version_entry()])
+        manager.get_skill = AsyncMock(side_effect=RegistryError("not visible"))
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import list_versions
             resp = await list_versions(req, "test-skill")
         assert resp.status_code == 200
+        [entry] = json.loads(resp.body)["versions"]
+        assert entry["version"] == "1.0.0" and entry["current"] is False
 
     @pytest.mark.asyncio
     async def test_registry_error(self):
@@ -998,6 +1017,7 @@ class TestCandidateRoutes:
         manager, ctx = _mock_manager_and_ctx()
         candidate = MagicMock()
         candidate.model_dump.return_value = {"id": "c1", "status": "pending"}
+        candidate.proposed_by = "uk1"
         manager.get_pending_candidates = AsyncMock(return_value=[candidate])
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
@@ -1009,6 +1029,8 @@ class TestCandidateRoutes:
     async def test_approve_candidate_success(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
+        # UI-B4: the caller is the person the candidate was learned for, so they decide it.
+        manager.find_candidate = AsyncMock(return_value=MagicMock(proposed_by="uk1"))
         manager.approve_candidate = AsyncMock(return_value=_mock_metadata())
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
@@ -1020,6 +1042,8 @@ class TestCandidateRoutes:
     async def test_approve_candidate_registry_error(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
+        # UI-B4: the caller is the person the candidate was learned for, so they decide it.
+        manager.find_candidate = AsyncMock(return_value=MagicMock(proposed_by="uk1"))
         manager.approve_candidate = AsyncMock(side_effect=RegistryError("not found"))
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
@@ -1032,6 +1056,8 @@ class TestCandidateRoutes:
     async def test_reject_candidate(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
+        # UI-B4: the caller is the person the candidate was learned for, so they decide it.
+        manager.find_candidate = AsyncMock(return_value=MagicMock(proposed_by="uk1"))
         manager.reject_candidate = AsyncMock()
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
@@ -1253,7 +1279,10 @@ class TestFinalizeImport:
             resources={"ref.md": "# ref"},
         )
 
-        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}._import_review", new_callable=AsyncMock, return_value=None),
+        ):
             from app.api.routes.skills import finalize_import
             resp = await finalize_import(req, payload)
         assert resp.status_code == 201
@@ -1341,6 +1370,7 @@ class TestFinalizeImport:
         with (
             patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
             patch(f"{MODULE}.get_builtin_seeder", return_value=seeder),
+            patch(f"{MODULE}._import_review", new_callable=AsyncMock, return_value=None),
         ):
             from app.api.routes.skills import finalize_import
             resp = await finalize_import(req, payload)
@@ -1409,3 +1439,9 @@ class TestFinalizeImport:
             with pytest.raises(HTTPException) as exc:
                 await finalize_import(req, payload)
             assert exc.value.status_code == 400
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("o1")

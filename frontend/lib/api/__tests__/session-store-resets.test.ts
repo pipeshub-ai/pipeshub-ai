@@ -38,7 +38,7 @@ import { useOnboardingTourStore } from '@/app/(main)/components/tours/onboarding
 import { useInlineCitationPopoverStore } from '@/app/(main)/chat/components/message-area/response-tabs/citations/citation-popover-store';
 import { useUploadStore } from '@/lib/store/upload-store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
-import { useOrgStore } from '@/lib/store/org-store';
+import { useOrgStore } from '@/config';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useLanguageStore } from '@/lib/store/language-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';

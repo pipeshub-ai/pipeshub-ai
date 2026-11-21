@@ -123,7 +123,7 @@ describe('accessLog: one http.request.end line per request', () => {
     waiters = []
     const root = Logger.getInstance()
     ;(root as any).logger.level = 'debug'
-    sinon.stub((root as any).logger, 'log').callsFake((r: Record<string, any>) => {
+    sinon.stub((root as any).logger, 'log').callsFake((r: any) => {
       records.push(r)
       for (const wake of waiters.splice(0)) wake()
     })
@@ -158,7 +158,7 @@ describe('accessLog: one http.request.end line per request', () => {
       },
     })
     expect(status).to.equal(200)
-    const [line] = await accessLines(1)
+    const line = (await accessLines(1))[0]!
     expect(line).to.include({
       level: 'info', service: 'HttpAccess', method: 'GET', route: '/api/v1/kb/:kbId/records/:rid', status: 200,
       outcome: 'success', request_id: 'req-abc', org_id: ORG, user_id: USER,

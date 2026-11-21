@@ -33,6 +33,7 @@ from app.core.db import (
 from app.core.db import capabilities as caps
 from app.core.db.pool import PooledConnection
 from app.core.db.uow import Tx
+from tests.support.cpu_budget import thread_cpu
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -401,16 +402,11 @@ def test_the_guard_fails_closed_on_what_it_cannot_resolve() -> None:
 
 
 def test_the_sql_start_check_is_linear_on_hostile_comments() -> None:
-    import time
-
     def seconds(unit: str, n: int) -> float:
         text = unit * n + "x"
-        best = float("inf")
-        for _ in range(3):                                                      # the best of three runs: a scheduling pause hits one, not all
-            start = time.perf_counter()
+        with thread_cpu() as cpu:
             assert not sql_lint._starts_sql(text)
-            best = min(best, time.perf_counter() - start)
-        return best
+        return cpu.seconds
 
     for unit in ("-- ", "/* ", "--", "/**/ ", "/**/\n"):
         big = seconds(unit, 200_000)
@@ -818,12 +814,11 @@ def test_an_empty_pooler_setting_means_the_default(monkeypatch) -> None:
 
 
 def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
-    import time
-
     from app.core.db import sql_lint
+    from tests.support.cpu_budget import thread_cpu
 
     assert sql_lint._starts_sql("/* tag */ /* more */\n  select 1")
     assert not sql_lint._starts_sql("not sql at all")
-    started = time.monotonic()
-    sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
-    assert time.monotonic() - started < 5.0
+    with thread_cpu() as cpu:
+        sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
+    assert cpu.seconds < 5.0  # milliseconds when linear; the bound only has to catch a quadratic scan

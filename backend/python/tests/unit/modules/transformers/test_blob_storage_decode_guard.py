@@ -34,6 +34,7 @@ from app.modules.transformers.blob_storage import (
     _decode_slot_for,
     max_decoded_record_bytes,
 )
+from tests.support.settle import settle
 
 LARGE = 512
 
@@ -479,24 +480,28 @@ class TestGate:
         with patch.object(storage, "_decompressed_payload", side_effect=route):
             large = asyncio.create_task(storage._decode_record(_envelope(_record(5000))))
             await _until(fake.entered.is_set)
-            assert await asyncio.wait_for(storage._decode_record(small), 1) == _record(10)
+            assert await settle(storage._decode_record(small)) == _record(10)
+            assert not large.done() and fake.inside == 1
             fake.release.set()
             await large
 
     async def test_event_loop_keeps_running_during_a_large_decode(self) -> None:
         storage = _bs()
+        ticked = threading.Event()
+        ticks_seen_by_decode: list[bool] = []
 
         def slow(data: dict) -> bytes:
-            time.sleep(0.3)
+            # Decoded on the loop's thread, this wait blocks the ticker and times out.
+            ticks_seen_by_decode.append(ticked.wait(5))
             return msgspec.msgpack.encode({"ok": True})
 
-        lags: list[float] = []
-
         async def ticker(stop: asyncio.Event) -> None:
+            ticks = 0
             while not stop.is_set():
-                t = time.perf_counter()
                 await asyncio.sleep(0.01)
-                lags.append(time.perf_counter() - t - 0.01)
+                ticks += 1
+                if ticks == 5:
+                    ticked.set()
 
         stop = asyncio.Event()
         tick = asyncio.create_task(ticker(stop))
@@ -504,8 +509,7 @@ class TestGate:
             await storage._decode_record(_envelope(_record(5000)))
         stop.set()
         await tick
-        assert len(lags) > 10
-        assert max(lags) < 0.15
+        assert ticks_seen_by_decode == [True]
 
 
 class TestPerLoopSlots:
@@ -650,9 +654,8 @@ class TestStoredSizeGatesTheDownload:
         slot = await self._hold_slot()
         try:
             with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()):
-                got = await asyncio.wait_for(
+                got = await settle(
                     storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": stored}),
-                    1,
                 )
             assert got == {"a": 1}
         finally:

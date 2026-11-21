@@ -53,12 +53,10 @@ def test_submit_does_not_block_caller() -> None:
 
     try:
         blocker = lease.submit(release.wait, 20)
-        start = time.monotonic()
         queued = [lease.submit(int) for _ in range(200)]
-        elapsed = time.monotonic() - start
 
-        # A blocking implementation would have waited on the blocker for 20s.
-        assert elapsed < 1.0
+        # A blocking submit returns only once the blocker ends, and the blocker ends only when released.
+        assert not blocker.done()
         assert not any(future.done() for future in queued)
         assert lease.queued == 200
 

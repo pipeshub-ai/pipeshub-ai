@@ -16,13 +16,13 @@ from app.agent_loop_lib.sandbox.coding.base import (
     CodingSandboxError,
     ErrorCategory,
 )
-from app.agent_loop_lib.sandbox.coding.docker_client import reset_default_provider
 from app.agent_loop_lib.sandbox.coding.docker import (
     DockerCodingSandbox,
     _collect_working_dir_inputs,
     _extract_container_dir,
     _tar_files,
 )
+from app.agent_loop_lib.sandbox.coding.docker_client import reset_default_provider
 
 
 @pytest.fixture(autouse=True)
@@ -117,6 +117,7 @@ class TestContract:
         assert isinstance(sandbox.sandbox_id, str)
         assert sandbox.sandbox_id
 
+
     async def test_provision_creates_working_dir_and_returns_ready(self, tmp_path) -> None:
         working_dir = str(tmp_path / "wd")
         sandbox = DockerCodingSandbox(working_dir=working_dir)
@@ -142,6 +143,49 @@ class TestContract:
             assert os.path.isdir(working_dir)
             assert sandbox.sandbox_id
         assert not os.path.isdir(working_dir)
+
+
+class TestArchiveBoundary:
+    def test_writable_workspace_files_are_owned_by_non_root_sandbox_user(self) -> None:
+        archive = _tar_files({"workspace/nested.txt": b"content"})
+        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+            members = {member.name: member for member in tar.getmembers()}
+        assert members["workspace"].uid == 1000
+        assert members["workspace/nested.txt"].uid == 1000
+        assert members["workspace/nested.txt"].mode == 0o640
+
+    @pytest.mark.parametrize("prefix", ["input", "skills", "artifacts", "system"])
+    def test_protected_mount_files_are_root_owned_and_read_only(self, prefix: str) -> None:
+        archive = _tar_files({f"{prefix}/nested/file.bin": b"content"})
+        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+            members = {member.name: member for member in tar.getmembers()}
+        assert members[prefix].uid == 0
+        assert members[prefix].mode == 0o555
+        assert members[f"{prefix}/nested/file.bin"].uid == 0
+        assert members[f"{prefix}/nested/file.bin"].mode == 0o444
+
+    def test_staged_file_archive_rejects_traversal(self) -> None:
+        with pytest.raises(ValueError, match="Unsafe sandbox archive path"):
+            _tar_files({"../secret.txt": b"nope"})
+
+    def test_extraction_ignores_links_and_keeps_regular_files(self, tmp_path) -> None:
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            regular = tarfile.TarInfo("output/result.txt")
+            regular.size = 2
+            tar.addfile(regular, io.BytesIO(b"ok"))
+            link = tarfile.TarInfo("output/escape")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            tar.addfile(link)
+        container = MagicMock()
+        container.get_archive.return_value = (iter([archive.getvalue()]), {})
+
+        from app.agent_loop_lib.sandbox.coding.docker import _extract_container_dir
+
+        _extract_container_dir(container, "/output", str(tmp_path))
+        assert (tmp_path / "result.txt").read_bytes() == b"ok"
+        assert not (tmp_path / "escape").exists()
 
 
 class TestExecuteHappyPath:
@@ -735,7 +779,7 @@ class TestTarFiles:
         tar_bytes = _tar_files(files)
 
         with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tar:
-            assert set(tar.getnames()) == set(files)
+            assert set(files).issubset(tar.getnames())
             for name, content in files.items():
                 assert tar.extractfile(name).read() == content
 

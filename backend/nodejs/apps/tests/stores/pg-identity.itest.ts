@@ -16,6 +16,8 @@ import { PgOrgMetricsJobRepository } from '../../src/libs/repositories/org-metri
 import { PgOrgRepository } from '../../src/libs/repositories/org/pg';
 import { PgPictureRepository } from '../../src/libs/repositories/picture/pg';
 import { PgResetLinkRepository } from '../../src/libs/repositories/reset-link/pg';
+import { PgSessionFamilyRepository } from '../../src/libs/repositories/session-family/pg';
+import { describeSessionFamilyContract } from './contract/session-family.contract';
 import { PgUserRepository } from '../../src/libs/repositories/user/pg';
 import { describeIdentityContract } from './contract/identity.contract';
 import { describeLookupContract, describeMetricsContract, describeOrgContract } from './contract/rest.contract';
@@ -67,6 +69,14 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         newOrg: () => world.newOrg(),
         newId,
         clearOrgAuth: () => world.clearOrgs(),
+      });
+    });
+
+    describe('session-family contract', () => {
+      describeSessionFamilyContract({
+        repo: new PgSessionFamilyRepository(),
+        newOrg: () => world.newOrg(),
+        newId,
       });
     });
 

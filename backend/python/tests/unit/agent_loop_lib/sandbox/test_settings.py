@@ -71,6 +71,18 @@ class TestEnvSandboxSettingsLoader:
         assert "image" in opts
         assert "egress_network" in opts
 
+    async def test_fm_f1_a_blank_image_or_network_reads_as_unset_as_the_broker_reads_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.sandbox_broker_main import allowed_images
+
+        monkeypatch.setenv("SANDBOX_MODE", "broker")
+        monkeypatch.setenv("SANDBOX_DOCKER_IMAGE", "")
+        monkeypatch.setenv("SANDBOX_EGRESS_NETWORK", "")
+        opts = (await EnvSandboxSettingsLoader().load(SandboxContext())).backend_options["broker"]
+        assert opts["image"] in allowed_images()
+        assert opts["egress_network"] == "pipeshub_sandbox_egress"
+
     async def test_env_loader_network_disabled(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

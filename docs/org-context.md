@@ -13,8 +13,13 @@ Only from a verified source, never from a body, query string or header other tha
 | Broker consumers (Python Kafka/Redis Streams, Node Kafka/Redis Streams) | the org from the signed envelope (below). |
 | Crawling worker | `forOrg(job.orgId, "crawl")` per job, after checking the org id is a valid id and the org exists and is active (otherwise the job is dropped, not failed). |
 | Periodic loops and start-up migrations (trash purge, storage release, flat storage migration, record label repair, code edge build reconcile, named-entity sweep and completion, sync resume, stale sync-state reset, queued-sync drain, connector token refresh, connector registry sync, connector config migrations, code graph backfill, All-team migration, query service start-up and its builtin skill seeding, Node metrics refresh) | enumeration under `system(reason)`, each org's work under `for_org` / `forOrg` so nothing leaks between iterations. Per-org settings (for example the trash purge's `softDeletePurge`) are read inside the org they apply to. `app/core/org_jobs.for_each_org` runs a job's work this way for every internal org and returns the orgs whose work failed, so a one-time job stays pending until each has run. Arango and Neo4j ignore the bound org, so a read inside it still filters on `orgId` (or `of_org`). The queued-sync drain reads each active org's queue this way, then publishes oldest first across orgs within one budget, each resync under its own org, in one pass. |
+| Agent harness worker (`app/harness/worker/claimer.py`) | each claimed run's org, from Node's claim, in a run task started detached (`job:harness-run`); the run's assembler narrows it to the run's person. |
+| Tool Gateway and Model Gateway (`app/harness/gateway/org_binding.py`) | the org the verified run token names, for the rest of the request (`gateway_token`); a refused token binds nothing. |
+| Harness sweeps (binding token refresh, MCP hub baseline, live-layer reload, and an edition's background jobs) | enumeration under `system(reason)`, each row's work under `for_org` of the org that row names. |
 
 Outside these, no context is bound and `current()` raises `MissingOrgContext`. It is a bug in the caller, not a user error.
+
+Two accessors besides `current()`: `bound_org_id()` answers None where no org (or a cross-org scope) is bound, for a route whose own refusal answers a token with no org; `org_of(row)` is the org a stored row, document or wire record names (`orgId`, else `org_id`), for a tenancy check against the bound org, never a value to bind from.
 
 ## Long-lived work
 

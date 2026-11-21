@@ -9,6 +9,7 @@ import {
   redactSecretsInText,
   redactSensitiveQueryParams,
 } from '../../../src/libs/utils/log-redaction.utils'
+import { threadCpuMs } from '../../support/cpu-budget'
 
 const FAKE_CODE = '4/0FAKE-auth-code-not-real'
 const FAKE_STATE = 'ZmFrZS1zdGF0ZQ'
@@ -379,7 +380,7 @@ describe('log-redaction.utils', () => {
       ['mongodb://root:ab/cd==@mongo:27017/db', 'ab/cd', 'mongodb://root:REDACTED@mongo:27017/db'],
       ['redis://:p/ass@redis:6379/0', 'p/ass', 'redis://:REDACTED@redis:6379/0'],
     ]) {
-      it(`redacts a password holding a \`/\`: ${url.split(':')[0]}`, () => {
+      it(`redacts a password holding a \`/\`: ${url!.split(':')[0]}`, () => {
         expect(redactSensitiveQueryParams(url)).to.equal(expected)
         for (const logged of [
           `/debug?db=${url}`,
@@ -390,7 +391,7 @@ describe('log-redaction.utils', () => {
         ]) {
           const out = decodeAll(redactSensitiveQueryParams(logged))
           expect(out, logged).to.not.contain(password)
-          expect(out, logged).to.not.contain(`${password.split('/')[0]}/`)
+          expect(out, logged).to.not.contain(`${password!.split('/')[0]}/`)
           expect(out, logged).to.not.contain('FAKE-auth-code')
         }
       })
@@ -892,9 +893,8 @@ describe('redactSecretsInText', () => {
 
   it('stays linear on a long run of eyJ- (a JWT match can only start where no token character precedes)', () => {
     const text = 'eyJ-'.repeat(25_000) + 'x';
-    const started = process.hrtime.bigint();
     expect(redactSecretsInText(text)).to.equal(text);
-    expect(Number(process.hrtime.bigint() - started) / 1e6).to.be.below(200);
+    expect(threadCpuMs(() => redactSecretsInText(text))).to.be.below(200);
   });
 
   it('redacts a secret in free text and keeps the rest readable', () => {
@@ -936,32 +936,19 @@ describe('redactSecretsInText', () => {
   });
 
   it('stays linear on a long run with no separator', () => {
-    const started = Date.now();
-
-    redactSecretsInText('!'.repeat(200_000));
-
-    expect(Date.now() - started).to.be.below(1000);
+    // Linear takes under 1 ms of CPU; quadratic on 200 000 characters takes minutes.
+    expect(threadCpuMs(() => redactSecretsInText('!'.repeat(200_000)))).to.be.below(1000);
   });
 });
 
 describe('redaction on adversarial input', () => {
-  // Each of these took 300ms or more before (ReDoS); linear code takes about
-  // 13ms, and up to 100ms under c8 with four mocha workers on a CI runner.
-  // CPU time leaves out waiting for a core, and the fastest of three runs
-  // leaves out a one-off GC or JIT pause; a single wall-clock run hit 200.8ms.
+  // Each of these took 300ms or more before (ReDoS); linear code takes at most
+  // about 20ms of this thread's CPU. The whole process's CPU, used before,
+  // also counted GC and coverage threads and reached 100ms under c8.
   const BOUND_MS = 200
   const RUNS = 3
   const N = 50_000
-  const elapsedMs = (run: () => unknown): number => {
-    let fastest = Infinity
-    for (let i = 0; i < RUNS; i++) {
-      const started = process.cpuUsage()
-      run()
-      const used = process.cpuUsage(started)
-      fastest = Math.min(fastest, (used.user + used.system) / 1000)
-    }
-    return fastest
-  }
+  const elapsedMs = (run: () => unknown): number => threadCpuMs(run, RUNS)
 
   // `/^[^a-z0-9]+|[^a-z0-9]+$/gi` in isSensitiveQueryKey.
   const trimShape = `a${'/'.repeat(N)}a`

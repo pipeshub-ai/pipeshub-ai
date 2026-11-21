@@ -87,7 +87,7 @@ class TestSandboxToolsetGate:
     def _only_coding_sandbox(self) -> Iterator[None]:
         registry = MagicMock()
         registry.get_all_toolsets.return_value = {
-            "codingsandbox": {"class": CodingSandbox, "isInternal": True, "description": "sandbox"},
+            "codingsandbox": {"class": CodingSandbox, "isInternal": True, "provider": "platform", "description": "sandbox"},
         }
         with patch(
             "app.agents.registry.toolset_registry.get_toolset_registry", return_value=registry,

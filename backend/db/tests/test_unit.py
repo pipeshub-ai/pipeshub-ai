@@ -1,4 +1,5 @@
 """Unit tests: no database needed."""
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -351,8 +352,13 @@ def test_extra_locations_read_from_the_edition_file(tmp_path, monkeypatch):
     assert locations.version_locations()[-1] == str(mod)
 
 
-def test_shipped_edition_seam_is_empty():
-    assert locations.extra_locations() == []
+def test_shipped_edition_seam_names_only_module_directories_that_exist():
+    """An edition's extra migration modules must all be there: a missing one would silently migrate less."""
+    spec = importlib.util.spec_from_file_location("_shipped_edition", locations.BACKEND_DIR / "python" / "app" / "edition.py")
+    edition = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(edition)
+    declared = getattr(edition, "EXTRA_MIGRATION_LOCATIONS", [])
+    assert len(locations.extra_locations()) == len(declared)
 
 
 def test_url_is_required_and_normalised(monkeypatch):

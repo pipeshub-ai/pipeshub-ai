@@ -120,7 +120,7 @@ export const startKbHarness = async (): Promise<KbHarness> => {
   const previousConnectorBackend = process.env.CONNECTOR_BACKEND
   process.env.CONNECTOR_BACKEND = backend.url
   const previousSecretKey = process.env.SECRET_KEY
-  process.env.SECRET_KEY = previousSecretKey ?? 'kb-http-test-secret-key'
+  process.env.SECRET_KEY = previousSecretKey ?? 'f8fb87101d013045a4df449d5bb16c28a82902657614fc37ead6ebd791cd8f15'
 
   const config = {
     jwtSecret: JWT_SECRET,

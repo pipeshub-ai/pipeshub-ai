@@ -1,4 +1,7 @@
 import 'reflect-metadata';
+import { InMemorySlackUserLinks } from '../../../support/slack/in-memory-slack-links'
+import { setSlackUserLinkRepository } from '../../../../src/libs/repositories/slack-user-link'
+import { NoAdminForHandoverError } from '../../../../src/modules/user_management/services/principal-deletion.service';
 import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
@@ -26,6 +29,8 @@ import { getUserRepository, setUserRepository } from '../../../../src/libs/repos
 import { setOAuthTokenRepository } from '../../../../src/libs/repositories/oauth-token';
 import type { OAuthTokenRepository } from '../../../../src/libs/repositories/oauth-token';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
+import { principalErasers } from '../support/principal-erasers';
+import { threadCpuMs, threadCpuMsAsync } from '../../../support/cpu-budget';
 
 /** Query chain stub for OAuthApp.find(...).select().lean().exec() used in handOverOAuthOfDeletedUser */
 function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
@@ -66,6 +71,9 @@ function stubUserMemberships(memberships: Array<{ _id: unknown; orgId: unknown }
 }
 
 describe('UserController', () => {
+  // User deletion removes the person's Slack links (ADR-SLACKID-01); in memory here.
+  before(() => setSlackUserLinkRepository(new InMemorySlackUserLinks()))
+  after(() => setSlackUserLinkRepository())
   let controller: UserController;
   let mockConfig: any;
   let mockMailService: any;
@@ -337,6 +345,25 @@ describe('UserController', () => {
       expect(filter.kind).to.deep.equal({ $ne: 'service' });
     });
 
+    it('DEACT-13 (SEC-AZ-08): marks a deactivated account, which is never active', async () => {
+      stubUserEnrichment();
+      stubUsersFind([
+        { _id: new mongoose.Types.ObjectId(), orgId: new mongoose.Types.ObjectId(), fullName: 'Dee', hasLoggedIn: true, isDisabled: true },
+        { _id: new mongoose.Types.ObjectId(), orgId: new mongoose.Types.ObjectId(), fullName: 'Max', hasLoggedIn: true },
+      ]);
+      stubUsersCount(2);
+
+      await controller.getAllUsers(req, res);
+
+      const body = res.json.firstCall.args[0] as {
+        users: { name?: string; isDisabled?: boolean; isActive?: boolean }[];
+      };
+      expect(body.users.map((u) => [u.name, u.isDisabled, u.isActive])).to.deep.equal([
+        ['Dee', true, false],
+        ['Max', false, true],
+      ]);
+    });
+
     it('sends each returned record its kind, so a picker can mark a machine', async () => {
       // Filtering them in is only half of it. Without `kind` on the way out,
       // the picker offers a service account with nothing to distinguish it,
@@ -429,8 +456,8 @@ describe('UserController', () => {
 
       await controller.getAllUsers(req, res);
 
-      expect(Users.find.calledOnce).to.be.true;
-      const filter = Users.find.firstCall.args[0];
+      expect((Users.find as unknown as sinon.SinonStub).calledOnce).to.be.true;
+      const filter = (Users.find as unknown as sinon.SinonStub).firstCall.args[0];
       expect(filter.hasLoggedIn).to.equal(true);
       expect(filter._id.$nin).to.be.an('array').with.length(2);
       expect(filter._id.$nin[0].toString()).to.equal('507f1f77bcf86cd799439021');
@@ -470,8 +497,8 @@ describe('UserController', () => {
 
       await controller.getAllUsers(req, res);
 
-      expect(Users.find.calledOnce).to.be.true;
-      const filter = Users.find.firstCall.args[0];
+      expect((Users.find as unknown as sinon.SinonStub).calledOnce).to.be.true;
+      const filter = (Users.find as unknown as sinon.SinonStub).firstCall.args[0];
       expect(filter.hasLoggedIn).to.equal(false);
       expect(filter._id.$nin).to.be.an('array').with.length(1);
       expect(filter._id.$nin[0].toString()).to.equal('507f1f77bcf86cd799439023');
@@ -512,8 +539,8 @@ describe('UserController', () => {
 
       await controller.getAllUsers(req, res);
 
-      expect(Users.find.calledOnce).to.be.true;
-      const filter = Users.find.firstCall.args[0];
+      expect((Users.find as unknown as sinon.SinonStub).calledOnce).to.be.true;
+      const filter = (Users.find as unknown as sinon.SinonStub).firstCall.args[0];
       expect(filter.$or).to.be.an('array').with.length(1);
       expect(filter.$or[0]._id.$in).to.be.an('array').with.length(0);
       expect(res.status.calledWith(200)).to.be.true;
@@ -552,7 +579,7 @@ describe('UserController', () => {
 
       await controller.getAllUsers(req, res);
 
-      const filter = Users.find.firstCall.args[0];
+      const filter = (Users.find as unknown as sinon.SinonStub).firstCall.args[0];
       expect(filter.$or).to.be.an('array').with.length(1);
       expect(filter.$or[0]._id.$in).to.be.an('array').with.length(2);
       expect(filter.$or[0]._id.$in[0].toString()).to.equal('507f1f77bcf86cd799439031');
@@ -589,7 +616,7 @@ describe('UserController', () => {
 
       await controller.getAllUsers(req, res);
 
-      const filter = Users.find.firstCall.args[0];
+      const filter = (Users.find as unknown as sinon.SinonStub).firstCall.args[0];
       expect(filter.$and).to.be.an('array').with.length(2);
       expect(filter.$or).to.be.undefined;
       expect(filter.$and[0].$or).to.be.an('array').with.length(2); // search(fullName/email)
@@ -614,7 +641,7 @@ describe('UserController', () => {
 
       await controller.getAllUsers(req, res);
 
-      const filter = Users.find.firstCall.args[0];
+      const filter = (Users.find as unknown as sinon.SinonStub).firstCall.args[0];
       const rx = filter.$or[0].fullName.$regex;
       // Metacharacters are escaped, so search is matched literally (no 500, no match-all).
       expect(rx).to.equal('a\\(b\\)\\.\\*');
@@ -657,7 +684,7 @@ describe('UserController', () => {
 
       await controller.getAllUsers(req, res);
 
-      const filter = Users.find.firstCall.args[0];
+      const filter = (Users.find as unknown as sinon.SinonStub).firstCall.args[0];
       expect(filter._id.$in).to.be.an('array').with.length(2);
       expect(filter._id.$in[0].toString()).to.equal(u1);
       expect(filter._id.$in[1].toString()).to.equal(u2);
@@ -1965,7 +1992,7 @@ describe('UserController', () => {
 
       await controller.updateEmail(req, res, next);
 
-      expect(findOneStub.secondCall.args[0].email).to.equal('taken@test.com');
+      expect(findOneStub.secondCall.args[0]!.email).to.equal('taken@test.com');
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.include('already exists');
       expect(emailChangeStub.called).to.be.false;
@@ -2108,6 +2135,180 @@ describe('UserController', () => {
       expect((UserCredentials.updateOne as sinon.SinonStub).called).to.be.false;
       expect(mockEventService.publishEvent.called).to.be.false;
       expect(res.json.called).to.be.false;
+    });
+
+    for (const fails of [false, true]) {
+      it(`ER-1: erases the user's model accounts before the user is marked deleted${fails ? ' (a failure leaves the user undeleted)' : ''}`, async () => {
+        req.params.id = '507f1f77bcf86cd799439011';
+        const mockUser = {
+          _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+          orgId: new mongoose.Types.ObjectId(req.user.orgId),
+          email: 'test@test.com',
+          isDeleted: false,
+          hasLoggedIn: true,
+          role: 'member',
+          save: sinon.stub().resolves(),
+        };
+        sinon.stub(Users, 'findOne').resolves(mockUser as any);
+        sinon.stub(UserActivities, 'create').resolves({} as any);
+        sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+        stubOAuthAppsForDeletedUser([]);
+        sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+        const eraser = {
+          eraseOrg: sinon.stub(),
+          eraseUser: fails
+            ? sinon.stub().rejects(new Error('kv down'))
+            : sinon.stub().callsFake(async () => {
+                expect(mockUser.isDeleted).to.be.false;
+                return 2;
+              }),
+        };
+        const erasing = new UserController(
+          mockConfig,
+          mockMailService,
+          mockAuthService,
+          mockLogger,
+          mockEventService,
+          mockNotificationProducer,
+          eraser,
+        );
+
+        await erasing.deleteUser(req, res, next);
+
+        expect(eraser.eraseUser.calledOnceWith(req.user.orgId, '507f1f77bcf86cd799439011')).to.be.true;
+        expect(mockUser.isDeleted).to.equal(!fails);
+        expect(mockUser.save.called).to.equal(!fails);
+      });
+    }
+
+    for (const failing of [undefined, 'agentMemories', 'personalInstances']) {
+      it(`QA15-10: every principal store listed for deleteUser is erased before the user is marked deleted${failing ? ' (a failing one leaves the user undeleted)' : ''}`, async () => {
+        req.params.id = '507f1f77bcf86cd799439011';
+        const mockUser = {
+          _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+          orgId: new mongoose.Types.ObjectId(req.user.orgId),
+          email: 'test@test.com',
+          isDeleted: false,
+          hasLoggedIn: true,
+          role: 'member',
+          save: sinon.stub().resolves(),
+        };
+        sinon.stub(Users, 'findOne').resolves(mockUser as any);
+        sinon.stub(UserActivities, 'create').resolves({} as any);
+        sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+        stubOAuthAppsForDeletedUser([]);
+        sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+        const erasers = principalErasers(
+          'modules/user_management/controller/users.controller.ts#deleteUser',
+          () => mockUser.isDeleted,
+          failing ? { failing } : {},
+        );
+        expect(erasers.stores).to.deep.equal(['modelAccounts', 'agentSchedules', 'agentMemories', 'engineSignIns', 'inbox', 'personalInstances']);
+        const { modelAccounts, schedules, memories, engineSignIns, inbox, personalInstances } = erasers.byField as Record<string, any>;
+        const erasing = new UserController(
+          mockConfig,
+          mockMailService,
+          mockAuthService,
+          mockLogger,
+          mockEventService,
+          mockNotificationProducer,
+          modelAccounts,
+          schedules,
+          memories,
+          engineSignIns,
+          null,
+          personalInstances,
+          null,
+          null,
+          null,
+          inbox,
+        );
+
+        await erasing.deleteUser(req, res, next);
+
+        // A failing store stops the deletion there: the stores after it are reached by the retry.
+        const reached = failing ? erasers.stores.slice(0, erasers.stores.indexOf(failing) + 1) : erasers.stores;
+        expect(erasers.calls.map((c) => c.store)).to.deep.equal(reached);
+        for (const call of erasers.calls) {
+          expect(call, call.store).to.deep.include({ hook: 'eraseUser', principalDeleted: false });
+          expect(call.args).to.deep.equal([req.user.orgId, '507f1f77bcf86cd799439011']);
+        }
+        expect(mockUser.isDeleted).to.equal(failing === undefined);
+        expect(mockUser.save.called).to.equal(failing === undefined);
+      });
+    }
+
+    for (const refused of [false, true]) {
+      it(`CLEANUP-G2: the user's conversations are handed over before anything is erased${refused ? '; with no admin to take the shared ones nothing is deleted' : ''}`, async () => {
+        req.params.id = '507f1f77bcf86cd799439011';
+        const mockUser = {
+          _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+          orgId: new mongoose.Types.ObjectId(req.user.orgId),
+          email: 'test@test.com',
+          isDeleted: false,
+          role: 'member',
+          save: sinon.stub().resolves(),
+        };
+        sinon.stub(Users, 'findOne').resolves(mockUser as any);
+        sinon.stub(UserActivities, 'create').resolves({} as any);
+        sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+        stubOAuthAppsForDeletedUser([]);
+        sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+        const erasers = principalErasers('modules/user_management/controller/users.controller.ts#deleteUser', () => mockUser.isDeleted);
+        const { modelAccounts, schedules, memories, engineSignIns, personalInstances } = erasers.byField as Record<string, any>;
+        const handOverUser = refused
+          ? sinon.stub().rejects(new NoAdminForHandoverError())
+          : sinon.stub().callsFake(async () => {
+              expect(erasers.calls, 'nothing erased before the hand-over').to.deep.equal([]);
+              return { erased: 1, transferred: 1 };
+            });
+        const deleting = new UserController(
+          mockConfig, mockMailService, mockAuthService, mockLogger, mockEventService, mockNotificationProducer,
+          modelAccounts, schedules, memories, engineSignIns, { handOverUser } as any, personalInstances,
+        );
+
+        await deleting.deleteUser(req, res, next);
+
+        expect(handOverUser.calledOnceWith(req.user.orgId, '507f1f77bcf86cd799439011')).to.be.true;
+        expect(mockUser.isDeleted).to.equal(!refused);
+        expect(erasers.calls).to.have.length(refused ? 0 : 5);
+        if (refused) expect(next.firstCall.args[0]).to.be.instanceOf(NoAdminForHandoverError);
+      });
+    }
+
+    it('R51-COMPAT: with the harness off on the compatibility profile the conversations stay, and no admin is needed', async () => {
+      const saved = { h: process.env.PIPESHUB_HARDENED, w: process.env.AGENT_HARNESS_WORKER_ENABLED };
+      delete process.env.PIPESHUB_HARDENED;
+      process.env.AGENT_HARNESS_WORKER_ENABLED = 'false';
+      try {
+        req.params.id = '507f1f77bcf86cd799439011';
+        const mockUser = {
+          _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+          orgId: new mongoose.Types.ObjectId(req.user.orgId),
+          email: 'test@test.com',
+          isDeleted: false,
+          role: 'member',
+          save: sinon.stub().resolves(),
+        };
+        sinon.stub(Users, 'findOne').resolves(mockUser as any);
+        sinon.stub(UserActivities, 'create').resolves({} as any);
+        sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+        stubOAuthAppsForDeletedUser([]);
+        sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+        const handOverUser = sinon.stub().rejects(new NoAdminForHandoverError());
+        const deleting = new UserController(
+          mockConfig, mockMailService, mockAuthService, mockLogger, mockEventService, mockNotificationProducer,
+          null, null, null, null, { handOverUser } as any, null,
+        );
+        await deleting.deleteUser(req, res, next);
+        expect(handOverUser.called).to.equal(false);
+        expect(mockUser.isDeleted).to.equal(true);
+      } finally {
+        if (saved.h === undefined) delete process.env.PIPESHUB_HARDENED;
+        else process.env.PIPESHUB_HARDENED = saved.h;
+        if (saved.w === undefined) delete process.env.AGENT_HARNESS_WORKER_ENABLED;
+        else process.env.AGENT_HARNESS_WORKER_ENABLED = saved.w;
+      }
     });
   });
 
@@ -4172,7 +4373,7 @@ describe('UserController', () => {
       expect(userDelete.calledOnce).to.be.true;
       const pull = groupUpdate.getCalls().find((call) => '$pull' in call.args[1]);
       expect(pull, 'the user is taken back out of the everyone group').to.exist;
-      expect(String(pull!.args[1].$pull.users)).to.equal(String(userDelete.firstCall.args[0]._id));
+      expect(String(pull!.args[1].$pull.users)).to.equal(String(userDelete.firstCall.args[0]!._id));
       expect(mockEventService.stop.calledOnce).to.be.true;
       expect(res.status.called).to.be.false;
     });
@@ -6470,9 +6671,7 @@ describe('UserController', () => {
       const nasty = 'a'.repeat(50000) + '@' + 'a'.repeat(50000);
       req.body = { emails: [nasty] };
 
-      const startedAt = Date.now();
-      await controller.addManyUsers(req, res, next);
-      expect(Date.now() - startedAt).to.be.lessThan(1000);
+      expect(await threadCpuMsAsync(() => controller.addManyUsers(req, res, next))).to.be.lessThan(1000);
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal('Invalid emails are found');
@@ -6518,9 +6717,10 @@ describe('isValidEmail', () => {
   });
 
   it('answers quickly for a long near-miss (no catastrophic backtracking)', () => {
-    const started = Date.now();
-    isValidEmail(`a@${'b.'.repeat(5000)}`);
-    isValidEmail(`a@${'b'.repeat(50000)}!`);
-    expect(Date.now() - started).to.be.lessThan(100);
+    const cpuMs = threadCpuMs(() => {
+      isValidEmail(`a@${'b.'.repeat(5000)}`);
+      isValidEmail(`a@${'b'.repeat(50000)}!`);
+    });
+    expect(cpuMs).to.be.lessThan(100);
   });
 });

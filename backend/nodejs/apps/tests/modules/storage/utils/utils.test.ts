@@ -525,7 +525,7 @@ describe('storage/utils/utils', () => {
       expect(result).to.exist
       expect(result!.document).to.deep.equal(savedDoc)
       expect(createStub.calledOnce).to.be.true
-      expect(createStub.firstCall.args[0].documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub')
+      expect(createStub.firstCall.args[0]!.documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub')
     })
 
     it('should prefix org and PipesHub when documentPath is provided', async () => {
@@ -542,7 +542,7 @@ describe('storage/utils/utils', () => {
       expect(result).to.exist
       expect(result!.document).to.deep.equal(savedDoc)
       expect(createStub.calledOnce).to.be.true
-      expect(createStub.firstCall.args[0].documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub/folderA')
+      expect(createStub.firstCall.args[0]!.documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub/folderA')
     })
 
     it('should persist the normalized (dot-prefixed) extension', async () => {
@@ -557,7 +557,7 @@ describe('storage/utils/utils', () => {
 
       // Pass the bare extension (no dot) - it must be stored normalized as ".pdf"
       await createPlaceholderDocument(req, next, 1000, 'pdf', 'test.pdf')
-      expect(createStub.firstCall.args[0].extension).to.equal('.pdf')
+      expect(createStub.firstCall.args[0]!.extension).to.equal('.pdf')
     })
 
     it('should call next on validation error', async () => {
@@ -922,5 +922,40 @@ describe('storage/utils/utils - additional coverage', () => {
         expect(root, recordPath).to.not.equal(getFullDocumentPath('org1', recordPath))
       }
     })
+  })
+})
+
+describe('serveFileFromLocalStorage - a stored .json file (QAFIX3 bug 5)', () => {
+  // The Python reader (`blob_staging.fetch_blob_bytes`) tells this file stream from the cloud `{signedUrl}`
+  // envelope by `Content-Disposition: attachment`: a stored .json file is `application/json` too.
+  it('sends the file itself as an attachment, never as a bare JSON body', async () => {
+    const os = await import('os')
+    const path = await import('path')
+    const { PassThrough } = await import('stream')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qafix3-'))
+    const file = path.join(dir, 'receipt.json')
+    fs.writeFileSync(file, '{"state":"started"}')
+    const headers: Record<string, string> = {}
+    const res = Object.assign(new PassThrough(), {
+      setHeader: (name: string, value: string) => {
+        headers[name] = value
+      },
+      headersSent: false,
+    }) as any
+    const chunks: Buffer[] = []
+    res.on('data', (chunk: Buffer) => chunks.push(chunk))
+    const ended = new Promise((resolve) => res.on('end', resolve))
+    try {
+      serveFileFromLocalStorage(
+        { local: { localPath: file }, documentName: 'receipt', extension: '.json' } as any,
+        res,
+      )
+      await ended
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+    expect(headers['Content-Type']).to.equal('application/json')
+    expect(headers['Content-Disposition']).to.match(/^attachment;/)
+    expect(Buffer.concat(chunks).toString()).to.equal('{"state":"started"}')
   })
 })

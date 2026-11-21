@@ -237,6 +237,18 @@ describe('SkillsApi', () => {
       expect(mockedPost).toHaveBeenCalledWith(`${BASE_URL}/candidates/c1/approve`);
     });
 
+    it('approveCandidate sends the reviewer\'s edits in the same call', async () => {
+      mockedPost.mockResolvedValueOnce({ data: { name: 'pdf-extractor' } });
+      await SkillsApi.approveCandidate('c1', { description: 'Use for PDFs.', changeNote: 'Clearer' });
+      expect(mockedPost).toHaveBeenCalledWith(`${BASE_URL}/candidates/c1/approve`, { description: 'Use for PDFs.', changeNote: 'Clearer' });
+    });
+
+    it('renameSkill posts the shown name with If-Match', async () => {
+      mockedPost.mockResolvedValueOnce({ data: { name: 'pdf', displayName: 'PDF tools', changeNote: null } });
+      await SkillsApi.renameSkill('pdf', 'PDF tools', 123);
+      expect(mockedPost).toHaveBeenCalledWith(`${BASE_URL}/pdf/rename`, { displayName: 'PDF tools' }, { headers: { 'If-Match': '123' } });
+    });
+
     it('rejectCandidate posts to the reject endpoint', async () => {
       mockedPost.mockResolvedValueOnce({ data: { status: 'success' } });
       await SkillsApi.rejectCandidate('c1');

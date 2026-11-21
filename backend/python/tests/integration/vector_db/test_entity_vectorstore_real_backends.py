@@ -28,10 +28,11 @@ the rest:
   docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml \\
     up -d --wait redis-vector-it opensearch-vector-it
   docker run -d --name qdrant-it -p 6343:6333 qdrant/qdrant:v1.15
-  cd backend/python && pytest tests/integration/vector_db/test_entity_vectorstore_real_backends.py -m integration
+  cd backend/python && QDRANT_HOST=localhost REDIS_VECTOR_HOST=localhost OPENSEARCH_HOST=localhost \\
+    pytest tests/integration/vector_db/test_entity_vectorstore_real_backends.py -m integration
 
-Environment: QDRANT_HTTP_PORT (6343), REDIS_VECTOR_HOST/PORT (6399),
-OPENSEARCH_HOST/PORT (9299).
+Environment: QDRANT_HOST, QDRANT_HTTP_PORT (6343), REDIS_VECTOR_HOST, REDIS_VECTOR_PORT (6399),
+OPENSEARCH_HOST, OPENSEARCH_PORT (9299). A backend whose host is unset is skipped.
 """
 from __future__ import annotations
 
@@ -51,6 +52,7 @@ from app.modules.transformers.entity_vectorstore import (
     EntityVectorStore,
 )
 from app.services.vector_db.models import HealthStatus
+from tests.support import it_backends
 from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.entity_vector_db import recreate_lock_redis
 
@@ -106,9 +108,10 @@ async def _qdrant() -> IVectorDBService:
     from app.services.vector_db.qdrant.config import QdrantConfig
     from app.services.vector_db.qdrant.qdrant import QdrantService
 
+    host = it_backends.endpoint("QDRANT_HOST")
     # HTTP only: with gRPC the client always dials 6334, whatever `port` says.
     port = int(os.environ.get("QDRANT_HTTP_PORT", "6343"))
-    service = QdrantService(QdrantConfig.from_dict({"host": "localhost", "port": port, "prefer_grpc": False}))
+    service = QdrantService(QdrantConfig.from_dict({"host": host, "port": port, "prefer_grpc": False}))
     await _connect(service, f"Qdrant:{port}")
     return service
 
@@ -118,7 +121,7 @@ async def _redis() -> IVectorDBService:
     from app.services.vector_db.redis.config import RedisVectorConfig
     from app.services.vector_db.redis.redis_vector import RedisVectorService
 
-    host = os.environ.get("REDIS_VECTOR_HOST", "localhost")
+    host = it_backends.endpoint("REDIS_VECTOR_HOST")
     port = int(os.environ.get("REDIS_VECTOR_PORT", "6399"))
     service = RedisVectorService(RedisVectorConfig(host=host, port=port))
     await _connect(service, f"Redis:{port}")
@@ -130,7 +133,7 @@ async def _opensearch() -> IVectorDBService:
     from app.services.vector_db.opensearch.config import OpenSearchConfig
     from app.services.vector_db.opensearch.opensearch import OpenSearchService
 
-    host = os.environ.get("OPENSEARCH_HOST", "localhost")
+    host = it_backends.endpoint("OPENSEARCH_HOST")
     port = int(os.environ.get("OPENSEARCH_PORT", "9299"))
     service = OpenSearchService(OpenSearchConfig(
         host=host, port=port, username="admin", password="admin", use_ssl=False, verify_certs=False,

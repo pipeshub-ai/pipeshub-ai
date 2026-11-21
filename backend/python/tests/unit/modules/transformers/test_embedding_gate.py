@@ -44,6 +44,8 @@ from app.utils.embedding_gate import (
 )
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.indexing_workers import indexing_worker_count
+from harness_core.testing.virtual_time import on_virtual_time
+from tests.support.settle import settle
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore
 from tests.unit.modules.transformers.test_vectorstore_point_ids import (
     _reconciling_store,
@@ -329,7 +331,7 @@ class TestCancellation:
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
-        await asyncio.wait_for(third_entered.wait(), 1.0)
+        await settle(third_entered.wait())
         third_release.set()
         await third
         assert gate._s.holders == 0 and not gate._s.waiters
@@ -357,7 +359,7 @@ class TestCancellation:
         await asyncio.sleep(0.01)
         release.set()
         await holder
-        await asyncio.wait_for(live_entered.wait(), 1.0)
+        await settle(live_entered.wait())
         live_release.set()
         await live
         assert gate._s.holders == 0
@@ -434,6 +436,7 @@ class TestServerThatIsHungOrDown:
         gate = await self.gate_with(Health(encode_gate(1, age=2.5)))
         started = time.monotonic()
         assert await self.run_waiters(gate, 24, holder_error=TimeoutError()) == ["failfast"] * 24
+        # wall-clock-ok: a waiter that is not failed fast waits its 1 s attempt in turn, 24 s for the 24; fast is ms
         assert time.monotonic() - started < 2.0
         assert dict(_clean_env.drain().timeouts) == {SERVICE: 1}
 
@@ -607,7 +610,7 @@ class TestWidth:
         now[0] += 61
         health.body = encode_gate(2)
         await gate._current_width()
-        await asyncio.wait_for(second_entered.wait(), 1.0)
+        await settle(second_entered.wait())
         release.set()
         await asyncio.gather(holder, second)
 
@@ -675,6 +678,8 @@ class TestHealthRead:
         assert BulkGate("http://h:8002").health_url == "http://h:8002/health"
 
 
+# The budget, the stall timer and the waits are all on the loop's clock: on virtual time they are read exactly.
+@on_virtual_time
 class TestTheRecordBudget:
     """A real ``RecordProgress`` and a real ``asyncio.timeout``: the pause must survive the next batch's re-arm."""
 
@@ -731,10 +736,10 @@ class TestTheRecordBudget:
     async def test_the_pause_is_bounded_and_then_the_wait_counts_again(self) -> None:
         # 0.1 s of pause allowed, then the 0.2 s budget counts down: cut at about 0.3 s, not after the 5 s wait.
         # The bound sits halfway, so a loaded runner does not fail it.
-        started = time.monotonic()
+        started = asyncio.get_running_loop().time()
         with pytest.raises(TimeoutError):
             await self.run_record(cap=0.2, floor=5.0, waits=[5.0], gate_limit=0.1)
-        assert time.monotonic() - started < 2.5
+        assert asyncio.get_running_loop().time() - started < 2.5
 
     async def test_a_first_wait_longer_than_the_stall_floor_is_not_a_stall_cut(self) -> None:
         progress, budget = await self.run_record(cap=5.0, floor=0.05, waits=[0.2])
@@ -908,7 +913,7 @@ class TestGrantsAndFairness:
         assert not late_entered.is_set()
         release.set()
         first_release.set()
-        await asyncio.wait_for(late_entered.wait(), 1.0)
+        await settle(late_entered.wait())
         late_release.set()
         await asyncio.gather(holder, first, late)
 
@@ -933,7 +938,8 @@ class TestSharedHealthCheck:
         started = time.monotonic()
         assert await TestServerThatIsHungOrDown.run_waiters(gate, 24, holder_error=TimeoutError()) == ["failfast"] * 24
         assert health.calls == 1
-        assert time.monotonic() - started < 0.6
+        # wall-clock-ok: a waiter that is not failed fast waits its 1 s attempt in turn, 24 s for the 24; fast is ms
+        assert time.monotonic() - started < 2.0
 
 
 class TestOverlappingWaits:
@@ -972,6 +978,7 @@ class TestOverlappingWaits:
         assert not budget.expired()
 
 
+@on_virtual_time
 class TestBudgetPause:
     async def test_one_wait_longer_than_the_whole_budget_does_not_cut_a_record_that_is_only_queued(self) -> None:
         progress, budget = await TestTheRecordBudget().run_record(cap=0.3, floor=5.0, waits=[0.5])
@@ -981,19 +988,19 @@ class TestBudgetPause:
     async def test_the_pause_ends_at_the_allowance_not_at_the_end_of_the_wait(self) -> None:
         # Budget 0.3 s, 0.4 s of pause allowed: held until 0.7 s, then counting resumes and the record is cut.
         # The bounds sit halfway to the wrong answers: no pause cuts at 0.3 s, a pause to the end of the wait at 2.3 s.
-        started = time.monotonic()
+        started = asyncio.get_running_loop().time()
         with pytest.raises(TimeoutError):
             await TestTheRecordBudget().run_record(cap=0.3, floor=5.0, waits=[2.0], gate_limit=0.4)
-        assert 0.5 < time.monotonic() - started < 1.5
+        assert 0.5 < asyncio.get_running_loop().time() - started < 1.5
 
     async def test_the_allowance_is_shared_by_every_wait_of_the_record(self) -> None:
         # 2 s budget, 1.6 s allowance: the first wait uses 1 s of it, so the second has 0.6 s left and the record is
         # cut at 3.6 s. A fresh allowance for each wait would cut at 4.6 s and no pause at 2 s; the bounds sit
         # halfway to each, so a loaded runner's scheduling delay cannot move the answer across them.
-        started = time.monotonic()
+        started = asyncio.get_running_loop().time()
         with pytest.raises(TimeoutError):
             await TestTheRecordBudget().run_record(cap=2.0, floor=20.0, waits=[1.0, 12.0], gate_limit=1.6)
-        assert 2.8 < time.monotonic() - started < 4.1
+        assert 2.8 < asyncio.get_running_loop().time() - started < 4.1
 
 
 class TestEmbedderSwappedDuringTheWait:

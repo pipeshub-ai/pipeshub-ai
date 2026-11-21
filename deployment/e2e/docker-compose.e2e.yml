@@ -1,0 +1,226 @@
+# DEV-ONLY overlay for deployment/e2e/run.sh (X5 E2E): the real Compose stack
+# of deployment/docker-compose/docker-compose.yml with every PipesHub process
+# run from this tree instead of the app image (the shipped image is not built: disk).
+#
+#   pipeshub-ai     pxh-e2e-app (Dockerfile.app: python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f + the shipped
+#                   image's document converter) + the host's Node 22: Node (tsc build of
+#                   this tree), connectors, query service, model gateway
+#   sandbox-broker  python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f, as D1's smoke
+#   egress-proxy    python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f, as D1's smoke
+#   neo4j, qdrant   the base file's services
+#   pxh-fake-llm    the scripted model (fake_llm/server.py), on `pipeshub` only
+#
+# MongoDB and Redis are the host's shared pxh-mongo-rs / pxh-redis, attached by
+# run.sh to this project's networks as `mongodb` / `redis`. Everything binds to
+# 127.0.0.1. Variables come from the env file run.sh writes.
+
+x-e2e-labels: &e2e-labels
+  pipeshub.harness.owner: x-lead
+  io.pipeshub.e2e.run: ${E2E_RUN:?set E2E_RUN}
+
+x-e2e-python: &e2e-python
+  image: python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+  build: !reset null
+  user: "${E2E_UID:?}:${E2E_GID:?}"
+  working_dir: /tmp
+  labels: *e2e-labels
+  restart: "no"
+  depends_on: !reset {}
+
+services:
+  pipeshub-ai:
+    <<: *e2e-python
+    image: ${E2E_APP_IMAGE:?}
+    ports: !override
+      - "127.0.0.1:${E2E_APP_PORT:?}:3000"
+    entrypoint: ["bash", "/e2e/app_from_source.sh"]
+    environment:
+      - HOME=/tmp
+      # KEYRING-FU-1: `docker compose exec` gets this too, so an operator's `node` runs as in the shipped image.
+      - PATH=/opt/node/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+      - NODE_ENV=production
+      # SEC-D-06: the stack's own Redis takes REDIS_PASSWORD; the shared pxh-redis has none, so there the app signs in
+      # without one and the store-auth check only warns (run.sh sets both).
+      - REDIS_PASSWORD=${E2E_APP_REDIS_PASSWORD:-}
+      - REDIS_URL=redis://:${E2E_APP_REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - STORE_AUTH_CHECK=${E2E_STORE_AUTH_CHECK:-enforce}
+      # As the app image sets it: Node logs to stdout, which run.sh keeps as node.log.
+      - NODE_LOG_FILES=false
+      - PORT=3000
+      - E2E_FAULT=${E2E_FAULT:-}
+      - MODEL_GATEWAY_ENABLED=true
+      # The Compose default sizes workers from the CPU count and then re-execs
+      # uvicorn's CLI, which would drop pyrun.py's import path.
+      - QUERY_UVICORN_WORKERS=1
+      - CONNECTOR_UVICORN_WORKERS=1
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:?}
+      # The durable lane (run.sh durable): the worker runs engine runs and the
+      # proxy reaches its tool gateway by the app container's Compose alias on
+      # the sandbox plane, never an address of the container's own.
+      - E2E_DURABLE=${E2E_DURABLE:-}
+      - HARNESS_ENGINE_RUNS=${E2E_ENGINE_RUNS:-false}
+      # Coding engines run through the documented dev/test override (policy/release.json engineIsolation) on the
+      # strongest runtime the host offers, and admins see its warning; E2E_SANDBOX_RUNTIME=runsc (run.sh) turns it off,
+      # as a production install has it.
+      - PIPESHUB_ENGINES_WITHOUT_GVISOR=${E2E_ENGINES_WITHOUT_GVISOR:-true}
+      # R32-TRUST (ADR-SEC-01 D7): the ACP profiles read unsigned (the dev setting, auto and runc by default), or
+      # verified against the stack's own test root, which run.sh writes at build (runsc, E2E_ACP_PROFILES=signed).
+      - PIPESHUB_ACP_PROFILES_UNSIGNED=${E2E_ACP_PROFILES_UNSIGNED:-true}
+      - PIPESHUB_TEST_TRUST_ROOT=${E2E_TEST_TRUST_ROOT:-}
+      - HARNESS_TOOL_GATEWAY_PORT=8098
+      - HARNESS_TOOL_GATEWAY_URL=http://tool-gateway:8098/harness/tool-gateway
+      # QA-6: the matrix lane supervises the query service so a row can restart it with its settings.
+      - E2E_SUPERVISE_QUERY=${E2E_SUPERVISE_QUERY:-}
+      - E2E_INDEXING=${E2E_INDEXING:-}
+      # R35-SLACK: the Slack bot and the scripted Slack workspace (app_from_source.sh).
+      - E2E_FAKE_SLACK=${E2E_FAKE_SLACK:-}
+      # Every provider wire of the options matrix reaches the scripted model (fake_llm/wires.py): the SDKs'
+      # own base-URL settings, as an operator points a deployment at a proxy. Azure and OpenAI-compatible
+      # models name their endpoint in the model's configuration instead.
+      - ANTHROPIC_BASE_URL=http://pxh-fake-llm:8080
+      - GOOGLE_GEMINI_BASE_URL=http://pxh-fake-llm:8080
+      - OPENAI_BASE_URL=http://pxh-fake-llm:8080/v1
+      - AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://pxh-fake-llm:8080
+    volumes:
+      - ${E2E_SRC:?}/backend/python:/app/python:ro
+      - ${E2E_SITE_PACKAGES:?}:/site:ro
+      - ${E2E_SRC}/backend/nodejs/apps/src:/app/backend/src:ro
+      - ${E2E_WORK:?}/node-dist:/app/backend/dist:ro
+      - ${E2E_SRC}/backend/nodejs/apps/node_modules:/app/backend/dist/node_modules:ro
+      - ${E2E_NODE_HOME:?}:/opt/node:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+      - ${E2E_WORK}/logs:/e2e-logs
+      - ${E2E_WORK}/control:/e2e-control
+      - ${E2E_WORK}/test-trust:/run/pipeshub/test-trust:ro
+      # Local blob storage writes under $HOME/.local. The image's HOME is /root, on this volume (the base file mounts
+      # it at /root/.local); here HOME is /tmp, so the same volume goes there too, or a recreated container loses
+      # every uploaded file while Mongo, the graph and the vector store keep their records.
+      - pipeshub_root_local:/tmp/.local
+    healthcheck: !reset null
+
+  sandbox-broker:
+    <<: *e2e-python
+    # The base file's hardening applies unchanged: a read-only root, no capabilities, and no Docker socket: it reaches
+    # Docker through docker-socket-proxy below (R38IDENT-FU-1). The lane proves the shape an install runs (SEC-D-02).
+    entrypoint: ["python", "/e2e/pyrun.py", "app.sandbox_broker_main"]
+    environment:
+      HOME: /tmp
+      SANDBOX_DOCKER_IMAGE: ${SANDBOX_DOCKER_IMAGE}
+      SANDBOX_EGRESS_SUBNETS: ${E2E_EGRESS_SUBNETS:?}
+      PIPESHUB_ENGINES_WITHOUT_GVISOR: ${E2E_ENGINES_WITHOUT_GVISOR:-true}
+      # As pipeshub-ai's: the broker and the worker agree on which ACP agent profiles are installed.
+      PIPESHUB_ACP_PROFILES_UNSIGNED: ${E2E_ACP_PROFILES_UNSIGNED:-true}
+      PIPESHUB_TEST_TRUST_ROOT: ${E2E_TEST_TRUST_ROOT:-}
+      # E2E_SANDBOX_RUNTIME=runc (run.sh): runsc withheld, so a gVisor host runs the runc lane.
+      SANDBOX_WITHHOLD_RUNTIMES: ${E2E_WITHHOLD_RUNTIMES:-}
+    volumes:
+      - ${E2E_SRC}/backend/python:/app/python:ro
+      - ${E2E_SITE_PACKAGES}:/site:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+      - ${E2E_WORK}/test-trust:/run/pipeshub/test-trust:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8095/healthz', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 5s
+
+  # The base file's only socket holder, run from this tree. Its user is the stack's, its group the socket's from
+  # DOCKER_GID (the base file's group_add), as an install runs it.
+  docker-socket-proxy:
+    <<: *e2e-python
+    entrypoint: ["python", "/e2e/pyrun.py", "app.docker_proxy_main"]
+    environment:
+      HOME: /tmp
+      # The broker's pool above: the proxy admits sandbox networks only inside the pool the broker allocates from.
+      SANDBOX_EGRESS_SUBNETS: ${E2E_EGRESS_SUBNETS:?}
+      # The broker's image above: the only one its egress firewall helper may run from (R44STOP-FU-3).
+      SANDBOX_DOCKER_IMAGE: ${SANDBOX_DOCKER_IMAGE}
+    volumes:
+      - ${E2E_SRC}/backend/python:/app/python:ro
+      - ${E2E_SITE_PACKAGES}:/site:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+
+  # SEC-D-06 (kv-etcd stacks): etcd's certificates from this tree. Root only to give the stack's uid its client files.
+  etcd-tls:
+    <<: *e2e-python
+    user: "0:0"
+    entrypoint: ["python", "/e2e/pyrun.py", "app.utils.internal_tls", "/tls"]
+    environment:
+      HOME: /tmp
+      ETCD_TLS_CLIENT_OWNER: "${E2E_UID:?}:${E2E_GID:?}"
+    volumes:
+      - ${E2E_SRC}/backend/python:/app/python:ro
+      - ${E2E_SITE_PACKAGES}:/site:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+
+  egress-proxy:
+    <<: *e2e-python
+    entrypoint: ["python", "/e2e/pyrun.py", "app.egress_proxy_main"]
+    environment:
+      HOME: /tmp
+    volumes:
+      - ${E2E_SRC}/backend/python:/app/python:ro
+      - ${E2E_SITE_PACKAGES}:/site:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://egress-proxy-control:8098/healthz', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 5s
+
+  neo4j:
+    labels: *e2e-labels
+    restart: "no"
+
+  qdrant:
+    labels: *e2e-labels
+    restart: "no"
+
+  pxh-fake-llm:
+    <<: *e2e-python
+    entrypoint: ["python", "/e2e/pyrun.py", "/e2e/fake_llm/server.py", "8080"]
+    environment:
+      FAKE_LLM_API_KEY: ${E2E_LLM_KEY:?}
+      FAKE_LLM_CONTROL_TOKEN: ${E2E_LLM_CONTROL:?}
+      # The matrix lane's model per wire (integration-tests/harness/e2e/fixtures.py) answers too.
+      FAKE_LLM_MODELS: e2e-llm,e2e-embedding,gpt-5-mini,claude-sonnet-4-5,gemini-2.5-flash,anthropic.claude-3-5-sonnet-20240620-v1:0
+    ports:
+      - "127.0.0.1:${E2E_LLM_PORT:?}:8080"
+    volumes:
+      - ${E2E_SRC}/backend/python:/app/python:ro
+      - ${E2E_SITE_PACKAGES}:/site:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+    networks:
+      - pipeshub
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s
+
+  # The durable lane's SaaS (run.sh durable): an MCP server and a Jira Data
+  # Center API whose writes count their effects (fake_saas/server.py). On
+  # `pipeshub` only: the worker reaches it, no sandbox can.
+  pxh-fake-saas:
+    <<: *e2e-python
+    entrypoint: ["python", "/e2e/pyrun.py", "/e2e/fake_saas/server.py", "8090"]
+    environment:
+      FAKE_SAAS_CONTROL_TOKEN: ${E2E_LLM_CONTROL:?}
+      FAKE_SAAS_JIRA_TOKEN: ${E2E_JIRA_TOKEN:-}
+    ports:
+      - "127.0.0.1:${E2E_SAAS_PORT:?}:8090"
+    volumes:
+      - ${E2E_SRC}/backend/python:/app/python:ro
+      - ${E2E_SITE_PACKAGES}:/site:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+    networks:
+      - pipeshub
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s

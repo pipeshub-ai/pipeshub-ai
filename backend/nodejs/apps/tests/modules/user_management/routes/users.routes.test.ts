@@ -1329,6 +1329,26 @@ describe('User Routes - handler coverage', () => {
   })
 
   describe('POST /updateAppConfig handler', () => {
+    it("ORGDEL: rebuilds the org and user controllers through the container's factories, so a config update keeps their deletion services", async () => {
+      const handler = findHandler('/updateAppConfig', 'post')
+      const updated = { frontendUrl: 'http://new', scopedJwtSecret: 's2' }
+      const configModule = require('../../../../src/modules/tokens_manager/config/config')
+      sinon.stub(configModule, 'loadAppConfig').resolves(updated)
+      const orgController = { composed: 'org' }
+      const userController = { composed: 'user' }
+      const orgFor = sinon.stub().returns(orgController)
+      const userFor = sinon.stub().returns(userController)
+      container.bind('OrgControllerFactory').toConstantValue(orgFor)
+      container.bind('UserControllerFactory').toConstantValue(userFor)
+
+      await handler({} as any, mockRes(), sinon.stub())
+
+      expect(container.get('OrgController')).to.equal(orgController)
+      expect(container.get('UserController')).to.equal(userController)
+      expect(orgFor.firstCall.args).to.deep.equal([updated])
+      expect(userFor.firstCall.args).to.deep.equal([updated])
+    })
+
     it('should update app config and rebind services', async () => {
       const handler = findHandler('/updateAppConfig', 'post')
       expect(handler).to.exist

@@ -39,6 +39,7 @@ from app.connectors.api.router import (
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import RecordType
+from tests.support.record_access import InMemoryRecordAccess
 
 # ============================================================================
 # Helpers
@@ -995,7 +996,7 @@ class TestGetSignedUrl:
         handler.get_signed_url = AsyncMock(return_value="https://signed.url/file")
         gp = AsyncMock()
         gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
-        gp.check_record_access_with_details = AsyncMock(return_value={"role": "READER"})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1").serve(gp)
 
         result = await get_signed_url(
             _mock_request(), "org-1", "user-1", "googledrive", "rec-1", handler, gp
@@ -1012,6 +1013,8 @@ class TestGetSignedUrl:
         handler.get_signed_url = AsyncMock(return_value="https://signed.url/file")
         gp = AsyncMock()
         gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
+        access = InMemoryRecordAccess().user("record-owner", "org-1").record("rec-1", "org-1")
+        access.serve(gp)
         request = _mock_request(
             user={"orgId": "org-1", "token_type": "scoped", "scopes": ["connector:signedUrl"]}
         )
@@ -1020,7 +1023,7 @@ class TestGetSignedUrl:
             request, "org-1", "record-owner", "googledrive", "rec-1", handler, gp
         )
         assert result["signedUrl"] == "https://signed.url/file"
-        gp.check_record_access_with_details.assert_not_called()
+        assert access.asked_about == []
         args, kwargs = handler.get_signed_url.await_args
         assert args[2] == "record-owner"
         assert kwargs["additional_claims"]["org_id"] == "org-1"
@@ -1074,7 +1077,7 @@ class TestGetSignedUrl:
         handler = AsyncMock()
         gp = AsyncMock()
         gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1").serve(gp)
         with pytest.raises(HTTPException) as exc_info:
             await get_signed_url(
                 _mock_request(), "org-1", "user-1", "drive", "rec-1", handler, gp
@@ -1089,7 +1092,7 @@ class TestGetSignedUrl:
         handler.get_signed_url = AsyncMock(side_effect=Exception("fail"))
         gp = AsyncMock()
         gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
-        gp.check_record_access_with_details = AsyncMock(return_value={"role": "READER"})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1").serve(gp)
 
         with pytest.raises(HTTPException) as exc_info:
             await get_signed_url(
@@ -1116,7 +1119,8 @@ class TestGetRecordById:
         from app.connectors.api.router import get_record_by_id
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": "data"})
+        access = InMemoryRecordAccess().readable("user-1", "org-1", "rec-1")
+        access.serve(gp)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
@@ -1124,7 +1128,7 @@ class TestGetRecordById:
 
         result = await get_record_by_id("rec-1", request, gp)
         # No revision on the record, so no stage states.
-        assert result == {"record": "data", "stageStates": []}
+        assert result == {**await access.check_record_access_with_details("user-1", "org-1", "rec-1"), "stageStates": []}
 
     async def test_the_record_leaves_out_internal_bookkeeping(self) -> None:
         """The response schema rejects fields it does not list, and these are
@@ -1133,32 +1137,32 @@ class TestGetRecordById:
         from app.connectors.api.router import get_record_by_id
         from app.services.graph_db.common.utils import INTERNAL_RECORD_FIELDS
 
-        stored = {
-            "id": "rec-1",
+        documented = {
             "recordName": "notes.md",
             "indexingStatus": "QUEUED",
             "retryNotBefore": 1_700_000_060_000,
             "restoredAtTimestamp": 1_700_000_000_000,
             "deletedByUserId": None,
-            **dict.fromkeys(INTERNAL_RECORD_FIELDS, 1),
         }
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": stored})
+        access = InMemoryRecordAccess().readable(
+            "user-1", "org-1", "rec-1", **documented, **dict.fromkeys(INTERNAL_RECORD_FIELDS, 1),
+        )
+        access.serve(gp)
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
 
         result = await get_record_by_id("rec-1", _mock_request(container=container), gp)
 
-        assert set(result["record"]) == {
-            "id", "recordName", "indexingStatus", "retryNotBefore", "restoredAtTimestamp", "deletedByUserId",
-        }
-        assert INTERNAL_RECORD_FIELDS <= set(stored), "the stored record itself is not changed"
+        assert INTERNAL_RECORD_FIELDS.isdisjoint(result["record"])
+        assert documented.items() <= result["record"].items()
+        assert INTERNAL_RECORD_FIELDS <= set(access.records["rec-1"]), "the stored record itself is not changed"
 
     async def test_no_access_raises_404(self):
         from app.connectors.api.router import get_record_by_id
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1").serve(gp)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
@@ -1182,7 +1186,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"orgId": "org-1", "origin": "CONNECTOR"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="CONNECTOR").serve(gp)
         with pytest.raises(HTTPException) as exc_info:
             await delete_record("rec-1", _mock_request(), gp, AsyncMock())
         assert exc_info.value.status_code == 403
@@ -1192,7 +1196,8 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"orgId": "org-2", "origin": "UPLOAD"}})
+        access = InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-2", origin="UPLOAD")
+        access.grant("rec-1", user="user-1").serve(gp)
         with pytest.raises(HTTPException) as exc_info:
             await delete_record("rec-1", _mock_request(), gp, AsyncMock())
         assert exc_info.value.status_code == 404
@@ -1202,7 +1207,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -1230,7 +1235,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": False,
             "code": 404,
@@ -1250,7 +1255,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -1280,7 +1285,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -1311,7 +1316,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"payload": {"recordId": "rec-1"}},  # missing eventType/topic
@@ -1334,7 +1339,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"orgId": "org-1", "origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "folder-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -1362,7 +1367,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -2406,7 +2411,7 @@ class TestConvertToPdf:
             with patch("asyncio.create_subprocess_exec", return_value=mock_process):
                 with pytest.raises(HTTPException) as exc_info:
                     await convert_to_pdf(input_path, tmpdir)
-                assert "timed out" in exc_info.value.detail.lower()
+                assert "timed out" in exc_info.value.detail["message"].lower()
 
     async def test_nonzero_return_code_raises(self):
         from app.connectors.api.router import convert_to_pdf
@@ -2440,7 +2445,7 @@ class TestConvertToPdf:
             with patch("asyncio.create_subprocess_exec", return_value=mock_process):
                 with pytest.raises(HTTPException) as exc_info:
                     await convert_to_pdf(input_path, tmpdir)
-                assert "not found" in exc_info.value.detail.lower()
+                assert "not found" in exc_info.value.detail["message"].lower()
 
 
 # ============================================================================
@@ -3397,11 +3402,12 @@ class TestDownloadFile:
         from app.connectors.api.router import download_file
 
         handler, gp = self._redeemable()
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        access = InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1")
+        access.serve(gp)
         with pytest.raises(HTTPException) as exc_info:
             await download_file(_mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
-        gp.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+        assert access.asked_about == [("user-1", "org-1", "rec-1")]
 
     async def test_purpose_claim_is_required(self):
         from app.connectors.api.router import download_file
@@ -3429,7 +3435,8 @@ class TestDownloadFile:
         from app.connectors.api.router import download_file
 
         handler, gp = self._redeemable(token_user="minter")
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        access = InMemoryRecordAccess().user("minter", "org-1").record("rec-1", "org-1")
+        access.serve(gp)
         connector_instance = {"_key": "conn-1", "type": "slack", "name": "My Slack", "isActive": True}
         gp.get_document = AsyncMock(side_effect=[{"_key": "org-1"}, connector_instance, connector_instance])
 
@@ -3443,7 +3450,7 @@ class TestDownloadFile:
         with patch("app.connectors.api.router.has_service_scope", return_value=True):
             result = await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
         assert isinstance(result, Response)
-        gp.check_record_access_with_details.assert_not_called()
+        assert access.asked_about == []
 
 
 # ============================================================================
@@ -3492,7 +3499,7 @@ class TestStreamRecord:
             {"_key": "conn-1", "name": "drive"},  # connector instance
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1").serve(gp)
 
         config_service = AsyncMock()
         request = _mock_request()
@@ -3511,7 +3518,7 @@ class TestStreamRecord:
             None,  # connector instance not found
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
-        gp.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1").serve(gp)
 
         config_service = AsyncMock()
         request = _mock_request()
@@ -3530,7 +3537,7 @@ class TestStreamRecord:
             {"_key": "conn-1", "name": "Drive", "isActive": True},  # connector instance
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
-        gp.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1").serve(gp)
 
         mock_connector = MagicMock()
         mock_connector.get_app_name = MagicMock(return_value=Connectors.SLACK)
@@ -3966,9 +3973,7 @@ class TestRecordStageStates:
         from app.modules.pipeline.models import StageStateSummary
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(
-            return_value={"record": {"_key": "rec-1", "virtualRecordId": "vr-1", "contentRev": "rev-a"}}
-        )
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", _key="rec-1", virtualRecordId="vr-1", contentRev="rev-a").serve(gp)
         # not a demo connector's record, so the demo-data check lets it through
         gp.get_document = AsyncMock(return_value={"_key": "rec-1"})
         summary = StageStateSummary(stage="classify", status=ProgressStatus.FAILED, reason="LLM quota", attempt=3)
@@ -3986,9 +3991,7 @@ class TestRecordStageStates:
         from app.connectors.api.router import get_record_by_id
 
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(
-            return_value={"record": {"_key": "rec-1", "virtualRecordId": "vr-1", "contentRev": "rev-a"}}
-        )
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", _key="rec-1", virtualRecordId="vr-1", contentRev="rev-a").serve(gp)
         # not a demo connector's record, so the demo-data check lets it through
         gp.get_document = AsyncMock(return_value={"_key": "rec-1"})
         with patch("app.connectors.api.router.stage_summaries", AsyncMock(side_effect=RuntimeError("graph down"))):

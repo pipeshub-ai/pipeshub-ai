@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import ipaddress
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     BLOCKED_CIDRS,
+    DEFAULT_OPEN_EGRESS_POOL,
+    ENV_OPEN_EGRESS_SUBNETS,
     FIREWALL_UNAVAILABLE_EXIT_CODE,
     build_firewall_script,
     ensure_egress_network_sync,
     firewall_unavailable,
     firewalled_container_kwargs,
     new_firewall_token,
+    open_egress_pool,
+    open_egress_subnets,
     parse_cidrs,
 )
 
@@ -205,6 +210,82 @@ class TestEnsureEgressNetwork:
         client.networks.create.side_effect = RuntimeError("create failed")
         with pytest.raises(RuntimeError, match="create failed"):
             ensure_egress_network_sync(client, "egress", {})
+
+
+def _subnet_of_create(call) -> str:
+    (pool,) = call.kwargs["ipam"]["Config"]
+    assert pool["Gateway"] == str(next(ipaddress.ip_network(pool["Subnet"]).hosts()))
+    return pool["Subnet"]
+
+
+_OVERLAP = RuntimeError("400 Client Error: invalid pool request: Pool overlaps with other one on this address space")
+
+
+class TestEgressBridgeAddresses:
+    """The open-egress bridge never asks the daemon's default pools for an address: on a host whose ~30 default
+    pools other stacks hold, that create fails ("all predefined address pools have been fully subnetted") and with
+    it every open-egress sandbox (round 7 Docker lane)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_pool_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(ENV_OPEN_EGRESS_SUBNETS, raising=False)
+
+    def test_a_new_bridge_takes_the_first_22_of_the_default_pool(self) -> None:
+        client = MagicMock()
+        created = _network("egress", subnet="10.212.0.0/22")
+        client.networks.list.side_effect = [[], [created]]
+        client.networks.get.return_value = created
+
+        assert ensure_egress_network_sync(client, "egress", {}) == ["10.212.0.0/22"]
+        assert _subnet_of_create(client.networks.create.call_args) == "10.212.0.0/22"
+        assert DEFAULT_OPEN_EGRESS_POOL == "10.212.0.0/16"
+
+    def test_a_subnet_another_network_holds_is_skipped(self) -> None:
+        client = MagicMock()
+        created = _network("egress", subnet="10.212.4.0/22")
+        client.networks.list.side_effect = [[], [created]]
+        client.networks.get.return_value = created
+        client.networks.create.side_effect = [_OVERLAP, MagicMock()]
+
+        assert ensure_egress_network_sync(client, "egress", {}) == ["10.212.4.0/22"]
+        tried = [_subnet_of_create(c) for c in client.networks.create.call_args_list]
+        assert tried == ["10.212.0.0/22", "10.212.4.0/22"]
+
+    def test_the_operators_pool_is_used(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(ENV_OPEN_EGRESS_SUBNETS, "192.168.250.0/24")
+        client = MagicMock()
+        client.networks.list.side_effect = [[], [_network("egress", subnet="192.168.250.0/24")]]
+
+        ensure_egress_network_sync(client, "egress", {})
+        assert _subnet_of_create(client.networks.create.call_args) == "192.168.250.0/24"
+
+    def test_a_full_pool_names_the_setting(self) -> None:
+        client = MagicMock()
+        client.networks.list.return_value = []
+        client.networks.create.side_effect = _OVERLAP
+
+        with pytest.raises(RuntimeError, match=ENV_OPEN_EGRESS_SUBNETS):
+            ensure_egress_network_sync(client, "egress", {}, pool="10.212.0.0/21")
+        assert client.networks.create.call_count == 2
+
+    def test_a_recreated_bridge_keeps_its_old_subnet_first(self) -> None:
+        client = MagicMock()
+        legacy = _network("egress", icc_off=False, subnet="10.215.7.0/28")
+        fresh = _network("egress", subnet="10.215.7.0/28")
+        client.networks.list.side_effect = [[legacy], [fresh]]
+        client.networks.get.side_effect = [legacy, fresh]
+
+        assert ensure_egress_network_sync(client, "egress", {}) == ["10.215.7.0/28"]
+        assert _subnet_of_create(client.networks.create.call_args) == "10.215.7.0/28"
+
+    @pytest.mark.parametrize("raw", ["fd00::/64", "10.212.0.0/30", "10.212.0.1/16", "nope"])
+    def test_a_bad_pool_is_refused_not_replaced(self, raw: str) -> None:
+        with pytest.raises(ValueError):
+            open_egress_pool(raw)
+
+    def test_a_small_pool_is_one_subnet(self) -> None:
+        assert open_egress_subnets(open_egress_pool("10.9.9.0/24")) == ["10.9.9.0/24"]
+        assert len(open_egress_subnets(open_egress_pool(None))) == 64
 
 
 class TestCreateSandboxContainerDiskQuota:

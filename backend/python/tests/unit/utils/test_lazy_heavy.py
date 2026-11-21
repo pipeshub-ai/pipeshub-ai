@@ -77,19 +77,31 @@ async def test_later_calls_return_without_importing_again(fake_heavy: tuple[str,
     assert len(lazy_heavy._attempts) == 1  # type: ignore[attr-defined]
 
 
-async def test_the_loop_keeps_running_while_the_import_runs(fake_heavy: tuple[str, list[int]]) -> None:
-    ticks = []
+async def test_the_loop_keeps_running_while_the_import_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    importing = threading.Event()
+    ticked = threading.Event()
+    saw_ticks: list[bool] = []
+
+    def import_until_the_loop_ticks() -> None:
+        importing.set()
+        # Run on the loop thread, the import would wait here alone for the whole backstop.
+        saw_ticks.append(ticked.wait(10))
+
+    monkeypatch.setattr(lazy_heavy, "_import_docling", import_until_the_loop_ticks)
 
     async def probe() -> None:
+        ticks_while_importing = 0
         while True:
-            ticks.append(time.perf_counter())
             await asyncio.sleep(0.01)
+            if importing.is_set():
+                ticks_while_importing += 1
+                if ticks_while_importing >= 3:
+                    ticked.set()
 
     task = asyncio.create_task(probe())
     await lazy_heavy.ensure_docling()
     task.cancel()
-    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
-    assert len(ticks) > 5 and max(gaps) < 0.1
+    assert saw_ticks == [True], "the loop did not run while the import did"
 
 
 async def test_a_failed_import_raises_and_is_retried_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:

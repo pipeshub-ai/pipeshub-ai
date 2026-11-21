@@ -246,6 +246,7 @@ async def test_permit_holder_memory_wait_is_bounded(host, governor, monkeypatch)
     started = time.monotonic()
     with pytest.raises(cc.ParseAdmissionTimeout):
         await cc.acquire_parsing_slot(host, ParseTier.HEAVY, 10 * MIB, timeout=30.0, kind=ParseKind.DOCLING_DOCX)
+    # wall-clock-ok: unbounded, the wait is the 30 s admission timeout; bounded, it gives up after 0.3 s
     assert time.monotonic() - started < 3.0
     assert gate.in_use == 0, "the permit went back"
     assert budget.stats()["reserved_bytes"] == int(1.5 * GIB), "and took nothing"
@@ -263,6 +264,7 @@ async def test_permit_holder_never_waits_for_memory_beyond_the_bound(host, gover
     started = time.monotonic()
     with pytest.raises(cc.ParseAdmissionTimeout):
         await cc.acquire_parsing_slot(host, ParseTier.HEAVY, 10 * MIB, timeout=30.0, kind=ParseKind.DOCLING_DOCX)
+    # wall-clock-ok: unbounded, the wait is the 30 s admission timeout; bounded, it gives up after 0.3 s
     assert time.monotonic() - started < 3.0
     cc.release_admission(x)
 

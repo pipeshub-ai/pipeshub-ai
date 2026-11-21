@@ -142,7 +142,7 @@ kubectl taint nodes <node> node.kubernetes.io/out-of-service=nodeshutdown:NoExec
 
 Leave Redis in the cluster, or use one ElastiCache replication group with cluster mode disabled, one replica, automatic failover, in-transit encryption, and an AUTH token. Cluster mode disabled matters: the app's background worker cannot talk to Redis Cluster, so cluster mode would need a second Redis just for that worker.
 
-The EKS network policy allows DNS, pods in the namespace, HTTPS, and the Pod Identity agent. ElastiCache on port 6379 needs an extra rule. Save this as `elasticache.yaml` (use your VPC CIDR):
+The network policy is default-deny with one rule per component pair (ADR-OPS-04). ElastiCache is outside the cluster, so the app and the sandbox broker (which logs in to Redis with its own account) each need a rule for port 6379. Save this as `elasticache.yaml` (use your VPC CIDR):
 
 ```yaml
 redis:
@@ -157,15 +157,40 @@ redis:
     enabled: true
 networkPolicy:
   extraEgress:
+    # values-eks.yaml's Pod Identity rule; a list set here replaces it, so repeat it.
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 2703
     - to:
         - ipBlock:
             cidr: 10.0.0.0/16
       ports:
         - protocol: TCP
           port: 6379
+  sandboxBroker:
+    extraEgress:
+      - to:
+          - ipBlock:
+              cidr: 10.0.0.0/16
+        ports:
+          - protocol: TCP
+            port: 6379
 ```
 
 Put the AUTH token in the `redis-password` key of the app Secret (`pipeshub-ai-secrets` unless you set `SECRET_NAME`). Create that Secret before the first install. The script reuses it and does not change `redis-password`. If the script creates the Secret, the password is random and will not match the AUTH token: replace the key and restart the app deployment.
+
+The sandbox broker never gets the Redis password. It logs in as its own Redis user, which the app creates with `ACL SETUSER` on every start and every five minutes. ElastiCache refuses that command, so create the user yourself, once, with role-based access control (a user group on the replication group):
+
+1. In the app container, run `node dist/scripts/component-acl.js --password`. For each component it prints the `ACL SETUSER` line, the user name and its password. The rules after `on` and the password hash are the access string.
+2. Create that user in ElastiCache (`aws elasticache create-user` with the name, the password and the access string) and add it to the replication group's user group.
+3. Nothing needs a restart. Until the user exists the app logs `agent_harness.component_publish_failed` with `errorType: ComponentLoginMissing` and the step to take, and the broker cannot read its configuration. Once the user exists, the next publish finds the broker's login working and the warning stops.
+
+The password comes from `SANDBOX_BROKER_COMPONENT_KEY`: rotate that key and you create the user again.
 
 ```bash
 PIPESHUB_EXTRA_VALUES="$PWD/elasticache.yaml" ./deployment/helm/aws/deploy.sh \
@@ -209,7 +234,7 @@ Install the tools on macOS or Linux (amd64 or arm64):
 ./deployment/helm/aws/install-deps.sh
 ```
 
-It installs only what is missing or too old, into `~/.pipeshub/bin`, without sudo. `kubectl`, `helm`, and `eksctl` come from their official releases and are checked against the published SHA-256 sums. The AWS CLI comes from AWS; on macOS its package signature is checked. `kubectl` matches the cluster's Kubernetes minor version. `--check` only reports. Add `~/.pipeshub/bin` to your `PATH` to use the tools outside the scripts. `curl`, `tar`, `openssl`, and on Linux `unzip` come from the operating system; the script prints the package-manager command if one is missing.
+It installs only what is missing or too old, into `~/.pipeshub/bin`, without sudo. Each tool is a pinned version from its official release, checked against the SHA-256 the script carries (not a sum read from the download server); on macOS the AWS CLI package's signature is checked as well. `kubectl` matches the cluster's Kubernetes minor version (1.33 to 1.36 are pinned; another minor is refused with what to do). `--check` only reports. Add `~/.pipeshub/bin` to your `PATH` to use the tools outside the scripts. `curl`, `tar`, `openssl`, and on Linux `unzip` come from the operating system; the script prints the package-manager command if one is missing.
 
 On Windows, use WSL2: run `wsl --install -d Ubuntu` in PowerShell, then clone the repository inside Ubuntu and follow the Linux steps.
 
@@ -635,7 +660,7 @@ The app scales from two to four pods. More pods do not fit on two app nodes. To 
 
 **Sandbox pod is forbidden.** The namespace must allow privileged pods. DinD is privileged on purpose, and only on the app nodes. Re-run `install.sh`; it re-applies the namespace labels.
 
-**`run_code` cannot pull an image.** The sandbox image is set by `config.sandboxDockerImage`. Check that the tag exists on Docker Hub and that the app nodes have outbound HTTPS through the NAT gateway. The network policy allows TCP 443.
+**`run_code` cannot pull an image.** The sandbox image is set by `config.sandboxDockerImage`. Check that the tag exists on Docker Hub and that the app nodes have outbound HTTPS through the NAT gateway. The sandbox broker's network policy allows TCP 443 to public addresses only, so a registry reached through a VPC endpoint (a private address) is refused: list its address in `networkPolicy.sandboxBroker.registryEgress.blocks`.
 
 **S3 errors with "could not load credentials".** The pod started before the Pod Identity association existed. Restart the deployment. Confirm the association with `eksctl get podidentityassociation --cluster "$CLUSTER" --region "$AWS_REGION"`.
 
@@ -666,7 +691,7 @@ The KMS key `alias/<cluster>-eks` is kept. Disks that are still attached are lef
 - Node groups are in private subnets. IMDSv1 is off and pods cannot reach instance metadata. AWS access is only through the Pod Identity and IRSA roles in this guide.
 - Node IAM roles have no extra policies. The EBS driver, the load balancer controller, and S3 each use their own role.
 - EBS volumes and Kubernetes Secrets are encrypted with KMS. The S3 bucket is private, encrypted, and versioned.
-- Network policy is on: DNS, pods in the namespace, HTTPS 443, and the Pod Identity agent. Only ports 3001 and 8088 accept traffic from outside the namespace.
+- Network policy is on and default-deny (ADR-OPS-04). The app reaches DNS, its stores on their client ports, the sandbox broker, the internet and the Pod Identity agent, never instance metadata. Each store accepts only its clients. The sandbox broker, which holds the privileged Docker daemon, reaches DNS, its Redis login and public addresses on 443 only: no private address, no metadata, no Pod Identity agent. Only ports 3001 and 8088 accept traffic from outside the namespace. To keep the Docker daemon off the app nodes, give it a tainted node group of its own with `sandbox.nodePool`.
 - The sandbox does not install packages unless you set `config.sandboxAllowNetwork=true`. User code itself runs with no network.
 - No database port is published on the load balancer.
 - `FLUSHALL` and `FLUSHDB` are disabled on Redis. `secret-key` is stored in Secrets Manager as well as in the Secret.

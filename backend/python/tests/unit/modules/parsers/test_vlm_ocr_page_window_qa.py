@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
-import time
 import weakref
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -12,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
+from tests.support.settle import settle
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -126,18 +126,31 @@ class TestBatchShapes:
         assert 5 <= peak <= 8
 
     async def test_a_slow_page_does_not_hold_up_the_other_slots(self) -> None:
-        """Three slow pages in a 24-page document, window 8, 4 slots: a per-batch
-        barrier would cost a slow page per batch (~0.9 s); rolling costs about one."""
+        """Three slow pages in a 24-page document, window 8, 4 slots: the slow pages are held until every
+        other page is done. Rolling, the fourth slot gets through all of them; a per-batch barrier would wait
+        on page 1 before page 9 is ever rendered, and the hold would never be let go."""
         strategy, _live, _events, _calls = _strategy(pages=24, batch=8, concurrency=4)
-        slow = 0.3
+        slow_pages = {1, 9, 17}
+        fast_left = 24 - len(slow_pages)
+        release = asyncio.Event()
+        held: list[int] = []
+        held_at_release: list[int] = []
 
         async def call_llm(image_base64: str, page_number: int) -> str:
-            await asyncio.sleep(slow if page_number in (1, 9, 17) else 0.01)
+            nonlocal fast_left
+            if page_number in slow_pages:
+                held.append(page_number)
+                await release.wait()
+            else:
+                await asyncio.sleep(0)
+                fast_left -= 1
+                if fast_left == 0:
+                    held_at_release.extend(sorted(held))
+                    release.set()
             return "x"
 
         strategy._call_llm_for_markdown = call_llm  # type: ignore[method-assign]
-        started = time.monotonic()
-        await strategy._preprocess_document()
-        elapsed = time.monotonic() - started
+        result = await settle(strategy._preprocess_document())
 
-        assert elapsed < slow * 2
+        assert held_at_release == sorted(slow_pages)  # all three held at once while every other page got done
+        assert [p["page_number"] for p in result["pages"]] == list(range(1, 25))

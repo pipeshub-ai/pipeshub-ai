@@ -587,9 +587,10 @@ def test_a_submit_does_not_wait_for_the_idle_shutdown_to_join_its_children() -> 
     reaper.start()
     try:
         assert SlowToExit.joining.wait(5)
-        started = time.monotonic()
         ex.submit(int).result(timeout=5)
-        assert time.monotonic() - started < 1.0
+        # The join is held until the finally: a submit that waited for it would only get here after the
+        # reaper's 10 s wait ran out and the reaper finished.
+        assert not SlowToExit.release.is_set() and reaper.is_alive()
     finally:
         SlowToExit.release.set()
         reaper.join(10)

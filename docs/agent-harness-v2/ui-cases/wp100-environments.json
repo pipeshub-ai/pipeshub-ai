@@ -1,0 +1,76 @@
+{
+  "title": "WP-100 Environment: the agent builder's environment section (C20.18)",
+  "spec": null,
+  "unitTests": [
+    "frontend/app/(main)/agents/agent-builder/components/__tests__/wp100-agent-environment.test.tsx",
+    "backend/python/tests/unit/api/routes/test_wp100_agent_environment.py"
+  ],
+  "mock": "docs/agent-harness-v2/impl/mocks/wp100-environments.html",
+  "mocks": [
+    "docs/agent-harness-v2/impl/mocks/wp100-environments.html"
+  ],
+  "screenshots": {
+    "pattern": "<name>-<desktop|phone>-<light|dark>.png",
+    "viewports": {
+      "desktop": "1280x900",
+      "phone": "390x844"
+    },
+    "where": "Agent builder > the agent's card > Environment (agent harness on); none taken here (no stack)"
+  },
+  "routed": false,
+  "cases": [
+    {
+      "id": "UI-ENV-1",
+      "title": "Setup steps",
+      "scenario": [
+        "G-17",
+        "GA-09"
+      ],
+      "steps": [
+        "Open an agent in the builder with the agent harness on",
+        "Open Environment, choose Setup steps, enter commands and settings, save"
+      ],
+      "expected": [
+        "The agent saves; reopening shows the same commands and settings",
+        "Saved as the agent's environment (level agent)"
+      ],
+      "screenshots": [
+        "ui-env-1-steps"
+      ]
+    },
+    {
+      "id": "UI-ENV-2",
+      "title": "From devcontainer.json",
+      "scenario": [
+        "G-17"
+      ],
+      "steps": [
+        "Choose From devcontainer.json and paste a file with image, containerEnv and postCreateCommand"
+      ],
+      "expected": [
+        "Saved as a repository environment",
+        "The note says image is not used (the engine's image is the base)"
+      ],
+      "screenshots": [
+        "ui-env-2-devcontainer"
+      ]
+    },
+    {
+      "id": "UI-ENV-3",
+      "title": "A variable that looks secret",
+      "scenario": [
+        "G-17"
+      ],
+      "steps": [
+        "Enter GITHUB_TOKEN=... in Settings"
+      ],
+      "expected": [
+        "The line is named as looking like a secret, with 'connect it as an account instead'",
+        "Save sends no environment until it is fixed"
+      ],
+      "screenshots": [
+        "ui-env-3-secret"
+      ]
+    }
+  ]
+}

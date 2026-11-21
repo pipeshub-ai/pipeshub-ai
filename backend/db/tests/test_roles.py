@@ -59,10 +59,15 @@ def test_surface_matches_the_committed_text(db):
     with cluster.admin(name) as c:
         live = surface.live_lines(c)
         version = surface.major(c)
+    # An edition's own migration modules bring their surface in their allowlist, as db.migrate's check reads it; an
+    # update writes only what is not theirs.
+    allowlists = [f for f in surface.expected_files() if f.suffix == ".yaml"]
+    theirs = surface.expected_lines(allowlists) if allowlists else set()
     if update:        # lines of the other PostgreSQL majors are kept, and the reviewed sysfuncs lines of other minor releases
         keep = [x for x in BASE.read_text(encoding="utf-8").splitlines() if x not in surface.for_major([x], version) or x.startswith("sysfuncs@")]
-        BASE.write_text("\n".join(sorted({*keep, *live})) + "\n", encoding="utf-8")
-    assert surface.diff(live, surface.for_major(surface.expected_lines([BASE]), version)) == [], "the security surface changed: review the diff, then rerun with UPDATE_SURFACE=1"
+        BASE.write_text("\n".join(sorted({*keep, *(set(live) - theirs)})) + "\n", encoding="utf-8")
+    expected = surface.expected_lines([BASE, *allowlists])
+    assert surface.diff(live, surface.for_major(expected, version)) == [], "the security surface changed: review the diff, then rerun with UPDATE_SURFACE=1"
 
 
 def test_surface_diff_reports_extra_and_missing_lines(db):
