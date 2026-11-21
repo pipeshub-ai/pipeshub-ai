@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Flex, Link, Text } from '@radix-ui/themes';
+import { Badge, Callout, Flex, Link, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { WorkspaceRightPanel } from '../../components/workspace-right-panel';
 import { categoryIcon } from '../categories';
@@ -15,6 +15,8 @@ interface McpCatalogDetailsProps {
   addedCount: number;
   /** Adding makes an org server (admins) or the person's own. */
   isAdmin: boolean;
+  /** Why this person can't add it here; replaces Add with this note. */
+  addBlockedNote?: string;
   onClose: () => void;
   onAdd: (template: McpServerTemplate) => void;
 }
@@ -28,7 +30,14 @@ const hostOf = (url: string) => {
 };
 
 /** One catalog entry: what it can do, whether it changes data, how people sign in, and Add. */
-export function McpCatalogDetails({ template, addedCount, isAdmin, onClose, onAdd }: McpCatalogDetailsProps) {
+export function McpCatalogDetails({
+  template,
+  addedCount,
+  isAdmin,
+  addBlockedNote,
+  onClose,
+  onAdd,
+}: McpCatalogDetailsProps) {
   const { t } = useTranslation();
   if (!template) return null;
   const capabilities = template.capabilities ?? [];
@@ -63,6 +72,8 @@ export function McpCatalogDetails({ template, addedCount, isAdmin, onClose, onAd
       onOpenChange={(open) => !open && onClose()}
       title={template.displayName}
       icon={<McpServerIcon typeId={template.typeId} name={template.displayName} size={20} color="var(--gray-11)" />}
+      // Nothing to do here when adding is blocked; the note says who can, and the header closes it.
+      hideFooter={Boolean(addBlockedNote)}
       primaryLabel={
         addedCount > 0
           ? t('workspace.mcpServers.catalog.addAnother')
@@ -162,9 +173,18 @@ export function McpCatalogDetails({ template, addedCount, isAdmin, onClose, onAd
           )}
         </Flex>
 
-        <Text size="2" style={{ color: 'var(--gray-11)' }}>
-          {isAdmin ? t('workspace.mcpServers.discover.orgNote') : t('workspace.mcpServers.discover.personalNote')}
-        </Text>
+        {addBlockedNote ? (
+          <Callout.Root color="amber" size="1">
+            <Callout.Icon>
+              <MaterialIcon name="info" size={16} color="currentColor" />
+            </Callout.Icon>
+            <Callout.Text>{addBlockedNote}</Callout.Text>
+          </Callout.Root>
+        ) : (
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>
+            {isAdmin ? t('workspace.mcpServers.discover.orgNote') : t('workspace.mcpServers.discover.personalNote')}
+          </Text>
+        )}
       </Flex>
     </WorkspaceRightPanel>
   );

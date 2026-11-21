@@ -33,6 +33,7 @@ import {
 import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { visibleWebSearchProviders } from './sidebar-web-search-section';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
+import { AgentBuilderMcpDiscovery } from './sidebar-mcp-discovery';
 import { AgentBuilderMcpSection } from './sidebar-mcp-section';
 import { AgentBuilderSkillsSection } from './sidebar-skills-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
@@ -601,6 +602,7 @@ export function AgentBuilderSidebar(props: {
                     mcpMergeCheckNodes={mcpMergeCheckNodes}
                     isServiceAccount={isServiceAccount}
                     agentShared={isServiceAccount || shareWithOrg}
+                    isAdmin={Boolean(isAdmin)}
                     agentKey={agentKey}
                     onNotify={onNotify}
                     structureLocked={paletteStructureLocked}
@@ -636,6 +638,18 @@ export function AgentBuilderSidebar(props: {
             <Text size="1" role="status" style={{ color: 'var(--olive-11)', fontStyle: 'italic', padding: '4px 8px' }}>
               {t('message.noResults')}
             </Text>
+          ) : null}
+
+          {/* No added server matches, so the MCP section is hidden: the catalog still answers. */}
+          {mcpEnabled && searching && !showMcp ? (
+            <AgentBuilderMcpDiscovery
+              search={mcpSearch}
+              mcpServers={mcpServers}
+              isAdmin={Boolean(isAdmin)}
+              agentShared={isServiceAccount || shareWithOrg}
+              refreshMcpServers={refreshMcpServers}
+              onNotify={onNotify}
+            />
           ) : null}
         </Box>
       </ScrollArea>

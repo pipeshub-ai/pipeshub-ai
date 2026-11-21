@@ -26,6 +26,21 @@ vi.mock('../hooks/use-web-search-config', () => ({
   useWebSearchConfig: () => ({ configuredProviders: webSearch.configured, loading: false, error: null, reload: async () => {} }),
 }));
 
+// A catalog with one server nobody added, ranked as the backend would for a search.
+const mcpApi = vi.hoisted(() => ({
+  getCatalog: vi.fn(async (params?: { search?: string }) => {
+    const linear = {
+      typeId: 'linear', displayName: 'Linear', description: 'Issues.', transport: 'streamable_http', defaultAuthMode: 'oauth',
+      supportedAuthModes: ['oauth'], args: [], requiredEnv: [], optionalEnv: [], defaultScopes: [], supportsDcr: true, tags: [],
+      category: 'projects', capabilities: ['Plan cycles and projects'],
+    };
+    const hit = params?.search?.includes('cycles');
+    return { templates: params?.search ? (hit ? [{ ...linear, matchedCapability: 'Plan cycles and projects' }] : []) : [linear], total: 1 };
+  }),
+  getPopular: vi.fn(async () => []),
+}));
+vi.mock('../../../workspace/mcp-servers/api', () => ({ McpServersApi: mcpApi }));
+
 import { AgentBuilderSidebar } from '../components/agent-builder-sidebar';
 
 function toolset(overrides: Partial<BuilderSidebarToolset> = {}): BuilderSidebarToolset {
@@ -168,6 +183,17 @@ describe('palette search box', () => {
     typeQuery('zzqxv');
     expect(screen.getByText('No results found')).toBeTruthy();
     expect(screen.queryByText('Tools')).toBeNull();
+  });
+
+  it('answers a search nothing in the palette matches from the MCP catalog', async () => {
+    renderSidebar();
+    typeQuery('plan cycles');
+
+    expect(screen.getByText('No results found')).toBeTruthy();
+    expect(await screen.findByText('From the catalog')).toBeTruthy();
+    expect(screen.getByText('Linear')).toBeTruthy();
+    expect(screen.getByText('Plan cycles and projects')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Browse MCP servers' })).toBeTruthy();
   });
 
   it('restores the palette when the query is cleared', () => {

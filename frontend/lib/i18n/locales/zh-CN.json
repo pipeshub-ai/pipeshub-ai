@@ -4254,7 +4254,17 @@
         "popularTitle": "你的组织中常用的服务器",
         "popularHint": "按登录人数",
         "peopleUse_one": "{{count}} 人在用",
-        "peopleUse_other": "{{count}} 人在用"
+        "peopleUse_other": "{{count}} 人在用",
+        "browse": "浏览 MCP 服务器",
+        "browseHint": "添加服务器并登录后，它会出现在列表中，可拖到画布上。",
+        "fromCatalog": "来自目录",
+        "add": "添加",
+        "view": "查看",
+        "askAdmin": "共享的智能体只能使用你的组织添加的服务器。请让管理员添加一个。",
+        "sharedAgentNote": "只有管理员能添加共享智能体可用的服务器。请让管理员为你的组织添加 {{name}}。",
+        "addedSignIn": "已添加 {{name}}。在列表中登录后即可使用它的工具。",
+        "emptyBuilder": "还没有 MCP 服务器。添加一个，让这个智能体使用 Linear、Slack 或 GitHub 等应用的工具。",
+        "noAddedMatch": "你的服务器中没有匹配项。"
       }
     },
     "bots": {
@@ -5706,7 +5716,6 @@
     "mcpServerAlreadyAttachedNotify": "此智能体已有另一个与 {{name}} 同类型的服务器。每种类型的服务器，一个智能体只能使用一个。",
     "webSearchOnlyOne": "只能附加一个网络搜索提供方",
     "mcpServerNodeSubtitle": "来自 MCP 服务器的工具",
-    "noMcpServersAvailable": "没有可用的 MCP 服务器",
     "webSearchLocked": "此智能体的网络搜索无法更改",
     "webSearchLoading": "正在加载网络搜索提供方…",
     "webSearchConfigureFirst": "请先配置 {{name}}",

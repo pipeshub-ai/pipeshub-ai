@@ -4254,7 +4254,17 @@
         "popularTitle": "你的組織中常用的伺服器",
         "popularHint": "依登入人數",
         "peopleUse_one": "{{count}} 人在用",
-        "peopleUse_other": "{{count}} 人在用"
+        "peopleUse_other": "{{count}} 人在用",
+        "browse": "瀏覽 MCP 伺服器",
+        "browseHint": "新增伺服器並登入後，它會出現在清單中，可拖到畫布上。",
+        "fromCatalog": "來自目錄",
+        "add": "新增",
+        "view": "檢視",
+        "askAdmin": "共享的代理只能使用你的組織新增的伺服器。請管理員新增一個。",
+        "sharedAgentNote": "只有管理員能新增共享代理可用的伺服器。請管理員為你的組織新增 {{name}}。",
+        "addedSignIn": "已新增 {{name}}。在清單中登入後即可使用它的工具。",
+        "emptyBuilder": "還沒有 MCP 伺服器。新增一個，讓這個代理使用 Linear、Slack 或 GitHub 等應用程式的工具。",
+        "noAddedMatch": "你的伺服器中沒有符合項目。"
       }
     },
     "bots": {
@@ -5706,7 +5716,6 @@
     "mcpServerAlreadyAttachedNotify": "此代理程式已有另一個與 {{name}} 同類型的伺服器。每種類型的伺服器，一個代理程式只能使用一個。",
     "webSearchOnlyOne": "只能附加一個網路搜尋供應商",
     "mcpServerNodeSubtitle": "來自 MCP 伺服器的工具",
-    "noMcpServersAvailable": "沒有可用的 MCP 伺服器",
     "webSearchLocked": "此代理程式的網路搜尋無法變更",
     "webSearchLoading": "正在載入網路搜尋供應商…",
     "webSearchConfigureFirst": "請先設定 {{name}}",

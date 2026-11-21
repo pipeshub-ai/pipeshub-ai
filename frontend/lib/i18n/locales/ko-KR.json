@@ -4254,7 +4254,17 @@
         "popularTitle": "조직에서 인기 있는 서버",
         "popularHint": "로그인한 사람 수 기준",
         "peopleUse_one": "{{count}}명이 사용 중",
-        "peopleUse_other": "{{count}}명이 사용 중"
+        "peopleUse_other": "{{count}}명이 사용 중",
+        "browse": "MCP 서버 둘러보기",
+        "browseHint": "서버를 추가하고 로그인하면 목록에 나타나며 캔버스로 끌어올 수 있습니다.",
+        "fromCatalog": "카탈로그에서",
+        "add": "추가",
+        "view": "보기",
+        "askAdmin": "공유 에이전트는 조직이 추가한 서버만 사용할 수 있습니다. 관리자에게 추가를 요청하세요.",
+        "sharedAgentNote": "공유 에이전트가 쓸 수 있는 서버는 관리자만 추가할 수 있습니다. 관리자에게 조직용 {{name}} 추가를 요청하세요.",
+        "addedSignIn": "{{name}}이(가) 추가되었습니다. 도구를 사용하려면 목록에서 로그인하세요.",
+        "emptyBuilder": "아직 MCP 서버가 없습니다. Linear, Slack, GitHub 같은 앱의 도구를 이 에이전트에 주려면 하나를 추가하세요.",
+        "noAddedMatch": "일치하는 서버가 없습니다."
       }
     },
     "bots": {
@@ -5706,7 +5716,6 @@
     "mcpServerAlreadyAttachedNotify": "이 에이전트에는 이미 {{name}}과(와) 같은 유형의 다른 서버가 있습니다. 에이전트는 유형별로 서버를 하나만 사용할 수 있습니다.",
     "webSearchOnlyOne": "웹 검색 제공자는 하나만 연결할 수 있습니다",
     "mcpServerNodeSubtitle": "MCP 서버의 도구",
-    "noMcpServersAvailable": "사용 가능한 MCP 서버가 없습니다",
     "webSearchLocked": "이 에이전트의 웹 검색은 변경할 수 없습니다",
     "webSearchLoading": "웹 검색 제공자를 불러오는 중…",
     "webSearchConfigureFirst": "먼저 {{name}}을(를) 구성하세요",

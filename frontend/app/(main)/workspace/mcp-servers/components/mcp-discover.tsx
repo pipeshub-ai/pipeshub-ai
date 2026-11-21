@@ -1,30 +1,27 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Flex, Grid, Heading, IconButton, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { McpServersApi } from '../api';
 import { MCP_CATEGORIES } from '../categories';
+import { useCatalogSearch } from '../hooks/use-catalog-search';
 import { McpServerCard } from '../team/components/mcp-server-card';
 import type { McpCategory, McpMyServerEntry, McpServerTemplate } from '../types';
 
-// Long enough that typing a phrase asks the server once, short enough to feel live.
-export const DISCOVER_SEARCH_DELAY_MS = 250;
 
 interface McpDiscoverProps {
   /** The catalog entries this person may add. */
   catalog: McpServerTemplate[];
   instances: McpMyServerEntry[];
-  description: string;
+  /** Shown under the section's heading; without it the heading is left out (the host names it). */
+  description?: string;
   /** Shown above the grid when nothing is searched or picked, such as servers popular here. */
   highlights?: ReactNode;
   onOpen: (template: McpServerTemplate) => void;
   onAdd: (template: McpServerTemplate) => void;
 }
-
-type Found = { query: string; templates: McpServerTemplate[] };
 
 /** The catalog to browse: search by name or by what a server does, or pick a category. */
 export function McpDiscover({ catalog, instances, description, highlights, onOpen, onAdd }: McpDiscoverProps) {
@@ -32,36 +29,8 @@ export function McpDiscover({ catalog, instances, description, highlights, onOpe
   const isMobile = useIsMobile();
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<McpCategory | null>(null);
-  const [found, setFound] = useState<Found | null>(null);
-  const request = useRef(0);
   const q = query.trim();
-
-  // The backend ranks a search (names, then what servers do); the category narrows here, at once.
-  useEffect(() => {
-    const id = ++request.current;
-    if (!q) {
-      setFound(null);
-      return;
-    }
-    const timer = setTimeout(() => {
-      McpServersApi.getCatalog({ search: q, limit: 200 })
-        .then((res) => {
-          if (id === request.current) setFound({ query: q, templates: res.templates });
-        })
-        .catch(() => {
-          // A failed search falls back to names and descriptions here rather than showing nothing.
-          if (id !== request.current) return;
-          const needle = q.toLowerCase();
-          setFound({
-            query: q,
-            templates: catalog.filter(
-              (tpl) => tpl.displayName.toLowerCase().includes(needle) || tpl.description.toLowerCase().includes(needle),
-            ),
-          });
-        });
-    }, DISCOVER_SEARCH_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [q, catalog]);
+  const { results, searching } = useCatalogSearch(query, catalog);
 
   const addedCount = useMemo(() => {
     const counts = new Map<string, number>();
@@ -75,19 +44,9 @@ export function McpDiscover({ catalog, instances, description, highlights, onOpe
     return byCategory;
   }, [catalog]);
 
-  const searching = Boolean(q) && found?.query !== q;
   const shown = useMemo(() => {
-    const offered = new Map(catalog.map((tpl) => [tpl.typeId, tpl]));
     const inCategory = (tpl: McpServerTemplate) => !category || tpl.category === category;
-    if (q && found) {
-      // Search results keep the server's ranking; only entries this person may add are listed.
-      return found.templates
-        .filter((tpl) => offered.has(tpl.typeId) && inCategory(tpl))
-        .map((tpl) => ({
-          ...offered.get(tpl.typeId)!,
-          matchedCapability: tpl.matchedCapability,
-        }));
-    }
+    if (results) return results.filter(inCategory);
     return catalog.filter(inCategory).sort(
       (a, b) =>
         Number((addedCount.get(a.typeId) ?? 0) > 0) - Number((addedCount.get(b.typeId) ?? 0) > 0) ||
@@ -95,7 +54,7 @@ export function McpDiscover({ catalog, instances, description, highlights, onOpe
           sensitivity: 'base',
         }),
     );
-  }, [catalog, category, q, found, addedCount]);
+  }, [catalog, category, results, addedCount]);
 
   const label = (id: McpCategory) => t(`workspace.mcpServers.categories.${id}`);
   const chip = (id: McpCategory | null, text: string, count: number, icon?: string) => {
@@ -131,14 +90,16 @@ export function McpDiscover({ catalog, instances, description, highlights, onOpe
 
   return (
     <Flex direction="column" gap="4" style={{ width: '100%' }} data-testid="mcp-discover">
-      <Flex direction="column" gap="1">
-        <Heading as="h2" size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          {t('workspace.mcpServers.discover.title')}
-        </Heading>
-        <Text size="2" style={{ color: 'var(--gray-11)' }}>
-          {description}
-        </Text>
-      </Flex>
+      {description !== undefined && (
+        <Flex direction="column" gap="1">
+          <Heading as="h2" size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            {t('workspace.mcpServers.discover.title')}
+          </Heading>
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>
+            {description}
+          </Text>
+        </Flex>
+      )}
 
       <TextField.Root
         size={isMobile ? '3' : '2'}

@@ -4161,7 +4161,17 @@
         "popularTitle": "Populares en tu organización",
         "popularHint": "Según las personas con sesión iniciada",
         "peopleUse_one": "Lo usa {{count}} persona",
-        "peopleUse_other": "Lo usan {{count}} personas"
+        "peopleUse_other": "Lo usan {{count}} personas",
+        "browse": "Explorar servidores MCP",
+        "browseHint": "Añade un servidor e inicia sesión; después aparece en la lista, listo para arrastrarlo al lienzo.",
+        "fromCatalog": "Del catálogo",
+        "add": "Añadir",
+        "view": "Ver",
+        "askAdmin": "Un agente compartido solo puede usar servidores que haya añadido tu organización. Pide a un administrador que añada uno.",
+        "sharedAgentNote": "Solo un administrador puede añadir un servidor que pueda usar un agente compartido. Pide a un administrador que añada {{name}} para tu organización.",
+        "addedSignIn": "Se ha añadido {{name}}. Inicia sesión desde la lista para usar sus herramientas.",
+        "emptyBuilder": "Aún no hay servidores MCP. Añade uno para dar a este agente herramientas de apps como Linear, Slack o GitHub.",
+        "noAddedMatch": "Ninguno de tus servidores coincide."
       }
     },
     "bots": {
@@ -5708,7 +5718,6 @@
     "mcpServerAlreadyAttachedNotify": "Este agente ya tiene otro servidor del mismo tipo que {{name}}. Un agente puede usar un servidor de cada tipo.",
     "webSearchOnlyOne": "Solo se puede adjuntar un proveedor de búsqueda web",
     "mcpServerNodeSubtitle": "Herramientas de un servidor MCP",
-    "noMcpServersAvailable": "No hay servidores MCP disponibles",
     "webSearchLocked": "La búsqueda web no se puede cambiar para este agente",
     "webSearchLoading": "Cargando proveedores de búsqueda web…",
     "webSearchConfigureFirst": "Configure primero {{name}}",

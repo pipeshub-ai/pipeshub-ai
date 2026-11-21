@@ -4117,7 +4117,17 @@
         "popularTitle": "Beliebt in Ihrer Organisation",
         "popularHint": "Nach angemeldeten Personen",
         "peopleUse_one": "{{count}} Person nutzt ihn",
-        "peopleUse_other": "{{count}} Personen nutzen ihn"
+        "peopleUse_other": "{{count}} Personen nutzen ihn",
+        "browse": "MCP-Server durchsuchen",
+        "browseHint": "Fügen Sie einen Server hinzu und melden Sie sich an; danach steht er in der Liste und lässt sich auf die Arbeitsfläche ziehen.",
+        "fromCatalog": "Aus dem Katalog",
+        "add": "Hinzufügen",
+        "view": "Ansehen",
+        "askAdmin": "Ein geteilter Agent kann nur Server nutzen, die Ihre Organisation hinzugefügt hat. Bitten Sie einen Admin, einen hinzuzufügen.",
+        "sharedAgentNote": "Nur ein Admin kann einen Server hinzufügen, den ein geteilter Agent nutzen kann. Bitten Sie einen Admin, {{name}} für Ihre Organisation hinzuzufügen.",
+        "addedSignIn": "{{name}} wurde hinzugefügt. Melden Sie sich in der Liste an, um seine Tools zu nutzen.",
+        "emptyBuilder": "Noch keine MCP-Server. Fügen Sie einen hinzu, um diesem Agenten Tools aus Apps wie Linear, Slack oder GitHub zu geben.",
+        "noAddedMatch": "Keiner Ihrer Server passt."
       }
     },
     "bots": {
@@ -5648,7 +5658,6 @@
     "mcpServerAlreadyAttachedNotify": "Dieser Agent hat bereits einen anderen Server desselben Typs wie {{name}}. Ein Agent kann einen Server pro Typ verwenden.",
     "webSearchOnlyOne": "Es kann nur ein Websuchanbieter hinzugefügt werden",
     "mcpServerNodeSubtitle": "Tools eines MCP-Servers",
-    "noMcpServersAvailable": "Keine MCP-Server verfügbar",
     "webSearchLocked": "Die Websuche kann für diesen Agenten nicht geändert werden",
     "webSearchLoading": "Websuchanbieter werden geladen…",
     "webSearchConfigureFirst": "Konfigurieren Sie zuerst {{name}}",

@@ -4108,7 +4108,17 @@
         "popularTitle": "Popular in your organization",
         "popularHint": "By people signed in",
         "peopleUse_one": "{{count}} person uses it",
-        "peopleUse_other": "{{count}} people use it"
+        "peopleUse_other": "{{count}} people use it",
+        "browse": "Browse MCP servers",
+        "browseHint": "Add a server and sign in to it; it then shows in the list, ready to drag onto the canvas.",
+        "fromCatalog": "From the catalog",
+        "add": "Add",
+        "view": "View",
+        "askAdmin": "A shared agent can only use servers your organization added. Ask an admin to add one.",
+        "sharedAgentNote": "Only an admin can add a server that a shared agent can use. Ask an admin to add {{name}} for your organization.",
+        "addedSignIn": "{{name}} is added. Sign in to it from the list to use its tools.",
+        "emptyBuilder": "No MCP servers yet. Add one to give this agent tools from apps like Linear, Slack or GitHub.",
+        "noAddedMatch": "None of your servers match."
       }
     },
     "bots": {
@@ -5649,7 +5659,6 @@
     "mcpServerAlreadyAttachedNotify": "This agent already has another server of the same type as {{name}}. An agent can use one server of each type.",
     "webSearchOnlyOne": "Only one web search provider can be attached",
     "mcpServerNodeSubtitle": "Tools from an MCP server",
-    "noMcpServersAvailable": "No MCP servers available",
     "webSearchLocked": "Web search cannot be changed for this agent",
     "webSearchLoading": "Loading web search providers…",
     "webSearchConfigureFirst": "Configure {{name}} first",
