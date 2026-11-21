@@ -38,8 +38,8 @@ from app.modules.named_entities.domain.kinds import (
 from app.modules.retrieval.entity_permissions import (
     NAMED_ENTITY_TYPE,
     RECORD_ENTITY_TYPE,
-    SEARCH_DEADLINE_SECONDS,
     RECORD_GROUP_ENTITY_TYPE,
+    SEARCH_DEADLINE_SECONDS,
     SEARCHABLE_ENTITY_TYPES,
     EntityAccessContext,
     EntityAccessError,
