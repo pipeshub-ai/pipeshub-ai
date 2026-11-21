@@ -266,10 +266,13 @@ def _sharepoint(stored_ids: list[str], listing: object, complete: bool = True, s
 
 
 @pytest.mark.asyncio
-async def test_sharepoint_deleted_account_is_withdrawn_blocked_one_listed_stays() -> None:
+async def test_sharepoint_deleted_and_blocked_accounts_are_withdrawn_and_the_blocked_one_is_not_saved() -> None:
     c, stored = _sharepoint(["a", "gone", "blocked"], [_app_user("a"), _app_user("blocked", active=False)])
     await c._sync_users()
-    assert set(stored) == {"a", "blocked"}
+    assert set(stored) == {"a"}
+    saved = {u.source_user_id for u in c.data_entities_processor.on_new_app_users.await_args.args[0]}
+    assert saved == {"a"}
+    c.msgraph_client.get_user_status.assert_awaited_once_with("gone")  # the listing already says "blocked" is disabled
 
 
 @pytest.mark.asyncio

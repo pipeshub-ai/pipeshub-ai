@@ -3649,14 +3649,15 @@ class SharePointConnector(BaseConnector):
             return PermissionType.READ
 
     async def _withdraw_unlisted_app_users(self, listed: UserListing) -> bool:
-        """Take the connector away from stored users (guest accounts included) the user listing
-        does not show and that a read of the account finds gone or disabled
-        (``withdraw_unconfirmed_accounts``). An account the listing shows as disabled stays linked:
-        the disabled set keeps it out of the groups. Restoring the account saves the user again.
-        Returns whether the listing can be trusted."""
+        """Take the connector away from stored users (guest accounts included) that are disabled
+        or gone, by this listing or by a read of the account (``withdraw_unconfirmed_accounts``).
+        Enabling or restoring the account saves the user, and the access, again. Returns whether
+        the listing can be trusted."""
         return await withdraw_unconfirmed_accounts(
             self, self.user_sync_point, self.msgraph_client.get_user_status,
-            {u.source_user_id for u in listed if u.source_user_id}, set(), complete=getattr(listed, "complete", True),
+            {u.source_user_id for u in listed if u.source_user_id},
+            {u.source_user_id for u in listed if u.source_user_id and u.is_active is False},
+            complete=getattr(listed, "complete", True),
         )
 
     async def _sync_users(self) -> None:
@@ -3681,7 +3682,9 @@ class SharePointConnector(BaseConnector):
             # A listing that answered nothing vouches for nobody: the stored accounts are read one by one.
             await self._withdraw_unlisted_app_users(UserListing())
             raise
-        await self.data_entities_processor.on_new_app_users(users)
+        # A disabled account is not saved and loses the link (as in OneDrive and Outlook): a direct grant on an item read
+        # before it was disabled would otherwise still reach it. Enabling it saves the user, and the access, again.
+        await self.data_entities_processor.on_new_app_users([u for u in users if u.is_active is not False])
         self._confirmed_active_emails = {u.email.lower() for u in users if u.email and u.is_active is not False}
         trusted = await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
@@ -3697,7 +3700,7 @@ class SharePointConnector(BaseConnector):
             )
         else:
             # Unknown is not empty: a listing that may be cut or stale replaces no membership and no disabled set.
-            self.logger.warning("User listing is not trusted; no user loses access and the claim groups keep their members this run")
+            self.logger.warning("User listing is not trusted; the claim groups keep their members this run")
             # The accounts a cut listing shows as disabled are disabled; the rest is the last good set. Used this run, never saved.
             self._inactive_emails = stored_emails | {user.email.lower() for user in users if user.email and user.is_active is False}
             self._refresh_all_groups = False
