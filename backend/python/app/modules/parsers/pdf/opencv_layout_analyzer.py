@@ -1709,6 +1709,7 @@ def extract_layout_regions(
     ])
     # After every grid is chosen: the choices prefer more columns, and the sign
     # columns this removes would otherwise count.
+    ordered = _split_side_by_side_tables(ordered, page, all_words, page_w, page_h)
     for region in ordered:
         if region.type == LayoutRegionType.TABLE and region.table_grid:
             _merge_table_currency_columns(region)
@@ -3003,6 +3004,7 @@ def _table_grid_by_words(
     ]
     if not cells:
         return table.extract()
+    placed: list[tuple[dict[str, Any], int, int]] = []
     for w in words:
         cx = (float(w["x0"]) + float(w["x1"])) / 2.0
         cy = (float(w["top"]) + float(w["bottom"])) / 2.0
@@ -3017,6 +3019,7 @@ def _table_grid_by_words(
                 for cell, ri, ci in cells
             )
         buckets[home[0]][home[1]].extend(w["chars"])
+        placed.append((w, home[0], home[1]))
 
     grid: list[list[Optional[str]]] = []
     for row, row_buckets in zip(rows, buckets):
@@ -3029,7 +3032,226 @@ def _table_grid_by_words(
             )
             for cell, chars in zip(cells, row_buckets)
         ])
-    return grid
+    try:
+        return _split_merged_header_band(grid, rows, placed, region, page_order)
+    except Exception:
+        return grid
+
+
+_MONTH_WORDS = frozenset(
+    "january february march april may june july august september october "
+    "november december jan feb mar apr jun jul aug sep sept oct nov dec".split()
+)
+_DATA_NUMBER = re.compile(r"^[(\-\u2013\u2212]?[$\u20ac\u00a3\u00a5]?\d[\d,]*(?:\.\d+)?%?\)?$")
+_YEAR_NUMBER = re.compile(r"^(?:19|20)\d{2}$")
+# A rule this thin (pt) is an underline, not a box edge.
+_RULE_MAX_THICKNESS = 2.5
+_RULE_MIN_WIDTH = 15.0
+
+
+def _phrase_text(phrase: list[dict[str, Any]]) -> str:
+    """A phrase's words with one space between them.
+
+    Words are split at the cell-assignment tolerance, so a gap is a real gap;
+    ``extract_text`` would fuse the ones set closer than its own tolerance
+    ("FiscalYearsEnded") where the file carries no space glyph.
+    """
+    return " ".join(str(w["text"]) for w in phrase)
+
+
+def _line_phrases(line: list[tuple[dict[str, Any], int]]) -> list[list[dict[str, Any]]]:
+    """Split a text line into phrases: runs of words set with a word space between them."""
+    height = sum(float(w["bottom"]) - float(w["top"]) for w, _ in line) / len(line)
+    phrases: list[list[dict[str, Any]]] = []
+    for w, _ in line:
+        if phrases and float(w["x0"]) - float(phrases[-1][-1]["x1"]) <= 0.8 * height:
+            phrases[-1].append(w)
+        else:
+            phrases.append([w])
+    return phrases
+
+
+def _rejoin_split_phrases(
+    grid: list[list[Optional[str]]],
+    rows: list[Any],
+    placed: list[tuple[dict[str, Any], int, int]],
+    lines: list[list[tuple[dict[str, Any], int]]],
+) -> list[list[Optional[str]]]:
+    """Keep each phrase of a heading row in one cell.
+
+    Cells are cut where the values' edges are, so a heading set over them
+    ("December 31,") can be cut in two. The phrase goes to the column whose
+    values it overlaps most; the lines of a cell stay on their own lines.
+    """
+    ncols = len(grid[0])
+    column_of = {id(w): ci for ln in lines for w, ci in ln}
+    phrases = [_line_phrases(ln) for ln in lines]
+    if not any(
+        len({column_of[id(w)] for w in ph}) > 1 for line in phrases for ph in line
+    ):
+        return grid
+    spans: list[Optional[list[float]]] = [None] * ncols
+    for w, ri, ci in placed:
+        if ri == 0 or not str(w["text"]).strip():
+            continue
+        e = spans[ci]
+        x0, x1 = float(w["x0"]), float(w["x1"])
+        spans[ci] = [x0, x1] if e is None else [min(e[0], x0), max(e[1], x1)]
+    if any(sp is None for sp in spans):
+        return grid
+    cells: list[list[str]] = [[] for _ in range(ncols)]
+    for line in phrases:
+        for ph in line:
+            x0, x1 = float(ph[0]["x0"]), float(ph[-1]["x1"])
+            overlap = [min(x1, sp[1]) - max(x0, sp[0]) for sp in spans]  # type: ignore[index]
+            if max(overlap) <= 0:
+                return grid
+            col = next(c for c in range(ncols) if overlap[c] >= 0.8 * max(overlap))
+            cells[col].append(_phrase_text(ph))
+    # Row 0 is only heading lines here: whatever is not text stays as it was.
+    return [["\n".join(c) for c in cells], *grid[1:]]
+
+
+
+def _split_merged_header_band(
+    grid: list[list[Optional[str]]],
+    rows: list[Any],
+    placed: list[tuple[dict[str, Any], int, int]],
+    region: "Page",
+    page_order: dict[int, int],
+) -> list[list[Optional[str]]]:
+    """Give the header lines at the top of a borderless grid their own rows.
+
+    A text-aligned grid has no rule between the column headings and the first
+    value line, so both land in row 0 ("2012\\nTotal ... | 2011\\n2,647"). Its
+    columns are cut where the values' edges are, which is not where a heading
+    sits: right-aligned values leave the heading's centre in the column to the
+    left. Row 0 is split per text line when the line the first value is on has
+    heading lines above it; each heading phrase goes to the column whose values
+    (plus a rule drawn over only that column) it overlaps most.
+    """
+    if len(grid) < 2 or not grid[0] or any(c is None for row in grid for c in row):
+        return grid
+    ncols = len(grid[0])
+    row0 = [(w, ci) for w, ri, ci in placed if ri == 0]
+    text_words = [(w, ci) for w, ci in row0 if str(w["text"]).strip()]
+    if len(text_words) < 2:
+        return grid
+
+    # Text lines of row 0, top to bottom.
+    lines: list[list[tuple[dict[str, Any], int]]] = []
+    for w, ci in sorted(text_words, key=lambda t: (float(t[0]["top"]), float(t[0]["x0"]))):
+        cy = (float(w["top"]) + float(w["bottom"])) / 2.0
+        if lines:
+            last = lines[-1]
+            lcy = sum((float(a["top"]) + float(a["bottom"])) / 2.0 for a, _ in last) / len(last)
+            ref = min(float(w["bottom"]) - float(w["top"]),
+                      float(last[0][0]["bottom"]) - float(last[0][0]["top"])) or 1.0
+            if abs(cy - lcy) < 0.6 * ref:
+                last.append((w, ci))
+                continue
+        lines.append([(w, ci)])
+    if len(lines) < 2:
+        return grid
+
+    def _is_value(line: list[tuple[dict[str, Any], int]], i: int) -> bool:
+        w, ci = line[i]
+        text = str(w["text"]).strip()
+        if ci < 1 or not _DATA_NUMBER.match(text) or _YEAR_NUMBER.match(text):
+            return False
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(line) and str(line[j][0]["text"]).strip().lower().rstrip(".,") in _MONTH_WORDS:
+                return False
+        return True
+
+    ordered = [sorted(ln, key=lambda t: float(t[0]["x0"])) for ln in lines]
+    k = next((n for n, ln in enumerate(ordered) if any(_is_value(ln, i) for i in range(len(ln)))), None)
+    if k is None:
+        return _rejoin_split_phrases(grid, rows, placed, ordered)
+    if k == 0:
+        return grid
+    a = next((n for n in range(k) if any(ci >= 1 for _, ci in ordered[n])), None)
+    if a is None:
+        return grid
+    header = ordered[a:k]
+
+    # Extent of each column's values, from every line that is not a heading.
+    header_ids = {id(w) for ln in header for w, _ in ln}
+    extents: list[Optional[list[float]]] = [None] * ncols
+    for w, _ri, ci in placed:
+        if id(w) in header_ids or not str(w["text"]).strip():
+            continue
+        e = extents[ci]
+        x0, x1 = float(w["x0"]), float(w["x1"])
+        extents[ci] = [x0, x1] if e is None else [min(e[0], x0), max(e[1], x1)]
+    for ci in range(ncols):
+        if extents[ci] is None:
+            cell = rows[0].cells[ci]
+            if cell is None:
+                return grid
+            extents[ci] = [float(cell[0]), float(cell[2])]
+
+    # An underline over exactly one column belongs to that column's heading.
+    top0 = min(float(w["top"]) for ln in header for w, _ in ln) - 3.0
+    top1 = min(float(w["top"]) for w, _ in ordered[k])
+    try:
+        rules = [
+            (float(o["x0"]), float(o["x1"]))
+            for o in list(region.lines) + list(region.rects)
+            if float(o["bottom"]) - float(o["top"]) <= _RULE_MAX_THICKNESS
+            and float(o["x1"]) - float(o["x0"]) >= _RULE_MIN_WIDTH
+            and top0 <= float(o["top"]) <= top1
+        ]
+    except Exception:
+        rules = []
+    spans = [list(e) for e in extents]  # type: ignore[arg-type]
+    for r0, r1 in rules:
+        hit = [ci for ci in range(ncols) if min(r1, extents[ci][1]) > max(r0, extents[ci][0])]  # type: ignore[index]
+        if len(hit) == 1:
+            spans[hit[0]][0] = min(spans[hit[0]][0], r0)
+            spans[hit[0]][1] = max(spans[hit[0]][1], r1)
+
+    def _column_of(x0: float, x1: float) -> int:
+        overlap = [min(x1, spans[c][1]) - max(x0, spans[c][0]) for c in range(ncols)]
+        top = max(overlap)
+        if top > 0:
+            # A heading over several columns (within 20% of the best overlap)
+            # sits in the leftmost of them.
+            return next(c for c in range(ncols) if overlap[c] >= 0.8 * top)
+        mid = (x0 + x1) / 2.0
+        return min(range(ncols), key=lambda c: (abs(mid - (spans[c][0] + spans[c][1]) / 2.0), c))
+
+    header_rows: list[list[Optional[str]]] = []
+    for ln in header:
+        phrases = _line_phrases(ln)
+        cells: list[list[str]] = [[] for _ in range(ncols)]
+        for ph in phrases:
+            cells[_column_of(float(ph[0]["x0"]), float(ph[-1]["x1"]))].append(
+                _phrase_text(ph)
+            )
+        header_rows.append([" ".join(c) for c in cells])
+
+    # Row 0 keeps the lines that are not headings, split by cell as before.
+    centres = [
+        sum((float(w["top"]) + float(w["bottom"])) / 2.0 for w, _ in ln) / len(ln)
+        for ln in ordered
+    ]
+    keep = [[] for _ in range(ncols)]
+    for w, ri, ci in placed:
+        if ri != 0 or id(w) in header_ids:
+            continue
+        if not str(w["text"]).strip():
+            cy = (float(w["top"]) + float(w["bottom"])) / 2.0
+            near = min(range(len(centres)), key=lambda n: abs(centres[n] - cy))
+            if a <= near < k:
+                continue
+        keep[ci].extend(w["chars"])
+    first = [
+        pdfplumber_utils.extract_text(sorted(ch, key=lambda c: page_order.get(id(c), 0))) if ch else ""
+        for ch in keep
+    ]
+    return [*header_rows, first, *grid[1:]]
+
 
 
 def _extract_table_by_words(
@@ -3823,6 +4045,169 @@ def _merge_table_currency_columns(region: LayoutRegion) -> None:
     region.text = (
         region.text.replace(before, after) if region.text and before in region.text else after
     )
+
+
+# Blank width (pt) that separates two statements set side by side.
+_STATEMENT_GUTTER_MIN = 20.0
+# A statement block needs this many lines of "label, then figures".
+_STATEMENT_MIN_LINES = 5
+_STATEMENT_MIN_SHARE = 0.2
+# A statement's figure line carries a value for each of at least two periods.
+_STATEMENT_MIN_FIGURES = 2
+# Two lines are on one baseline when their centres are this close (pt); a gutter
+# whose sides share this share of their lines is inside one table.
+_STATEMENT_ROW_TOLERANCE = 1.5
+_STATEMENT_ROW_SHARE = 0.6
+# A label starts within this many points of its block's left edge.
+_STATEMENT_LABEL_EDGE = 12.0
+# A statement's title ends this far (pt) above its table, at most.
+_STATEMENT_TITLE_REACH = 30.0
+
+
+def _text_lines(words: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """``words`` grouped into text lines by their vertical centre, top to bottom."""
+    lines: list[list[dict[str, Any]]] = []
+    for w in sorted(words, key=lambda w: float(w["top"]) + float(w["bottom"])):
+        mid = (float(w["top"]) + float(w["bottom"])) / 2.0
+        last = lines[-1][-1] if lines else None
+        height = float(w["bottom"]) - float(w["top"]) or 1.0
+        if last is not None and abs(mid - (float(last["top"]) + float(last["bottom"])) / 2.0) < 0.6 * height:
+            lines[-1].append(w)
+        else:
+            lines.append([w])
+    return lines
+
+
+def _statement_lines(words: list[dict[str, Any]]) -> int:
+    """How far ``words`` read as a statement: the lesser of its label lines and figure lines.
+
+    A label line opens with text at the block's left edge (labels wrap, so they
+    need not share a line with their figures); a figure line holds at least two
+    numbers, one per period, which a text column with one amount does not.
+    """
+    left = min(float(w["x0"]) for w in words)
+    labels = figures = 0
+    for ln in _text_lines(words):
+        ordered = sorted(ln, key=lambda w: float(w["x0"]))
+        first = ordered[0]
+        if any(ch.isalpha() for ch in str(first["text"])) and float(first["x0"]) - left < _STATEMENT_LABEL_EDGE:
+            labels += 1
+        if sum(1 for w in ordered if _DATA_NUMBER.match(str(w["text"]).strip())) >= _STATEMENT_MIN_FIGURES:
+            figures += 1
+    return min(labels, figures)
+
+
+def _rows_line_up(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
+    """True when most lines of the smaller side sit on a baseline of the other side.
+
+    Two column groups of one table share their rows; two statements have rows
+    of their own, so their baselines drift apart.
+    """
+    def centres(ws: list[dict[str, Any]]) -> list[float]:
+        return [
+            sum((float(w["top"]) + float(w["bottom"])) / 2.0 for w in ln) / len(ln) for ln in _text_lines(ws)
+        ]
+
+    a, b = centres(left), centres(right)
+    small, large = (a, b) if len(a) <= len(b) else (b, a)
+    hits = sum(1 for y in small if any(abs(y - z) <= _STATEMENT_ROW_TOLERANCE for z in large))
+    return hits >= _STATEMENT_ROW_SHARE * len(small)
+
+
+def _statement_cut(
+    words: list[dict[str, Any]],
+    x0: float,
+    x1: float,
+    titles: list[tuple[float, float]],
+) -> Optional[tuple[float, float]]:
+    """The blank band between two side-by-side statements, if the words show one.
+
+    The band must run the full height of the words. Each side must read as a
+    statement of its own: lines that open with a label and carry figures for at
+    least two periods, under a title of its own (``titles`` are the x-spans of
+    the text set apart above the table, never the table's own first row), and
+    with rows of its own. A table whose columns are far apart has one title, or
+    none, and its rows run across the gutter, so it is not cut.
+    """
+    spans = sorted((float(w["x0"]), float(w["x1"])) for w in words)
+    reach = spans[0][1]
+    for lo, hi in spans[1:]:
+        if lo - reach >= _STATEMENT_GUTTER_MIN:
+            left = [w for w in words if (float(w["x0"]) + float(w["x1"])) / 2.0 <= reach]
+            right = [w for w in words if (float(w["x0"]) + float(w["x1"])) / 2.0 >= lo]
+            wide = x1 - x0
+            left_edge = min(float(w["x0"]) for w in left)
+            right_edge = min(float(w["x0"]) for w in right)
+            if (
+                reach - x0 >= _STATEMENT_MIN_SHARE * wide
+                and x1 - lo >= _STATEMENT_MIN_SHARE * wide
+                and any(abs(ta - left_edge) <= _STATEMENT_LABEL_EDGE and tb <= lo for ta, tb in titles)
+                and any(abs(ta - right_edge) <= _STATEMENT_LABEL_EDGE and ta >= reach for ta, _ in titles)
+                and _statement_lines(left) >= _STATEMENT_MIN_LINES
+                and _statement_lines(right) >= _STATEMENT_MIN_LINES
+                and not _rows_line_up(left, right)
+            ):
+                return reach, lo
+        reach = max(reach, hi)
+    return None
+
+
+def _split_side_by_side_tables(
+    regions: list[LayoutRegion],
+    page: "Page | None",
+    all_words: list[dict[str, Any]],
+    page_w: float,
+    page_h: float,
+) -> list[LayoutRegion]:
+    """Emit two statements set side by side as two tables.
+
+    One grid over both would join unrelated rows and give the right-hand
+    statement the left one's column headings.
+    """
+    if page is None or not all_words:
+        return regions
+
+    def _pieces(
+        bbox: tuple[float, float, float, float], titles: list[tuple[float, float]], depth: int = 0,
+    ) -> list[tuple[float, float, float, float]]:
+        words = [w for w in all_words if str(w.get("text", "")).strip() and _word_center_in_bbox(w, bbox)]
+        if depth > 3 or len(words) < 2 * _STATEMENT_MIN_LINES:
+            return [bbox]
+        cut = _statement_cut(words, bbox[0], bbox[2], titles)
+        if cut is None:
+            return [bbox]
+        a, b = cut
+        out: list[tuple[float, float, float, float]] = []
+        for part in ((bbox[0], bbox[1], a, bbox[3]), (b, bbox[1], bbox[2], bbox[3])):
+            out.extend(_pieces(part, titles, depth + 1))
+        return out
+
+    result: list[LayoutRegion] = []
+    for r in regions:
+        if r.type != LayoutRegionType.TABLE or not r.table_grid or r.from_model:
+            result.append(r)
+            continue
+        titles = [
+            (float(o.bbox[0]), float(o.bbox[2])) for o in regions
+            if o.type == LayoutRegionType.TEXT and r.bbox[1] - _STATEMENT_TITLE_REACH <= o.bbox[3] <= r.bbox[1] + 2.0
+            and o.bbox[0] < r.bbox[2] and o.bbox[2] > r.bbox[0]
+        ]
+        boxes = _pieces(tuple(r.bbox), titles)  # type: ignore[arg-type]
+        if len(boxes) < 2:
+            result.append(r)
+            continue
+        parts: list[LayoutRegion] = []
+        for box in boxes:
+            grid = _reextract_grid_for_bbox(page, box, page_w, page_h)
+            if not grid:
+                parts = []
+                break
+            parts.append(LayoutRegion(
+                type=LayoutRegionType.TABLE, bbox=box, text=_grid_to_text(grid),
+                table_grid=grid, font_size=r.font_size, is_bold=r.is_bold,
+            ))
+        result.extend(parts or [r])
+    return result
 
 
 def _is_plausible_table(
