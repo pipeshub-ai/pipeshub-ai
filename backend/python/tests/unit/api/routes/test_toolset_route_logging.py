@@ -232,6 +232,11 @@ def _nothing(_monkeypatch: pytest.MonkeyPatch, _store: _Store) -> None:
     return None
 
 
+def _sign_in_restarted(_monkeypatch: pytest.MonkeyPatch, store: _Store) -> None:
+    # A newer sign-in replaced the state this callback carries: the real handle_callback raises OAuthStateError.
+    store.values[USER_AUTH_PATH] = {"oauth": {"state": "newer-state"}}
+
+
 def _connect_error() -> aiohttp.ClientConnectorError:
     """A fresh one per case: a logged exception carries the level it was logged at."""
     return aiohttp.ClientConnectorError(
@@ -275,6 +280,8 @@ CALLBACK_CASES = {
                               logging.WARNING, "forbidden", "provider_error", "other", None, None),
     "missing-code": (_nothing, {"state": _state()},
                      logging.WARNING, "bad_request", "missing_parameters", None, None, None),
+    "stale-state": (_sign_in_restarted, {**_CODE, "state": _state()},
+                    logging.WARNING, "bad_request", "server_error", None, "i1", None),
     "agent-no-edit-access": (_agent_check(404), {**_CODE, "state": _state(user_id="agent-1", is_agent=True)},
                              logging.WARNING, "forbidden", "agent_permission_denied", None, "i1", "agent-1"),
     "agent-sign-in-expired": (_agent_check(401), {**_CODE, "state": _state(user_id="agent-1", is_agent=True)},

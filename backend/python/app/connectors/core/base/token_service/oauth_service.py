@@ -67,7 +67,9 @@ def _require_access_token(data: object) -> None:
 
 class OAuthStateError(ValueError):
     """The callback is not for the sign-in in progress: its state is stale, replayed or forged, or its code was used.
-    Nothing was exchanged or saved."""
+    Nothing was exchanged or saved. The client sent an expired or spent state or code, so it is the request's fault."""
+
+    log_error_class = "bad_request"
 
 
 class OAuthStoreUnavailableError(Exception):
