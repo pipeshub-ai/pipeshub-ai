@@ -32,6 +32,7 @@ from app.events.dedup import (
     select_duplicate,
     will_promote_queued_copies,
 )
+from app.events.emptied_record import drop_previous_vectors_of_emptied_record
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -90,7 +91,6 @@ from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.parsers.worker_verdict import worker_gave_up_on
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
-from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ENRICHMENT_DEFERRED, ENRICHMENT_FOLLOWS
@@ -1068,58 +1068,14 @@ class EventProcessor:
     async def _drop_the_previous_vectors_of_an_emptied_record(
         self, doc: dict[str, Any], virtual_record_id: str | None, event_type: str | None
     ) -> None:
-        """An update that leaves a record empty must not leave its old content searchable.
-
-        Every type still holds its vectors when this runs: nothing is taken out
-        ahead of the work. A VRID another record also holds is that record's
-        content, so it is left alone.
-        """
-        if not virtual_record_id or event_type not in (
-            EventTypes.UPDATE_RECORD.value,
-            EventTypes.REINDEX_RECORD.value,
-        ):
-            return
-        # An unreadable graph also answers []; raising lets the event retry rather
-        # than reading the failure as "nobody else holds this content".
-        try:
-            holders = await self.graph_provider.get_records_by_virtual_record_id(
-                virtual_record_id, raise_on_error=True
-            )
-        except Exception as e:
-            raise IndexingError(
-                "Could not tell whether another record shares this content",
-                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
-            ) from e
-        if set(holders or []) != {_record_key(doc)}:
-            return
-        pipeline = self._indexing_pipeline()
-        if pipeline is None:
-            # Completing anyway would leave the old content in the vector store for good.
-            raise IndexingError(
-                "No indexing pipeline to delete the previous vectors of an emptied record",
-                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
-            )
-        await pipeline.delete_points_for_virtual_record(
-            virtual_record_id, RecordContext.from_graph_document(doc)
+        await drop_previous_vectors_of_emptied_record(
+            graph_provider=self.graph_provider,
+            pipeline=self._indexing_pipeline(),
+            orchestrator=self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None),
+            doc=doc,
+            virtual_record_id=virtual_record_id,
+            event_type=event_type,
         )
-        # The VRID is kept, so without this the next diff would pair unchanged
-        # blocks with the points just deleted and embed nothing.
-        orchestrator = self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None)
-        try:
-            if orchestrator is None:
-                raise RuntimeError("no sink orchestrator to reset the reconciliation metadata")
-            org_id = doc.get("orgId")
-            await orchestrator.blob_storage.save_reconciliation_metadata(
-                org_id, _record_key(doc), virtual_record_id, ReconciliationMetadata().to_dict(),
-                document_path=await orchestrator.blob_storage.get_actual_content_path(org_id, virtual_record_id),
-                connector_id=doc.get("connectorId"),
-                record_group_id=doc.get("recordGroupId"),
-            )
-        except Exception as e:
-            raise IndexingError(
-                "Could not reset the stored block list of an emptied record",
-                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
-            ) from e
 
     async def mark_record_status(
         self,
