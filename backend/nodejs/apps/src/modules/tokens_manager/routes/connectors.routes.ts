@@ -23,6 +23,7 @@ import axiosRetry, { retryAfter } from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { bindConnectorLogFields } from '../utils/connector.utils';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import { createKeyedRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
@@ -667,6 +668,7 @@ export function createConnectorRouter(
     'filterKey',
     'recordId',
   );
+  bindConnectorLogFields(router);
   let config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const eventService = container.get<EntitiesEventProducer>('EntitiesEventProducer');
