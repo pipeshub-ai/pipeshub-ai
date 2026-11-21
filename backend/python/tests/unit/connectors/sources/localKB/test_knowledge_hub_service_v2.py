@@ -29,6 +29,7 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
     PermissionVerificationUnavailableError,
+    listing_busy,
 )
 from app.utils.kh_cursor import (
     Boundary,
@@ -485,14 +486,23 @@ def _check_stopped_by(cause: Exception) -> PermissionVerificationUnavailableErro
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("grouped", [False, True], ids=["raised", "in_a_group"])
-async def test_a_deadline_passing_inside_the_batch_check_is_a_503_not_a_500(service, provider, grouped) -> None:
-    """The check wraps whatever stopped it; the listing's own deadline stopping it is still the listing being busy."""
-    wrapped = _check_stopped_by(KnowledgeHubListingBusy(timed_out=True))
-    provider.get_knowledge_hub_connector_page_v3.side_effect = ExceptionGroup("pages", [wrapped]) if grouped else wrapped
+@pytest.mark.parametrize("shape", ["raised", "in_a_group", "a_group_below_the_wrap"])
+async def test_a_deadline_passing_inside_the_batch_check_is_a_503_not_a_500(service, provider, shape) -> None:
+    """The check wraps whatever stopped it; the listing's own deadline stopping it is still the listing being busy, also where it
+    stopped one of several tasks the check ran (a group the wrap carries as its cause)."""
+    busy = KnowledgeHubListingBusy(timed_out=True)
+    wrapped = _check_stopped_by(ExceptionGroup("walks", [ValueError("other"), busy]) if shape == "a_group_below_the_wrap" else busy)
+    provider.get_knowledge_hub_connector_page_v3.side_effect = ExceptionGroup("pages", [wrapped]) if shape == "in_a_group" else wrapped
     result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app")
 
     assert (result.success, result.errorCode, result.error) == (False, 503, str(KnowledgeHubListingBusy(timed_out=True)))
+
+
+def test_a_cause_chain_that_loops_through_a_group_ends() -> None:
+    wrapped = _check_stopped_by(ConnectionError("graph down"))
+    group = ExceptionGroup("walks", [wrapped])
+    wrapped.__cause__.__cause__ = group
+    assert listing_busy(group) is None
 
 
 @pytest.mark.asyncio

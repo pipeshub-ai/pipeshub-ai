@@ -21787,6 +21787,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             parameters["grantedIds"] = [g for ids_ in access["by_connector"].values() for g in ids_]
         return parameters, bool(probe)
 
+    @staticmethod
+    def _kh_v3_reached(start: str, hop: str, tag: str, *, child: str, parent: str, rel: str, hops: int = 50) -> str:
+        """The nodes a walk up the hierarchy from ``start`` reaches in 1 to ``hops`` steps, each step from ``child`` to ``parent`` over
+        ``rel`` passing ``hop``. Read a level at a time, each node once, so the cost follows the nodes above the start, never the routes
+        to them: matched as a path, two parents at many levels make the routes exponential (24 such levels: 2^24). A node a walk reaches
+        within ``hops`` steps is reached by a route of distinct nodes as short, whose steps are a subset of the walk's, so the nodes are
+        those the path match ``(start) ((child)<-[rel:NODE_RELATION]-(parent) WHERE hop){1,hops} (end)`` ends in."""
+        w, i, n, d, x, a = (f"kh_{v}{tag}" for v in ("w", "i", "n", "d", "x", "a"))
+        step = f"[({child})<-[{rel}:NODE_RELATION]-({parent}) WHERE {hop} | {parent}]"
+        new = (f"reduce({d} = [], {x} IN reduce({a} = [], {child} IN {w}.f | {a} + {step})"
+               f" | CASE WHEN {x} IN {d} OR {x} IN {w}.s THEN {d} ELSE {d} + {x} END)")
+        return (f"reduce({w} = {{f: [{start}], s: []}}, {i} IN range(1, {hops}) | CASE WHEN size({w}.f) = 0 THEN {w}"
+                f" ELSE [{n} IN [{new}] | {{f: {n}, s: {w}.s + {n}}}][0] END).s")
+
     async def _kh_v3_accessible_rows(
         self,
         user_key: str,
@@ -21810,18 +21824,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The arms are the listing's, cheapest first; every rule-bearing walk
         # stops at the first hop that fails. Fragments nest, and a name reused
         # inside EXISTS binds to the outer one, so each takes its own tag.
-        # Each walk is matched from its bound start and its ends are collected before they are tested: a test on the end (the App, a
-        # seed, a declared group) lets the planner start the walk there instead, from every node of the App for each target, and a plan
-        # chosen while an App is small stays cached for every App until the statistics change several-fold. A test on the collected
-        # list cannot be moved into the walk.
+        # Every walk starts at its bound start and what it reaches is tested after it: a test on the walk's end (the App, a seed, a
+        # declared group) lets the planner start the walk there instead, from every node of the App for each target, and a plan chosen
+        # while an App is small stays cached for every App until the statistics change several-fold. A walk whose hop reads an edge
+        # between its two nodes (inheritance) is read a level at a time (`_kh_v3_reached`): as a path match it enumerates every route.
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
 
         def from_app(v: str, tag: str) -> str:
             c, p, h = f"kh_c{tag}", f"kh_p{tag}", f"kh_h{tag}"
             hop = self._kh_v3_check_hop(c, p, h, grant_once=bool(access.get("probe")))
-            e, es = f"kh_ae{tag}", f"kh_aes{tag}"
-            return (f"EXISTS {{ MATCH ({v}) (({c})<-[{h}:NODE_RELATION]-({p}) WHERE {hop}){{1,50}} ({e})"
-                    f" WITH collect({e}) AS {es} WHERE app IN {es} RETURN 1 }}")
+            return f"app IN {self._kh_v3_reached(v, hop, tag, child=c, parent=p, rel=h)}"
 
         def in_declared_scope(v: str, tag: str) -> str:
             """A group under an admitted RECORD_GROUP_LEVEL declaration, or a
@@ -21856,9 +21868,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # admits is not a seed, so its hierarchy-only children stay out.
         open_hop = f"kh_hs.relationshipType {hierarchy} AND {self._kh_v3_seed_hop('kh_cs', 'kh_ps', state=False)}"
         below_seed = f"""EXISTS {{
-                MATCH (t) ((kh_cs)<-[kh_hs:NODE_RELATION]-(kh_ps) WHERE {open_hop}){{1,50}} (kh_se)
-                WITH collect(DISTINCT kh_se) AS kh_ses
-                UNWIND kh_ses AS kh_s
+                UNWIND {self._kh_v3_reached('t', open_hop, 's', child='kh_cs', parent='kh_ps', rel='kh_hs')} AS kh_s
                 WITH kh_s WHERE {seed('kh_s')}
                   AND NOT {from_app('kh_s', 'x')}
                   AND NOT {in_declared_scope('kh_s', 'x')}
@@ -22215,6 +22225,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if browse_mode == _KH_SPLIT_COMPARE:
             raise undecided
         self.logger.info(f"kh browse in {app_id} answered by legacy: {undecided}")
+        skip_reads = KH_SKIP_READS.get()
+        if skip_reads is not None:
+            # A read before a numbered page takes up to `kh_browse_skip_rows` rows on split; legacy holds every row it keeps in transaction
+            # memory, so it reads a page's worth and the reads before the page go on from its cursor.
+            args = {**args, "limit": min(args["limit"], skip_reads["page_rows"])}
         return await self.get_knowledge_hub_connector_page_v3(**args, browse_mode="legacy")
 
     async def _kh_split_group_ids(self, ids: list[str], *, org_id: str, transaction: str | None) -> set[str]:
@@ -22256,9 +22271,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WITH app, (coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB') AS appOpensEverything
         MATCH (start:App|Record|RecordGroup {{id: $start_id}})
         WHERE start = app
-           // The walk's ends are collected before they are tested, so its plan starts at the start (as the check's walks do).
-           OR EXISTS {{ MATCH (start) ((kh_c)<-[kh_h:NODE_RELATION]-(kh_p) WHERE {self._kh_v3_check_hop("kh_c", "kh_p", "kh_h", grant_once=probe)}){{1,49}} (kh_top)
-                        WITH collect(kh_top) AS kh_tops WHERE app IN kh_tops RETURN 1 }}
+           // Read a level at a time from the start, as the check's walks are: its plan cannot start at the App, nor read every route.
+           OR app IN {self._kh_v3_reached("start", self._kh_v3_check_hop("kh_c", "kh_p", "kh_h", grant_once=probe), "r", child="kh_c", parent="kh_p", rel="kh_h", hops=49)}
         // Collected, so the walk above the start is read once, not once for each child the planner might start from.
         WITH app, appOpensEverything, collect(start) AS reached
         UNWIND reached AS start
