@@ -18,7 +18,8 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         authorization_url="https://mcp.zapmail.ai/authorize",
         token_url="https://mcp.zapmail.ai/token",
         # domains and workspaces_billing are opt-in: both hold tools that spend wallet balance (buy_domain, renew_domains,
-        # purchase_*, upgrade_*). The mailboxes and inbox tools only read, pause or delete.
+        # purchase_*, upgrade_*). The default mailboxes grant still lets an agent provision, assign, update and schedule
+        # removal of mailboxes and share mailbox analyses, so it is not read-only.
         default_scopes=["mailboxes", "inbox"],
         supports_dcr=True,
         documentation_url="https://docs.zapmail.ai/mcp-2107149m0",
