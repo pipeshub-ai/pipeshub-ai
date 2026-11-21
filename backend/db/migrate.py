@@ -9,6 +9,7 @@ Exit codes: 0 done | 1 a migration failed | 2 bad configuration | 3 lock wait ti
 import contextlib
 import os
 import sys
+import threading
 import time
 from collections.abc import Iterator
 
@@ -175,29 +176,71 @@ def _modules(cfg: Config, conn: psycopg.Connection, *, pending: bool) -> list:
     return [r.module for r in revs if int(r.revision.rsplit("_", 1)[1]) > epochs.get(r.revision.rsplit("_", 1)[0], 0)]
 
 
+PROGRESS_EVERY_S = 10.0
+
+
+@contextlib.contextmanager
+def _progress(c: Connection, qname: str) -> Iterator[None]:
+    """Log the build's ``pg_stat_progress_create_index`` row every ``PROGRESS_EVERY_S`` seconds, read from a second session."""
+    pid = c.exec_driver_sql("SELECT pg_backend_pid()").scalar()
+    stop = threading.Event()
+
+    def poll() -> None:
+        try:
+            with c.engine.connect() as p:
+                # The view shows another session's progress only to a role with its session user's rights: the login, not the owner role.
+                p.exec_driver_sql("SET ROLE NONE")
+                while not stop.wait(PROGRESS_EVERY_S):
+                    row = p.exec_driver_sql("SELECT phase, blocks_done, blocks_total, partitions_done, partitions_total "
+                                            "FROM pg_stat_progress_create_index WHERE pid = %s", (pid,)).first()
+                    if row:
+                        log(f"index {qname}: {row[0]}, blocks {row[1]}/{row[2]}, partitions {row[3]}/{row[4]}")
+        except Exception as exc:                        # progress is only reported: the build goes on without it
+            log(f"index {qname}: no progress report ({type(exc).__name__})")
+    t = threading.Thread(target=poll, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(timeout=10)
+
+
 def _build_online(c: Connection, modules: list, started: list[str]) -> None:
     """Build the ``ONLINE_INDEXES`` of the pending revisions before their transaction, without blocking writers (``ensure_partitioned_index``:
     ``ON ONLY`` the parent, CREATE INDEX CONCURRENTLY per leaf, ATTACH). The revision's own call then finds them valid and does nothing. An
-    index a stopped run left invalid is rebuilt. A table a pending revision creates is skipped: that revision builds on it, empty."""
+    index a stopped run left invalid is rebuilt. A table a pending revision creates is skipped: that revision builds on it, empty. A table
+    that got an index with an expression key is analyzed once at the end: the planner has no statistics for an expression until then."""
+    analyze: list[str] = []
     for ix in (ix for m in modules for ix in getattr(m, "ONLINE_INDEXES", ())):
         schema = ix["table"].split(".")[0]
         qname = f"{schema}.{ix['name']}"
-        if c.exec_driver_sql("SELECT to_regclass(%s) IS NULL", (ix["table"],)).scalar() or ddl._index_valid(c, qname):
+        if c.exec_driver_sql("SELECT to_regclass(%s) IS NULL", (ix["table"],)).scalar():
             continue
-        started.append(qname)
+        if not ddl._index_valid(c, qname):
+            started.append(qname)
+            t0 = time.monotonic()
+            log(f"index {qname}: building online")
+            try:
+                with _progress(c, qname):
+                    ddl.ensure_partitioned_index(c, **ix, blocking=False)
+            except DBAPIError as exc:
+                # A column, function or operator class the index names comes from an earlier pending revision (a database several releases behind).
+                # The first statement failed, so nothing was built: the revision builds it in its transaction, as before this step existed.
+                if getattr(exc.orig, "sqlstate", None) not in ("42703", "42883", "42704"):
+                    raise
+                log(f"index {qname}: built in the upgrade's transaction instead (an earlier pending revision changes {ix['table']}: "
+                    f"{str(exc.orig).strip().splitlines()[0]})")
+                continue
+            log(f"index {qname}: built in {time.monotonic() - t0:.1f}s")
+        # A key that is not a plain column is an expression. Also when a stopped run built the index: it may have stopped before the ANALYZE.
+        if "(" in ix["cols"] and ix["table"] not in analyze:
+            analyze.append(ix["table"])
+    for table in analyze:
         t0 = time.monotonic()
-        log(f"index {qname}: building online")
-        try:
-            ddl.ensure_partitioned_index(c, **ix, blocking=False)
-        except DBAPIError as exc:
-            # A column, function or operator class the index names comes from an earlier pending revision (a database several releases behind).
-            # The first statement failed, so nothing was built: the revision builds it in its transaction, as before this step existed.
-            if getattr(exc.orig, "sqlstate", None) not in ("42703", "42883", "42704"):
-                raise
-            log(f"index {qname}: built in the upgrade's transaction instead (an earlier pending revision changes {ix['table']}: "
-                f"{str(exc.orig).strip().splitlines()[0]})")
-            continue
-        log(f"index {qname}: built in {time.monotonic() - t0:.1f}s")
+        # ANALYZE of a partitioned table also analyzes each leaf, where the expression statistics of the leaves' indexes are kept.
+        c.exec_driver_sql(f"ANALYZE {ddl._ident(table)}")
+        log(f"table {table}: analyzed in {time.monotonic() - t0:.1f}s (statistics of its new expression indexes)")
 
 
 def drop_online(c: Connection, qname: str) -> None:

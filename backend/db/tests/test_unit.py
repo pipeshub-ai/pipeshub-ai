@@ -605,3 +605,60 @@ def test_the_compose_image_role_script_has_the_layout_of_bootstrap_roles():
     assert handed_out == vetted
     assert flat(b.LARGE_OBJECTS_SQL) in flat(sql)
     assert {"pg_trgm", "vector"} <= set(re.findall(r"CREATE EXTENSION IF NOT EXISTS (\w+) WITH SCHEMA ext", sql))   # the extensions CI installs
+
+
+_BUILD = 'def upgrade():\n    ensure_partitioned_index(op.get_bind(), "graph.nodes", "nodes_x", "org_id, (doc->>\'x\')", blocking=True)\n'
+
+
+@pytest.mark.parametrize("name,body,sql,flagged", [
+    ("blocking on an existing table", _BUILD, None, True),
+    ("its name is one of ONLINE_INDEXES", 'ONLINE_INDEXES = [{"table": "graph.nodes", "name": "nodes_x", "cols": "org_id"}]\n' + _BUILD, None, False),
+    ("another name is", 'ONLINE_INDEXES = [{"table": "graph.nodes", "name": "nodes_y", "cols": "org_id"}]\n' + _BUILD, None, True),
+    ("built from ONLINE_INDEXES", 'ONLINE_INDEXES = []\n\n\ndef upgrade():\n    for ix in ONLINE_INDEXES:\n'
+                                  '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, False),
+    ("built from another list", 'INDEXES = []\n\n\ndef upgrade():\n    for ix in INDEXES:\n'
+                                '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, True),
+    ("names built at run time", 'def upgrade():\n    for t, n in X:\n        ensure_partitioned_index(op.get_bind(), t, n, "c", blocking=True)\n', None, True),
+    ("its table is created by the revision's .sql", _BUILD, "CREATE TABLE graph.nodes (org_id text)", False),
+    ("a reasoned waiver", 'blocking_index_ok = "the index keys a column this revision adds"\n' + _BUILD, None, False),
+    ("a waiver without a reason", 'blocking_index_ok = "ok"\n' + _BUILD, None, True),
+    ("online, not blocking", _BUILD.replace("blocking=True", "blocking=False"), None, False),
+    ("only in downgrade()", _BUILD.replace("def upgrade", "def downgrade"), None, False),
+])
+def test_lint_refuses_an_index_built_inside_the_upgrade_transaction(tmp_path, name, body, sql, flagged):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_0003"\n' + body)
+    if sql:
+        py.with_suffix(".sql").write_text(sql)
+    msgs = lint.lint_revision(py, {"graph": 2})
+    assert any("inside the upgrade's transaction" in m for m in msgs) is flagged, (name, msgs)
+
+
+@pytest.mark.parametrize("name,body,flagged", [
+    ("an f-string", 'def upgrade():\n    op.execute(f"DROP INDEX IF EXISTS graph.{n}")\n', True),
+    ("concatenated", 'def upgrade():\n    op.execute("DROP INDEX " + n)\n', True),
+    ("its kind built at run time", 'def upgrade():\n    op.execute(f"DROP {kind} graph.x")\n', True),
+    ("through a name", 'def upgrade():\n    sql = "drop index %s" % n\n    op.execute(sql)\n', True),
+    (".format", 'def upgrade():\n    op.get_bind().exec_driver_sql("DROP INDEX {}".format(n))\n', True),
+    ("a literal in a revision without .sql", 'def upgrade():\n    op.execute("DROP INDEX graph.x")\n', True),
+    ("a waiver does not clear it", 'older_code_compatible = "older code never reads that index at all"\n'
+                                   'def upgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n', True),
+    ("a contract does", 'min_code_epoch = 3\ndef upgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n', False),
+    ("another statement", 'def upgrade():\n    op.execute(f"CREATE INDEX {n} ON graph.x (c)")\n', False),
+    ("in downgrade()", 'def downgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n\n\ndef upgrade():\n    pass\n', False),
+])
+def test_lint_refuses_a_drop_index_built_at_run_time(tmp_path, name, body, flagged):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_0003"\n' + body)
+    msgs = lint.lint_revision(py, {"graph": 2})
+    assert any("may DROP INDEX" in m for m in msgs) is flagged, (name, msgs)
+
+
+def test_lint_leaves_released_revisions_alone(tmp_path):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_0003"\n' + _BUILD + '    op.execute(f"DROP INDEX graph.{n}")\n')
+    assert len(lint.lint_revision(py, {"graph": 2})) == 2
+    assert lint.lint_revision(py, {"graph": 3}) == []
+    assert lint.main([str(py)]) == 0                                # graph_0003 is in released_heads.json
+    py.write_text(py.read_text().replace("graph_0003", "graph_9999"))
+    assert lint.main([str(py)]) == 1

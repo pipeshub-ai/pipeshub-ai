@@ -2,6 +2,7 @@
 organisation and connector reads reach across organisations only through their vetted functions."""
 import json
 import re
+import time
 
 import psycopg
 import pytest
@@ -1788,3 +1789,85 @@ def test_an_invalid_index_on_an_empty_leaf_is_rebuilt_not_kept(db):
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*), bool_and(i.indisvalid), bool_and(NOT i.indisunique) FROM pg_partition_tree('public.rt_k') t "
                          "JOIN pg_index i ON i.indexrelid = t.relid").fetchone() == (2, True, True)
+
+
+def test_an_online_build_analyzes_a_table_that_got_an_expression_index(db):
+    """The planner has no statistics for an index's expression until the table is analyzed (autovacuum may not get to it for long): the online
+    step analyzes a table once it has built an index with an expression key on it, and leaves a table with only plain-column indexes alone."""
+    from types import SimpleNamespace
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    from db import migrate
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1) WITH (autovacuum_enabled = off)")
+        c.execute("INSERT INTO public.rt SELECT 1 FROM generate_series(1, 1000)")
+    stats = "SELECT count(*) FROM pg_statistic WHERE starelid = %s::regclass"
+    engine = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as c:
+            migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[{"table": "public.rt", "name": "rt_k", "cols": "k"}])], [])
+        with connect(cluster, name) as c:
+            assert c.execute(stats, ("public.rt_1",)).fetchone()[0] == 0
+        with engine.connect() as c:
+            migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[{"table": "public.rt", "name": "rt_k1", "cols": "(k + 1)"}])], [])
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute(stats, ("public.rt_1_rt_k1",)).fetchone()[0] == 1          # the leaf index's expression column
+        assert c.execute(stats, ("public.rt_1",)).fetchone()[0] == 1
+
+
+def test_a_long_online_build_logs_its_progress(db, monkeypatch, capsys):
+    """A concurrent build waits for the writers of its leaf and then reads it whole: while it runs, the step logs its phase and blocks every
+    PROGRESS_EVERY_S, read by the migrate login (the owner role, which the build runs as, is not shown another session's progress)."""
+    import runpy
+    import threading
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from db import migrate
+
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    assert run_migrate(url, "downgrade", "graph_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    ix = runpy.run_path(str(Path(__file__).parents[1] / "versions" / "graph" / "0015_pending_virtual_record_index.py"))["ONLINE_INDEXES"][0]
+    with connect(cluster, name) as c:
+        leaf = _populate(c)
+    monkeypatch.setattr(migrate, "PROGRESS_EVERY_S", 0.2)
+    writer = psycopg.connect(host="127.0.0.1", port=cluster.port, user="postgres", dbname=name)       # an open write on the leaf
+    writer.execute(f"INSERT INTO {leaf} VALUES (%s, 'records', 'held', '{{}}'::jsonb)", (A,))
+    engine, failed = migrate._online(url, None), []
+
+    def build():
+        try:
+            with engine.connect() as c:
+                migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[ix])], [])
+        except Exception as exc:  # reported by the assertion below
+            failed.append(exc)
+    t = threading.Thread(target=build)
+    t.start()
+    try:
+        with connect(cluster, name) as c:
+            for _ in range(300):
+                if c.execute("SELECT count(*) FROM pg_stat_progress_create_index WHERE phase = 'waiting for writers before build'").fetchone()[0]:
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail("the build never waited for the writer")
+        time.sleep(1)
+    finally:
+        writer.rollback()
+        writer.close()
+        t.join(60)
+        engine.dispose()
+    assert not failed and not t.is_alive(), failed
+    out = capsys.readouterr().out
+    assert re.search(rf"index graph\.{ix['name']}: waiting for writers before build, blocks \d+/\d+, partitions \d+/\d+", out), out
+    with connect(cluster, name) as c:
+        assert _whole_and_valid(c, ix["name"])

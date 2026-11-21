@@ -110,6 +110,9 @@ QUERIES = [
         f"WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND {_NSP} AND {_NOT_FOLDED.format(rel="c.oid")}"),
     ("index", f"SELECT i.indexrelid::regclass || ' on ' || i.indrelid::regclass || ' unique=' || i.indisunique || ' exclusion=' || i.indisexclusion || ' valid=' || i.indisvalid "
         f"|| ' def=' || md5(pg_get_indexdef(i.indexrelid)) FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE {_NSP} AND {_NOT_FOLDED.format(rel="i.indrelid")}"),
+    ("statistics", f"SELECT quote_ident(n.nspname) || '.' || quote_ident(s.stxname) || ' on ' || s.stxrelid::regclass || ' owner=' || s.stxowner::regrole "
+        f"|| ' def=' || md5(pg_get_statisticsobjdef(s.oid)) FROM pg_statistic_ext s JOIN pg_namespace n ON n.oid = s.stxnamespace "
+        f"WHERE {_NSP} AND {_NOT_FOLDED.format(rel="s.stxrelid")}"),
     ("operator", f"SELECT o.oid::regoperator || ' owner=' || o.oprowner::regrole || ' function=' || o.oprcode FROM pg_operator o JOIN pg_namespace n ON n.oid = o.oprnamespace WHERE {_NSP}"),
     ("cast", "SELECT c.castsource::regtype || ' -> ' || c.casttarget::regtype || ' function=' || c.castfunc::regproc || ' context=' || c.castcontext::text "
         "FROM pg_cast c WHERE c.oid >= 16384"),

@@ -1,4 +1,5 @@
 """Integration tests against real PostgreSQL (every version in MIGRATE_TEST_PG_BINS). See conftest.py."""
+import re
 import textwrap
 import time
 
@@ -702,6 +703,21 @@ def test_a_refused_upgrade_leaves_the_revisions_and_epochs_as_they_were(db, tmp_
     assert _applied(cluster, name) == before                                         # no ext_0001, no ext epoch
     with connect(cluster, name) as c:
         assert c.execute("SELECT has_schema_privilege('pipeshub_ext_reader', 'kernel', 'USAGE')").fetchone()[0] is False
+
+
+def test_extended_statistics_are_part_of_the_surface(db):
+    """A CREATE STATISTICS object is a line of the security surface, like an index: one that no snapshot lists fails the check."""
+    from db import surface
+    cluster, name = db
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+    with connect(cluster, name) as c:
+        assert surface.violations(c) == []
+        c.execute("CREATE STATISTICS kernel.probe_stats (ndistinct) ON branch, epoch FROM kernel.schema_epoch")
+        found = surface.violations(c)
+        assert [k for k, _ in found] == ["50 surface: unexpected"] and re.fullmatch(
+            r"statistics kernel\.probe_stats on kernel\.schema_epoch owner=\S+ def=[0-9a-f]{32}", found[0][1]), found
+        c.execute("DROP STATISTICS kernel.probe_stats")
+        assert surface.violations(c) == []
 
 
 def test_a_first_run_on_an_empty_database_commits_revision_by_revision(db, tmp_path):

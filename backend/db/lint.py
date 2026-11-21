@@ -19,9 +19,12 @@ SECURITY DEFINER is looked for in function definitions):
   - SECURITY DEFINER outside a ``vetted`` directory (generated function files are linted there too, and may
     GRANT CREATE ON SCHEMA to the schema's vetted role for their own transaction); BYPASSRLS; MATERIALIZED VIEW;
     ALTER DEFAULT PRIVILEGES.
-Pure-Python revisions (no .sql) are not parsed. Not covered: PG18-only syntax (guard with kernel.pg_major()).
+Pure-Python revisions (no .sql) are not parsed by these rules. ``lint_revision`` reads every unreleased revision's .py for its index rules:
+a blocking index build on a table the revision does not create, and a DROP INDEX (also built at run time) without ``min_code_epoch``.
+Not covered: PG18-only syntax (guard with kernel.pg_major()).
 """
 import ast
+import json
 import re
 import sys
 from pathlib import Path
@@ -199,10 +202,29 @@ def _call_name(f: ast.expr) -> str:
     return ""
 
 
-def _upgrade_sql(py_text: str) -> tuple[list[str], bool]:
+def _static(node: ast.expr, env: dict[str, ast.expr], depth: int = 0) -> str:
+    """The text of a SQL argument with each part built at run time as ``\x00``: f-strings, ``+``, ``%`` and ``.format`` on a literal, and a name
+    assigned in the same function."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "\x00" for v in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _static(node.left, env, depth) + _static(node.right, env, depth)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        return re.sub(r"%[sdr]", "\x00", _static(node.left, env, depth))
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+        return re.sub(r"\{[^}]*\}", "\x00", _static(node.func.value, env, depth))
+    if isinstance(node, ast.Name) and node.id in env and depth < 5:
+        return _static(env[node.id], env, depth + 1)
+    return "\x00"
+
+
+def _upgrade_sql(py_text: str, runtime: list[str] | None = None) -> tuple[list[str], bool]:
     """SQL a revision runs: string constants passed to execute / exec_driver_sql / text / ensure_index and Alembic's schema API
     calls, in ``upgrade()`` and every module function it calls (``downgrade()`` is not read). True when some argument is not a
-    constant (not parsed). shortcut: calls through objects other than module functions are not followed."""
+    constant (not parsed); ``runtime`` collects such an argument's text as far as it is written in the file (``_static``).
+    shortcut: calls through objects other than module functions are not followed."""
     funcs = {f.name: f for f in ast.parse(py_text).body if isinstance(f, ast.FunctionDef) and f.name != "downgrade"}
     sql, dynamic, seen, todo = [], False, set(), ["upgrade"] if "upgrade" in funcs else []
     while todo:
@@ -213,6 +235,7 @@ def _upgrade_sql(py_text: str) -> tuple[list[str], bool]:
         nodes = list(ast.walk(fn))
         alias = {t.id for n in nodes if isinstance(n, ast.Assign) and _call_name(n.value) in _EXEC_CALLS
                  for t in n.targets if isinstance(t, ast.Name)}                   # run = conn.exec_driver_sql
+        env = {t.id: n.value for n in nodes if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
         for call in (n for n in nodes if isinstance(n, ast.Call)):
             name = _call_name(call.func)
             if name in funcs and isinstance(call.func, ast.Name):
@@ -237,6 +260,8 @@ def _upgrade_sql(py_text: str) -> tuple[list[str], bool]:
                 v = _const_str(a)
                 if v is None:
                     dynamic = True
+                    if runtime is not None:
+                        runtime.append(_static(a, env))
                 else:
                     sql.append(v)
     return sql, dynamic
@@ -391,9 +416,60 @@ def lint_file(path: Path) -> list[str]:
     return bad
 
 
+def _released() -> dict[str, int]:
+    return json.loads((Path(__file__).parent / "released_heads.json").read_text())["epochs"]
+
+
+def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
+    """Index rules for a revision's .py, with or without a .sql. A revision a release shipped (epoch up to ``released``) is not read:
+    it cannot change, and a database that ran it keeps what it built.
+      - ``ensure_partitioned_index(..., blocking=True)`` on a table this revision does not create, unless the index is one of the revision's
+        ``ONLINE_INDEXES`` (db.migrate builds those before the transaction) or the module sets ``blocking_index_ok = "<why>"`` (an index on a
+        column the revision adds cannot be built ahead): a blocking build keeps the table's writers waiting until the upgrade commits;
+      - SQL in ``upgrade()`` that is, or may be, a DROP INDEX (also built at run time: an f-string, ``+``, ``%``, ``.format``) without
+        ``min_code_epoch``: a drop inside the upgrade's transaction keeps every reader of the table waiting until the commit."""
+    text = py.read_text(encoding="utf-8")
+    rev = _module_assign(text, "revision")
+    branch, _, epoch = rev.value.rpartition("_") if isinstance(rev, ast.Constant) and isinstance(rev.value, str) else ("", "", "")
+    if not epoch.isdigit() or int(epoch) <= released.get(branch, 0):
+        return []
+    sql_file = py.with_suffix(".sql")
+    runtime: list[str] = []
+    const_sql, _ = _upgrade_sql(text, runtime)
+    created = {_key(m.group(1)) for s in [sql_file.read_text(encoding="utf-8") if sql_file.is_file() else "", *const_sql]
+               for m in re.finditer(rf"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(?:IF NOT EXISTS\s+)?({_N})", s, re.I)}
+    online = _module_assign(text, "ONLINE_INDEXES")
+    online_names = {_const_str(v) for d in (online.elts if isinstance(online, ast.List) else []) if isinstance(d, ast.Dict)
+                    for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant) and k.value == "name"}
+    why = _module_assign(text, "blocking_index_ok")
+    waived = isinstance(why, ast.Constant) and isinstance(why.value, str) and len(why.value.split()) >= 4
+    tree = ast.parse(text)
+    nodes = [n for f in tree.body if not (isinstance(f, ast.FunctionDef) and f.name == "downgrade") for n in ast.walk(f)]
+    from_online = {n.target.id for n in nodes if isinstance(n, ast.For) and isinstance(n.target, ast.Name)
+                   and isinstance(n.iter, ast.Name) and n.iter.id == "ONLINE_INDEXES"}
+    bad = []
+    for call in (n for n in nodes if isinstance(n, ast.Call) and _call_name(n.func) == "ensure_partitioned_index"):
+        if not any(k.arg == "blocking" and isinstance(k.value, ast.Constant) and k.value.value is True for k in call.keywords):
+            continue
+        if any(k.arg is None and isinstance(k.value, ast.Name) and k.value.id in from_online for k in call.keywords):
+            continue
+        table, name = (_const_str(n) if (n := _arg(call, i, kw)) is not None else None for i, kw in ((1, "table"), (2, "name")))
+        if (table and _key(table) in created) or (name and name in online_names) or waived:
+            continue
+        bad.append(f"{py.name}: index {name or '<built at run time>'} on {table or '<built at run time>'} is built inside the upgrade's transaction "
+                   "(blocking=True): list it in ONLINE_INDEXES, or set blocking_index_ok = \"<why it cannot be built ahead>\"")
+    if not _contract(text):                     # a .sql's revision has its constant SQL linted by lint_file
+        bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: {s.replace(chr(0), '{...}')[:60]}"
+                for s in runtime + ([] if sql_file.is_file() else const_sql) if re.search(r"\bDROP\s+(?:INDEX\b|\x00)", s, re.I)]
+    return bad
+
+
 def main(argv: list[str]) -> int:
     files = [Path(a) for a in argv] or sorted(f for d in version_locations() for g in ("*.sql", "vetted/*.sql") for f in Path(d).glob(g))
-    bad = [msg for f in files for msg in lint_file(f)]
+    bad = [msg for f in files if f.suffix != ".py" for msg in lint_file(f)]
+    revisions = [f for f in files if f.suffix == ".py"] if argv else sorted(f for d in version_locations() for f in Path(d).glob("[0-9]*.py"))
+    released = _released()
+    bad += [msg for f in revisions for msg in lint_revision(f, released)]
     if not argv:
         from db.lib import vetted
         bad += vetted.callers_violations(vetted.load_all(vetted.manifest_files()), Path(__file__).resolve().parents[1])
