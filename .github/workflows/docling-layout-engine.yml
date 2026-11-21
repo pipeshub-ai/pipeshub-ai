@@ -1,0 +1,85 @@
+name: Docling layout engine
+
+# The image holds the heron layout model as PyTorch weights (Docling) and as the ONNX export (table
+# detector). This job bakes the models the way the Dockerfile does, then runs Docling's layout on generated
+# PDFs with the ONNX engine and with the PyTorch engine on CPU. It fails if the layout boxes differ and
+# reports CPU and wall per page for both; the CPU ratio is informational, not a gate.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'deployment/bake-docling-models.py'
+      - 'backend/python/app/config/constants/docling_models.py'
+      - 'backend/python/app/modules/parsers/pdf/docling_processor.py'
+      - 'backend/python/app/modules/parsers/pdf/table_detector.py'
+      - 'backend/python/tests/perf/docling_layout_engine_check.py'
+      - 'backend/python/tests/unit/modules/parsers/test_baked_docling_models.py'
+      - '.github/workflows/docling-layout-engine.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docling-layout-engine-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  layout-engine:
+    name: ONNX against PyTorch layout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Install backend dependencies
+        working-directory: backend/python
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+
+      - name: Bake the models
+        working-directory: backend/python
+        run: |
+          .venv/bin/python ../../deployment/bake-docling-models.py "${RUNNER_TEMP}/docling-models" --with-tableformer-fast
+
+      # The app's own converter and the heron detector, offline, from the freshly baked directory, in every
+      # table mode (including fast with only accurate baked). A skip here is a failure.
+      - name: Load the baked models through the app, offline
+        working-directory: backend/python
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend/python
+          DOCLING_MODELS_TEST_DIR: ${{ runner.temp }}/docling-models
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m pytest -o addopts="" -p no:randomly \
+            tests/unit/modules/parsers/test_baked_docling_models.py -k real_weights \
+            --junitxml="${RUNNER_TEMP}/real-weights.xml"
+          .venv/bin/python ../../scripts/assert_no_skips.py "${RUNNER_TEMP}/real-weights.xml" --min-tests 3
+
+      - name: Compare the layout engines
+        working-directory: backend/python
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend/python
+        run: |
+          set -euo pipefail
+          .venv/bin/python tests/perf/docling_layout_engine_check.py "${RUNNER_TEMP}/docling-models" \
+            | tee "${RUNNER_TEMP}/layout-engine.json"
+          {
+            echo '### Docling layout: ONNX against PyTorch (CPU)'
+            echo '```json'
+            cat "${RUNNER_TEMP}/layout-engine.json"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

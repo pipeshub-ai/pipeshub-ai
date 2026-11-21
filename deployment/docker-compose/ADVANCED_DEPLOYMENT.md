@@ -86,6 +86,35 @@ them at the prompts or via `PIPESHUB_GRAPH_DB` / `PIPESHUB_KV_STORE`.
 **Full** pre-bakes the [BAAI/bge-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) embedding model so the first query does not stall waiting for a download.
 **Eval** is slim without the sandbox image pull and without the Slack bot process.
 
+### Models in the image
+
+Every image (slim and full, Compose and Helm) carries the models the PDF parsers use and
+loads them from the image, never from the Hugging Face Hub:
+
+| Model | Used by | Path in the image |
+|-------|---------|-------------------|
+| `docling-project/docling-layout-heron` (rev `8f39ad3`) | Docling PDF pipeline, layout (PyTorch weights) | `/opt/docling-models/docling-project--docling-layout-heron` |
+| `docling-project/docling-models` (rev `fc0f2d4`), TableFormer `accurate` | Docling PDF pipeline, table structure | `/opt/docling-models/docling-project--docling-models/model_artifacts/tableformer/accurate` |
+| `docling-project/docling-layout-heron-onnx` (rev `40bde04`) | pdfplumber table and figure detector | `/opt/docling-models/docling-project--docling-layout-heron-onnx` |
+
+`/opt/docling-models` is read-only and outside every volume: the `pipeshub_hf_cache` volume
+(`/root/.cache/huggingface`) cannot hide it after an upgrade, and Kubernetes needs no
+volume for it. `PIPESHUB_DOCLING_MODELS_DIR=/opt/docling-models` is set in the image; do not set it
+in your Compose or Helm values (an older image does not have the directory). Do not set
+Docling's own `DOCLING_ARTIFACTS_PATH`: once it is set, Docling stops downloading and
+fails on any file the directory lacks. Each model
+is stored once. The detector and Docling's layout stage use different serializations of the same
+heron model (ONNX and PyTorch weights) on purpose: Docling's own ONNX engine produced identical
+boxes but used 1.3 to 1.7 times the CPU per page, so Docling keeps the PyTorch weights.
+
+TableFormer `fast` (`PDF_DOCLING_TABLE_MODE=fast`) is not baked by default (145 MB). Without its
+weights the parser runs `accurate` and logs one warning; nothing is downloaded. To use `fast`, build with
+`--build-arg BUNDLE_TABLEFORMER_FAST=1`.
+
+The `pipeshub_hf_cache` volume still holds what is downloaded at runtime, such as an embedding
+model you choose in the UI. A model missing from the image (a from-source install) is
+downloaded as before, and the log says so once.
+
 ---
 
 ## Environment overrides for CI / scripted installs
@@ -484,6 +513,8 @@ PipesHub starts and indexes documents **without** outbound internet when models 
 already cached locally. The default **slim** image downloads the embedding model
 on first use, so leave `HF_HUB_OFFLINE` unset there. Set `HF_HUB_OFFLINE=1` only
 on air-gapped hosts that already have the models (or use the full `latest` image).
+The Docling and table-detector models are always in the image and are read by path, so
+`HF_HUB_OFFLINE` does not affect them.
 **Cloud LLMs** (Gemini, OpenAI,
 Anthropic, …) and **external connectors** (Google, Slack, Microsoft, …) require
 the **`pipeshub-ai` container** to reach the public internet — not just your

@@ -16,14 +16,21 @@ from typing import TYPE_CHECKING, Optional
 import cv2
 import numpy as np
 
+from app.config.constants.docling_models import (
+    LAYOUT_HERON_ONNX_REPO,
+    LAYOUT_HERON_ONNX_REVISION,
+    heron_onnx_path,
+)
+
 if TYPE_CHECKING:
     from onnxruntime import InferenceSession
 
 logger = logging.getLogger(__name__)
 
-_HERON_REPO = "docling-project/docling-layout-heron-onnx"
-# The label ids below belong to this export; the Dockerfile downloads the same revision.
-_HERON_REVISION = "40bde044036bb181c130ddf6c51792187268748f"
+# The label ids below belong to this export. The image bakes the pinned revision
+# (app.config.constants.docling_models) and the file is loaded from there.
+_HERON_REPO = LAYOUT_HERON_ONNX_REPO
+_HERON_REVISION = LAYOUT_HERON_ONNX_REVISION
 _HERON_SIZE = 640
 _HERON_TABLE_LABEL = 8
 _HERON_PICTURE_LABEL = 6
@@ -71,9 +78,13 @@ def _session(name: str) -> Optional["InferenceSession"]:
                 import onnxruntime as ort
 
                 if name == "heron":
-                    from huggingface_hub import hf_hub_download
+                    baked = heron_onnx_path()
+                    if baked is not None:
+                        path = str(baked)
+                    else:
+                        from huggingface_hub import hf_hub_download
 
-                    path = hf_hub_download(_HERON_REPO, "model.onnx", revision=_HERON_REVISION)
+                        path = hf_hub_download(_HERON_REPO, "model.onnx", revision=_HERON_REVISION)
                 else:
                     path = os.environ.get(_GATE_MODEL_ENV) or str(_GATE_MODEL_BUNDLED)
                     if path == "off":
