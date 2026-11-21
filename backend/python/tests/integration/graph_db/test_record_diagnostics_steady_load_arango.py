@@ -213,6 +213,15 @@ async def test_rewiden_under_steady_load(env, monkeypatch: pytest.MonkeyPatch, s
     narrowed_at = time.monotonic()
     assert await p.http_client.update_collection_schema(RECORDS, narrow_schema(), timeout=30)  # the older image starts
     sent, begins_waited_out = running_at_each_widening(p.http_client, monkeypatch)
+    # the contended count when each change goes out: a forced one counts its own contended try before it is sent
+    contended_at_send: list[float] = []
+    widen = p.http_client.update_collection_schema
+
+    async def counted(*args: object, **kwargs: object) -> bool:
+        contended_at_send.append(_counter("pipeshub_record_schema_rewiden_contended_total"))
+        return await widen(*args, **kwargs)
+
+    monkeypatch.setattr(p.http_client, "update_collection_schema", counted)
     trigger_started = time.monotonic()
     # What this is about is recovery, not how many tries it takes: skipped widenings, a forced one that timed out with its lease still held
     # (the next tries are refused without a new widening until the lease or the pending change ends) and the retries between them all
@@ -241,11 +250,15 @@ async def test_rewiden_under_steady_load(env, monkeypatch: pytest.MonkeyPatch, s
         # and the open ones end; the helper holds begins from the list to the change, so none begins in between. A first change the
         # server does not answer in time keeps its lease, and a later try may send it again. Each must go out with none open, unless
         # the guard forced it, which it does only after FORCE_AFTER_SKIPS tries in a row found a transaction open.
-        forced = sum(1 for running in sent if running)
-        assert sent and forced * FORCE_AFTER_SKIPS <= contended, (
-            f"a widening was sent while the server listed {sent} right before it, after only {contended:g} contended skips: "
-            "only a forced send may go out with a transaction open"
-        )
+        assert sent and len(contended_at_send) == len(sent), (sent, contended_at_send)
+        previous = before_contended
+        for running, at in zip(sent, contended_at_send, strict=True):
+            # FORCE_AFTER_SKIPS skips, then the forced try itself, since the change before
+            assert not running or at - previous >= FORCE_AFTER_SKIPS + 1, (
+                f"a widening was sent while the server listed {running} right before it, after {at - previous:g} contended tries "
+                f"since the one before: only a forced send may go out with a transaction open ({sent})"
+            )
+            previous = at
     else:
         # a transaction is nearly always open, so the first quiet-point wait finds no moment: that widening is skipped (the write is refused
         # transiently) and a later try finds a gap or is forced. What a write then waits for is the save transactions open at that
