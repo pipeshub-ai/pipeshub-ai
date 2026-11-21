@@ -89,6 +89,9 @@ ITEM_FIELDS = (
 )
 # Box service accounts and app users sign in under this domain.
 _BOX_APP_LOGIN_DOMAIN = '@boxdevedition.com'
+# User statuses that can sign in to Box. The Admin Console lists Active, Active View Only and Active View/Upload
+# Only as able to log in; an Inactive user cannot. Any other status links no one.
+BOX_SIGN_IN_STATUSES = frozenset({'active', 'cannot_delete_edit', 'cannot_delete_edit_upload'})
 
 
 # Helper functions
@@ -248,6 +251,10 @@ class BoxConnector(BaseConnector):
     # False while this run's user list is partial, so an owner missing from it may still be ours.
     # _sync_users sets it at the start of every run; before any run there's no evidence of a gap.
     _user_list_complete: bool = True
+    # Sync-point key (users) for the Box ids withdrawn since the last full sync.
+    WITHDRAWN_ACCOUNTS_KEY = "withdrawn_accounts"
+    # Box ids the last user list showed as unable to sign in: no grant is written to them.
+    _cannot_sign_in_ids: frozenset = frozenset()
 
     def __init__(
         self,
@@ -662,6 +669,9 @@ class BoxConnector(BaseConnector):
                 accessible_by_id = accessible_by.get('id')
                 if not accessible_by_id:
                     continue
+                # A grant left on an account that cannot sign in would open a share removed while it was away.
+                if entity_type == EntityType.USER and str(accessible_by_id) in self._cannot_sign_in_ids:
+                    continue
 
                 permissions.append(Permission(
                     external_id=accessible_by_id,
@@ -734,12 +744,14 @@ class BoxConnector(BaseConnector):
             self.logger.info("Syncing Box users...")
 
             app_users = []
-            offset = 0
-            limit = 1000
+            marker = None
             self._user_list_complete = True
 
             while True:
-                response = await self.data_source.users_get_users(limit=limit, offset=offset)
+                # Marker paging: Box rejects an offset above 10000, which would cut a large enterprise's list short.
+                response = await self.data_source.users_get_users(
+                    limit=1000, usemarker=True, marker=marker, user_type="managed"
+                )
 
                 if not response.success:
                     self.logger.error(f"Failed to fetch users: {response.error}")
@@ -755,12 +767,7 @@ class BoxConnector(BaseConnector):
                     break
 
                 data = self._to_dict(response.data)
-                users_data = data.get('entries', [])
-
-                if not users_data:
-                    break
-
-                for user in users_data:
+                for user in data.get('entries') or []:
                     app_user = AppUser(
                         app_name=self.connector_name,
                         connector_id=self.connector_id,
@@ -768,20 +775,23 @@ class BoxConnector(BaseConnector):
                         org_id=self.data_entities_processor.org_id,
                         email=user.get('login', ''),
                         full_name=user.get('name', ''),
-                        is_active=user.get('status') == 'active',
+                        is_active=user.get('status') in BOX_SIGN_IN_STATUSES,
                         title=user.get('job_title')
                     )
                     app_users.append(app_user)
 
-                offset += limit
-
-                # Check if there are more users
-                if len(users_data) < limit:
+                marker = data.get('next_marker')
+                if not marker:
                     break
 
             self.logger.info(f"Synced {len(app_users)} Box users")
+            # A listed row is evidence on its own, even when a later page could not be read.
+            self._cannot_sign_in_ids = frozenset(str(u.source_user_id) for u in app_users if u.source_user_id and not u.is_active)
             if self._user_list_complete:
-                self._synced_box_user_ids = frozenset(str(u.source_user_id) for u in app_users if u.source_user_id)
+                # Only accounts that can sign in get a drive record group (see _sync_record_groups).
+                self._synced_box_user_ids = frozenset(
+                    str(u.source_user_id) for u in app_users if u.source_user_id and u.is_active
+                )
             return app_users
 
         except Exception as e:
@@ -789,6 +799,71 @@ class BoxConnector(BaseConnector):
             self._mark_read_incomplete(e)
             self._user_list_complete = False
             return []
+
+    async def _link_users(self, users: list[AppUser], *, full_sync: bool) -> list[AppUser]:
+        """Link the Box accounts that can sign in. After a complete user list, an account that left Box (inactive,
+        deleted, or any other status) loses its link and its own grants; after a partial one, no one does.
+
+        Returns the accounts linked again after such a withdrawal: only a full sync writes their grants again, as
+        no event names them. With no record of withdrawals (never written, or the sync points were cleared), every
+        newly linked account counts, and is recorded before it is linked: once linked it no longer looks new, and
+        this run may stop before its full sync."""
+        signed_in = [u for u in users if u.is_active]
+        try:
+            stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            record = await self.user_sync_point.read_sync_point(self.WITHDRAWN_ACCOUNTS_KEY)
+        except Exception as e:
+            # Linking without knowing who was linked or withdrawn before would skip the full sync a returning account needs.
+            self.logger.error(f"Could not read the linked Box users, so no one is linked or withdrawn this run: {e}")
+            self._read_complete = False
+            return []
+        withdrawn = set(record.get("ids") or []) if record else None
+        stored_ids = {str(u.source_user_id) for u in stored if u.source_user_id}
+        stored_emails = {u.email.lower() for u in stored if u.email}
+        newly_linked = [
+            u for u in signed_in
+            if str(u.source_user_id) not in stored_ids and (u.email or "").lower() not in stored_emails
+        ]
+        if withdrawn is None and newly_linked and not full_sync:
+            withdrawn = {str(u.source_user_id) for u in newly_linked if u.source_user_id}
+            try:
+                await self.user_sync_point.update_sync_point(self.WITHDRAWN_ACCOUNTS_KEY, {"ids": sorted(withdrawn)})
+            except Exception as e:
+                self.logger.error(f"Could not record the newly linked Box accounts, so no one is linked this run: {e}")
+                self._read_complete = False
+                return []
+        await self.data_entities_processor.on_new_app_users(signed_in)
+        returning = [u for u in signed_in if str(u.source_user_id) in (withdrawn or set())]
+        # An empty list is no evidence that everyone left; a complete list in which no one can sign in is.
+        if not self._user_list_complete or not users:
+            return returning
+        kept_ids = {str(u.source_user_id) for u in signed_in if u.source_user_id}
+        kept_emails = {u.email.lower() for u in signed_in if u.email}
+        gone = [
+            u for u in stored
+            if str(u.source_user_id) not in kept_ids and (u.email or "").lower() not in kept_emails
+        ]
+        ids = (withdrawn or set()) | {str(u.source_user_id) for u in gone if u.source_user_id}
+        if full_sync:
+            # This full sync writes the grants of an account that came back; one cut short saves no cursor, so the next
+            # run is a full sync again.
+            ids -= kept_ids
+        try:
+            if full_sync and returning:
+                # A returning account's individual shares are written only by the share-history replay (an access-only
+                # invite is not in the grantee's All Files), and the replay moved past them: read it again from the start.
+                # shortcut: Box keeps that history for a limited time; a share older than it comes back only by a walk.
+                await self.box_cursor_sync_point.update_sync_point(self.SHARE_HISTORY_KEY, {"position": "0"})
+            if full_sync or gone:
+                # Saved before the withdrawal, so a failure in between cannot lose the account's later full sync.
+                await self.user_sync_point.update_sync_point(self.WITHDRAWN_ACCOUNTS_KEY, {"ids": sorted(ids)})
+            if gone:
+                self.logger.info(f"Withdrawing Box access from {len(gone)} account(s) that left Box or cannot sign in")
+                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
+        except Exception as e:
+            self.logger.error(f"Could not withdraw the Box accounts that left Box; retried next run: {e}")
+            self._read_complete = False
+        return returning
 
     async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
         """
@@ -1383,7 +1458,7 @@ class BoxConnector(BaseConnector):
             self._read_complete = True
             self.logger.info("📦 [Full Sync] Syncing users...")
             users = await self._sync_users()
-            await self.data_entities_processor.on_new_app_users(users)
+            await self._link_users(users, full_sync=True)
 
             self.logger.info("📦 [Full Sync] Creating virtual groups...")
             await self._ensure_virtual_groups()
@@ -1392,10 +1467,12 @@ class BoxConnector(BaseConnector):
             await self._sync_user_groups()
 
             self.logger.info("📦 [Full Sync] Syncing user drives...")
-            await self._sync_record_groups(users)
+            # Their drive groups carry an owner grant, which the withdrawal above has just taken away.
+            await self._sync_record_groups([u for u in users if u.is_active])
 
             self.logger.info("📦 [Full Sync] Syncing user files and folders...")
-            await self._process_users_in_batches(users)
+            # Box hides an inactive user's folders from collaborators, and the user cannot sign in to read them.
+            await self._process_users_in_batches([u for u in users if u.is_active])
 
             self.logger.info("📦 [Full Sync] Backfilling historical 'Shared with Me' collaborations...")
             our_org_box_user_ids = {
@@ -1510,8 +1587,7 @@ class BoxConnector(BaseConnector):
             self.logger.info("👥 [Incremental] Refreshing User list...")
             users = await self._sync_users()
 
-            # Update the in-memory or DB map of users so we can link files to them later
-            await self.data_entities_processor.on_new_app_users(users)
+            returning = await self._link_users(users, full_sync=False)
             users_complete = self._read_complete
 
             # Box user IDs that belong to our org (for distinguishing external vs internal shares)
@@ -1535,6 +1611,12 @@ class BoxConnector(BaseConnector):
                 "❌ [Incremental] The Box user list could not be read, so no changes are applied this run and "
                 "the event-stream position is kept until it can be read."
             )
+            return
+        if returning:
+            # Their grants were dropped when they left; dropping the stream position makes any cut-short run full again.
+            self.logger.info(f"[Incremental] {len(returning)} Box account(s) came back; running a full sync for them.")
+            await self.box_cursor_sync_point.update_sync_point("event_stream_cursor", {"cursor": None})
+            await self._run_sync()
             return
         # Pages applied with a stale group list lose grants, so a failed refresh stops at one page.
         refresh_complete = self._read_complete

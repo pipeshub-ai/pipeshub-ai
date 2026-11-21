@@ -80,6 +80,10 @@ on:
       - 'backend/python/app/connectors/sources/linear/**'
       - 'backend/python/app/sources/client/linear/**'
       - 'backend/python/app/sources/external/linear/**'
+      - 'backend/python/app/connectors/sources/box/**'
+      - 'backend/python/app/sources/client/box/**'
+      - 'backend/python/app/sources/external/box/**'
+      - 'backend/python/tests/unit/connectors/sources/box/behaviour/box_behaviour_fakes.py'
       - 'backend/python/app/indexing_main.py'
       # The recovery sweeps graph_db/test_recovery_sweeps_real_backends.py drives.
       - 'backend/python/app/modules/indexing/lane_upkeep.py'
