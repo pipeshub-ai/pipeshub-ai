@@ -108,6 +108,7 @@ from app.harness.legacy.resolved_request import (
     with_resolved_stages,
 )
 from app.harness.run_policy.select import engine_profiles
+from app.modules.agents.caller_policy import get_agent_caller_policy, guard_agent_route
 from app.modules.agents.capability_summary import (
     PARTLY_SHARED_KEY,
     fetch_connector_configs,
@@ -477,6 +478,7 @@ def _get_user_context(request: Request) -> dict[str, Any]:
         "domain": domain_from_email(user.get("email")),
         "isServiceAccount": bool(user.get("isServiceAccount", False)),
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
+        **get_agent_caller_policy().caller_fields(user),
     }
 
 
@@ -2344,67 +2346,6 @@ async def require_agent_execute_for_named_agents(request: Request, agent_id: str
 
 
 @router.get(
-    "/{agent_id}/readiness",
-    response_model=AgentReadiness,
-    response_model_by_alias=True,
-    dependencies=[
-        Depends(
-            require_scopes(
-                OAuthScopes.AGENT_EXECUTE,
-                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
-            )
-        )
-    ],
-)
-async def get_agent_readiness(request: Request, agent_id: str) -> AgentReadiness:
-    """Which of this agent's toolsets and MCP servers the caller can use, and whether a run would start."""
-    try:
-        services = await get_services(request)
-        user_context = _get_user_context(request)
-        org_key = user_context["orgId"]
-        graph_provider = services["graph_provider"]
-
-        agent = await graph_provider.get_agent(agent_id, org_key)
-        if not agent:
-            raise AgentNotFoundError(agent_id)
-        # As in the run, every agent answers to the caller's own permission on it.
-        await _assert_agent_belongs_to_caller_org(agent, graph_provider, org_key, agent_id)
-        user_doc = await _get_user_document(user_context["userId"], graph_provider, services["logger"])
-        if not await graph_provider.check_agent_permission(agent_id, user_doc["_key"], org_key):
-            raise AgentNotFoundError(agent_id)
-
-        config_service = services["config_service"]
-        from app.agents.mcp.service import is_mcp_enabled
-        from app.services.featureflag.platform_settings import is_actions_enabled
-
-        actions_enabled, mcp_enabled = await asyncio.gather(
-            is_actions_enabled(config_service), is_mcp_enabled(config_service),
-        )
-        mcp_servers = (agent.get("mcpServers") or []) if mcp_enabled else []
-        if mcp_servers:
-            from app.edition_config import unusable_agent_mcp_server_ids
-
-            # As in the run: a server this person wasn't given is left out, never reported or waited on.
-            unusable_mcp_server_ids = await unusable_agent_mcp_server_ids(
-                mcp_servers, config_service, org_key, user_context["userId"],
-            )
-            mcp_servers = [s for s in mcp_servers if s.get("instanceId") not in unusable_mcp_server_ids]
-        return await compute_agent_readiness(
-            agent,
-            user_context,
-            config_service=config_service,
-            agent_id=agent_id,
-            toolsets=agent.get("toolsets", []) if actions_enabled else [],
-            mcp_servers=mcp_servers,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        _log.error("get_agent_readiness failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("check this agent's readiness")) from e
-
-
-@router.get(
     "/{agent_id}/run-definition",
     # The stream's own rule (main #4220): the universal agent with conversation:chat, a named one with agent:execute.
     dependencies=[
@@ -3031,11 +2972,80 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
 UNIVERSAL_AGENT_ID = "agentIdPlaceholder"
 
 
+@router.get(
+    "/{agent_id}/readiness",
+    response_model=AgentReadiness,
+    response_model_by_alias=True,
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.AGENT_EXECUTE,
+                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+            )
+        )
+    ],
+)
+async def get_agent_readiness(request: Request, agent_id: str) -> AgentReadiness:
+    """Which of this agent's toolsets and MCP servers the caller can use, and whether a run would start."""
+    try:
+        services = await get_services(request)
+        user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
+        graph_provider = services["graph_provider"]
+
+        agent = await graph_provider.get_agent(agent_id, org_key)
+        if not agent:
+            raise AgentNotFoundError(agent_id)
+        caller_policy = get_agent_caller_policy()
+        # As in the run: a service-account agent that runs as itself is the org's to use and runs on the
+        # credentials kept for it; any other agent answers to the caller's own permission on it.
+        runs_as_agent = bool(agent.get("isServiceAccount", False)) and caller_policy.service_agents_run_as_themselves()
+        if runs_as_agent:
+            await _assert_agent_belongs_to_caller_org(agent, graph_provider, org_key, agent_id)
+        else:
+            await caller_policy.admit_agent(agent, graph_provider=graph_provider, org_id=org_key, agent_id=agent_id)
+            user_doc = await _get_user_document(user_context["userId"], graph_provider, services["logger"])
+            if not await graph_provider.check_agent_permission(agent_id, user_doc["_key"], org_key):
+                raise AgentNotFoundError(agent_id)
+
+        config_service = services["config_service"]
+        from app.agents.mcp.service import is_mcp_enabled
+        from app.services.featureflag.platform_settings import is_actions_enabled
+
+        actions_enabled, mcp_enabled = await asyncio.gather(
+            is_actions_enabled(config_service), is_mcp_enabled(config_service),
+        )
+        mcp_servers = (agent.get("mcpServers") or []) if mcp_enabled else []
+        if mcp_servers:
+            from app.edition_config import unusable_agent_mcp_server_ids
+
+            # As in the run: a server this person wasn't given is left out, never reported or waited on.
+            unusable_mcp_server_ids = await unusable_agent_mcp_server_ids(
+                mcp_servers, config_service, org_key, user_context["userId"],
+            )
+            mcp_servers = [s for s in mcp_servers if s.get("instanceId") not in unusable_mcp_server_ids]
+        return await compute_agent_readiness(
+            agent,
+            user_context,
+            config_service=config_service,
+            agent_id=agent_id,
+            toolsets=agent.get("toolsets", []) if actions_enabled else [],
+            mcp_servers=mcp_servers,
+            runs_as_agent=runs_as_agent,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error("get_agent_readiness failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=400, detail=action_failed("check this agent's readiness")) from e
+
+
 @router.post(
     "/{agent_id}/chat",
     dependencies=[
         Depends(require_scopes(OAuthScopes.AGENT_EXECUTE, OAuthScopes.CONVERSATION_CHAT)),
         Depends(require_agent_execute_for_named_agents),
+        Depends(guard_agent_route),
     ],
 )
 async def chat(request: Request, agent_id: str) -> JSONResponse:
@@ -3295,6 +3305,7 @@ async def _resolve_mcp_server_configs(
             )
         ),
         Depends(require_agent_execute_for_named_agents),
+        Depends(guard_agent_route),
     ],
 )
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
@@ -3311,6 +3322,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         reranker_service = None  # reranking is not wired; the slot is kept for call signatures
         config_service = services["config_service"]
         user_context = _get_user_context(request)
+        caller_policy = get_agent_caller_policy()
+        caller_policy.check_caller(user_context)
         org_key = user_context["orgId"]
         body = _parse_request_body(await request.body())
         try:
@@ -3416,7 +3429,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             )
             if not agent:
                 raise AgentNotFoundError(agent_id)
-            is_service_account = agent.get("isServiceAccount", False)
+            # A service-account agent runs as its own identity, unless the edition runs every agent
+            # as the person asking (`AgentCallerPolicy.service_agents_run_as_themselves`).
+            is_service_account = (
+                bool(agent.get("isServiceAccount", False)) and caller_policy.service_agents_run_as_themselves()
+            )
             artifact_owner_user_id = None
 
             if is_service_account:
@@ -3437,7 +3454,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
             else:
                 # Standard user path: look up the user document and verify permissions.
+                await caller_policy.admit_agent(agent, graph_provider=graph_provider, org_id=org_key, agent_id=agent_id)
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+                caller_policy.admit_person(user_doc)
                 enriched_user_info = await _enrich_user_info(user_context, user_doc)
                 if resolved is not None and resolved.access_run:
                     # Node's agent directory holds a current "may run" for this caller (CPD-10).
@@ -3475,7 +3494,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             Failures in here surface as a terminal SSE error frame rather than
             an HTTP status — the status line is long gone by then. Genuine
             auth/not-found errors are raised before this, in `chat_stream`."""
-            nonlocal agent, prefetched_toolset_auth, actions_enabled, mcp_enabled, is_service_account
+            nonlocal agent, prefetched_toolset_auth, actions_enabled, mcp_enabled
             try:
                 # Node sends every Agent-mode question of the assistant here, not to `/chat/stream`, so the
                 # assistant's own answers that need no model (the edition's help card) are given here too.
@@ -3610,7 +3629,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # 5. The lookup key comes from authenticated request context (user) or agent key
                 # ============================================================================
 
-                is_service_account = bool(agent.get("isServiceAccount", False))
                 executing_user_id = user_context["userId"]
 
                 readiness = await compute_agent_readiness(
@@ -3622,17 +3640,23 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     prefetched_auth=prefetched_toolset_auth,
                     mcp_servers=agent_mcp_servers,
                     prefetched_mcp=prefetched_mcp,
-                    # Credentials the turn's resolution already holds for the caller are not read again.
-                    bound=bound_installations(resolved, executing_user_id, service_account=False),
+                    # Credentials the turn's resolution already holds are not read again: the caller's, or the
+                    # agent's for a service-account agent that runs as itself.
+                    bound=bound_installations(
+                        resolved,
+                        agent_id if is_service_account else executing_user_id,
+                        service_account=is_service_account,
+                    ),
+                    runs_as_agent=is_service_account,
                 )
                 toolset_configs = readiness.toolset_configs  # references to the caller's credentials
                 # MCP instances and references to the caller's credentials. An MCP server's instance
                 # (transport/url/authMode) is never stored on the graph node.
                 mcp_server_configs: dict[str, dict[str, Any]] = readiness.mcp_server_configs
 
-                # A service-account agent answers with its own credentials, which only an admin can
-                # set up, so a missing one stops the run. Everyone else runs with what they have
-                # connected, and the model and the client are told what was left out.
+                # A service-account agent stops the run while one of its tools cannot be used. Everyone
+                # else runs with what they have connected, and the model and the client are told what
+                # was left out.
                 if not readiness.can_send:
                     log_turn_end(
                         logger, "error", error_class="bad_request", code=readiness.blocked_code,
@@ -3665,10 +3689,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
-                # An unbound service agent would read a collection as its creator, so it reads none,
-                # the caller's project collection included (project_files_knowledge reads it from filters).
-                collections_allowed = not is_service_account or bool(agent.get("serviceAccountUserId"))
-                if is_service_account:
+                # Anyone in the org may use a service agent, so it keeps only the sources shared with the
+                # org, and a collection (the caller's project collection included) only when it is bound.
+                # Both flags are the agent record's own, never the request's, and the lookup runs as the
+                # identity the run acts as: this only removes sources.
+                service_agent = bool(agent.get("isServiceAccount", False))
+                collections_allowed = not service_agent or bool(agent.get("serviceAccountUserId"))
+                if service_agent:
                     agent_knowledge = await service_account_knowledge(
                         graph_provider, agent_knowledge, enriched_user_info.get("userId", ""), org_key, logger,
                         bound=collections_allowed,
@@ -3878,8 +3905,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         request.state, "harness_virtual_filesystem", None
                     ),
                     "is_service_account": is_service_account,
-                    # Every credential of the run is the caller's own (see the readiness above).
-                    "credentialOwner": executing_user_id,
+                    # Whose credentials the run reads, as the readiness above checked them: the caller's own, or the
+                    # agent's for a service-account agent that runs as itself.
+                    "credentialOwner": agent_id if is_service_account else executing_user_id,
                     "artifact_owner_user_id": artifact_owner_user_id,
                     "isPlaceholderAgent": is_placeholder,
                     "modelName": model_name,
@@ -3901,6 +3929,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "chatStreaming": getattr(request.state, "chat_streaming", True) is not False,
                     "toolApproval": chat_query.toolApproval,
                     "aclVersion": chat_query.aclVersion,
+                    **caller_policy.run_query_fields(service_agent=service_agent),
                 }
                 query_info.update(extension_fields)
 
@@ -3939,6 +3968,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         ) if is_service_account else None
                     ),
                     entity_vector_store=entity_vector_store,
+                    **caller_policy.run_loop_options(service_agent=service_agent),
                 )
 
                 # Close the bridge with this generator so its producer task is

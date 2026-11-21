@@ -718,12 +718,20 @@ def _mcp_attachments_unreadable() -> AgentError:
     )
 
 
+def _or_runs_as_a_service_account() -> str:
+    """How a refusal names the agents other people run: one shared with the organization, and a
+    service agent where service agents run as themselves (`AgentCallerPolicy`)."""
+    from app.modules.agents.caller_policy import get_agent_caller_policy
+
+    return " or runs as a service account" if get_agent_caller_policy().service_agents_run_as_themselves() else ""
+
+
 def _assert_no_personal_mcp_servers(
-    instances: dict[str, dict[str, Any]], *, shared_with_org: bool,
+    instances: dict[str, dict[str, Any]], *, shared_with_org: bool, service_account: bool,
 ) -> None:
     """A personal MCP server holds one user's credentials and is visible to that user only;
     an agent other people run could never load it."""
-    if not shared_with_org:
+    if not (shared_with_org or service_account):
         return
     from app.agents.mcp.service import is_personal
 
@@ -731,7 +739,7 @@ def _assert_no_personal_mcp_servers(
     if personal:
         raise InvalidRequestError(
             f"Personal MCP servers ({', '.join(personal)}) can't be attached to an agent that is shared "
-            "with the organization."
+            f"with the organization{_or_runs_as_a_service_account()}."
         )
 
 
@@ -1499,14 +1507,14 @@ async def _checked_service_account_binding(
 
 
 async def _checked_api_toolset_tools(
-    raw: object, config_service: ConfigurationService, org_id: str,
+    raw: object, config_service: ConfigurationService, org_id: str, *, service_account: bool,
 ) -> list[str]:
     """The API toolset operations to store on an agent, each one checked to exist in the org."""
     if raw == []:
         return []
     try:
         return await api_toolset_attachments.checked_attachments(
-            ApiToolsetStore(config_service), org_id, raw,
+            ApiToolsetStore(config_service), org_id, raw, service_account=service_account,
         )
     except ApiToolsetError as e:
         raise InvalidRequestError(str(e)) from e
@@ -1562,11 +1570,11 @@ def _toolset_attachments_unreadable() -> AgentError:
 
 
 def _assert_no_personal_toolsets(
-    instances: dict[str, dict[str, Any]], *, shared_with_org: bool,
+    instances: dict[str, dict[str, Any]], *, shared_with_org: bool, service_account: bool,
 ) -> None:
     """A personal action holds one user's sign-in and is visible to that user only; an agent other
     people run could never use it."""
-    if not shared_with_org:
+    if not (shared_with_org or service_account):
         return
     from app.agents.toolset_store import is_personal
 
@@ -1574,17 +1582,17 @@ def _assert_no_personal_toolsets(
     if personal:
         raise InvalidRequestError(
             f"Personal actions ({', '.join(personal)}) can't be attached to an agent that is shared "
-            "with the organization."
+            f"with the organization{_or_runs_as_a_service_account()}."
         )
 
 
 async def _assert_service_account_knowledge(
     connector_ids: Iterable[str], graph_provider: IGraphDBProvider, org_id: str, user_id: str, *, bound: bool,
 ) -> None:
-    """A service-account agent may be used by anyone in the organisation, so it may only be
-    given sources shared with the whole organisation: no personal connector, and a collection
-    only when it is bound to a service account. A source that is not the organisation's (or no
-    longer exists) is refused too. The run applies the same rule."""
+    """A service-account agent is run by anyone in the organisation on one identity, so it may
+    only be given sources shared with the whole organisation: no personal connector, and a
+    collection only when it runs as a bound service account. A source that is not the
+    organisation's (or no longer exists) is refused too. The run applies the same rule."""
     ids = list(dict.fromkeys(connector_ids))
     if not ids:
         return

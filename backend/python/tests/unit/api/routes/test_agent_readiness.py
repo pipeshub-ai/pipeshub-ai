@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.agents.constants.toolset_constants import get_toolset_config_path
+from app.harness.credentials.tool_credentials import toolset_reference
 from app.modules.agents.readiness import compute_agent_readiness
 from tests.support.agent_routes import (
     FakeConfigService,
@@ -23,6 +24,14 @@ def _graph_with_toolsets() -> InMemoryGraph:
     for key, name in (("ts-x", "Slack"), ("ts-y", "Gmail")):
         graph.add_node(TOOLSETS, {"_key": key, "instanceId": f"inst-{key}", "name": name.lower(), "instanceName": name})
         graph.add_edge(HAS_TOOLSET, {"_from": "agentInstances/a1", "_to": f"{TOOLSETS}/{key}"})
+    return graph
+
+
+def _graph_with_a_service_agent() -> InMemoryGraph:
+    graph = InMemoryGraph()
+    graph.add_agent("sa", "alice", share_with_org=True, isServiceAccount=True)
+    graph.add_node(TOOLSETS, {"_key": "ts-x", "instanceId": "inst-ts-x", "name": "slack", "instanceName": "Slack"})
+    graph.add_edge(HAS_TOOLSET, {"_from": "agentInstances/sa", "_to": f"{TOOLSETS}/ts-x"})
     return graph
 
 
@@ -78,6 +87,7 @@ class TestReadinessRoute:
         body = client.get("/api/v1/agent/a1/readiness", headers=as_user("bob")).json()
         assert body["missingToolsets"] == ["Slack", "Gmail"]
 
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
     def test_a_service_agent_cannot_send_until_the_caller_connects_its_tools(self) -> None:
         graph = InMemoryGraph()
         graph.add_agent("sa", "alice", share_with_org=True, isServiceAccount=True)
@@ -91,6 +101,7 @@ class TestReadinessRoute:
         (item,) = body["unavailableTools"]
         assert item["displayName"] == "Slack" and item["userCanConnect"] is True
 
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
     def test_a_service_agent_is_ready_on_the_callers_own_connection(self) -> None:
         graph = InMemoryGraph()
         graph.add_agent("sa", "alice", share_with_org=True, isServiceAccount=True)
@@ -99,6 +110,25 @@ class TestReadinessRoute:
         client, _ = make_client(graph, _config("u-bob", **{"inst-ts-x": {"isAuthenticated": True}}))
         body = client.get("/api/v1/agent/sa/readiness", headers=as_user("bob")).json()
         assert body["canSend"] is True
+        assert body["unavailableTools"] == []
+
+    @pytest.mark.usefixtures("default_caller_policy")
+    def test_a_service_agent_cannot_send_until_its_own_credentials_are_set_up(self) -> None:
+        """The base caller policy runs a service-account agent as itself, on the credentials kept for it."""
+        # The caller's own connection never counts for a service agent's run.
+        client, _ = make_client(_graph_with_a_service_agent(), _config("u-bob", **{"inst-ts-x": {"isAuthenticated": True}}))
+        body = client.get("/api/v1/agent/sa/readiness", headers=as_user("bob")).json()
+        assert body["canSend"] is False
+        assert body["serviceAccount"] is True
+        (item,) = body["unavailableTools"]
+        assert item["displayName"] == "Slack" and item["userCanConnect"] is False
+
+    @pytest.mark.usefixtures("default_caller_policy")
+    def test_a_service_agent_is_ready_on_the_credentials_kept_for_it(self) -> None:
+        client, _ = make_client(_graph_with_a_service_agent(), _config("sa", **{"inst-ts-x": {"isAuthenticated": True}}))
+        body = client.get("/api/v1/agent/sa/readiness", headers=as_user("bob")).json()
+        assert body["canSend"] is True
+        assert body["serviceAccount"] is True
         assert body["unavailableTools"] == []
 
     def test_mcp_servers_are_included(self) -> None:
@@ -206,7 +236,7 @@ class TestReadinessRoute:
 
 
 class TestComputeAgentReadiness:
-    async def test_a_service_agent_reads_credentials_under_the_callers_id_never_the_agent_key(self) -> None:
+    async def test_without_running_as_itself_a_service_agent_reads_the_callers_credentials(self) -> None:
         agent = {"isServiceAccount": True, "toolsets": [{"instanceId": "i1", "name": "slack"}]}
         config = FakeConfigService({
             "/services/toolsets/i1/agent-7": {"isAuthenticated": True, "token": "agent"},
@@ -214,8 +244,22 @@ class TestComputeAgentReadiness:
         })
         result = await compute_agent_readiness(agent, {"userId": "u-bob"}, config_service=config, agent_id="agent-7")
         assert result.can_send is True
-        assert result.toolset_configs == {"i1": {"isAuthenticated": True, "token": "bob"}}
+        # A reference to the caller's record, resolved when the run opens it (P2.4a), never its values.
+        assert result.toolset_configs == {"i1": toolset_reference("i1", "u-bob")}
         assert "toolsetConfigs" not in result.model_dump(by_alias=True)
+
+    async def test_a_service_agent_that_runs_as_itself_reads_the_agent_key(self) -> None:
+        agent = {"isServiceAccount": True, "toolsets": [{"instanceId": "i1", "name": "slack"}]}
+        config = FakeConfigService({
+            "/services/toolsets/i1/agent-7": {"isAuthenticated": True, "token": "agent"},
+            "/services/toolsets/i1/u-bob": {"isAuthenticated": True, "token": "bob"},
+        })
+        result = await compute_agent_readiness(
+            agent, {"userId": "u-bob"}, config_service=config, agent_id="agent-7", runs_as_agent=True,
+            prefetched_auth={"i1": {"isAuthenticated": True, "token": "bob"}},
+        )
+        assert result.can_send is True and result.is_service_account is True
+        assert result.toolset_configs == {"i1": toolset_reference("i1", "agent-7")}
 
     async def test_a_normal_agent_is_never_blocked(self) -> None:
         agent = {"toolsets": [{"instanceId": "i1", "name": "gmail_app"}]}
@@ -235,6 +279,17 @@ class TestComputeAgentReadiness:
         assert result.blocked_message == (
             "This agent requires the following actions to be set up — not configured: 'Gmail App'. "
             "Please connect your actions in Workspace → Actions before using this agent."
+        )
+
+    async def test_a_service_agent_that_runs_as_itself_names_the_agent_builder(self) -> None:
+        agent = {"isServiceAccount": True, "toolsets": [{"instanceId": "i1", "name": "gmail_app"}]}
+        result = await compute_agent_readiness(
+            agent, {"userId": "u-bob"}, config_service=FakeConfigService(), agent_id="a", runs_as_agent=True,
+        )
+        assert result.can_send is False
+        assert result.blocked_message == (
+            "This service account agent requires the following actions to be configured — not configured: "
+            "'Gmail App'. Please configure the agent's action credentials in Agent Builder (key icon next to each action)."
         )
 
     async def test_prefetched_auth_skips_the_config_read(self) -> None:

@@ -312,6 +312,7 @@ class TestChatStreamToolsets:
         (call,) = loop.calls
         assert _resolved(config, call["query_info"]["toolsetConfigs"]["inst-1"])["who"] == "agent"
 
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
     def test_a_service_agent_runs_on_the_callers_own_credentials(self, graph, loop) -> None:
         self._with_toolset(graph, "sa")
         config = FakeConfigService({
@@ -377,6 +378,7 @@ class TestChatStreamToolsets:
         assert "tools_unavailable" not in response.text
         assert loop.calls[0]["query_info"]["unavailableTools"] == []
 
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
     def test_a_service_agent_the_caller_has_not_connected_still_stops_and_names_it(self, graph, loop) -> None:
         self._with_toolset(graph, "sa")
         # A credential kept under the agent's key never stands in for the caller's own.
@@ -402,6 +404,7 @@ class TestChatStreamToolsets:
         }
         assert not loop.calls
 
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
     @pytest.mark.parametrize("stored,counts", [(None, (1, 0)), ({"isAuthenticated": False}, (0, 1))])
     def test_the_stopped_run_logs_one_end_line_with_counts_not_names(
         self, graph, loop, caplog, stored, counts,
@@ -502,6 +505,7 @@ class TestChatStreamMcpServers:
         assert item["authMode"] == "api_token"
         assert item["userCanConnect"] is False
 
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
     def test_a_service_agent_stops_until_the_caller_connects_its_servers(self, graph, loop) -> None:
         self._attach(graph, "sa")
         c, _ = make_client(graph, self._config(**{
@@ -523,6 +527,7 @@ class TestChatStreamMcpServers:
         assert item["kind"] == "mcp" and item["userCanConnect"] is True
         assert not loop.calls
 
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
     def test_a_service_agent_runs_on_the_callers_own_server_credential(self, graph, loop) -> None:
         self._attach(graph, "sa")
         c, _ = make_client(graph, self._config(**{
@@ -540,7 +545,7 @@ class TestChatStreamMcpServers:
         self._attach(graph, "sa")
         c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": self._instance()}))
 
-        error = self._run_error(_stream(c, "sa", "bob"))
+        error = _run_error(_stream(c, "sa", "bob"))
 
         assert error["details"]["serviceAccount"] is True
         assert error["details"]["agentId"] == "sa"
@@ -773,6 +778,7 @@ class TestNonStreamingChat:
         assert [i["instanceId"] for i in body["unavailableTools"]] == ["inst-1"]
         assert "events" not in body
 
+    @pytest.mark.usefixtures("agents_run_as_the_caller")
     def test_a_service_agent_missing_the_callers_credentials_reaches_them_with_the_tools(self, graph, loop) -> None:
         graph.add_node("agentToolsets", {"_key": "ts", "name": "jira", "displayName": "Jira", "instanceId": "inst-1"})
         graph.add_edge("agentHasToolset", {"_from": f"{AGENTS}/sa", "_to": "agentToolsets/ts"})

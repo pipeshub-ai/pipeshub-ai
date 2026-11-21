@@ -62,6 +62,7 @@ from app.models.blocks import (
     DataFormat,
 )
 from app.models.record_convert import convert_record_dict_to_record
+from app.modules.agents.caller_policy import guard_agent_route
 from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.agents.privacy.ledger import with_unopened_provenance
 from app.modules.parsers import parse_pool
@@ -2387,7 +2388,10 @@ async def _parse_chat_query(
     return query_info, resolved
 
 
-@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@router.post(
+    "/chat",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT)), Depends(guard_agent_route)],
+)
 @inject
 async def askAI(
     request: Request,
@@ -2424,7 +2428,10 @@ async def askAI(
     return outcome.to_response()
 
 
-@router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@router.post(
+    "/chat/stream",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT)), Depends(guard_agent_route)],
+)
 @inject
 async def askAIStream(
     request: Request,

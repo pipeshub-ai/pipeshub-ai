@@ -2222,8 +2222,12 @@ class TestCreateSkillEdges:
         assert edges[0]["_from"] == "agentInstances/agent1"
 
     @pytest.mark.asyncio
-    async def test_links_builtin_skill_regardless_of_creator(self) -> None:
+    async def test_links_builtin_skill_regardless_of_creator(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.agent_loop.skills.graph_store import skill_visible_to
         from app.api.routes.agent import _create_skill_edges
+
+        # The default rule: a builtin-sourced skill is the whole org's.
+        monkeypatch.setattr("app.edition_services.skill_visible_to", skill_visible_to)
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(
             return_value={"orgId": "org1", "createdBy": "someone-else", "source": "builtin"}
@@ -3566,6 +3570,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1", "knowledge": [], "toolsets": [],
             "models": ["mk1_mn1"],
         })
@@ -3610,6 +3615,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1", "knowledge": [], "toolsets": [],
             "models": [],
         })
@@ -3654,6 +3660,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [
                 {"connectorId": "google_drive", "filters": {}},
@@ -3709,6 +3716,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [],
             "toolsets": [
@@ -3761,6 +3769,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [{"connectorId": "google_drive", "filters": {}}],
             "toolsets": [],
@@ -3803,6 +3812,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1", "knowledge": [], "toolsets": [], "models": ["mk1_mn1"],
         })
         services["config_service"].get_config = AsyncMock(return_value={"llm": []})
@@ -4393,8 +4403,13 @@ class TestServiceAccountAgentRoutes:
                 await update_agent(request, "a1")
 
     @pytest.mark.asyncio
-    async def test_chat_stream_service_account_uses_agent_credentials_lookup(self) -> None:
+    async def test_chat_stream_service_account_uses_agent_credentials_lookup(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from fastapi.responses import StreamingResponse
+
+        from app.modules.agents.caller_policy import default_agent_caller_policy
+
+        # The default policy: a service-account agent runs as itself, on the credentials kept for it.
+        monkeypatch.setattr("app.edition_services.agent_caller_policy", default_agent_caller_policy)
 
         from app.api.routes.agent import chat_stream
 
@@ -4422,7 +4437,7 @@ class TestServiceAccountAgentRoutes:
             "email": "creator@example.com",
         })
 
-        async def mock_config(path, *args, **kwargs):
+        async def mock_config(path, *args, **kwargs) -> dict:
             if "toolsets" in str(path):
                 return {"isAuthenticated": True}
             return {"llm": []}

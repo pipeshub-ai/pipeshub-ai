@@ -17,6 +17,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
 )
+from app.modules.agents.caller_policy import get_agent_caller_policy
 from app.modules.agents.service.access_validator import AccessValidator
 from app.modules.agents.service.builders import (
     SPLIT_PATH_EXPECTED_PARTS,
@@ -222,9 +223,9 @@ class AgentService:
         # Other people run a service agent whether or not it is shared with the whole org, and a
         # personal server or action is its owner's alone.
         _assert_no_personal_mcp_servers(
-            attached_mcp_instances, shared_with_org=share_with_org or is_service_account,
+            attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
         )
-        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org or is_service_account)
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
         if is_service_account:
             await _assert_service_account_knowledge(
                 knowledge_sources, graph_provider, org_key, user_context["userId"],
@@ -232,6 +233,7 @@ class AgentService:
             )
         api_toolset_tools = await _checked_api_toolset_tools(
             spec.api_toolset_tools, self._config, org_key,
+            service_account=is_service_account and get_agent_caller_policy().service_agents_run_as_themselves(),
         )
 
         # Create agent document
@@ -682,7 +684,7 @@ class AgentService:
                 logger.error(f"Could not check the MCP servers of agent {agent_id} before sharing it: {e}")
                 raise _mcp_attachments_unreadable() from e
         _assert_no_personal_mcp_servers(
-            attached_mcp_instances, shared_with_org=final_shared or final_service_account,
+            attached_mcp_instances, shared_with_org=final_shared, service_account=final_service_account,
         )
         if sharing_turned_on and "toolsets" not in body:
             existing_toolset_ids = {ts["instanceId"] for ts in agent.get("toolsets") or [] if ts.get("instanceId")}
@@ -693,7 +695,7 @@ class AgentService:
             except Exception as e:
                 logger.error(f"Could not check the actions of agent {agent_id} before sharing it: {e}")
                 raise _toolset_attachments_unreadable() from e
-        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared or final_service_account)
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
         if final_service_account and ("knowledge" in body or converting or "serviceAccountUserId" in body):
             await _assert_service_account_knowledge(
                 _parse_knowledge_sources(body.get("knowledge")) if "knowledge" in body
@@ -703,9 +705,13 @@ class AgentService:
                 user_context["userId"],
                 bound=bool(body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))),
             )
-        if "apiToolsetTools" in body:
+        # A service agent that runs as itself takes only API actions with a shared credential.
+        api_actions_as_agent = final_service_account and get_agent_caller_policy().service_agents_run_as_themselves()
+        if "apiToolsetTools" in body or (api_actions_as_agent and not agent.get("isServiceAccount")):
+            # Becoming a service account re-checks what is already attached.
             body["apiToolsetTools"] = await _checked_api_toolset_tools(
-                body.get("apiToolsetTools", agent.get("apiToolsetTools") or []), self._config, org_key,
+                body.get("apiToolsetTools", agent.get("apiToolsetTools") or []), self._config,
+                org_key, service_account=api_actions_as_agent,
             )
 
         # After every validation, before the first other write.

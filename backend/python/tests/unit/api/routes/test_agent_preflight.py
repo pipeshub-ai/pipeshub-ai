@@ -22,7 +22,7 @@ class _CardExtension(ChatExtension):
     def __init__(self) -> None:
         self.asked: list[dict] = []
 
-    async def preflight(self, chat_query, *, graph_provider, config_service, user_id, org_id, logger):  # noqa: ANN001, ANN201
+    async def preflight(self, chat_query, *, graph_provider, config_service, user_id, org_id, logger):  # noqa: ANN202
         self.asked.append({"query": chat_query.query, "user_id": user_id, "org_id": org_id})
 
         async def card() -> AsyncIterator[str]:
@@ -61,6 +61,10 @@ async def _stream(agent_id: str, extension: ChatExtension) -> tuple[str, MagicMo
     with ExitStack() as stack:
         for target, kwargs in route_patches.items():
             stack.enter_context(patch(f"app.api.routes.agent.{target}", **kwargs))
+        # Whatever the installed policy checks of the agent, this test's agent passes it.
+        from app.modules.agents.caller_policy import get_agent_caller_policy
+
+        stack.enter_context(patch.object(type(get_agent_caller_policy()), "admit_agent", new_callable=AsyncMock))
         for target in (
             "app.services.featureflag.platform_settings.is_actions_enabled",
             "app.services.featureflag.platform_settings.is_user_context_enabled",

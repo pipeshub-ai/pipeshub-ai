@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 # administrator may move it, and which pool of lanes an org belongs in. An
 # edition can replace any of them: pin a connector to a lane of its own, weight
 # lanes, allow admin moves, or keep a group of orgs on lanes of their own.
+# Who an agent run acts as (see app.modules.agents.caller_policy).
+from app.modules.agents.caller_policy import default_agent_caller_policy
+
 # Chat and agent-loop hooks (see app.modules.agents.chat_extension).
 from app.modules.agents.chat_extension import default_chat_extension
 
@@ -38,6 +41,7 @@ from app.services.messaging.lanes.assignment_policy import (
 
 chat_extension = default_chat_extension
 sql_extension = default_sql_extension
+agent_caller_policy = default_agent_caller_policy
 
 
 def sa_forces_org_sharing() -> bool:
