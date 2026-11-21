@@ -1428,7 +1428,9 @@ async def _resolve_service_account_binding(
     # raise_on_error, so a database that is down surfaces as a failure rather
     # than as "no such account" — an administrator told the wrong one of those
     # goes looking for a problem that is not there.
-    account = await graph_provider.get_user_by_user_id(wanted, raise_on_error=True)
+    from app.edition_config import user_lookup_scope
+
+    account = await graph_provider.get_user_by_user_id(wanted, raise_on_error=True, **user_lookup_scope(caller_org_id))
     caller_org = str(caller_org_id or "").strip()
     account_org = str((account or {}).get("orgId") or "").strip()
 

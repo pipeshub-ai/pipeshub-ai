@@ -1977,8 +1977,10 @@ async def accessible_node_names(
     is the check's limit per statement (``check_access``)."""
     if not node_ids or not user_id or not org_id:
         return {}
+    from app.edition_config import user_lookup_scope
+
     try:
-        user = await get_caller_user(graph_provider, user_id, raise_on_error=True)
+        user = await get_caller_user(graph_provider, user_id, raise_on_error=True, **user_lookup_scope(org_id))
     except Exception as exc:
         raise PermissionVerificationUnavailableError() from exc
     user_key = (user or {}).get("id") or (user or {}).get("_key")

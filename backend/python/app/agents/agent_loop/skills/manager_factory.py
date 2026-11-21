@@ -314,10 +314,13 @@ async def run_user_key(context: "AgentContext") -> str | None:
     key = getattr(context, "user_key", "") or ""
     if key:
         return key
+    from app.edition_config import user_lookup_scope
     from app.utils.user_lookup import get_caller_user
 
     try:
-        user = await get_caller_user(context.graph_provider, context.user_id)
+        user = await get_caller_user(
+            context.graph_provider, context.user_id, **user_lookup_scope(context.org_id or None),
+        )
     except Exception as e:
         log_event(logger, "skills.user_key_failed", level=logging.WARNING, error_class=type(e).__name__)
         return None

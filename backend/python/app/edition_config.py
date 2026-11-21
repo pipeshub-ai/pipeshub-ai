@@ -46,15 +46,17 @@ from app.api.routes.mcp_resolvers import (
     build_schedule_refresh_kwargs,
     forbid_inherited_mcp_mutation,
     get_mcp_instance as get_mcp_instance_resolved,
-    keeps_attached_mcp_servers_on_edit,
+    keeps_attached_mcp_servers_on_edit,  # noqa: F401
     load_mcp_instances,
     mask_mcp_instance_for_response,
     mcp_instance_visible_to_org,  # noqa: F401 - edition seam, read at call time by app.agents.mcp.instance_scope
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
-    unusable_agent_mcp_server_ids,
+    unusable_agent_mcp_server_ids,  # noqa: F401
 )
 from app.utils.oauth_config import fetch_oauth_config_by_id
+# A user lookup's org binding: none, since a user id names one user.
+from app.utils.user_lookup import user_lookup_scope  # noqa: E402, F401
 from app.api.middlewares.auth import (
     authMiddleware,
     deny_service_tokens,

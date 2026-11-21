@@ -202,9 +202,17 @@ class TestNoKeyNoSkills:
         graph.fail_user_reads = True
         assert await _run_manager(_context(graph, DANA_ACCOUNT)) is None
 
-    async def test_the_key_of_a_user_in_another_org_is_not_read(self) -> None:
+    async def test_the_key_is_read_under_the_editions_lookup_scope(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        asked: list[str | None] = []
+
+        def scope(org_id: str | None) -> dict[str, str]:
+            asked.append(org_id)
+            return {"org_id": "org-2"}
+
+        monkeypatch.setattr("app.edition_config.user_lookup_scope", scope)
         graph = await _graph()
-        assert await run_user_key(_context(graph, DANA_ACCOUNT, org_id="org-2")) is None
+        assert await run_user_key(_context(graph, DANA_ACCOUNT)) is None
+        assert asked == [ORG]
 
 
 class TestTheComparison:
