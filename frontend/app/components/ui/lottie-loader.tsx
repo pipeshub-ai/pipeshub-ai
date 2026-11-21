@@ -20,7 +20,12 @@ function LogoFallback(props: { style?: React.CSSProperties }) {
 const DotLottieReact = dynamic(
   () =>
     import('@lottiefiles/dotlottie-react')
-      .then((m) => m.DotLottieReact)
+      .then((m) => {
+        // The player downloads its wasm from a CDN unless told where it is; here it ships in
+        // the build, so the loader works with no route to the internet.
+        m.setWasmUrl(new URL('../../../node_modules/@lottiefiles/dotlottie-web/dist/dotlottie-player.wasm', import.meta.url).toString());
+        return m.DotLottieReact;
+      })
       .catch(() => LogoFallback as React.ComponentType<Record<string, unknown>>),
   {
     ssr: false,

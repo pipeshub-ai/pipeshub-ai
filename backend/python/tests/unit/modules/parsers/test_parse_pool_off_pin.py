@@ -62,7 +62,11 @@ PARSE_POOL_ALLOWED = {
     "_Lane._crashed",  # a worker ended by its job's CPU limit is a timeout (test_excel_worker_load_round6); any other death is still a crash (test_parse_pool::TestWorkerCrash)
 }
 TABLE_DETECTOR_ALLOWED = {
-    "_session",  # reads _threads()
+    # where the heron file is read from: the copy baked into the image when it exists, else the same pinned
+    # hf_hub_download as before (test_baked_docling_models::test_heron_session_*); the repo and revision values are unchanged
+    "assign:_HERON_REPO", "assign:_HERON_REVISION",
+    "import:from app.config.constants.docling_models import LAYOUT_HERON_ONNX_REPO, LAYOUT_HERON_ONNX_REVISION, heron_onnx_path",
+    "_session",  # reads _threads() and the baked heron path
     "_threads", "assign:_THREADS_EXPLICIT",  # new; _THREADS and its parsing are untouched
 }
 

@@ -56,6 +56,8 @@ services:
       - LOG_FORMAT=${LOG_FORMAT:-text}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
       - STRICT_MODE=${STRICT_MODE:-false}
+      # Air-gapped install: 1 turns telemetry and every model/price-list download off. Empty keeps the online behaviour.
+      - PIPESHUB_OFFLINE=${PIPESHUB_OFFLINE:-}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret

@@ -135,6 +135,8 @@ services:
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
+      # Air-gapped install: 1 turns telemetry and every model/price-list download off. Empty keeps the online behaviour.
+      - PIPESHUB_OFFLINE=${PIPESHUB_OFFLINE:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       - SECRET_KEY=${SECRET_KEY:-}
       - JWT_SECRET=${JWT_SECRET:-}
@@ -280,6 +282,10 @@ services:
       # air-gapped hosts that already have models cached (the full `latest` image).
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}
+      - HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-}
+      - HF_HUB_DISABLE_TELEMETRY=${HF_HUB_DISABLE_TELEMETRY:-}
+      - LITELLM_LOCAL_MODEL_COST_MAP=${LITELLM_LOCAL_MODEL_COST_MAP:-}
+      - DO_NOT_TRACK=${DO_NOT_TRACK:-}
 
       # Leave unset so new images size parse/index from CPU. Hub slim int()s
       # empty strings; entrypoint unsets blanks before start. Set an integer

@@ -3,6 +3,12 @@ set -e
 
 export PYTHONPATH="/app/python"
 
+# offline-switch: with PIPESHUB_OFFLINE on, keep the Next.js dev server off the network too (an explicit value wins).
+case "$(printf %s "${PIPESHUB_OFFLINE:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) export NEXT_TELEMETRY_DISABLED="${NEXT_TELEMETRY_DISABLED:-1}" ;;
+esac
+# end offline-switch
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }

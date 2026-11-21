@@ -503,16 +503,14 @@ class TestModelManager:
             "sentence_transformers.SentenceTransformer",
             side_effect=OSError("not in cache"),
         ):
-            with patch(
-                "app.embedding_main._download_with_progress",
-                side_effect=OSError("hub unreachable"),
-            ):
+            with patch("app.embedding_main._download_with_progress") as mock_download:
                 with patch(
                     "app.embedding_main.asyncio.to_thread",
                     side_effect=_passthrough_to_thread,
                 ):
-                    with pytest.raises(RuntimeError, match="HF_HUB_OFFLINE=0"):
+                    with pytest.raises(RuntimeError, match="is not in this image and cannot be downloaded"):
                         await manager.get_model("remote-model")
+            mock_download.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_model_passes_trust_remote_code_to_loader(self):

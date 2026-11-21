@@ -283,6 +283,19 @@ def _measure_blobs_dir_bytes(blobs_dir: str) -> int:
     return total
 
 
+# Seconds the Hub metadata lookup may take; without a bound a blocked network hangs the load.
+HUB_METADATA_TIMEOUT_SECONDS = 10.0
+
+
+def _offline_missing_model_message(model_name: str) -> str:
+    return (
+        f"Embedding model '{model_name}' is not in this image and cannot be downloaded: Hub access is "
+        "off (HF_HUB_OFFLINE=1, or PIPESHUB_OFFLINE=1). The full image carries BAAI/bge-large-en-v1.5 and "
+        "the slim image carries no local embedding model; use an image that has the model, put it in the "
+        "Hugging Face cache, or configure an embedding service. Set HF_HUB_OFFLINE=0 to allow the download."
+    )
+
+
 def _compute_expected_total_bytes(model_name: str) -> int:
     """Best-effort lookup of the repo's total download size via the Hub
     metadata API. Returns 0 if the lookup fails (e.g. offline, private repo
@@ -292,7 +305,9 @@ def _compute_expected_total_bytes(model_name: str) -> int:
         from huggingface_hub.utils import filter_repo_objects
 
         api = HfApi()
-        info = api.model_info(model_name, files_metadata=True)
+        info = api.model_info(
+            model_name, files_metadata=True, timeout=HUB_METADATA_TIMEOUT_SECONDS
+        )
         siblings = info.siblings or []
         filtered = filter_repo_objects(
             siblings,
@@ -1093,7 +1108,14 @@ class ModelManager:
                         status.progress = 100.0
                         status.updated_at = time.time()
                     return model
-                except Exception:
+                except Exception as load_exc:
+                    if hf_hub_offline():
+                        message = _offline_missing_model_message(model_name)
+                        with self._download_status_lock:
+                            status.status = "failed"
+                            status.error = message
+                            status.updated_at = time.time()
+                        raise RuntimeError(message) from load_exc
                     logger.info(
                         "Model '%s' not found in local cache; downloading from Hub",
                         model_name,
@@ -1396,10 +1418,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await model_manager.warmup(DEFAULT_EMBEDDING_MODEL)
             logger.info("Default embedding model ready")
         except Exception as exc:
-            logger.error(
-                "Failed to warm up default embedding model (will retry on first request): %s",
-                exc,
-            )
+            if hf_hub_offline():
+                logger.error("%s", exc)
+            else:
+                logger.error(
+                    "Failed to warm up default embedding model (will retry on first request): %s",
+                    exc,
+                )
     else:
         logger.info(
             "Skipping default embedding model warm-up: no local embedding is "

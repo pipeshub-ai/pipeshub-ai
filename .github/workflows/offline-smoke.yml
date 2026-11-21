@@ -1,0 +1,83 @@
+name: Offline smoke (x86)
+
+# PIPESHUB_OFFLINE=1 on an image with no network at all, for both app images
+# (slim and full) on x86. Builds the app image from this commit on top of the
+# published base images, then starts it with `--network none` and runs
+# deployment/docker-compose/tests/offline_image_smoke.sh. Nothing is pushed.
+# The arm64 slim build is covered by arm64-smoke.yml.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Dockerfile'
+      - 'Dockerfile.base'
+      - 'backend/python/pyproject.toml'
+      - 'backend/python/app/__init__.py'
+      - 'backend/python/app/telemetry/**'
+      - 'backend/python/app/utils/chat_helpers.py'
+      - 'backend/nodejs/apps/src/libs/services/telemetry/**'
+      - 'deployment/process_monitor.sh'
+      - 'deployment/docker-entrypoint.sh'
+      - 'deployment/offline-env.sh'
+      - 'deployment/bake-*.py'
+      - 'deployment/docker-compose/tests/offline_image_smoke.*'
+      - 'backend/python/app/offline.py'
+      - 'backend/python/app/embedding_main.py'
+      - 'backend/python/app/config/constants/docling_models.py'
+      - '.github/workflows/offline-smoke.yml'
+  # A dependency that starts calling out shows up with no change here; look weekly.
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-smoke-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Offline smoke (${{ matrix.variant }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: slim
+            deps: python-deps-slim
+          - variant: full
+            deps: python-deps
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # From GHCR so CI neither spends nor inflates Docker Hub pulls; Docker Hub is the fallback.
+      - name: Pull pre-built base images
+        run: |
+          for pair in PYTHON_DEPS_IMAGE=${{ matrix.deps }} RUNTIME_BASE_IMAGE=runtime; do
+            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
+            if ! docker pull "$image"; then
+              hub="pipeshubai/pipeshub-ai-base:${pair#*=}"
+              echo "::warning::Could not pull ${image}, so this run uses ${hub} from Docker Hub."
+              image="$hub"
+              docker pull "$image"
+            fi
+            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
+          done
+
+      - name: Build the ${{ matrix.variant }} app image
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg PYTHON_DEPS_IMAGE="${PYTHON_DEPS_IMAGE}" \
+            --build-arg RUNTIME_BASE_IMAGE="${RUNTIME_BASE_IMAGE}" \
+            -t "pipeshub-offline-smoke:${{ matrix.variant }}" .
+
+      - name: Offline smoke (no network)
+        run: bash deployment/docker-compose/tests/offline_image_smoke.sh "pipeshub-offline-smoke:${{ matrix.variant }}" ${{ matrix.variant }}

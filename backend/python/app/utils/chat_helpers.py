@@ -6430,44 +6430,38 @@ def count_tokens_in_messages(messages: list[Any],enc) -> int:  # noqa: ANN001
     return total_tokens
 
 
+@functools.lru_cache(maxsize=1)
+def _cl100k_encoder() -> Any:  # noqa: ANN401
+    """The cl100k_base encoder, or ``None`` when it cannot be loaded.
+
+    A failed load is kept too: without a table on disk each attempt is a network
+    fetch, and the callers count tokens on every request.
+    """
+    try:
+        import tiktoken  # type: ignore
+
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception as exc:
+        logger.warning("tiktoken encoding unavailable, using a character estimate: %s", exc)
+        return None
+
+
 def count_tokens_text(text: str,enc) -> int:  # noqa: ANN001
     """Count tokens in text using tiktoken or fallback heuristic"""
     if not text:
         return 0
+    if enc is None:
+        enc = _cl100k_encoder()
     if enc is not None:
         try:
             return len(enc.encode(text))
         except Exception:
             logger.warning("tiktoken encoding failed, falling back to heuristic.")
-            pass
-    else:
-        try:
-            import tiktoken  # type: ignore
-            try:
-                enc = tiktoken.get_encoding("cl100k_base")
-                return len(enc.encode(text))
-            except Exception:
-                logger.warning("tiktoken encoding failed, falling back to heuristic.")
-                pass
-        except Exception:
-            logger.warning("tiktoken encoding failed, falling back to heuristic.")
-            pass
 
     return max(1, len(text) // 4)
 
 def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]]]) -> tuple[int, int]:
-    # Lazy import tiktoken; fall back to a rough heuristic if unavailable
-    enc = None
-    try:
-        import tiktoken  # type: ignore
-        try:
-            enc = tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            logger.warning("tiktoken encoding failed, falling back to heuristic.")
-            enc = None
-    except Exception:
-        logger.warning("tiktoken import failed, falling back to heuristic.")
-        enc = None
+    enc = _cl100k_encoder()
 
 
     current_message_tokens = count_tokens_in_messages(messages,enc)

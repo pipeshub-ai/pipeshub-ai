@@ -122,6 +122,10 @@ run shell "installer unit tests" \
   'exists deployment/docker-compose/tests/installer_test.sh' \
   bash deployment/docker-compose/tests/installer_test.sh
 
+run shell "offline switch tests" \
+  'exists deployment/docker-compose/tests/offline_env_test.sh' \
+  bash deployment/docker-compose/tests/offline_env_test.sh
+
 run shell "eks purge tests" \
   'exists deployment/helm/tests/purge_bucket_test.sh' \
   bash deployment/helm/tests/purge_bucket_test.sh

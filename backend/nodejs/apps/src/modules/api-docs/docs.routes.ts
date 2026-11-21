@@ -2,10 +2,22 @@
  * API Documentation Routes
  * Serves the API documentation HTML UI
  */
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
+import path from 'path';
 import { Container } from 'inversify';
 import { ApiDocsService } from './docs.service';
 import { Logger } from '../../libs/services/logger.service';
+
+/** Where the page's fonts are served from; they come from npm packages, not from Google. */
+export const DOCS_FONT_ROUTE = '/fonts';
+
+const packageDir = (name: string): string => {
+  try {
+    return path.dirname(require.resolve(`${name}/package.json`));
+  } catch {
+    return '';
+  }
+};
 
 export function createApiDocsRouter(container: Container): Router {
   const router = Router();
@@ -17,6 +29,29 @@ export function createApiDocsRouter(container: Container): Router {
   router.get('/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', service: 'api-docs' });
   });
+
+  // Immutable: the package version is part of the install. A package missing from the
+  // install leaves its route out, and the page falls back to system fonts.
+  const manrope = packageDir('@fontsource/manrope');
+  const icons = packageDir('material-icons');
+  const staticOptions = {
+    maxAge: '30d',
+    immutable: true,
+    fallthrough: false,
+    index: false,
+  };
+  if (manrope !== '') {
+    router.use(
+      `${DOCS_FONT_ROUTE}/manrope`,
+      express.static(path.join(manrope, 'files'), staticOptions),
+    );
+  }
+  if (icons !== '') {
+    router.use(
+      `${DOCS_FONT_ROUTE}/material-icons`,
+      express.static(path.join(icons, 'iconfont'), staticOptions),
+    );
+  }
 
   /**
    * Get unified API documentation data
@@ -69,10 +104,19 @@ function getDocumentationHtml(): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PipesHub API Documentation</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
+  <style>
+    /* Self-hosted: an install with no route to the internet still shows the page's fonts. */
+    @font-face { font-family: 'Manrope'; font-weight: 400; font-display: swap; src: url('/api/v1/docs${DOCS_FONT_ROUTE}/manrope/manrope-latin-400-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'Manrope'; font-weight: 500; font-display: swap; src: url('/api/v1/docs${DOCS_FONT_ROUTE}/manrope/manrope-latin-500-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'Manrope'; font-weight: 600; font-display: swap; src: url('/api/v1/docs${DOCS_FONT_ROUTE}/manrope/manrope-latin-600-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'Manrope'; font-weight: 700; font-display: swap; src: url('/api/v1/docs${DOCS_FONT_ROUTE}/manrope/manrope-latin-700-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'Material Icons Outlined'; font-style: normal; font-weight: 400; font-display: block; src: url('/api/v1/docs${DOCS_FONT_ROUTE}/material-icons/material-icons-outlined.woff2') format('woff2'); }
+    .material-icons-outlined {
+      font-family: 'Material Icons Outlined'; font-weight: normal; font-style: normal; display: inline-block;
+      letter-spacing: normal; text-transform: none; white-space: nowrap; word-wrap: normal; direction: ltr;
+      -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; font-feature-settings: 'liga';
+    }
+  </style>
   <style>
     /* PipesHub theme: the dashboard's Radix olive grays and emerald accent (frontend/app/globals.css). */
     :root {

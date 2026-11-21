@@ -392,6 +392,7 @@ carry the label `pipeshub.ai/workload: parsing`.
 - Optional extra volumes and mounts
 - Optional service account creation
 - Optional PDB, NetworkPolicy
+- Air-gapped installs: `offline.enabled: true` sets `PIPESHUB_OFFLINE=1` on the app and parsing pods (no telemetry, no Hugging Face or LiteLLM network calls). The slim image has no local embedding model; use the full image or an embedding service the cluster can reach.
 - Product telemetry switch: `telemetry.collection.enabled: false` sets `TELEMETRY_COLLECTION_FLAG=false`
 
 ## Metrics

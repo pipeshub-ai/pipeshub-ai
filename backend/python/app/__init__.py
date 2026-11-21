@@ -1,7 +1,11 @@
 import warnings
 
+from app.offline import apply_offline_env
 from app.utils.process_hardening import disable_vendor_telemetry
 from app.utils.store_umbrella import apply_store_umbrella
+
+# PIPESHUB_OFFLINE=1 sets the no-network switches before any library reads them.
+apply_offline_env()
 
 # Every service imports this package before any dependency that can load onnxruntime.
 disable_vendor_telemetry()
