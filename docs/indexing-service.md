@@ -140,7 +140,7 @@ sequenceDiagram
     Hnd->>G: get record, connector active?, supported type?
     Hnd->>Conn: stream bytes (signed URL or /internal/stream/record)
     Hnd->>G: md5 dedup lookup; parsingStatus/indexingStatus = IN_PROGRESS
-    Hnd-->>W: yield START_PARSING(tier, size_bytes)
+    Hnd-->>W: yield START_PARSING(tier, size_bytes) (tier raised to heavy for a heavy reader)
     W->>Gov: acquire HEAVY_PARSE or LIGHT_PARSE permit (bounded wait, clock paused)
     W->>Red: lease "parsing" / "parsing:light"
     Hnd->>Prs: parse → BlocksContainer
@@ -434,7 +434,7 @@ Jira issues and Confluence pages are published as `application/blocks` (Jira) or
 The tier decides four things, all in `consumer_concurrency.py` and `resource_governor/`:
 
 1. **Which index pool** the record holds for its whole lifetime: `Pool.INDEX_HEAVY` or `Pool.INDEX_LIGHT` (`acquire_index_slot`). This permit is taken before the handler runs and released on `INDEXING_COMPLETE`, so it covers download, the wait for a parse slot, parsing and embedding. Classification is outside it, on the `classify` stage's own permits (§2.3).
-2. **Which parse pool** the record waits on at `START_PARSING`: `HEAVY_PARSE` or `LIGHT_PARSE`, cost 2 permits for a heavy file over 25 MiB.
+2. **Which parse pool** the record waits on at `START_PARSING`: `HEAVY_PARSE` or `LIGHT_PARSE`, cost 2 permits for a heavy file over 25 MiB. This tier is the labels' one raised to heavy when the reader that runs is a heavy format (`tiers.reader_tier`): `classify` lets the extension decide, while the reader is picked by the mime first, so a PDF labelled `txt` is parsed by the PDF reader and admitted as heavy. The dispatch passes its in-process reader (`file_types.read_tier`; a Google Docs, Slides or Sheets reader parses as docx, pptx or xlsx), or on the service pipeline the format the parsing service will resolve from the same labels (`file_types.format_tier`), which the parsing service also passes for its own gate. Nothing is lowered to light, and the index pool (point 1) stays on the event's labels.
 3. **Which cluster-wide Redis lease** it takes: `parsing` vs `parsing:light` always; `indexing` vs `indexing:light` only once `INDEXING_SPLIT_LEASE_POOLS=true`.
 4. **The ceilings and floors** the governor sizes each pool with (section 4.3).
 
