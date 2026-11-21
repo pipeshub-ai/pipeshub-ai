@@ -15,6 +15,7 @@ from aiohttp import ClientSession
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.web.address_guard import guarded_session_kwargs
+from app.utils.encryption.encryption_service import DecryptionError
 from app.utils.logging_fields import log_event, log_once
 from app.utils.oauth_errors import (
     MAX_TOKEN_LIFETIME_S,
@@ -67,6 +68,35 @@ def _require_access_token(data: object) -> None:
 class OAuthStateError(ValueError):
     """The callback is not for the sign-in in progress: its state is stale, replayed or forged, or its code was used.
     Nothing was exchanged or saved."""
+
+
+class OAuthStoreUnavailableError(Exception):
+    """Our own config or graph store failed during a sign-in callback, so the sign-in was not recorded (the provider's
+    sign-in itself did not fail)."""
+
+    log_error_class = "unavailable"
+
+
+# RFC 6749 4.1.2: a code lives at most 10 minutes. The claim only has to outlast one exchange; used_codes guards replays.
+_CODE_CLAIM_TTL_SECONDS = 600
+
+
+def _code_claim_path(credentials_path: str, code: str) -> str:
+    # Hashed: the code is a credential. Outside credentials_path, whose /services/toolsets/ prefix is scanned as records.
+    return "/services/oauth-code-claims/" + hashlib.sha256(f"{credentials_path}\n{code}".encode()).hexdigest()
+
+
+async def read_oauth_config(config_service: ConfigurationService, path: str) -> dict[str, Any]:
+    """The config at ``path`` ({} when unset). A store that did not answer is an OAuthStoreUnavailableError; a value
+    that is there but does not decode in the encrypted layer (a changed SECRET_KEY) reads as unset, as before, since
+    retrying cannot fix it."""
+    try:
+        config = await config_service.get_config(path, raise_on_error=True)
+    except (ValueError, DecryptionError):
+        return {}
+    except Exception as e:
+        raise OAuthStoreUnavailableError("The OAuth config could not be read") from e
+    return config if isinstance(config, dict) else {}
 
 
 class MalformedTokenError(ValueError):
@@ -577,9 +607,7 @@ class OAuthProvider:
         return self._get_authorization_url(state=state, **extra)
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        config = await read_oauth_config(self.configuration_service, self.credentials_path)
 
         oauth_data = config.get('oauth', {}) or {}
         stored_state = oauth_data.get("state")
@@ -623,6 +651,7 @@ class OAuthProvider:
                     raise ValueError("Authorization code has already been used") from None
             # Code was used and nothing was saved
             raise OAuthStateError("Authorization code has already been used")
+        await self._claim_code(code)
         try:
             token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
             self.token = token
@@ -642,9 +671,7 @@ class OAuthProvider:
                 "used_codes": used_codes  # Keep used codes to prevent replay attacks
             }
 
-            await self.configuration_service.set_config(self.credentials_path, config)
-
-            return token
+            saved = await self.configuration_service.set_config(self.credentials_path, config)
         except Exception:
             # If token exchange fails, still mark the code as used to prevent retry loops
             used_codes.append(code)
@@ -652,3 +679,19 @@ class OAuthProvider:
             config['oauth'] = oauth_data
             await self.configuration_service.set_config(self.credentials_path, config)
             raise
+        if not saved:
+            raise OAuthStoreUnavailableError("The OAuth credentials could not be saved")
+        return token
+
+    async def _claim_code(self, code: str) -> None:
+        """Only one callback exchanges a code. Two that read the config before either saved would both pass the
+        used_codes check, and the provider's refusal of the second would write its stale copy over the first's tokens."""
+        try:
+            claimed = await self.configuration_service.create_config_if_absent(
+                _code_claim_path(self.credentials_path, code), {"claimed": True}, ttl_seconds=_CODE_CLAIM_TTL_SECONDS,
+            )
+        except Exception as e:
+            raise OAuthStoreUnavailableError("The authorization code could not be claimed") from e
+        if not claimed:
+            # Another callback is exchanging it, or one that did not finish spent it (the claim outlives a failed save).
+            raise OAuthStateError("Authorization code was already submitted")

@@ -1094,7 +1094,8 @@ class TestSignInRoutes:
                 await routes.start_my_sign_in("c1", self._request(), graph_provider=AsyncMock())
         assert e.value.status_code == 400
 
-    async def _complete(self, *, gate=None, exchange=None, verify=None) -> tuple:
+    async def _complete(self, *, gate=None, exchange=None, verify=None, store=None) -> tuple:
+        """With ``store``, the real OAuthProvider runs its callback on it; otherwise a mock provider answers."""
         from app.connectors.api import user_access_router as routes
 
         provider = MagicMock()
@@ -1105,10 +1106,10 @@ class TestSignInRoutes:
                           new=gate or AsyncMock(return_value={"type": "Notion", "config": {}})), \
                 patch.object(routes, "get_user_or_503", new=AsyncMock(return_value={"id": "n1", "userId": "u1",
                                                                                     "email": "ann@acme.com"})), \
-                patch.object(routes, "_config_service", return_value=_session_store()), \
+                patch.object(routes, "_config_service", return_value=store or _session_store()), \
                 patch.object(routes, "current_org_id", return_value="org-1"), \
                 patch.object(routes, "user_oauth_config", new=AsyncMock(return_value=MagicMock())), \
-                patch.object(routes, "OAuthProvider", return_value=provider), \
+                patch.object(routes, "OAuthProvider", **({"new": routes.OAuthProvider} if store else {"return_value": provider})), \
                 patch.object(routes, "verify_token",
                              new=verify or AsyncMock(return_value=NotionIdentity("p1", "ann@acme.com", "ws-1"))), \
                 patch.object(routes, "list_connections", new=AsyncMock(return_value=[])), \
@@ -1163,6 +1164,26 @@ class TestSignInRoutes:
     async def test_a_failed_exchange_is_reported_and_the_session_dropped(self) -> None:
         result, _, save, drop_session = await self._complete(exchange=AsyncMock(side_effect=ValueError("Invalid state")))
         assert result["success"] is False and result["error_message"]
+        save.assert_not_awaited()
+        drop_session.assert_awaited_once()
+
+    async def test_a_session_the_store_did_not_save_fails_the_sign_in_and_connects_nothing(self) -> None:
+        # The session is thrown away after the sign-in, but the same store holds the connection: a store that
+        # dropped the tokens' write is not trusted with it (the code is spent, so the user starts again).
+        from app.connectors.core.base.token_service.oauth_service import (
+            OAuthProvider,
+            OAuthToken,
+        )
+
+        store = _session_store()
+        store.set_config.return_value = False
+        store.create_config_if_absent.return_value = True
+        exchange = AsyncMock(return_value=OAuthToken(access_token="at", refresh_token="rt"))
+        with patch.object(OAuthProvider, "exchange_code_for_token", new=exchange):
+            result, _, save, drop_session = await self._complete(store=store)
+        exchange.assert_awaited_once()
+        assert store.set_config.await_args.args[1]["credentials"]["access_token"] == "at"
+        assert result["success"] is False and result["error_message"] == "Notion sign-in did not complete. Try again."
         save.assert_not_awaited()
         drop_session.assert_awaited_once()
 
