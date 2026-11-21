@@ -5,7 +5,11 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent import observability as obs
-from app.agent_loop_lib.core.exceptions import ToolError, spawn_refusal
+from app.agent_loop_lib.core.exceptions import (
+    ToolError,
+    spawn_failure_text,
+    spawn_refusal,
+)
 from app.agent_loop_lib.core.types import AgentResult, Goal, ToolCall
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
@@ -20,7 +24,7 @@ from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
 from app.agent_loop_lib.tools.builtin.coordination.parent_results import parent_request
 from app.agent_loop_lib.tools.special_route import RouteContext
 from app.agent_loop_lib.tools.tags import TAG_SPAWN, TAG_SPAWN_BATCH
-from app.utils.error_class import log_failure
+from app.utils.error_class import failure_reason, log_failure
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
@@ -197,16 +201,17 @@ async def _run_detached_spawn(agent, call: ToolCall, goal, turn_index: int, star
             _logger, "sub_agent.detached_failed", e, role=call.arguments.get("role"), include_error_text=False,
             **(spawn_refusal(e) or {}),
         )
+        reason = failure_reason(e)
         if agent.scope is not None:
             failed = AgentResult(
                 goal=Goal(description=call.arguments.get("goal", "")),
                 success=False,
-                error=f"detached spawn_agent task '{task_id}' failed with an infrastructure error: {e}",
+                error=f"detached spawn_agent task '{task_id}' failed with an infrastructure error: {reason}",
             )
             record_completed_spawn(agent.scope, task_id, failed)
         await obs.append_timeline(
             agent, "spawn_agent_detached_failed",
-            f"Detached child agent failed: {e}", "failed", {"error": str(e)},
+            f"Detached child agent failed: {reason}", "failed", {"error": reason},
         )
     finally:
         agent._detached_tasks.discard(asyncio.current_task())
@@ -387,7 +392,7 @@ class SpawnAgentTool(Tool):
             )
         except Exception as e:
             return CoreToolResult(
-                tool_call_id=call.id, name=call.name, content=str(e), is_error=True,
+                tool_call_id=call.id, name=call.name, content=spawn_failure_text(e), is_error=True,
                 cause=e, end_fields=spawn_refusal(e) or {"reason": "exception"},
             )
 

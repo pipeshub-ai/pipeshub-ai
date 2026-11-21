@@ -196,6 +196,10 @@ except Exception as e:
   `None` or lower, else `log_event` at the unit's level with the error fields (see "Tool calls and MCP").
 - A lifecycle `*.end` line that must stay at INFO when the work failed uses `log_event(..., level=level_for(cls), error_class=cls,
   outcome="failure")`. `outcome` is `success`, `failure`, `partial` or `skipped` (cancellation is `failure` with `error_class=cancelled`).
+- Outside the logs the same rule holds. A model's or a driver's error text never goes into a client frame, a tool result, a run's
+  `AgentResult.error`, the timeline or a trace: write `failure_reason(exc)` instead (`bad_request: content_filter
+  (BadRequestError, HTTP 400)`: class, the provider's code as `provider_code(exc)` reads it, the innermost type, the status).
+  The raw text a user-facing classifier needs is `AgentResult.error_detail`, a private attribute no dump carries.
 - `app.agents.agent_loop.error_classification` also has a `classify_error` (user-facing text). Where both are in scope, import this
   module qualified, as above.
 
