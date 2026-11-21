@@ -1334,6 +1334,7 @@ class TestEnsureSchema:
         """Every write to an app document is checked against the live schema; a sync whose start is refused does not run."""
         from app.config.constants.arangodb import CollectionNames
 
+        connected_provider.http_client.apps_guard = None  # a client with no apps-schema guard writes the schema itself
         connected_provider.http_client.has_collection = AsyncMock(return_value=True)
         connected_provider.http_client.has_graph = AsyncMock(return_value=True)
         connected_provider.http_client.update_collection_schema = AsyncMock(
@@ -1347,6 +1348,7 @@ class TestEnsureSchema:
     async def test_an_apps_collection_not_created_fails_the_ensure(self, connected_provider) -> None:
         from app.config.constants.arangodb import CollectionNames
 
+        connected_provider.http_client.apps_guard = None  # a client with no apps-schema guard writes the schema itself
         connected_provider.http_client.has_collection = AsyncMock(return_value=False)
         connected_provider.http_client.create_collection = AsyncMock(
             side_effect=lambda name, **_: name != CollectionNames.APPS.value
@@ -1362,6 +1364,7 @@ class TestEnsureSchema:
         the schema is applied as to an existing collection, and the ensure fails while it cannot be."""
         from app.config.constants.arangodb import CollectionNames
 
+        connected_provider.http_client.apps_guard = None  # a client with no apps-schema guard writes the schema itself
         connected_provider.http_client.has_collection = AsyncMock(return_value=False)
         connected_provider.http_client.create_collection = AsyncMock(return_value=True)      # the 409 answer
         connected_provider.http_client.has_graph = AsyncMock(return_value=True)
