@@ -1,7 +1,7 @@
 // Generated from backend/python/app/config/file_types.py. Do not edit by hand:
 // run `python -m app.config.file_types --emit node` from backend/python.
 
-export const REGISTRY_VERSION = 3;
+export const REGISTRY_VERSION = 4;
 
 export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   '3gp': 'video/3gpp',
@@ -125,6 +125,7 @@ export const UPLOAD_EXTENSION_TO_MIME: Readonly<Record<string, string>> = {
   potx: 'application/vnd.openxmlformats-officedocument.presentationml.template',
   pps: 'application/vnd.ms-powerpoint',
   ppt: 'application/vnd.ms-powerpoint',
+  pptm: 'application/vnd.ms-powerpoint.presentation.macroEnabled.12',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   psd: 'image/vnd.adobe.photoshop',
   py: 'text/x-python',
@@ -215,6 +216,7 @@ export const INDEXABLE_EXTENSIONS: readonly string[] = [
   'png',
   'potx',
   'ppt',
+  'pptm',
   'pptx',
   'py',
   'rb',
@@ -236,4 +238,4 @@ export const INDEXABLE_EXTENSIONS: readonly string[] = [
 ];
 
 export const CONTENT_SHA256 =
-  '2c0aa49fb1205734960f3f38773831ba3ac523de03ff651b194174287da6f5af';
+  '5d46a4fb688efcac075a7d8f6d3db19b7d90a50babbf0c9be209ca77025aae2a';
