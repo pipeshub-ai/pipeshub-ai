@@ -428,3 +428,41 @@ async def test_a_close_waits_while_its_notice_cannot_be_saved(world: Outlook | S
     await world.sync()
     assert _written(world.proc, "g1")[-1] == [] and len(_notices(world)) == 1
     assert sp.data[GROUP_CHECK_KEY]["pending_notice"] == '["g1"]', "still owed: the notice was not delivered"
+
+
+async def _run_sync(w: SharePoint, read: Any) -> object:
+    """One sync's worth of a role-assignment read: the grace loaded, the run's caches empty, the grace finished."""
+    w.c._reset_permission_caches()
+    await w.c._group_grace.load()
+    try:
+        return await read()
+    finally:
+        await w.c._group_grace.finish()
+
+
+@pytest.mark.asyncio
+async def test_an_owners_claim_and_a_group_nested_in_a_directory_role_are_bounded_too() -> None:
+    """The owners of an M365 group named by a role assignment, and an Entra group nested in a directory role, were
+    read without the grace: a lasting refusal kept the stored grants (role assignments unreadable) with no bound."""
+    from types import SimpleNamespace
+
+    from app.models.permission import PermissionType
+
+    w = SharePoint()
+    w.c._disabled_set_unknown = False
+    w.answer = _odata(403)
+    owners = lambda: w.c._m365_owner_permissions("g1", PermissionType.OWNER)  # noqa: E731
+    page = SimpleNamespace(value=[SimpleNamespace(odata_type="#microsoft.graph.group", id="g2")], odata_next_link=None)
+    w.c.client.directory_roles.by_directory_role_id.return_value.members.get = AsyncMock(return_value=page)
+    role = lambda: w.c._get_directory_role_member_users("r1")  # noqa: E731
+    for _ in range(N - 1):
+        with pytest.raises(ODataError):
+            await _run_sync(w, owners)
+        with pytest.raises(ODataError):
+            await _run_sync(w, role)
+    assert await _run_sync(w, owners) == [], "past the grace the owners count as none"
+    assert await _run_sync(w, role) == [], "past the grace the nested group counts as none"
+    assert len(_notices(w)) == 2
+    w.answer = [{"id": "u-ann", "email": "ann@x.com", "name": "Ann"}]
+    assert [p.email for p in await _run_sync(w, owners)] == ["ann@x.com"]
+    assert [u["email"] for u in await _run_sync(w, role)] == ["ann@x.com"]

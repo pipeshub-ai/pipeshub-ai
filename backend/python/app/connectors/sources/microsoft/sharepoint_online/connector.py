@@ -2958,7 +2958,7 @@ class SharePointConnector(BaseConnector):
 
     async def _m365_owner_permissions(self, group_id: str, role: PermissionType) -> list[Permission]:
         if group_id not in self._m365_group_owners:
-            self._m365_group_owners[group_id] = await self._fetch_graph_group_members(group_id, is_owner=True)
+            self._m365_group_owners[group_id] = await self._claim_group_members(group_id, is_owner=True)
         return [
             Permission(external_id=owner['id'], email=owner['email'], type=role, entity_type=EntityType.USER)
             for owner in self._m365_group_owners[group_id]
@@ -3043,7 +3043,7 @@ class SharePointConnector(BaseConnector):
                     if user['email'].lower() not in self._inactive_emails:
                         users.append(user)
                 elif 'group' in (getattr(member, 'odata_type', None) or '').lower() and getattr(member, 'id', None):
-                    users.extend(await self._fetch_graph_group_members(member.id))
+                    users.extend(await self._claim_group_members(member.id))
             next_link = getattr(response, 'odata_next_link', None)
             if not next_link:
                 break
@@ -3293,17 +3293,16 @@ class SharePointConnector(BaseConnector):
         A group whose members can't all be read keeps the members stored for it: writing what was read
         would take access away from everyone who was not. Such a group is reported to the run's health.
         """
+        # The grace counts every member read of the run, the role-assignment reads after this included; run_sync
+        # finishes it at the end.
         await self._group_grace.load()
         try:
             await self._sync_azure_ad_groups()
         except Exception as groups_error:
             self.logger.error(f"❌ Error syncing Azure AD Groups with delta: {groups_error}")
             self._health.skipped("Entra groups", groups_error)
-        try:
-            await self._reread_closed_groups()
-            await self._sync_site_groups(sites)
-        finally:
-            await self._group_grace.finish()
+        await self._reread_closed_groups()
+        await self._sync_site_groups(sites)
 
     async def _reread_closed_groups(self) -> None:
         """Entra groups closed past the grace are no longer held on a group-change page, so each sync reads their
@@ -3395,8 +3394,10 @@ class SharePointConnector(BaseConnector):
         return out
 
     async def _claim_group_members(self, group_id: str, *, is_owner: bool = False) -> list[dict]:
-        """An Entra group's people inside a SharePoint group. Raises when they can't be read, so the SharePoint
-        group keeps its stored members, until Microsoft has refused them past the grace: then they count as none."""
+        """An Entra group's people (or its owners) where they stand for something else: a SharePoint group that holds
+        its claim, a directory role it is nested in, an owners claim in a role assignment. Raises when they can't be
+        read, so what they stand for keeps what is stored, until Microsoft has refused them past the grace: then they
+        count as none. Every such read goes through here, so none keeps stored access with no bound."""
         key = f"{group_id}/owners" if is_owner else group_id
         try:
             users = await self._fetch_graph_group_members(group_id, is_owner=is_owner)
@@ -3866,6 +3867,8 @@ class SharePointConnector(BaseConnector):
             'errors_encountered': 0
         }
         self._health = SyncHealth()
+        # Unloaded until _sync_user_groups: a run that reads no group counts nothing and closes nothing.
+        self._group_grace = GroupMemberGrace(self, self.user_sync_point)
         self._drive_roots = {}
         self._filtered_out_site_ids = set()
         self._token_failure_notified = False
@@ -3969,6 +3972,11 @@ class SharePointConnector(BaseConnector):
             duration = datetime.now() - start_time
             self.logger.error(f"💥 Critical error in SharePoint connector after {duration}: {e}")
             raise
+        finally:
+            try:
+                await self._group_grace.finish()
+            except Exception as e:
+                self.logger.warning(f"Could not save the unread-group-member count or send its notice: {e}")
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """A run that skipped part of the source removes nothing it did not see."""
