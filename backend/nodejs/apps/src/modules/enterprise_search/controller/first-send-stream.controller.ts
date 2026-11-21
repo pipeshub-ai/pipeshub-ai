@@ -47,11 +47,7 @@ import {
   writeConversationCreated,
   writeSseHead,
 } from '../utils/turn-stream';
-import {
-  extractModelInfo,
-  keepRunAlive,
-  streamFrameOf,
-} from '../utils/utils';
+import { extractModelInfo, keepRunAlive, streamFrameOf } from '../utils/utils';
 
 const logger = Logger.getInstance({ service: 'First-send stream' });
 
@@ -232,7 +228,9 @@ export const firstSendStream = (
       const stream = await streamRun.open(() =>
         startAIStream(
           aiCommandOptions,
-          responder.target.kind === 'agent' ? 'Agent Chat Stream' : 'Chat Stream',
+          responder.target.kind === 'agent'
+            ? 'Agent Chat Stream'
+            : 'Chat Stream',
           upstreamAbort.signal,
         ),
       );

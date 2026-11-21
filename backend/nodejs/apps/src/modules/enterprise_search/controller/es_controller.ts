@@ -2667,7 +2667,11 @@ async function regenerateAnswersInternal(
     await Promise.all(pendingWrites);
     // A run that went quiet past its limit ended upstream; a shutdown stops it as a Stop would.
     const ending: StreamEnd = timedOut
-      ? { kind: 'failed', error: new GatewayTimeoutError('The run reached its time limit'), fromStream: true }
+      ? {
+          kind: 'failed',
+          error: new GatewayTimeoutError('The run reached its time limit'),
+          fromStream: true,
+        }
       : stoppedEnding();
     if (
       timedOut &&
@@ -2913,7 +2917,10 @@ async function regenerateAnswersInternal(
     if (!validationResult) {
       throw new NotFoundError('Conversation or message not found');
     }
-    streamRun.bind({ conversationId: String(validationResult.conversation._id), agentKey });
+    streamRun.bind({
+      conversationId: String(validationResult.conversation._id),
+      agentKey,
+    });
     const userQuery = validationResult.userQuery;
     // Only an edit carries these two; their types are not trusted until read.
     const editBody = req.body as { query?: unknown; attachments?: unknown };

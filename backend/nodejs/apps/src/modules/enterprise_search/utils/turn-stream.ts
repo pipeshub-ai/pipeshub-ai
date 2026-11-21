@@ -839,7 +839,11 @@ export class TurnStreamPump {
     if (!this.claim()) return;
     // A run that went quiet past its limit ended upstream; a shutdown stops it as a Stop would.
     const ending: StreamEnd = timedOut
-      ? { kind: 'failed', error: new GatewayTimeoutError('The run reached its time limit'), fromStream: true }
+      ? {
+          kind: 'failed',
+          error: new GatewayTimeoutError('The run reached its time limit'),
+          fromStream: true,
+        }
       : this.stoppedEnding();
     await (timedOut && !this.content.hasContent()
       ? this.failTimedOut(ending)
