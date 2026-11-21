@@ -426,6 +426,11 @@ describe('Enterprise Search Controller', () => {
     if (!(searchUtils.reserveRun as any).restore) {
       sinon.stub(searchUtils, 'reserveRun').resolves(null)
     }
+    // The run heartbeat is covered in utils.persistence.test.ts. These fake streams never close, so the real
+    // one would keep a 60 s interval alive after the test and log into whichever test file runs next.
+    if (!(searchUtils.keepRunAlive as any).restore) {
+      sinon.stub(searchUtils, 'keepRunAlive')
+    }
     // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
     // call this on every request to extend the access filter with
     // project-shared conversations; default to "no accessible projects" so
