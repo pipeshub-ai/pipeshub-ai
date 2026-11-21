@@ -44,6 +44,7 @@ export function SelectionActionBar({
       align="center"
       gap="2"
       style={{
+        flexWrap: isMobile ? 'wrap' : 'nowrap',
         position: 'fixed',
         bottom: '40px',
         left: isMobile ? '50%' : '60%',

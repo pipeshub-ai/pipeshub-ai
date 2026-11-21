@@ -122,23 +122,20 @@ const slots = vi.hoisted(() => ({
   },
   selection: { props: null as null | { selectedItems: Array<{ id: string }>; onChanged?: () => void } },
 }));
-// The slots are mocked at their own modules: config.ts re-exports them, and the selection bar imports them from there.
-vi.mock('../hooks/use-kb-upload-extras', () => ({
-  useKbUploadExtras: (kbId: string | null) => {
-    slots.hookArgs.push(kbId);
-    return slots.extras;
-  },
-}));
-vi.mock('../components/kb-selection-actions', () => ({
-  KbSelectionActions: (props: { selectedItems: Array<{ id: string }>; onChanged?: () => void }) => {
-    slots.selection.props = props;
-    return null;
-  },
-}));
 vi.mock('@/config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/config')>();
   return {
     ...actual,
+    // The page reaches the extension slots through this module, so they are replaced here.
+    useKbUploadExtras: (kbId: string | null) => {
+      slots.hookArgs.push(kbId);
+      return slots.extras;
+    },
+    SelectionActionBar: (props: React.ComponentProps<typeof actual.SelectionActionBar>) => {
+      slots.selection.props =
+        props.selectedCount > 0 ? { selectedItems: (props.selectedItems ?? []) as Array<{ id: string }>, onChanged: props.onChanged } : null;
+      return <actual.SelectionActionBar {...props} />;
+    },
     // Keep the real collection views, but do not wire the real auth client.
     // A live client calls /api/v1/connectors with no token, toasts that failure,
     // and the reindex "Try again" test then clicks the wrong error toast.
@@ -1524,10 +1521,10 @@ describe('Knowledge base page — working with files', () => {
 });
 
 describe('Knowledge base page — extension slots', () => {
-  it('hands the ticked rows and the list refresh to the selection slot', async () => {
+  it('hands the ticked rows and the list refresh to the selection bar', async () => {
     await openEngineering();
     fireEvent.click(within(row('spec.pdf')).getByRole('checkbox'));
-    expect(await screen.findByText('1 selected')).toBeTruthy();
+    await waitFor(() => expect(slots.selection.props).not.toBeNull());
 
     expect(slots.selection.props?.selectedItems.map((i) => i.id)).toEqual(['rec-spec']);
     api.hub.loadFolderData.mockClear();
@@ -1555,6 +1552,35 @@ describe('Knowledge base page — extension slots', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
 
     await waitFor(() => expect(order).toEqual(['start', 'ok:rec-new', 'end']));
+  });
+
+  it('calls the end callback when every picked file is over the size limit and nothing is sent', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    const huge = new File(['x'], 'dump.bin', { type: 'application/octet-stream' });
+    Object.defineProperty(huge, 'size', { value: 50 * 1024 * 1024 });
+    upload.items = [{ id: 'u1', name: huge.name, size: huge.size, type: 'file', file: huge }];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
+    expect(api.kb.streamUpload).not.toHaveBeenCalled();
+  });
+
+  it('calls the end callback when there are no files to upload', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    upload.items = [];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
   });
 
   it('uploads normally when the hook provides no callbacks', async () => {

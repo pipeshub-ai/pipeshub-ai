@@ -36,4 +36,13 @@ describe('SelectionActionBar on mobile', () => {
     expect(buttons.length).toBeGreaterThanOrEqual(3);
     for (const b of buttons) expect(b.getAttribute('aria-label')).toBeTruthy();
   });
+
+  it('wraps onto a second row so edition-provided actions cannot push controls off a narrow screen', () => {
+    render(
+      <Theme>
+        <SelectionActionBar selectedCount={2} onDeselectAll={() => {}} onChat={() => {}} onDelete={() => {}} />
+      </Theme>,
+    );
+    expect(screen.getByText('2 selected').parentElement!.style.flexWrap).toBe('wrap');
+  });
 });

@@ -24,7 +24,7 @@ export function KbSelectionActions(_props: KbSelectionActionsProps) {
   return (
     <Flex align="center" gap="2" data-testid="kb-selection-actions-notice">
       <MaterialIcon name="low_priority" size={14} color="var(--slate-11)" />
-      <Text size="1" style={{ color: 'var(--slate-11)', whiteSpace: 'nowrap' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)' }}>
         {t('kb.selectionActionsNotice')}
       </Text>
       <EnterpriseBadge tooltip={t('kb.selectionActionsNoticeEnterprise')} />

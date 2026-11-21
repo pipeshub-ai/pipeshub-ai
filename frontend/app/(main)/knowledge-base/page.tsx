@@ -1707,13 +1707,12 @@ function KnowledgeBasePageContent() {
   const uploadExtras = useKbUploadExtras(selectedKbId);
   const { onUploadStart, onFileSucceeded, onUploadEnd } = uploadExtras;
 
-  // Handle upload save - add items to upload store and start uploading
-  const handleUploadSave = useCallback(
+  // Add items to the upload store and upload them
+  const uploadFiles = useCallback(
     async (items: UploadFileItem[]) => {
       if (!selectedKbId) return;
 
       setIsUploading(true);
-      onUploadStart?.();
 
       // Determine upload target:
       // - If current node is a folder, upload to that folder
@@ -2042,7 +2041,6 @@ function KnowledgeBasePageContent() {
         );
       } finally {
         stopOnSessionEnd();
-        onUploadEnd?.();
       }
       if (upload.signal.aborted) return;
 
@@ -2060,7 +2058,21 @@ function KnowledgeBasePageContent() {
         await refreshData();
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t, onUploadStart, onFileSucceeded, onUploadEnd]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t, onFileSucceeded]
+  );
+
+  // Handle upload save. The hook's start and end callbacks bracket every exit, early returns and errors included.
+  const handleUploadSave = useCallback(
+    async (items: UploadFileItem[]) => {
+      if (!selectedKbId) return;
+      onUploadStart?.();
+      try {
+        await uploadFiles(items);
+      } finally {
+        onUploadEnd?.();
+      }
+    },
+    [selectedKbId, uploadFiles, onUploadStart, onUploadEnd]
   );
 
   // Returns false so the upload panel keeps the picked files when there is
