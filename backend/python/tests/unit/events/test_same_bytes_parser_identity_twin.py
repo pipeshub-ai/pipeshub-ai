@@ -209,3 +209,20 @@ async def test_a_twin_still_being_processed_is_waited_for_only_when_read_by_the_
 
     assert (decision.skip_indexing is True) is queued
     assert (world.state.get("indexingStatus") == ProgressStatus.QUEUED.value) is queued
+
+
+@pytest.mark.asyncio
+async def test_an_octet_stream_record_named_without_a_suffix_is_read_from_its_files_document_before_it_attaches() -> None:
+    """The record's own extension is on its files document only; reading the records node alone would call it not tracked and attach."""
+    world = World(
+        node={"contentRev": "older", "virtualRecordId": TWIN_VRID, "mimeType": "application/octet-stream", "recordName": "notes"},
+        file_doc={"_key": "rec-1", "extension": "md"},
+    )
+    _files_by_key(world)
+    _attach_stubs(world)
+    world.ep._attach_to_finished_twin = AsyncMock()
+
+    decision = await world.ep._reuse_finished_duplicate(world.state, _match(_twin("inproc:txt@1")))
+
+    assert decision.skip_indexing is False
+    world.ep._attach_to_finished_twin.assert_not_awaited()
