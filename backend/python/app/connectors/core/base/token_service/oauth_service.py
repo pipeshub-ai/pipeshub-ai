@@ -533,9 +533,11 @@ class OAuthProvider:
             token.refresh_token = refresh_token
 
         # Update the stored credentials with the new token
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        try:
+            config = await read_oauth_config(self.configuration_service, self.credentials_path)
+        except OAuthStoreUnavailableError:
+            # Saving without the rest of the record would wipe it; every caller saves the token itself.
+            return token
 
         # Best effort: callers verify the write and retry it. A copy, because
         # get_config hands back the cached dict and a failed write must not change it.
@@ -561,9 +563,7 @@ class OAuthProvider:
     async def revoke_token(self) -> bool:
         """Revoke access token"""
         # Default implementation - override in specific providers
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        config = await read_oauth_config(self.configuration_service, self.credentials_path)
         config['credentials'] = None
         await self.configuration_service.set_config(self.credentials_path, config)
         return True
@@ -596,9 +596,8 @@ class OAuthProvider:
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256"
             })
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        # An unread record must not be saved back as just this session: it holds the sign-in, filters and sync settings.
+        config = await read_oauth_config(self.configuration_service, self.credentials_path)
         # Replace entire oauth session data - this clears any old state, codes, etc.
         # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
