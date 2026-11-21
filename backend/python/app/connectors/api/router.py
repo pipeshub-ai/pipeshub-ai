@@ -130,7 +130,9 @@ from app.connectors.core.base.error.stream_errors import not_downloadable, to_in
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthStateError,
+    OAuthStoreUnavailableError,
     OAuthToken,
+    read_oauth_config,
 )
 from app.connectors.core.constants import (
     AuthFieldKeys,
@@ -175,8 +177,9 @@ from app.edition_containers import ConnectorAppContainer
 from app.core.org_context import current_org_id, system
 from app.core.org_jobs import for_each_org, of_org
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import ArtifactRecord, Record, RecordType
-from app.modules.demo_data.access import is_hidden_demo_record
+from app.modules.demo_data.access import refuse_hidden_demo_record
 from app.modules.pipeline.models import RETRYABLE_STAGES
 from app.modules.pipeline.state import stage_summaries
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
@@ -209,6 +212,7 @@ from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.modules.pipeline.parse_now import ParseNow, optional_redis
 from app.utils.not_indexed import not_indexed_note
 from app.utils.user_messages import (
+    DATABASE_UNREACHABLE,
     EPUB_PREVIEW_UNAVAILABLE,
     action_failed,
     not_found,
@@ -888,7 +892,7 @@ async def get_record_content_internal(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
             )
-        await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
+        await refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
 
         return await _resolve_record_content_response(
             record=record,
@@ -910,23 +914,6 @@ async def get_record_content_internal(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("open this file"),
         ) from e
-
-
-async def _refuse_hidden_demo_record(
-    graph_provider: IGraphDBProvider,
-    config_service: ConfigurationService,
-    org_id: str,
-    user_id: str,
-    connector_id: str | None,
-) -> None:
-    """Opening a switched-off demo record by id answers like a record the user cannot see."""
-    try:
-        hidden = await is_hidden_demo_record(graph_provider, config_service, org_id, user_id, connector_id)
-    except Exception as exc:
-        logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
-        return
-    if hidden:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
 
 class ReindexFailedRequest(BaseModel):
@@ -1120,7 +1107,7 @@ async def require_connector_not_locked_for_record(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> None:
     """Raise 409 if the record's connector is locked. Used by reindex record route."""
-    record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+    record = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
     if not record:
         return
     if record.get("origin") != OriginTypes.CONNECTOR.value:
@@ -1128,7 +1115,7 @@ async def require_connector_not_locked_for_record(
     connector_id = record.get("connectorId")
     if not connector_id:
         return
-    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    app_doc = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
     if app_doc:
         _check_connector_not_locked(app_doc)
 
@@ -1138,15 +1125,13 @@ async def require_connector_not_locked_for_record_group(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> None:
     """Raise 409 if the record group's connector is locked. Used by reindex record group route."""
-    record_group = await graph_provider.get_document(
-        record_group_id, CollectionNames.RECORD_GROUPS.value
-    )
+    record_group = await get_document_or_503(graph_provider, record_group_id, CollectionNames.RECORD_GROUPS.value)
     if not record_group:
         return
     connector_id = record_group.get("connectorId")
     if not connector_id:
         return
-    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    app_doc = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
     if app_doc:
         _check_connector_not_locked(app_doc)
 
@@ -1727,7 +1712,7 @@ async def download_file(
                 )
 
         connector_id = record.connector_id
-        await _refuse_hidden_demo_record(
+        await refuse_hidden_demo_record(
             graph_provider, request.app.container.config_service(), org_id, user_id, connector_id
         )
         # Get connector instance to check scope and existence
@@ -1808,7 +1793,7 @@ async def stream_record(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record"
             )
-        await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
+        await refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         if isinstance(record, ArtifactRecord):
             from app.services.artifact_registry.gallery import ArtifactDisplayPolicy
@@ -2112,8 +2097,8 @@ async def get_record_by_id(
         has_access = await check_record_access_or_503(graph_provider, user_id, org_id, record_id)
         logger.debug(f"🚀 has_access: {has_access}")
         if has_access:
-            doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-            await _refuse_hidden_demo_record(
+            doc = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
+            await refuse_hidden_demo_record(
                 graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
             )
             await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
@@ -2135,7 +2120,6 @@ async def get_record_by_id(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error checking record access: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to check record access") from e
 
 @router.get(
@@ -2165,15 +2149,18 @@ async def get_record_content(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
             )
-        doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-        await _refuse_hidden_demo_record(
+        doc = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
+        await refuse_hidden_demo_record(
             graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
         )
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
     except HTTPException:
         raise
+    except PermissionVerificationUnavailableError as e:  # the access check could not be made: the record routes' 503
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail=DATABASE_UNREACHABLE, headers={"Retry-After": "5"},
+        ) from e
     except Exception as e:
-        logger.error(f"Error checking record access for {record_id}: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to check record access") from e
 
     try:
@@ -7366,9 +7353,9 @@ async def handle_oauth_callback(
 
         # Get configuration
         config_path = _get_config_path_for_instance(connector_id)
-        config = await config_service.get_config(config_path)
+        config = await read_oauth_config(config_service, config_path)
 
-        if not config or not config.get(OAuthConfigKeys.AUTH):
+        if not config.get(OAuthConfigKeys.AUTH):
             mark_request_failure(request, None, error_class="misconfigured", reason="config_not_found")
             return {
                 "success": False,
@@ -7475,13 +7462,15 @@ async def handle_oauth_callback(
             ConnectorStateKeys.AUTHENTICATED_BY: user_id,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms()
         }
-        await connector_registry.update_connector_instance(
+        # The registry answers None for a graph failure rather than raising.
+        if not await connector_registry.update_connector_instance(
             connector_id=connector_id,
             updates=updates,
             user_id=user_id,
             org_id=org_id,
             is_admin=is_admin
-        )
+        ):
+            raise OAuthStoreUnavailableError("The connector's sign-in could not be recorded")
         logger.info(f"Instance {connector_id} marked as authenticated")
 
         return {
@@ -7490,11 +7479,12 @@ async def handle_oauth_callback(
         }
 
     except Exception as e:
+        reason = "temporarily_unavailable" if isinstance(e, OAuthStoreUnavailableError) else "server_error"
         # Text-free: the exchange's errors quote the token URL with its query and the provider's answer.
-        mark_request_failure(request, e, reason="server_error", include_error_text=False)
+        mark_request_failure(request, e, reason=reason, include_error_text=False)
 
-        # A refused caller, or a callback for another sign-in, leaves the connector as it was.
-        if authorized_connector_id and not isinstance(e, OAuthStateError):
+        # A refused caller, a callback for another sign-in, or our own store failing leaves the connector as it was.
+        if authorized_connector_id and not isinstance(e, (OAuthStateError, OAuthStoreUnavailableError)):
             try:
                 updates = {
                     "isAuthenticated": False,
@@ -7513,9 +7503,9 @@ async def handle_oauth_callback(
         error_message = extract_oauth_error_message(e)
         return {
             "success": False,
-            "error": "server_error",
+            "error": reason,
             "error_message": error_message,
-            "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=server_error"
+            "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error={reason}"
         }
 
 

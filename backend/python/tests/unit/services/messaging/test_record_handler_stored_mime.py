@@ -5,6 +5,7 @@ answer to the dispatch on the payload, so the gate's verdict, the off switch and
 """
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +14,7 @@ import pytest
 from app.config import file_types
 from app.config.constants.arangodb import EventTypes
 from app.events.events import DedupDecision, EventProcessor
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -242,24 +244,83 @@ async def test_a_stored_mime_without_a_reader_ends_as_when_the_event_carries_it(
     assert {k: without[k] for k in ("error", "reader", "status")} == {k: carried[k] for k in ("error", "reader", "status")}
 
 
-# MED-2: the parsing service is told the stored mime. Its budget is then the PDF one, while the consumer sized the
-# record's own budget from the event's labels before the handler ran (known limitation, follow-up F23g).
+# F23g (rewrites the MED-2 pin, which sized the consumer's side from the event's labels and so pinned the drift): the
+# parsing service is told the stored mime, and the consumer's armed budget is grown to the same figure.
 async def test_the_parsing_service_is_sent_the_stored_mime() -> None:
-    out = await _read(name="Report", ext="unknown", event_mime=ABSENT, stored=PDF, service=True)
+    general = messaging_env.record_processing_timeout
+    async with asyncio.timeout(general) as timeout, record_budget.armed(timeout, general) as budget:
+        out = await _read(name="Report", ext="unknown", event_mime=ABSENT, stored=PDF, service=True)
     assert out["service"] is not None and out["service"]["mime_type"] == PDF, out
-    service_budget = messaging_env.record_processing_timeout_for("unknown", out["service"]["mime_type"])
-    consumer_budget = messaging_env.record_processing_timeout_for("unknown", None)
-    assert service_budget == messaging_env.record_processing_timeout_for("pdf", PDF)
-    assert consumer_budget == messaging_env.record_processing_timeout_for("unknown", "unknown")
+    sent = messaging_env.record_processing_timeout_for(out["service"]["extension"], out["service"]["mime_type"])
+    assert sent == messaging_env.pdf_record_processing_timeout
+    assert budget.seconds == sent
 
 
-# Known limitation (follow-up F23g): the parse tier is decided by the extension first, the reader by the mime, so an
-# event extension `txt` on a stored PDF is read as a PDF under the light tier, as when the event carries both labels.
-async def test_the_parse_tier_still_follows_the_event_extension() -> None:
-    out = await _read(name="Report.txt", ext="txt", event_mime=ABSENT, stored=PDF)
-    carried = await _read(name="Report.txt", ext="txt", event_mime=PDF, stored=PDF)
-    assert out["reader"] == carried["reader"] == "_dispatch_pdf_binary"
-    assert out["tier"] == carried["tier"] == ParseTier.LIGHT
+async def _completes() -> AsyncIterator[PipelineEvent]:
+    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+
+async def _budget_after(payload: dict[str, Any], stored: object, event_type: str = "newRecord") -> float:
+    """The seconds the consumer's budget holds once the handler has run, armed at the general figure."""
+    general = messaging_env.record_processing_timeout
+    handler = _handler(_record(payload["recordName"], stored))
+    handler.event_processor.on_event = MagicMock(side_effect=lambda _envelope: _completes())
+    signed, jwt, stream = _downloads(handler)
+    async with asyncio.timeout(general) as timeout, record_budget.armed(timeout, general) as budget:
+        with signed, jwt, stream, patch.object(handler, "_index_from_blob", side_effect=lambda **_k: _completes()):
+            async for _ in handler.process_event(event_type, payload):
+                pass
+    return budget.seconds
+
+
+@pytest.mark.parametrize(("event_mime", "stored", "pdf"), [
+    pytest.param(ABSENT, PDF, True, id="no-mime-stored-pdf"),
+    pytest.param("unknown", PDF, True, id="placeholder-stored-pdf"),
+    pytest.param(DOCX, PDF, False, id="the-event-mime-wins"),
+    pytest.param(ABSENT, DOCX, False, id="stored-docx"),
+    pytest.param(ABSENT, ABSENT, False, id="nothing-stored"),
+])
+async def test_the_handler_grows_the_budget_to_the_resolved_labels(event_mime: object, stored: object, pdf: bool) -> None:
+    seconds = await _budget_after(_payload("Report", "unknown", event_mime), stored)
+    assert seconds == (messaging_env.pdf_record_processing_timeout if pdf else messaging_env.record_processing_timeout)
+
+
+async def test_a_vector_only_reindex_of_a_stored_pdf_gets_the_pdf_budget() -> None:
+    payload = {**_payload("Report", "unknown", ABSENT), "vectorDbOnly": True}
+    assert await _budget_after(payload, PDF, EventTypes.REINDEX_RECORD.value) == messaging_env.pdf_record_processing_timeout
+
+
+# F23g (was test_the_parse_tier_still_follows_the_event_extension, which pinned LIGHT): the parse tier follows a
+# heavy reader, so an event extension `txt` on a stored PDF is parsed by the PDF reader under the heavy tier, as when the
+# event carries both labels.
+@pytest.mark.parametrize("event_mime", [ABSENT, PDF], ids=["no-mime", "carried"])
+async def test_the_parse_tier_follows_a_heavy_reader(event_mime: object) -> None:
+    out = await _read(name="Report.txt", ext="txt", event_mime=event_mime, stored=PDF)
+    assert out["reader"] == "_dispatch_pdf_binary"
+    assert out["tier"] == ParseTier.HEAVY
+
+
+@pytest.mark.parametrize("mime", [
+    "application/vnd.google-apps.document",
+    "application/vnd.google-apps.presentation",
+    "application/vnd.google-apps.spreadsheet",
+])
+async def test_a_google_export_labelled_txt_is_parsed_under_the_heavy_tier(mime: str) -> None:
+    out = await _read(name="Notes.txt", ext="txt", event_mime=mime, stored=mime)
+    assert out["reader"] is not None and out["tier"] == ParseTier.HEAVY, out
+
+
+@pytest.mark.parametrize(("service", "tier"), [(False, ParseTier.LIGHT), (True, ParseTier.HEAVY)], ids=["in-process", "service"])
+async def test_the_tier_follows_the_reader_of_the_pipeline_that_parses(service: bool, tier: ParseTier) -> None:
+    """`csv` + image/png: the in-process dispatch reads it as CSV (light); the parsing service resolves png (heavy)."""
+    out = await _read(name="Chart.csv", ext="csv", event_mime="image/png", stored="image/png", service=service)
+    assert out["tier"] == tier, out
+
+
+async def test_a_light_reader_keeps_the_light_tier() -> None:
+    out = await _read(name="Notes.md", ext="md", event_mime="text/markdown", stored="text/markdown")
+    assert out["tier"] == ParseTier.LIGHT, out
 
 
 # LOW-2: the broker's message is not changed; a redelivery resolves the mime again from the record.

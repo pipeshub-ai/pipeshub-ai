@@ -94,7 +94,7 @@ export const ProjectsFeature = {
       return value;
     } catch (error) {
       logger.warn('Could not read the Projects flag; leaving Projects on', {
-        error: error instanceof Error ? error.message : String(error),
+        error,
       });
       return true;
     }

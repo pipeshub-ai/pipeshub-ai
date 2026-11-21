@@ -238,6 +238,7 @@ class TestFifoLoop:
         with (
             patch.object(consumer, "_IndexingRedisStreamsConsumer__fifo_admission_open", side_effect=admission_open),
             patch.object(consumer, "_drain_pending", new_callable=AsyncMock),
+            patch.object(consumer, "_IndexingRedisStreamsConsumer__wait_for_finish", AsyncMock(return_value=False)),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
             await consumer._consume_loop()

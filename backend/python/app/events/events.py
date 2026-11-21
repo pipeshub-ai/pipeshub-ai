@@ -126,7 +126,7 @@ from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
-from app.services.resource_governor import classify
+from app.services.resource_governor import reader_tier
 from app.services.vector_db.filters import OrgRequired, org_for_filter
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
@@ -2318,13 +2318,21 @@ class EventProcessor:
                 else content_len
             )
             inspected = InspectedFacts()
+            # The reader that runs decides a heavy tier: a PDF labelled txt is parsed by the PDF reader. On the service
+            # pipeline that is the parser the service resolves from these labels, not the in-process one.
+            reader = (
+                file_types.format_tier(file_types.parse_format(mime_type, extension))
+                if self._use_service_pipeline()
+                else file_types.read_tier(dispatch)
+            )
+            parse_tier = reader_tier(extension, mime_type, reader)
             if wants_inspection(extension, mime_type, file_content):
                 # Before the parse slot: the page count and text layer correct the class the record was admitted
                 # under (a size is rarely known), so a 1000-page file never waits among the small ones.
                 yield PipelineEvent(
                     event=IndexingEvent.START_INSPECT,
                     data=PipelineEventData(
-                        record_id=record_id, tier=classify(extension, mime_type), size_bytes=size_bytes
+                        record_id=record_id, tier=parse_tier, size_bytes=size_bytes
                     ),
                 )
                 inspected = await inspect_facts(
@@ -2334,7 +2342,7 @@ class EventProcessor:
                 event=IndexingEvent.START_PARSING,
                 data=PipelineEventData(
                     record_id=record_id,
-                    tier=classify(extension, mime_type),
+                    tier=parse_tier,
                     size_bytes=size_bytes,
                     **(
                         {"pages": inspected.pages, "scanned": inspected.scanned}

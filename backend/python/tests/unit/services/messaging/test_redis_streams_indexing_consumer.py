@@ -3218,11 +3218,13 @@ class TestConsumeLoop:
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
             with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
-                with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                with patch.object(
+                    consumer, "_IndexingRedisStreamsConsumer__wait_for_finish", new_callable=AsyncMock
+                ) as wait_for_finish:
                     await consumer._consume_loop()
 
-        # Backpressure engaged on first iteration -> sleep(0.5)
-        mock_sleep.assert_any_call(0.5)
+        # Backpressure engaged on the first iteration -> it waits for a finish, at most the backpressure wait
+        wait_for_finish.assert_awaited_once_with(indexing_consumer_module._BACKPRESSURE_WAIT_SECONDS)
 
     @pytest.mark.asyncio
     async def test_backpressure_flag_toggles(self, consumer):
@@ -3251,7 +3253,12 @@ class TestConsumeLoop:
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
             with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
-                with patch("asyncio.sleep", new_callable=AsyncMock):
+                with (
+                    patch("asyncio.sleep", new_callable=AsyncMock),
+                    patch.object(
+                        consumer, "_IndexingRedisStreamsConsumer__wait_for_finish", AsyncMock(return_value=False)
+                    ),
+                ):
                     await consumer._consume_loop()
 
     @pytest.mark.asyncio

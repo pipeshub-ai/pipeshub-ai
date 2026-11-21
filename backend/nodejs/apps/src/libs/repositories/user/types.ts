@@ -256,8 +256,8 @@ export interface UserRepository {
 
   // --- writes
   /** Throws `UniqueConstraintError{key}` on a duplicate address or slug. */
-  create(orgId: string, fields: UserFields): Promise<UserDto>;
-  createMany(orgId: string, rows: UserFields[]): Promise<UserDto[]>;
+  create(orgId: string, fields: UserFields, tx?: Tx): Promise<UserDto>;
+  createMany(orgId: string, rows: UserFields[], tx?: Tx): Promise<UserDto[]>;
   /** Writes the given fields on the live account; null when there is none. */
   updateProfile(
     orgId: string,
@@ -272,9 +272,9 @@ export interface UserRepository {
     extra?: { signedOut?: boolean; deletedBy?: string },
   ): Promise<UserDto | null>;
   /** Brings removed accounts at these addresses back; returns them. */
-  restoreByEmails(orgId: string, emails: string[]): Promise<UserDto[]>;
+  restoreByEmails(orgId: string, emails: string[], tx?: Tx): Promise<UserDto[]>;
   /** Makes these people admins (service accounts excluded). */
-  promoteToAdmin(orgId: string, ids: string[]): Promise<void>;
+  promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void>;
   setRole(orgId: string, id: string, role: UserRole): Promise<void>;
   /** Serialises concurrent admin changes in this organisation (inside a transaction). */
   lockOrgAdminChanges(orgId: string, tx: Tx): Promise<void>;
