@@ -443,6 +443,15 @@ class TestRoster:
         result = await self._roster(members=[], connections=[_connection("u1")], users=[_user("u1")])
         assert [(p["userId"], p["status"]) for p in result["people"]] == [("u1", "connected")]
 
+    async def test_a_member_connected_under_another_email_shows_as_that_user_once(self) -> None:
+        # ann@gmail.com in PipesHub connected the Notion account ann@acme.com (source user n-ann).
+        connection = _connection("ann")
+        members = [{"sourceUserId": "n-ann", "name": "Ann", "email": "ann.work@acme.com"}]
+        result = await self._roster(members=members, connections=[connection],
+                                    users=[_user("ann", email="ann@gmail.com")])
+        assert [(p["userId"], p["status"], p["email"]) for p in result["people"]] == [
+            ("ann", "connected", "ann.work@acme.com")]
+
     async def test_the_admin_viewing_it_is_left_out_they_connect_themselves(self) -> None:
         members = [{"email": "admin@acme.com"}, {"email": "u1@acme.com"}]
         result = await self._roster(members=members, connections=[_connection("admin")],
@@ -805,7 +814,7 @@ class TestConnectDropsLinks:
         with patch.object(routes, "verify_token", new=AsyncMock(return_value=NotionIdentity("p1", "u1@acme.com", "ws-1"))), \
                 patch.object(routes, "_config_service", return_value=store), \
                 patch.object(routes, "_request_sync", new=AsyncMock()):
-            await routes._connect(MagicMock(), {"type": "Notion"}, "c1", _user("u1"), "tok", method="token")
+            await routes._connect(MagicMock(), AsyncMock(), {"type": "Notion"}, "c1", _user("u1"), "tok", method="token")
         assert await resolve_link(store, token, now_ms=10**13) is None
         assert await user_access.get_connection(store, "c1", "u1") is not None
         assert await user_access.get_invite(store, "c1", "u1") is None

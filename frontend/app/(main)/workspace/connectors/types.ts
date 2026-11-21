@@ -743,8 +743,8 @@ export interface UserAccessConnection {
   /** When a sync last finished reading everything this account can open; null before the first. */
   lastCompleteListingAt: number | null;
   lastError: string | null;
-  /** `oauth`: signed in with the source; `token`: pasted a token. */
-  method?: 'token' | 'oauth';
+  /** `oauth`: signed in with the source; `token`: pasted a token; `connector`: through the connector's own sign-in, which this person completed. */
+  method?: 'token' | 'oauth' | 'connector';
 }
 
 /** GET /connectors/user-access/mine: a per-user team connector with the caller's own connection. */

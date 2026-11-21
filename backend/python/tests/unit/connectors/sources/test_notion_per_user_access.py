@@ -103,23 +103,17 @@ class TestParseIdentity:
 
 
 class TestCheckIdentity:
-    def test_same_person_and_workspace_passes(self) -> None:
-        check_identity(NotionIdentity("p1", "ANN@acme.com", "ws-1"), pipeshub_email="ann@ACME.com",
-                       connector_workspace_id="ws-1")
+    def test_same_workspace_passes(self) -> None:
+        check_identity(NotionIdentity("p1", "ann@acme.com", "ws-1"), connector_workspace_id="ws-1")
 
     def test_other_workspace_is_refused(self) -> None:
         with pytest.raises(NotionAccessError, match="different Notion workspace"):
-            check_identity(NotionIdentity("p1", "ann@acme.com", "ws-2"), pipeshub_email="ann@acme.com",
-                           connector_workspace_id="ws-1")
+            check_identity(NotionIdentity("p1", "ann@acme.com", "ws-2"), connector_workspace_id="ws-1")
 
-    def test_another_persons_account_is_refused(self) -> None:
-        with pytest.raises(NotionAccessError, match="bob@acme.com"):
-            check_identity(NotionIdentity("p1", "bob@acme.com", "ws-1"), pipeshub_email="ann@acme.com",
-                           connector_workspace_id="ws-1")
-
-    def test_hidden_email_is_refused(self) -> None:
-        with pytest.raises(NotionAccessError, match="email"):
-            check_identity(NotionIdentity("p1", None, None), pipeshub_email="ann@acme.com", connector_workspace_id="ws-1")
+    def test_an_account_under_another_email_or_none_passes(self) -> None:
+        # People try PipesHub under one address and use Notion under another; the route refuses another user's.
+        check_identity(NotionIdentity("p1", "ann@gmail.com", "ws-1"), connector_workspace_id="ws-1")
+        check_identity(NotionIdentity("p1", None, None), connector_workspace_id="ws-1")
 
 
 # ---------------------------------------------------------------- the grant a pass writes
@@ -411,6 +405,7 @@ def _run_setup(connections, users, pass_results) -> tuple:
     connector._prepare_per_user_workspace = AsyncMock()
     connector._load_bot_user_ids = AsyncMock()
     connector._delete_records_nobody_sees = AsyncMock()
+    connector._connect_through_connector_sign_in = AsyncMock()  # tested in TestConnectorSignIn
     connector._run_user_pass = AsyncMock(side_effect=lambda c, u: pass_results[c.user_id])
     connector._update_connection = AsyncMock(return_value=True)
     for user in users.values():
@@ -715,6 +710,26 @@ class TestConnectRoute:
         with pytest.raises(HTTPException) as e:
             await self._connect(AsyncMock(return_value=NotionIdentity("p1", "ann@acme.com", "ws-1")), [other])
         assert e.value.status_code == 409
+
+    async def test_an_account_under_another_users_email_is_a_409(self) -> None:
+        from app.connectors.api import user_access_router as routes
+
+        graph = AsyncMock()
+        graph.get_users_by_emails.return_value = {"bob@acme.com": SimpleNamespace(user_id="u2", is_active=True)}
+        with patch.object(routes, "current_org_id", return_value="org-1"), pytest.raises(HTTPException) as e:
+            await routes._refuse_another_users_account(graph, "Bob@acme.com", "ann@gmail.com")
+        assert e.value.status_code == 409 and "bob@acme.com" in e.value.detail.lower()
+
+    async def test_an_account_under_an_email_nobody_uses_is_accepted(self) -> None:
+        from app.connectors.api import user_access_router as routes
+
+        graph = AsyncMock()
+        graph.get_users_by_emails.return_value = {}
+        with patch.object(routes, "current_org_id", return_value="org-1"):
+            await routes._refuse_another_users_account(graph, "ann@acme.com", "ann@gmail.com")
+            await routes._refuse_another_users_account(graph, None, "ann@gmail.com")
+            await routes._refuse_another_users_account(graph, "ANN@gmail.com", "ann@gmail.com")
+        graph.get_users_by_emails.assert_awaited_once_with(["ann@acme.com"], raise_on_error=True, org_id="org-1")
 
     async def test_a_good_credential_is_saved_and_a_sync_requested_without_echoing_it(self) -> None:
         result, save, sync = await self._connect(AsyncMock(return_value=NotionIdentity("p1", "ann@acme.com", "ws-1")))
@@ -1265,3 +1280,82 @@ class TestDisconnectAndAdminRoutes:
                 else:
                     await routes.remove_connected_user("c1", "u2", request, graph_provider=AsyncMock())
         assert e.value.status_code == 404
+
+
+# ---------------------------------------------------------------- connected through the connector's sign-in
+
+class TestConnectorSignIn:
+    """Whoever signed the connector in with OAuth is connected through it, without signing in again."""
+
+    _ME = {"type": "bot", "bot": {"workspace_id": "ws-1", "owner": {
+        "type": "user", "user": {"id": "n-admin", "person": {"email": "admin@acme.com"}}}}}
+
+    async def _run(self, connections=(), *, auth="OAUTH", me=None, removed=False, authenticator=None) -> tuple:
+        connector = _connector()
+        connector.config_service.get_config.return_value = {"auth": {"authType": auth}}
+        datasource = MagicMock()
+        datasource.retrieve_bot_user = AsyncMock(return_value=SimpleNamespace(
+            success=True, data=SimpleNamespace(json=lambda: me or self._ME)))
+        dep = connector.data_entities_processor
+        dep.get_app_authenticator_user = AsyncMock(
+            return_value=authenticator if authenticator is not None else {"userId": "admin", "email": "admin@pipeshub.com"})
+        dep.get_user_by_user_id.return_value = SimpleNamespace(id="k-old")
+        with patch.object(connector, "_get_fresh_datasource", new=AsyncMock(return_value=datasource)), \
+                patch(f"{_MOD}.list_connections", new=AsyncMock(return_value=list(connections))), \
+                patch(f"{_MOD}.was_removed", new=AsyncMock(return_value=removed)), \
+                patch(f"{_MOD}.delete_connection", new=AsyncMock(return_value=True)) as delete, \
+                patch(f"{_MOD}.save_connection", new=AsyncMock(return_value=True)) as save:
+            await connector._connect_through_connector_sign_in(now=5)
+        return connector, save, delete
+
+    async def test_the_admin_who_signed_in_is_connected_without_a_token_of_their_own(self) -> None:
+        _, save, delete = await self._run()
+        saved = save.await_args.args[2]
+        assert (saved.user_id, saved.email, saved.method, saved.token) == ("admin", "admin@pipeshub.com", "connector", "")
+        assert (saved.source_user_id, saved.source_email, saved.workspace_id) == ("n-admin", "admin@acme.com", "ws-1")
+        delete.assert_not_awaited()
+
+    async def test_nobody_is_connected_through_an_api_token(self) -> None:
+        _, save, _ = await self._run(auth="API_TOKEN")
+        save.assert_not_awaited()
+
+    async def test_not_made_again_after_a_disconnect(self) -> None:
+        _, save, _ = await self._run(removed=True)
+        save.assert_not_awaited()
+
+    async def test_their_own_connection_or_another_users_hold_on_the_account_wins(self) -> None:
+        own = _connection("admin", method="oauth")
+        _, save, _ = await self._run([own])
+        save.assert_not_awaited()
+        other = _connection("u9")
+        other.source_user_id = "n-admin"
+        _, save, _ = await self._run([other])
+        save.assert_not_awaited()
+
+    async def test_dropped_once_the_sign_in_names_someone_else(self) -> None:
+        old = _connection("admin", token="", method="connector")
+        old.source_user_id = "n-admin"
+        connector, save, delete = await self._run([old], authenticator={"userId": "u2", "email": "bob@acme.com"})
+        delete.assert_awaited_once_with(connector.config_service, "notion-1", "admin")
+        connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "k-old")
+        assert save.await_args.args[2].user_id == "u2"
+
+    async def test_dropped_when_the_connector_moves_to_an_api_token(self) -> None:
+        old = _connection("admin", token="", method="connector")
+        old.source_user_id = "n-admin"
+        _, save, delete = await self._run([old], auth="API_TOKEN")
+        delete.assert_awaited_once()
+        save.assert_not_awaited()
+
+    async def test_reads_with_the_connectors_own_client_and_refreshes_it(self) -> None:
+        connector = _connector()
+        connection = _connection("admin", token="", method="connector")
+        connector.config_service.get_config.return_value = {"auth": {"authType": "API_TOKEN", "apiToken": "t"}}
+        with patch.object(connector, "_client_for") as client_for, acting_as(connection):
+            await connector._get_fresh_datasource()
+        client_for.assert_not_called()
+        with patch.object(connector, "_refresh_connector_token", new=AsyncMock(return_value=False)), \
+                patch(f"{_MOD}.refresh_connection", new=AsyncMock()) as user_refresh:
+            # Never revoked for the connector's token: the pass is incomplete instead.
+            assert await connector._refresh_user_token(connection) is None
+        user_refresh.assert_not_awaited()

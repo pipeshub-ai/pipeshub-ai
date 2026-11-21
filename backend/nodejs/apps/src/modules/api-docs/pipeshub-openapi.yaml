@@ -866,8 +866,8 @@ components:
           nullable: true
         method:
           type: string
-          enum: [token, oauth]
-          description: '`token` when the user pasted a token, `oauth` when they signed in with the source.'
+          enum: [token, oauth, connector]
+          description: '`token` when the user pasted a token, `oauth` when they signed in with the source, `connector` when they are connected through the connector''s own sign-in, which they completed.'
     ConnectorUserConnectionStatus:
       type: object
       required: [connected, connection, signInAvailable]

@@ -128,7 +128,6 @@ def _email(user: dict[str, Any]) -> str | None:
 async def verify_token(
     token: str,
     *,
-    pipeshub_email: str,
     connector_id: str,
     config_service: ConfigurationService,
     logger: Logger,
@@ -153,7 +152,7 @@ async def verify_token(
         workspace_id = ((admin_me.data.json() or {}).get("bot") or {}).get("workspace_id") if admin_me.success and admin_me.data else None
         if not workspace_id:
             raise RuntimeError(f"Could not read the connector's Notion workspace: {admin_me.error}")
-        check_identity(identity, pipeshub_email=pipeshub_email, connector_workspace_id=workspace_id)
+        check_identity(identity, connector_workspace_id=workspace_id)
 
         if identity.workspace_id is None:
             # A personal access token names no workspace: the connector's own integration must know the person.
@@ -173,21 +172,13 @@ async def verify_token(
                 logger.warning("Failed to close a Notion client: %s", e)
 
 
-def check_identity(
-    identity: NotionIdentity, *, pipeshub_email: str, connector_workspace_id: str | None
-) -> None:
-    """Refuse a credential for another workspace or another person. A credential whose
-    workspace ``/users/me`` does not name is checked against the workspace by the caller."""
+def check_identity(identity: NotionIdentity, *, connector_workspace_id: str | None) -> None:
+    """Refuse a credential for another workspace. A credential whose workspace ``/users/me`` does not
+    name is checked against the workspace by the caller. The account's email may differ from the
+    person's PipesHub email (people often try PipesHub with another address); the caller refuses an
+    account whose email is another PipesHub user's."""
     if identity.workspace_id and connector_workspace_id and identity.workspace_id != connector_workspace_id:
         raise NotionAccessError("This token belongs to a different Notion workspace than this connector.")
-    if not identity.email:
-        raise NotionAccessError(
-            "Notion did not return the email of this account, so it cannot be matched to you."
-        )
-    if identity.email.casefold() != pipeshub_email.strip().casefold():
-        raise NotionAccessError(
-            f"This token belongs to {identity.email}. Connect the Notion account that uses your PipesHub email."
-        )
 
 
 def has_oauth_app(config: dict[str, Any] | None) -> bool:
