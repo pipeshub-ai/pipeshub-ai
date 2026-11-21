@@ -31,7 +31,12 @@ import {
 } from '../services/conversation/turn/turn-extension';
 import { conversationExtensions } from '../services/conversation/conversation-extensions';
 import { trackRun } from './active-runs';
-import { AGUIEventType, aguiErrorCodeFromPayload, frameAGUI, readRunFrame } from './agui';
+import {
+  AGUIEventType,
+  aguiErrorCodeFromPayload,
+  frameAGUI,
+  readRunFrame,
+} from './agui';
 import { AIRequestRefusedError } from './ai-stream';
 import { ChatStreamRun, logBadFrame, type StreamEnd } from './chat-stream-run';
 import {
@@ -959,7 +964,8 @@ export class TurnStreamPump {
     // Only the root run's RUN_FINISHED and RUN_ERROR end or fail the user's run (`readRunFrame`). One Node
     // cannot read, an empty one included, is logged and not passed on: the run ends on Node's no-answer path.
     const runFrame =
-      eventType === AGUIEventType.RUN_FINISHED || eventType === AGUIEventType.RUN_ERROR
+      eventType === AGUIEventType.RUN_FINISHED ||
+      eventType === AGUIEventType.RUN_ERROR
         ? readRunFrame(eventType, data)
         : undefined;
     if (runFrame?.kind === 'bad') {
