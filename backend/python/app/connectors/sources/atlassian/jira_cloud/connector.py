@@ -2962,13 +2962,19 @@ class JiraConnector(BaseConnector):
 
     def _authenticated_link(self) -> str:
         """``link``, ``unlink`` or ``keep`` the configuring user's link to the connector's own Jira account, after the
-        user and product-access reads. Unknown account, or a row showing it deactivated: unlink. Product access read in
+        user and product-access reads. Account not read this process: keep. A row showing it deactivated: unlink. Product access read in
         full: link exactly when it includes the account (only active members of a product group count), whatever the
         user list shows. Product access unread: a complete user list showing the account active links it; one without
         it unlinks, unless that sync holds the withdrawal of many missing accounts (``absent_accounts_due``), which
         keeps the link as it is; a user list not read in full tells nothing, so the link goes (fail closed)."""
         me, licensed = self._authenticated_jira_account_id, self._licensed_account_ids
-        if not me or me in self._shown_inactive_ids:
+        if not me:
+            # /myself was not read this process (init logs a failed read and goes on): no evidence the account
+            # changed. A User answer names the account by accountId, "which uniquely identifies the user across all
+            # Atlassian products" (User schema, https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-users/);
+            # one without it is no answer either.
+            return "keep"
+        if me in self._shown_inactive_ids:
             return "unlink"
         if licensed is not None:
             return "link" if me in licensed else "unlink"

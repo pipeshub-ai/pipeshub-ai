@@ -504,6 +504,19 @@ class TestConnectorGuards:
         c.users.resolved_email.assert_called_once_with(77)
         c.register_authenticated_source_user.assert_awaited_once_with(linked, "77")
 
+    async def test_an_account_this_run_did_not_bind_leaves_the_link(self) -> None:
+        """GET /user shows no public email and this run's user sync bound no email to the account (a lookup that
+        failed is retried next sync): the email is unknown, not hidden, so no id is passed and the link stays."""
+        c = self._connector(None)
+        c.data_source = MagicMock()
+        c.runtime = MagicMock()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response(SimpleNamespace(email=None, id=77)))
+        c.users = MagicMock()
+        c.users.resolved_email = MagicMock(return_value=None)
+        c.register_authenticated_source_user = AsyncMock()
+        await c._register_authenticated_identity()
+        c.register_authenticated_source_user.assert_not_awaited()
+
 
 async def test_a_code_prune_that_fails_holds_the_checkpoint_back() -> None:
     from app.connectors.sources.github_teams.repos import ReposSync

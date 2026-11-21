@@ -394,6 +394,11 @@ class GitHubTeamsConnector(BaseConnector):
             return
         if isinstance(source_user_id, int):
             email = self.users.resolved_email(source_user_id) or email
+        if not (isinstance(email, str) and email.strip()):
+            # GET /user carries only the public profile email, and this run's user sync may not have bound the
+            # account (a failed lookup is retried next sync): an email not found is unknown, not hidden, so no id
+            # is passed and the link is left as it is.
+            return
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None,
             str(source_user_id) if source_user_id is not None else None,
