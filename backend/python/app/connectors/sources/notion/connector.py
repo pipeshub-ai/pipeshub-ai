@@ -4268,7 +4268,7 @@ class NotionConnector(BaseConnector):
                     # Convert SVG to base64, then to PNG base64
                     svg_base64 = base64.b64encode(image_bytes).decode('utf-8')
                     try:
-                        png_base64 = image_parser.svg_base64_to_png_base64(svg_base64)
+                        png_base64 = await image_parser.svg_base64_to_png_base64_async(svg_base64)
                     except Exception as svg_error:
                         # A missing cairosvg or a malformed SVG: fetching
                         # the same bytes again cannot change the outcome.

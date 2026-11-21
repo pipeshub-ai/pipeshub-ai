@@ -1252,10 +1252,18 @@ def gate_decision(
     if not supported:
         return GateDecision(False, judged, None, "type")
     if decisive is not None and decisive.key in disabled:
-        return GateDecision(False, judged, decisive, "disabled")
+        return GateDecision(False, _reported_as(judged, decisive), decisive, "disabled")
     if limited_as is not None and isinstance(size_bytes, int) and size_bytes > TEXT_LOG_HARD_LIMIT_BYTES:
         return GateDecision(False, judged, decisive, "too_large", limited_as)
     return GateDecision(True, judged, decisive, None, limited_as, route)
+
+
+def _reported_as(judged: object, file_type: FileType) -> str | None:
+    """The extension a type turned off is refused under: the judged one when the type owns it, else
+    the type's own (None for a type no extension names), since another label may have decided it."""
+    if isinstance(judged, str) and normalize_extension(judged) in file_type.extensions:
+        return judged
+    return file_type.extensions[0] if file_type.extensions else None
 
 
 def _limited_as(judged: object, record_name: str | None) -> str | None:

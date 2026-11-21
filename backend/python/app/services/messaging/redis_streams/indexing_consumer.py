@@ -388,8 +388,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._shared_worker = worker
         # Shared with the ParsingClient/DoclingClient/EmbeddingServerEmbeddings
         # instances that this consumer's records flow through — see
-        # app.services.messaging.backpressure. Reading is paused whenever any
-        # of them last saw a 429+Retry-After, instead of pulling more work a
+        # app.services.messaging.backpressure. Reading is paused whenever one
+        # every record calls last saw a 429+Retry-After (a Docling one holds
+        # only Docling's records at dispatch), instead of pulling more work a
         # saturated downstream would just reject again.
         self.backpressure_coordinator = backpressure_coordinator
         self._downstream_backpressure_active = False
@@ -1132,6 +1133,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Whether reads are paused because no record could be admitted (not a downstream pause)."""
         return self._backpressure_active
 
+    def downstream_read_pause(self) -> float:
+        """Seconds every read must still wait out a downstream 429 (see ``consumer_concurrency.downstream_read_pause``)."""
+        return concurrency.downstream_read_pause(self, scoped=self._scheduler is not None)
+
     def admission_explain(self) -> dict[str, Any]:
         """Why this consumer is or is not admitting records (see consumer_concurrency)."""
         return concurrency.admission_explain(self)
@@ -1867,9 +1872,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         await self._clear_retry_tracking(tracking_id)
 
     async def _wait_out_backpressure(self) -> None:
-        """Block while any downstream service has an active 429+Retry-After
-        pause signalled, so this consumer stops pulling new work a saturated
-        parser/embedder/Docling instance would just reject again.
+        """Block while a downstream service has an active 429+Retry-After
+        pause signalled that holds every record, so this consumer stops pulling
+        new work a saturated parser/embedder would just reject again. With the
+        fair scheduler a Docling pause does not stop reads: the dispatch phase
+        holds the records that call Docling (``downstream_read_pause``).
 
         Polls in small increments and re-checks ``self.running`` between
         them, mirroring ``_delay_if_retry_not_ready``, so shutdown interrupts
@@ -1877,20 +1884,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """
         if self.backpressure_coordinator is None:
             return
-        while self.running and self.backpressure_coordinator.is_paused():
+        while self.running and (remaining := self.downstream_read_pause()) > 0.0:
             if not self._downstream_backpressure_active:
                 self._downstream_backpressure_active = True
                 self.logger.warning(
                     "Downstream backpressure from %s: pausing new stream "
                     "reads for %.1fs",
-                    ", ".join(sorted(self.backpressure_coordinator.paused_services)),
-                    self.backpressure_coordinator.pause_remaining(),
+                    ", ".join(concurrency.read_pausing_services(self, scoped=self._scheduler is not None)),
+                    remaining,
                 )
             # Buffered entries stay un-ACKed through a pause of any length;
             # keep their ownership confirmed, or the sweep would read a long
             # pause as a failed refresh and release them.
             await self.__refresh_held_ownership()
-            remaining = self.backpressure_coordinator.pause_remaining()
+            remaining = self.downstream_read_pause()
             await asyncio.sleep(min(_DELAY_POLL_INTERVAL_SECONDS, remaining) if remaining > 0 else _DELAY_POLL_INTERVAL_SECONDS)
         if self._downstream_backpressure_active:
             self._downstream_backpressure_active = False
@@ -3681,32 +3688,32 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._futures_lock:
             self._finishes_seen = self._finishes
         budget = self._dispatch_budget()
+        held = concurrency.held_pools(self)
 
         def can_dispatch(
             item: tuple[str, str, dict[str, str], StreamMessage, float],
         ) -> bool:
             _stream_name, message_id, _fields, parsed, _buffered_at = item
-            # A tier at its ceiling is passed over, not waited on: DRR skips
-            # the leaf without charging it and moves to the entity's other
-            # tier or the next entity.
-            return not self._is_in_flight(message_id, _stream_name) and budget.allows(
-                concurrency.dispatch_tier(self, parsed)
+            # A tier at its ceiling, or a record whose downstream asked for a
+            # pause, is passed over, not waited on: DRR skips the leaf without
+            # charging it and moves to the entity's other tier or the next entity.
+            return (
+                not self._is_in_flight(message_id, _stream_name)
+                and budget.allows(concurrency.dispatch_tier(self, parsed))
+                and not concurrency.held_downstream(self, parsed, held)
             )
 
         while self.running:
             # Re-checked inside the loop, not just once per iteration in
             # _consume_loop: a dispatch pass can start many records, and a
-            # downstream 429 arriving part-way through must stop the rest of
-            # them rather than being honoured only on the next poll. Mirrors
-            # the Kafka dispatch phase.
+            # downstream 429 arriving part-way through must stop (or, for a
+            # service one tier calls, hold) the rest of them rather than being
+            # honoured only on the next poll. Mirrors the Kafka dispatch phase.
             budget = self._dispatch_budget()
-            downstream_paused = (
-                self.backpressure_coordinator is not None
-                and self.backpressure_coordinator.is_paused()
-            )
+            held = concurrency.held_pools(self)
             if (
                 budget.blocked
-                or downstream_paused
+                or self.downstream_read_pause() > 0.0
                 or concurrency.index_gates_saturated(self)
             ):
                 break

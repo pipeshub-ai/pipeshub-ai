@@ -4,9 +4,11 @@ message, shared by `RespondPipeline` and `stream_bridge.py`."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from app.agents.agent_loop.error_classification import classify_error
+from app.agents.agent_loop.error_classification import classify_error, run_error_text
 
 
 @pytest.mark.parametrize(
@@ -305,3 +307,23 @@ def test_classify_exception_classifies_other_exceptions_by_text() -> None:
     from app.agents.agent_loop.error_classification import classify_exception
 
     assert classify_exception(RuntimeError("Error code: 429 - rate limit"))[0] == "rate_limit"
+
+
+class TestRunErrorText:
+    """What the user's answer is classified from: the raw text an `AgentResult` keeps, else `error` (a duck-typed
+    result, like the stubs the chat-stream e2e tests and older callers pass, keeps none)."""
+
+    def test_an_agent_result_gives_its_raw_text(self) -> None:
+        from app.agent_loop_lib.core.types import AgentResult, Goal
+
+        result = AgentResult(goal=Goal(description="q"), success=False, error="LLM call failed: rate_limited (X, HTTP 429)")
+        assert run_error_text(result.with_error_detail("LLM call failed: Error code: 429")) == "LLM call failed: Error code: 429"
+        assert run_error_text(result.with_error_detail(None)) == "LLM call failed: rate_limited (X, HTTP 429)"
+
+    @pytest.mark.parametrize(("result", "expected"), [
+        (SimpleNamespace(success=True, error=None), None),
+        (SimpleNamespace(success=False, error="tool exploded"), "tool exploded"),
+        (SimpleNamespace(success=True), None),
+    ])
+    def test_a_result_without_raw_text_gives_its_error(self, result: object, expected: str | None) -> None:
+        assert run_error_text(result) == expected

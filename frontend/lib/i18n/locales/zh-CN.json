@@ -2823,6 +2823,92 @@
           "pipeshub_code_entry_points": "列出执行进入仓库的位置，例如路由、命令行工具、任务和钩子。是阅读陌生代码的起点。",
           "pipeshub_entities": "在工作区的知识图谱中查找人员、团队、主题、项目、文件夹、客户和文档标题，列出与其中某一项关联的记录，以及与其一同被提及的人员、公司或产品。查找和列出在实体完成索引后提供；一同提及的列表还需要命名实体提取。OAuth 应用或访问令牌还需要 semantic:read 或 semantic:write 权限范围。",
           "pipeshub_find_records": "按记录属于谁或提及了什么来列出记录，而不是按其文字：分配给某人或由其创建、撰写或拥有的记录，提及金额、日期、数量或百分比的记录，以及记录中提到指定人员、公司或产品的段落。金额和日期需要命名实体提取，段落仅在部署同时开启实体搜索时提供。OAuth 应用或访问令牌还需要 semantic:read 或 semantic:write 权限范围。"
+        },
+        "count": "提供 {{offered}}/{{total}} 个",
+        "searchPlaceholder": "搜索工具、参数或权限范围",
+        "searchLabel": "搜索工具",
+        "filterLabel": "显示",
+        "filters": {
+          "all": "全部",
+          "read": "只读",
+          "writes": "写入或更改数据",
+          "off": "已关闭"
+        },
+        "expandAll": "全部展开",
+        "collapseAll": "全部收起",
+        "noMatch": "没有与此搜索匹配的工具。",
+        "groupCount": "已开启 {{offered}}/{{total}}",
+        "groupSwitch": "{{group}}中的所有工具",
+        "showDetails": "显示 {{tool}} 的详情",
+        "hideDetails": "隐藏 {{tool}} 的详情",
+        "groups": {
+          "read": {
+            "label": "查找和阅读",
+            "description": "搜索、阅读和下载用户可访问的内容。"
+          },
+          "people": {
+            "label": "人员和实体",
+            "description": "工作区的用户和群组，以及其知识图谱中的人员、项目、主题和数值。"
+          },
+          "chat": {
+            "label": "聊天和智能体",
+            "description": "向 PipesHub 的助手或工作区的某个智能体提问。"
+          },
+          "add": {
+            "label": "添加内容",
+            "description": "创建集合、上传文档、添加网站和连接来源。"
+          },
+          "viewer": {
+            "label": "引用查看器",
+            "description": "在能够显示它的客户端中展示回答背后的来源。"
+          },
+          "code": {
+            "label": "代码",
+            "description": "浏览已索引的代码仓库。",
+            "availability": "仅提供给可读取已索引代码仓库的用户。"
+          },
+          "other": {
+            "label": "其他",
+            "description": "此版本页面尚不认识的工具。"
+          }
+        },
+        "kinds": {
+          "readOnly": "只读",
+          "changes": "可更改数据",
+          "openWorld": "会访问 PipesHub 之外"
+        },
+        "blocked": {
+          "writesOff": "在不允许写入工具期间关闭。",
+          "chatOff": "在与 PipesHub 聊天关闭期间关闭。"
+        },
+        "details": {
+          "scopes": "所需的 OAuth 权限范围",
+          "noScopes": "无：它不调用 PipesHub 中的任何内容。",
+          "availability": "何时提供",
+          "arguments": "参数 · {{n}}",
+          "noArguments": "不接受参数。",
+          "columns": {
+            "name": "名称",
+            "type": "类型",
+            "description": "说明"
+          },
+          "required": "必填",
+          "oneOf": "取值之一：{{values}}",
+          "modelText": "AI 看到的内容",
+          "hideModelText": "隐藏 AI 看到的内容",
+          "modelTextHint": "AI 模型在选择此工具前读取的说明。"
+        },
+        "availability": {
+          "default": "开启时始终提供。",
+          "pipeshub_chat": "开启时始终提供。仅在允许写入工具时运行已连接的操作。",
+          "pipeshub_agents": "仅在与 PipesHub 聊天开启时提供。",
+          "pipeshub_create_collection": "仅在允许写入工具时提供。",
+          "pipeshub_upload": "仅在允许写入工具时提供。",
+          "pipeshub_add_web_source": "仅在允许写入工具时提供。",
+          "pipeshub_show_citations": "仅提供给能显示引用查看器的客户端，例如 Claude。",
+          "pipeshub_preview_record": "仅提供给引用查看器，从不提供给 AI 模型。",
+          "pipeshub_entities": "实体完成索引后，提供查找实体和列出其记录。一同提及的列表还需要命名实体提取。",
+          "pipeshub_find_records": "某人的记录始终提供。金额和日期需要命名实体提取，提到人员或公司的段落还需要部署开启实体搜索。"
         }
       },
       "appliesNote": "更改会在几秒内应用于新的 MCP 请求。",
@@ -2831,6 +2917,45 @@
         "saveSuccess": "MCP 访问设置已保存",
         "saveError": "无法保存 MCP 访问设置",
         "saveErrorDescription": "请检查网络连接后重试。"
+      },
+      "status": {
+        "on": "已开启 · 提供 {{offered}}/{{total}} 个工具",
+        "off": "已关闭 · AI 客户端无法连接"
+      },
+      "connect": {
+        "title": "连接 AI 客户端",
+        "description": "客户端连接到此端点，每位用户使用自己的 PipesHub 账号登录。也可以使用个人访问令牌。",
+        "endpointLabel": "MCP 端点",
+        "copy": "复制",
+        "copied": "已复制",
+        "copyEndpoint": "复制 MCP 端点",
+        "copySnippet": "复制配置",
+        "clientsLabel": "AI 客户端",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "在 Claude 中打开“自定义 › 连接器”，选择 +，然后选择“添加自定义连接器”。粘贴上面的端点，然后选择“连接”并登录 PipesHub。如果是 Team 或 Enterprise 套餐，需先由所有者在组织设置中添加该连接器。",
+            "tip": "Claude 从 Anthropic 的云端连接，而不是从你的电脑连接，因此端点必须能从互联网访问。localhost 或私有网络地址将无法使用。"
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "在 chatgpt.com 上打开“插件”，选择 +，然后选择“添加自定义 MCP 服务器”。将上面的端点粘贴为服务器 URL，选择 OAuth，接受警告并选择“创建为插件”，然后登录 PipesHub。在 Business、Enterprise 或 Edu 工作区中，需要管理员允许自定义 MCP 服务器。",
+            "tip": "ChatGPT 从 OpenAI 的服务器连接，而不是从你的电脑连接，因此端点必须能从互联网访问。localhost 或私有网络地址将无法使用。"
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "将服务器添加到 ~/.cursor/mcp.json，或项目中的 .cursor/mcp.json。Cursor 首次使用工具时会要求你登录。"
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "将服务器添加到 .vscode/mcp.json，然后从 MCP 服务器列表中启动它并登录。"
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "在终端中运行以下命令，然后在 Claude Code 中运行 /mcp 登录。",
+            "tip": "如果只问代码相关的问题，请在端点后加上 ?tools=code：客户端将只获得代码工具。"
+          }
+        }
       }
     },
     "labs": {

@@ -137,7 +137,8 @@ async def check_record_access_or_503(
 ) -> dict[str, Any] | None:
     """The record's access details, or None when the user may not open it; a failed read is a 503.
 
-    Like its siblings it answers every exception with 503, a bug of ours included; the cause is kept for the request log.
+    Like its siblings it answers every exception with 503, a bug of ours included; the cause is kept, text-hidden, for the
+    request log.
     """
     try:
         return await graph_provider.check_record_access_with_details(user_id, org_id, record_id)

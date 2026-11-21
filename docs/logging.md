@@ -196,6 +196,10 @@ except Exception as e:
   `None` or lower, else `log_event` at the unit's level with the error fields (see "Tool calls and MCP").
 - A lifecycle `*.end` line that must stay at INFO when the work failed uses `log_event(..., level=level_for(cls), error_class=cls,
   outcome="failure")`. `outcome` is `success`, `failure`, `partial` or `skipped` (cancellation is `failure` with `error_class=cancelled`).
+- Outside the logs the same rule holds. A model's or a driver's error text never goes into a client frame, a tool result, a run's
+  `AgentResult.error`, the timeline or a trace: write `failure_reason(exc)` instead (`bad_request: content_filter
+  (BadRequestError, HTTP 400)`: class, the provider's code as `provider_code(exc)` reads it, the innermost type, the status).
+  The raw text a user-facing classifier needs is `AgentResult.error_detail`, a private attribute no dump carries.
 - `app.agents.agent_loop.error_classification` also has a `classify_error` (user-facing text). Where both are in scope, import this
   module qualified, as above.
 
@@ -750,6 +754,11 @@ which every Postgres graph provider runs through) write one record per call that
   `error_class.record_exception(record)`. A message that embeds the error's text is not covered: `traceback.format_exc()`
   (log with `exc_info=True` instead), `%s` of the error, and asyncio's "Task exception was never retrieved", whose message holds
   the task's `repr` with the exception's text.
+- **A PostgreSQL connection the pool could not open writes no record**: no statement exists yet. Its error is stamped text-hidden
+  all the same: `ConnectionLost("cannot connect")` for an OS error, and the asyncpg server error itself otherwise (28P01 names the
+  database user, 57P03, 53300). Diagnose from `cause_type`: `ConnectionRefusedError` (the host answered, the port is closed),
+  `gaierror` (DNS), `OSError` (no route), `InvalidPasswordError`, `CannotConnectNowError`, `TooManyConnectionsError`. The
+  configured DSN names the host. What is lost is a plain `OSError`'s errno and which host of a multi-host DSN failed.
 - **Classes.** Only our bugs and our configuration are ERROR classes. Conflicts and lost races (ArangoDB 1200, 1210, 29, 1654,
   1655; Neo4j constraint, deadlock, entity lost to a delete; Postgres 23xxx, 40001, 40P01) are `conflict`; ArangoDB 18 and 1500,
   Neo4j transaction timeouts and Postgres 57014/55P03 are `timeout`; Postgres 22xxx, 54xxx, 23502 and 23514, and Neo4j data
@@ -765,7 +774,9 @@ failure, without the error's text (`include_error_text=False`): the graph's text
 record content. Like any `log_failure` line it is DEBUG when the same exception, or its cause, was already logged at its level or
 higher, so at a WARNING threshold a handled failure can leave no event. The user is the bound `user_id`; the graph key is never
 logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. When the batch access read
-fails, `check_access` first logs a `check_access failed …` ERROR with only the counts and the error's class. The
+fails and no graph client recorded it (no `db.query.failed` for it or for an exception it was raised `from`: a PostgreSQL
+connection the pool could not open, or our own bug), `check_access` first logs a `check_access failed …` line with only the
+counts and the error's class name, at that class's level (WARNING for `unavailable`, ERROR for `internal`). The
 `PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause; its chain
 is always text-hidden, so an `exc_info` record of it prints each exception as `Type: <message omitted>`.
 
