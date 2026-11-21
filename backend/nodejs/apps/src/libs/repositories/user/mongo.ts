@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import mongoose from 'mongoose';
 import { Users } from '../../../modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../modules/user_management/schema/userGroup.schema';
@@ -5,9 +6,12 @@ import { Org } from '../../../modules/user_management/schema/org.schema';
 import { UserCredentials } from '../../../modules/auth/schema/userCredentials.schema';
 import { escapeRegExp } from '../../../utils/escape-regexp';
 import { mapMongoError, sessionOf } from '../mongo';
+import { ServiceUnavailableError } from '../../errors/http.errors';
+import { Logger } from '../../services/logger.service';
 import { toPlain } from '../plain';
 import type { Tx } from '../uow';
 import type {
+  AdminLease,
   DirectoryQuery,
   MemberSummaryDto,
   RestoreServiceAccountInput,
@@ -37,6 +41,115 @@ const dto = (row: unknown): UserDto => toPlain<UserDto>(row);
  * existed have no value there at all.
  */
 const NOT_A_SERVICE_ACCOUNT = { kind: { $ne: 'service' } } as const;
+
+/**
+ * How long a standalone-Mongo admin-role lease lasts, and how long a change waits for
+ * a held one before answering busy. Read at call time, so tests can shorten them.
+ */
+export const adminLeaseTiming = { leaseMs: 30_000, waitMs: 5_000 };
+
+const ADMIN_LEASE_BUSY_MESSAGE =
+  'Another administrator change for this organisation is in progress. Try again in a moment.';
+
+/** Takes the lease when it is free or expired; expiry is judged by the server's clock. */
+const tryTakeAdminLease = async (
+  orgId: string,
+  holder: string,
+): Promise<boolean> =>
+  !!(await Org.findOneAndUpdate(
+    // A missing `until` sorts below any date, so a free lease matches too.
+    {
+      _id: orgId,
+      isDeleted: { $ne: true },
+      $expr: { $lt: ['$adminRoleLease.until', '$$NOW'] },
+    },
+    [
+      {
+        $set: {
+          adminRoleLease: {
+            holder,
+            until: { $add: ['$$NOW', adminLeaseTiming.leaseMs] },
+          },
+        },
+      },
+    ],
+    { projection: { _id: 1 }, lean: true, updatePipeline: true },
+  ));
+
+/** True once taken; false when the organisation is gone (nothing left to serialise). */
+const takeAdminLease = async (
+  orgId: string,
+  holder: string,
+): Promise<boolean> => {
+  const deadline = Date.now() + adminLeaseTiming.waitMs;
+  let pauseMs = 25;
+  for (;;) {
+    if (await tryTakeAdminLease(orgId, holder)) return true;
+    if (!(await Org.exists({ _id: orgId, isDeleted: { $ne: true } }))) {
+      return false;
+    }
+    if (Date.now() >= deadline) {
+      throw new ServiceUnavailableError(ADMIN_LEASE_BUSY_MESSAGE, {
+        retryAfter: '5',
+      });
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, pauseMs * (0.8 + Math.random() * 0.4)),
+    );
+    pauseMs = Math.min(pauseMs * 2, 200);
+  }
+};
+
+/** True, and renewed for a full term, while `holder` still holds the lease by the server's clock. */
+const renewAdminLease = async (
+  orgId: string,
+  holder: string,
+): Promise<boolean> =>
+  !!(await Org.findOneAndUpdate(
+    {
+      _id: orgId,
+      'adminRoleLease.holder': holder,
+      $expr: { $gt: ['$adminRoleLease.until', '$$NOW'] },
+    },
+    [
+      {
+        $set: {
+          'adminRoleLease.until': {
+            $add: ['$$NOW', adminLeaseTiming.leaseMs],
+          },
+        },
+      },
+    ],
+    { projection: { _id: 1 }, lean: true, updatePipeline: true },
+  ));
+
+/** Gives back only our own lease; a lease that expired under us was the overrun to report. */
+const releaseAdminLease = async (
+  orgId: string,
+  holder: string,
+): Promise<void> => {
+  try {
+    const { matchedCount } = await Org.updateOne(
+      { _id: orgId, 'adminRoleLease.holder': holder },
+      { $unset: { adminRoleLease: 1 } },
+    );
+    if (matchedCount === 0) {
+      Logger.getInstance().warn(
+        'Admin-role lease expired before the change finished; another admin change may have overlapped it',
+        { orgId },
+      );
+    }
+  } catch (error) {
+    // The change itself is done or failed already; an unreleased lease expires on its own.
+    Logger.getInstance().warn(
+      'Admin-role lease could not be released; it will expire',
+      {
+        orgId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
+};
 
 export class MongoUserRepository implements UserRepository {
   async getLive(orgId: string, id: string): Promise<UserDto | null> {
@@ -711,6 +824,23 @@ export class MongoUserRepository implements UserRepository {
       { $set: { adminRoleGuardAt: new Date() } },
       { session: sessionOf(tx) },
     );
+  }
+
+  async withAdminLease<T>(
+    orgId: string,
+    fn: (lease: AdminLease) => Promise<T>,
+  ): Promise<T> {
+    const holder = randomUUID();
+    const held = await takeAdminLease(orgId, holder);
+    // An organisation that is gone has no admins left to protect.
+    const lease: AdminLease = {
+      confirm: async () => !held || renewAdminLease(orgId, holder),
+    };
+    try {
+      return await fn(lease);
+    } finally {
+      if (held) await releaseAdminLease(orgId, holder);
+    }
   }
 
   async deleteById(id: string): Promise<void> {

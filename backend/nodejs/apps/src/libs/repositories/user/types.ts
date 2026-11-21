@@ -125,6 +125,15 @@ export interface RestoreServiceAccountInput {
   role: UserRole;
 }
 
+/**
+ * The admin-role lease a `withAdminLease` callback runs under. Nothing stops a holder
+ * whose lease expired, so a write that removes an admin confirms the lease first.
+ */
+export interface AdminLease {
+  /** True, and renewed for a full term, while the lease is still this holder's. */
+  confirm(): Promise<boolean>;
+}
+
 export interface UserRepository {
   // --- single account
   /** The live account in this organisation. */
@@ -278,6 +287,16 @@ export interface UserRepository {
   setRole(orgId: string, id: string, role: UserRole): Promise<void>;
   /** Serialises concurrent admin changes in this organisation (inside a transaction). */
   lockOrgAdminChanges(orgId: string, tx: Tx): Promise<void>;
+  /**
+   * Runs `fn` while holding this organisation's admin-role lease, for stores whose
+   * units of work are not transactions (a standalone MongoDB), where
+   * `lockOrgAdminChanges` cannot serialise anything. Not re-entrant: a nested call
+   * for the same organisation waits for itself and then fails as busy.
+   */
+  withAdminLease<T>(
+    orgId: string,
+    fn: (lease: AdminLease) => Promise<T>,
+  ): Promise<T>;
   /** Hard delete, to undo a create that did not finish. */
   deleteById(id: string): Promise<void>;
   /** Hard delete of a removed account (sample accounts); false when it was brought back meanwhile. */

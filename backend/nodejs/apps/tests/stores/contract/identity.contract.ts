@@ -5,6 +5,8 @@
  * a way to make an organisation row. Each scenario uses its own organisation(s)
  * so tests do not depend on each other.
  */
+import { adminLeaseTiming } from '../../../src/libs/repositories/user/mongo';
+import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors';
 import { expect } from 'chai';
 import { UniqueConstraintError } from '../../../src/libs/repositories/errors';
 import type { ScopedUnitOfWork } from './unit-of-work-scope';
@@ -30,6 +32,8 @@ export interface IdentityFixture {
   uow: ScopedUnitOfWork;
   /** True when a failed run rolls back (replica set). */
   transactional: boolean;
+  /** True when the store serves the admin-role lease (MongoDB); PostgreSQL refuses it. */
+  adminLease?: boolean;
   /** Makes an organisation row and returns its id. */
   newOrg(): Promise<string>;
   /** A well-formed id nothing refers to. */
@@ -925,6 +929,35 @@ export function describeIdentityContract(fx: IdentityFixture): void {
           ? { restored: false, created: 0, promoted: false }
           : { restored: true, created: 2, promoted: true },
       );
+    });
+
+    it('withAdminLease: one holder per organisation on MongoDB, refused by PostgreSQL', async () => {
+      const org = await fx.newOrg();
+      if (!fx.adminLease) {
+        let refused: unknown;
+        try { await users.withAdminLease(org, async () => 'ran'); } catch (e) { refused = e; }
+        expect((refused as Error)?.message).to.match(/standalone MongoDB/);
+        return;
+      }
+      const other = await fx.newOrg();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let entered!: () => void;
+      const inside = new Promise<void>((resolve) => { entered = resolve; });
+      const first = users.withAdminLease(org, async () => { entered(); await held; return 'first'; });
+      await inside;
+      // Another organisation is not held up; the same one is refused once the wait runs out.
+      expect(await users.withAdminLease(other, async () => 'other')).to.equal('other');
+      const saved = { ...adminLeaseTiming };
+      adminLeaseTiming.waitMs = 50;
+      let busy: unknown;
+      try { await users.withAdminLease(org, async () => 'second'); } catch (e) { busy = e; } finally { Object.assign(adminLeaseTiming, saved); }
+      expect(busy).to.be.instanceOf(ServiceUnavailableError);
+      expect((busy as ServiceUnavailableError).metadata?.retryAfter).to.equal('5');
+      release();
+      expect(await first).to.equal('first');
+      // Released: the next holder gets it at once.
+      expect(await users.withAdminLease(org, async () => 'third')).to.equal('third');
     });
 
     it('listDirectory: search, service accounts, hasLoggedIn, paging and sort by name', async () => {

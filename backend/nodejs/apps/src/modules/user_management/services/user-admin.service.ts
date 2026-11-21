@@ -1,4 +1,8 @@
-import { BadRequestError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  ServiceUnavailableError,
+} from '../../../libs/errors/http.errors';
+import { Logger } from '../../../libs/services/logger.service';
 import { isValidId } from '../../../libs/repositories/ids';
 import {
   createUnitOfWork,
@@ -18,6 +22,9 @@ const LAST_ADMIN_DEMOTION_MESSAGE =
   'Cannot demote the last admin. Promote another user to admin first.';
 
 export const MAX_ORG_ADMINS = 5;
+
+const ADMIN_LEASE_LOST_MESSAGE =
+  'This administrator change took too long and was not made. Try again.';
 
 export const ADMIN_ACCESS_REQUIRED_MESSAGE =
   'You need admin access to do this. Ask an admin in your organisation.';
@@ -164,7 +171,10 @@ export const assertCanPromoteAdmin = async (
 /**
  * Persist a user update that may demote an admin.
  * - Replica set: lock the org's admin changes + check + save in one txn.
- * - Non-RS: check, save, then verify; restore admin if the org was left with zero.
+ * - Non-RS: under the org's admin-role lease, check, confirm the lease, save,
+ *   then verify; restore admin if the org was left with zero. A demotion that
+ *   outlived its lease is not made: its check may have counted another change's
+ *   provisional admin. Restoring adds an admin, so it never needs the lease.
  */
 export const saveUserEnsuringOrgRetainsAdmin = async (
   orgId: string,
@@ -176,16 +186,22 @@ export const saveUserEnsuringOrgRetainsAdmin = async (
   let saved: UserDto | null = null;
 
   if (!unitsAreAtomic(rsAvailable)) {
-    await assertCanDemoteAdmin(orgId);
-    saved = await users.updateProfile(orgId, userId, fields);
-    const adminCount = await users.countActiveAdmins(orgId);
-    if (adminCount === 0) {
-      await users.setRole(orgId, userId, 'admin');
-      throw userRefusal(
-        new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE),
-        'last_admin',
-      );
-    }
+    saved = await users.withAdminLease(orgId, async (lease) => {
+      await assertCanDemoteAdmin(orgId);
+      if (!(await lease.confirm())) {
+        throw new ServiceUnavailableError(ADMIN_LEASE_LOST_MESSAGE);
+      }
+      const demoted = await users.updateProfile(orgId, userId, fields);
+      const adminCount = await users.countActiveAdmins(orgId);
+      if (adminCount === 0) {
+        await users.setRole(orgId, userId, 'admin');
+        throw userRefusal(
+          new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE),
+          'last_admin',
+        );
+      }
+      return demoted;
+    });
   } else {
     await createUnitOfWork(true).run(async (tx) => {
       await users.lockOrgAdminChanges(orgId, tx);
@@ -202,8 +218,12 @@ export const saveUserEnsuringOrgRetainsAdmin = async (
  * - Replica set / PostgreSQL: lock the org's admin changes, write, then count inside
  *   the same transaction; over the cap the transaction rolls back. Counting after
  *   the write makes the check exact however many admins the write grants.
- * - Non-RS: check, write, re-count, and `undo` the write if the org went over or
- *   the re-count failed.
+ * - Non-RS: under the org's admin-role lease, check, write, re-count, and `undo`
+ *   the write if the org went over or the re-count failed. Without the lease, a
+ *   demotion could pass because this write's admin exists, and the undo would then
+ *   leave the org with none. So the undo runs only once the lease is confirmed; a
+ *   write that outlived its lease stays (possibly over the cap, which an admin can
+ *   fix; an org with no admin cannot be fixed from the app).
  * The non-RS pre-check assumes one new admin, so a write that grants none must
  * not come through here.
  */
@@ -218,21 +238,34 @@ export const writeEnsuringAdminCap = async <T>(
     userRefusal(new BadRequestError(MAX_ORG_ADMINS_MESSAGE), 'admin_limit');
 
   if (!unitsAreAtomic(rsAvailable)) {
-    await assertCanPromoteAdmin(orgId);
-    const saved = await write();
-    let adminCount: number;
-    try {
-      adminCount = await users.countActiveAdmins(orgId);
-    } catch (error) {
-      // Unchecked against the cap, the write must not stay.
-      await undo(saved);
-      throw error;
-    }
-    if (adminCount > MAX_ORG_ADMINS) {
-      await undo(saved);
-      throw overTheCap();
-    }
-    return saved;
+    return users.withAdminLease(orgId, async (lease) => {
+      await assertCanPromoteAdmin(orgId);
+      const saved = await write();
+      /** False when the lease was lost: another change may count this admin, so it stays. */
+      const undone = async (): Promise<boolean> => {
+        if (await lease.confirm()) {
+          await undo(saved);
+          return true;
+        }
+        Logger.getInstance().warn(
+          'Admin-role lease lost before an admin grant could be taken back; the grant stays, possibly over the admin limit',
+          { orgId },
+        );
+        return false;
+      };
+      let adminCount: number;
+      try {
+        adminCount = await users.countActiveAdmins(orgId);
+      } catch (error) {
+        // Unchecked against the cap, the write must not stay.
+        if (await undone()) throw error;
+        return saved;
+      }
+      if (adminCount > MAX_ORG_ADMINS && (await undone())) {
+        throw overTheCap();
+      }
+      return saved;
+    });
   }
   return createUnitOfWork(true).run(async (tx) => {
     await users.lockOrgAdminChanges(orgId, tx);

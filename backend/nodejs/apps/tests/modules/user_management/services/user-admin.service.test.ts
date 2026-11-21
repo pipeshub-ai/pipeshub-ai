@@ -21,6 +21,9 @@ import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { refusalReason } from '../../../../src/libs/services/audit';
 import * as userRepo from '../../../../src/libs/repositories/user';
+import { MongoUserRepository } from '../../../../src/libs/repositories/user/mongo';
+import { ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
+import { Logger } from '../../../../src/libs/services/logger.service';
 
 function stubUsersFindOne(role: 'admin' | 'member' | null | undefined) {
   const doc =
@@ -64,6 +67,14 @@ function expectProjectionCarriesKind(select: sinon.SinonStub): void {
 describe('user-admin.service', () => {
   const userId = new mongoose.Types.ObjectId().toString();
   const orgId = new mongoose.Types.ObjectId().toString();
+  /** What the lease's confirm answers: false once it expired under the change. */
+  let leaseHeld = true;
+
+  beforeEach(() => {
+    // The model-stubbed cases below exercise the checks; the lease has its own tests.
+    leaseHeld = true;
+    sinon.stub(MongoUserRepository.prototype, 'withAdminLease').callsFake((_orgId, fn) => fn({ confirm: async () => leaseHeld }));
+  });
 
   afterEach(() => {
     sinon.restore();
@@ -440,6 +451,23 @@ describe('user-admin.service', () => {
       expect(updateStub.firstCall.args[0]).to.deep.include({ _id: userId });
     });
 
+    it('non-RS, the lease expired under the check: 503, and the admin is not demoted', async () => {
+      leaseHeld = false;
+      const save = sinon.stub().resolves();
+      sinon.stub(Users, 'findOne').resolves({ _id: userId, orgId, role: 'member', save } as any);
+      sinon.stub(Users, 'countDocuments').resolves(2);
+
+      let error: unknown;
+      try {
+        await saveUserEnsuringOrgRetainsAdmin(orgId, userId, {}, false);
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error).to.be.instanceOf(ServiceUnavailableError);
+      expect(save.called).to.equal(false);
+    });
+
     it('touches Org then checks then saves inside a transaction when RS is available', async () => {
       const save = sinon.stub().resolves();
       const user = {
@@ -641,6 +669,11 @@ describe('user-admin.service', () => {
         lockOrgAdminChanges: sinon.stub().callsFake(async (_o: string, tx: unknown) => { calls.push('lock'); txs.lock = tx; }),
         create: sinon.stub().callsFake(async (_o: string, _f: unknown, tx?: unknown) => { calls.push('create'); txs.create = tx; return created; }),
         deleteById: sinon.stub().callsFake(async () => { calls.push('delete'); }),
+        withAdminLease: sinon.stub().callsFake(async (_o: string, fn: (lease: unknown) => Promise<unknown>) => {
+          calls.push('lease');
+          const lease = { confirm: async () => { calls.push('confirm'); return leaseHeld; } };
+          try { return await fn(lease); } finally { calls.push('release'); }
+        }),
         ...overrides,
       };
       sinon.stub(userRepo, 'getUserRepository').returns(repo as any);
@@ -664,7 +697,7 @@ describe('user-admin.service', () => {
     it('non-RS, under the cap: check, create, re-count; nothing undone', async () => {
       const repo = stubRepo([4, 5]);
       expect(await createUserEnsuringAdminCap(orgId, fields, false)).to.equal(created);
-      expect(calls).to.deep.equal(['count', 'create', 'count']);
+      expect(calls).to.deep.equal(['lease', 'count', 'create', 'count', 'release']);
       expect(repo.create.firstCall.args.slice(0, 2)).to.deep.equal([orgId, fields]);
     });
 
@@ -673,14 +706,14 @@ describe('user-admin.service', () => {
       const error = await refusal(() => createUserEnsuringAdminCap(orgId, fields, false));
       expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);
       expect(refusalReason(error)).to.equal('admin_limit');
-      expect(calls).to.deep.equal(['count']);
+      expect(calls).to.deep.equal(['lease', 'count', 'release']);
     });
 
     it('non-RS, over the cap after the write: the new account is hard-deleted, then admin_limit', async () => {
       const repo = stubRepo([4, 6]);
       const error = await refusal(() => createUserEnsuringAdminCap(orgId, fields, false));
       expect(refusalReason(error)).to.equal('admin_limit');
-      expect(calls).to.deep.equal(['count', 'create', 'count', 'delete']);
+      expect(calls).to.deep.equal(['lease', 'count', 'create', 'count', 'confirm', 'delete', 'release']);
       expect(repo.deleteById.firstCall.args).to.deep.equal([userId]);
     });
 
@@ -695,13 +728,38 @@ describe('user-admin.service', () => {
       const repo = stubRepo([], {
         countActiveAdmins: sinon.stub().callsFake(async () => {
           calls.push('count');
-          if (calls.length > 1) throw countDown;
+          if (calls.filter((c) => c === 'count').length > 1) throw countDown;
           return 4;
         }),
       });
       expect(await refusal(() => createUserEnsuringAdminCap(orgId, fields, false))).to.equal(countDown);
-      expect(calls).to.deep.equal(['count', 'create', 'count', 'delete']);
+      expect(calls).to.deep.equal(['lease', 'count', 'create', 'count', 'confirm', 'delete', 'release']);
       expect(repo.deleteById.firstCall.args).to.deep.equal([userId]);
+    });
+
+    it('non-RS, over the cap but the lease was lost: the account stays (no admin taken back), one WARN with orgId', async () => {
+      leaseHeld = false;
+      const warn = sinon.spy(Logger.getInstance(), 'warn');
+      const repo = stubRepo([4, 6]);
+      expect(await createUserEnsuringAdminCap(orgId, fields, false)).to.equal(created);
+      expect(calls).to.deep.equal(['lease', 'count', 'create', 'count', 'confirm', 'release']);
+      expect(repo.deleteById.called).to.equal(false);
+      expect(warn.calledOnce).to.equal(true);
+      expect(warn.firstCall.args[1]).to.deep.equal({ orgId });
+    });
+
+    it('non-RS, the re-count fails and the lease was lost: the account stays and the create goes on', async () => {
+      leaseHeld = false;
+      const repo = stubRepo([], {
+        countActiveAdmins: sinon.stub().callsFake(async () => {
+          calls.push('count');
+          if (calls.filter((c) => c === 'count').length > 1) throw new Error('count failed');
+          return 4;
+        }),
+      });
+      expect(await createUserEnsuringAdminCap(orgId, fields, false)).to.equal(created);
+      expect(calls).to.deep.equal(['lease', 'count', 'create', 'count', 'confirm', 'release']);
+      expect(repo.deleteById.called).to.equal(false);
     });
 
     it('replica set: lock, create, then count, in one unit of work', async () => {
