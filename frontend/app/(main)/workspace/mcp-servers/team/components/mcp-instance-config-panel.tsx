@@ -16,6 +16,7 @@ import { McpServersApi } from '../../api';
 import { McpDisabledCallout, isMcpInstanceDisabled } from '../../components';
 import { mcpConnectionState } from '../../connection-state';
 import { freeServerName, serverNameKey } from '../../server-names';
+import { LabeledTextField } from '../../../api-toolsets/components/labeled-controls';
 import { McpPanelTitle } from './mcp-panel-header';
 import { McpClientSecretPrefixHint } from './mcp-client-secret-prefix-hint';
 import { McpLogoField } from './mcp-logo-field';
@@ -729,7 +730,12 @@ export function McpInstanceConfigPanel({
         required
         error={nameTaken ? t('workspace.mcpServers.form.nameTaken') : undefined}
       >
-        <TextField.Root size="2" value={name} onChange={(e) => setName(e.target.value)} />
+        <LabeledTextField
+          size="2"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          aria-invalid={nameTaken || undefined}
+        />
       </FormField>
 
       {!isTemplateBased && (

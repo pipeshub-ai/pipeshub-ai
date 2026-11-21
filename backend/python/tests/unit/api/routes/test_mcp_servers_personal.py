@@ -265,11 +265,41 @@ class TestUniqueNames:
 
         assert updated["description"] == "kept"
 
-    async def test_changing_only_the_case_of_its_own_name_is_allowed(self) -> None:
+    async def test_changing_only_the_case_of_its_own_name_is_allowed_even_beside_a_twin(self) -> None:
         store = _store()
-        updated = await update_instance(_as(store, "u-alice"), "alice-own", _payload(name="Alice Own"))
+        # A twin made before the rule, which a real rename onto the same name would hit.
+        store.data[ORG_PATH.format("twin")] = {**_record("twin"), "name": "alice-own"}
 
-        assert updated["name"] == "Alice Own"
+        updated = await update_instance(_as(store, "u-alice"), "alice-own", _payload(name="ALICE-OWN"))
+
+        assert updated["name"] == "ALICE-OWN"
+
+    @pytest.mark.parametrize(("taken", "asked"), [("Straße", "STRASSE"), ("GitHub", "ＧｉｔＨｕｂ")])
+    async def test_look_alike_unicode_forms_are_the_same_name(self, taken: str, asked: str) -> None:
+        store = _store()
+        store.data[ORG_PATH.format("first")] = {**_record("first"), "name": taken}
+
+        assert await _status(create_instance(_as(store, "admin-1"), _payload(name=asked))) == 409
+
+    @pytest.mark.parametrize("failing", ["list", "read"])
+    async def test_a_name_is_not_accepted_when_the_servers_cant_all_be_read(self, failing: str) -> None:
+        class Flaky(FakeConfigService):
+            async def list_keys_in_directory(self, prefix: str) -> list[str]:
+                if failing == "list" and prefix == "/services/mcp/instances/":
+                    raise RuntimeError("store down")
+                return await super().list_keys_in_directory(prefix)
+
+            async def get_config(self, key: str, default: object = None, use_cache: bool = False) -> object:
+                if failing == "read" and key == ORG_PATH.format("org-inst"):
+                    raise RuntimeError("store down")
+                return await super().get_config(key, default, use_cache)
+
+        store = Flaky(_store().data)
+        before = dict(store.data)
+
+        assert await _status(create_instance(_as(store, "admin-1"), _payload(name="brand new"))) == 503
+        assert await _status(update_instance(_as(store, "u-alice"), "alice-own", _payload(name="renamed"))) == 503
+        assert store.data == before
 
 
 class TestOwnerOnlyAccess:

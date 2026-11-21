@@ -1,7 +1,16 @@
-/** How two server names compare: case and runs of spaces don't tell servers apart to a reader.
- * Mirrors the backend's `_name_key`, which refuses a second server with the same name. */
+/** How two server names compare: case, runs of spaces and look-alike Unicode forms don't tell
+ * servers apart to a reader. Mirrors the backend's `_name_key` (NFKC, then Python's `casefold`),
+ * which refuses a second server with the same name. JavaScript has no case folding, so the two
+ * letters whose folding differs from lower case are mapped as `casefold` does. */
 export function serverNameKey(name: string): string {
-  return name.trim().split(/\s+/).join(' ').toLowerCase();
+  return name
+    .normalize('NFKC')
+    .trim()
+    .split(/\s+/)
+    .join(' ')
+    .toLowerCase()
+    .replace(/ß/g, 'ss')
+    .replace(/ς/g, 'σ');
 }
 
 /** `base`, else `base 2`, `base 3`… : the first name none of `taken` already has. */

@@ -14,6 +14,7 @@ values at rest exactly like the toolsets/connectors credential paths.
 """
 import asyncio
 import logging
+import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -354,8 +355,10 @@ def _max_personal_instances() -> int:
 
 
 def _name_key(name: object) -> str:
-    """How two names compare: case and runs of spaces don't tell servers apart to a reader."""
-    return " ".join(str(name or "").split()).casefold()
+    """How two names compare: case, runs of spaces and look-alike Unicode forms (full-width
+    letters, ligatures) don't tell servers apart to a reader. The form mirrors this in
+    `server-names.ts`."""
+    return " ".join(unicodedata.normalize("NFKC", str(name or "")).split()).casefold()
 
 
 async def _refuse_taken_name(
@@ -374,10 +377,18 @@ async def _refuse_taken_name(
     shortcut: check-then-write, so two saves at the same instant can both pass; closing that
     needs a unique key in the store.
     """
-    if scope == mcp_service.SCOPE_PERSONAL:
-        seen = await mcp_service.load_visible_instances(config_service, org_id, user_id)
-    else:
-        seen = await mcp_service.load_org_instances(config_service, org_id)
+    # Every record or none: a list missing the one that holds the name would let it through.
+    try:
+        if scope == mcp_service.SCOPE_PERSONAL:
+            seen = await mcp_service.load_visible_instances(config_service, org_id, user_id, strict=True)
+        else:
+            seen = await mcp_service.load_org_instances(config_service, org_id, strict=True)
+    except Exception as exc:
+        logger.warning("Couldn't read the MCP servers to check a name", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail="Couldn't check whether another MCP server already has this name. Try again.",
+        ) from exc
     key = _name_key(name)
     if key and any(i.get("_id") != instance_id and _name_key(i.get("name")) == key for i in seen):
         raise HTTPException(

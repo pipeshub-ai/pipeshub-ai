@@ -102,6 +102,12 @@ describe('server names', () => {
     expect(serverNameKey('Jira-Cloud')).not.toBe(serverNameKey('Jira Cloud'));
   });
 
+  it("fold look-alike Unicode forms the way Python's casefold does", () => {
+    expect(serverNameKey('Straße')).toBe(serverNameKey('STRASSE'));
+    expect(serverNameKey('ＧｉｔＨｕｂ')).toBe(serverNameKey('github'));
+    expect(serverNameKey('ΣΟΦΟΣ')).toBe(serverNameKey('σοφος'));
+  });
+
   it('a free name is the name itself, else the first numbered one nobody has', () => {
     expect(freeServerName('Jira', ['GitHub'])).toBe('Jira');
     expect(freeServerName('Jira', ['jira', 'JIRA 2'])).toBe('Jira 3');
@@ -137,6 +143,16 @@ describe('McpInstanceConfigPanel names', () => {
     expect(screen.queryByText(TAKEN)).toBeNull();
   });
 
+  it('lets a server change only how its name is written, even beside a twin', () => {
+    const strasse = entry({ _id: 'inst-2', name: 'Straße' });
+    renderPanel({ instances: [entry({ name: 'STRASSE' }), strasse], editing: strasse });
+
+    fireEvent.change(nameInput(), { target: { value: 'STRASSE' } });
+
+    expect(screen.queryByText(TAKEN)).toBeNull();
+    expect(saveButton('Save').disabled).toBe(false);
+  });
+
   it('flags renaming a server onto another one', () => {
     const other = entry({ _id: 'inst-2', name: 'Jira support' });
     renderPanel({ instances: [entry(), other], editing: other });
@@ -145,5 +161,9 @@ describe('McpInstanceConfigPanel names', () => {
 
     expect(screen.getByText(TAKEN)).toBeTruthy();
     expect(saveButton('Save').disabled).toBe(true);
+    // The input itself says it's invalid and points at the message, for screen readers.
+    expect(nameInput().getAttribute('aria-invalid')).toBe('true');
+    const describedBy = nameInput().getAttribute('aria-describedby') ?? '';
+    expect(describedBy.split(' ').map((id) => document.getElementById(id)?.textContent)).toContain(TAKEN);
   });
 });
