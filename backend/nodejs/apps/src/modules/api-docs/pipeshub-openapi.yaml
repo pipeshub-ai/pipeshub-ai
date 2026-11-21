@@ -25678,14 +25678,15 @@ components:
     EntityType:
       type: string
       description: >-
-        Kind of knowledge-graph entity a request can name. `person` and `organization`, which
-        `POST /search/entities` also returns, are not accepted in a request (400).
+        Kind of knowledge-graph entity `POST /search/entities/neighbors` can expand. `person` and
+        `organization` results (`EntitySearchResultType`) cannot be expanded there (400).
       enum: [department, category, subcategory, topic, language, record_group, record, named_entity]
     EntitySearchResultType:
       type: string
       description: >-
-        Kind of entity a search result is: one of the `EntityType` values, or `person` (a member of the
-        organisation named by records) or `organization` (an external organisation, such as a CRM account).
+        Kind of entity a search result is, and what `POST /search/entities` can be narrowed to: one of the
+        `EntityType` values, or `person` (a member of the organisation named by records) or `organization`
+        (an external organisation, such as a CRM account).
       enum: [department, category, subcategory, topic, language, record_group, record, named_entity, person, organization]
     EntityRecordDate:
       type: object
@@ -25721,10 +25722,12 @@ components:
           type: array
           maxItems: 10
           description: >-
-            Only these kinds. Omitted or empty means all, which is the only way to get `person`
-            and `organization` results: neither is accepted here (400).
+            Only these kinds. Omitted or empty means all. Where named-entity extraction is on,
+            `organization` also finds organization and product named entities, unless
+            `named_entity` is listed too, which then searches named entities of every kind.
+            `person` finds people only: named people are never indexed for search.
           items:
-            $ref: '#/components/schemas/EntityType'
+            $ref: '#/components/schemas/EntitySearchResultType'
         namedEntityKinds:
           type: array
           maxItems: 10
@@ -79479,8 +79482,7 @@ paths:
         (`person`: members of the organisation named by records) and
         organisations (`organization`, such as CRM accounts) and, where
         named-entity extraction is on, other named entities (`named_entity`).
-        People and organisations are returned only when `entityTypes` is
-        omitted or empty.
+        `entityTypes` narrows the search to some of these kinds.
 
         Only entities connected to records the caller can read are returned,
         decided by the same access check as the assistant's entity tools. Each
@@ -79514,7 +79516,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EntitySearchResponse'
         '400':
-          description: The request is invalid, for example an `entityTypes` value outside `EntityType` (such as `person` or `organization`), or only named entities asked for while named-entity extraction is off.
+          description: The request is invalid, for example an `entityTypes` value outside `EntitySearchResultType`, or only named entities asked for while named-entity extraction is off.
           content:
             application/json:
               schema:
