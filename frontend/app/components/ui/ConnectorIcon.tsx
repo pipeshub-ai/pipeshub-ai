@@ -74,6 +74,7 @@ export type ConnectorType =
   | 'google-admin'
   | 'google-cloud'
   | 'salesforce'
+  | 'apollo'
   // Databases
   | 'postgresql'
   | 'mariadb'
@@ -196,6 +197,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'mariadb': { svg: svg('mariadb'), fallback: 'storage' },
   'snowflake': { svg: svg('snowflake'), fallback: 'ac_unit' },
   'airtable': { svg: svg('airtable'), fallback: 'grid_view' },
+  'apollo': { svg: svg('apollo'), fallback: 'rocket_launch' },
   // Media & Other
   'youtube': { svg: svg('yt'), fallback: 'smart_display' },
   'rss': { svg: svg('rss'), fallback: 'rss_feed' },
@@ -276,6 +278,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   ['cifs', 'cifs'],
   // Dev tools & project tracking
   ['linear', 'linear'],
+  ['apollo', 'apollo'],
   ['monday.com', 'monday'],
   ['jira', 'jira'], ['confluence', 'confluence'],
   ['gitlab', 'gitlab'], ['slack', 'slack'],

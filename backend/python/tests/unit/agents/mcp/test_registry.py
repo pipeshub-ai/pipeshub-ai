@@ -78,6 +78,7 @@ class TestMCPRegistry:
         assert "microsoft_learn" in type_ids
         assert "atlassian_rovo" in type_ids
         assert "linear" in type_ids
+        assert "apollo" in type_ids
         assert "notion" in type_ids
         assert "monday" in type_ids
         assert "airtable" in type_ids
@@ -454,6 +455,20 @@ class TestMCPRegistry:
             assert template is not None and template.client_secret_prefix == "GOCSPX-"
             assert template.model_dump(by_alias=True)["clientSecretPrefix"] == "GOCSPX-"
         assert registry.get_template("linear").client_secret_prefix is None
+
+    def test_apollo_points_at_the_official_hosted_server_with_focused_scopes(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        template = registry.get_template("apollo")
+        assert template is not None
+        assert template.default_url == "https://mcp.apollo.io/mcp"
+        assert template.transport == MCPTransport.STREAMABLE_HTTP
+        assert template.default_auth_mode == MCPAuthMode.OAUTH
+        assert template.supports_dcr is True
+        assert template.icon == "/icons/connectors/apollo.svg"
+        # Apollo advertises 80+ scopes; the entry must request only a small subset.
+        assert 0 < len(template.default_scopes) < 20
+        assert not any(s.endswith("_write") or "send" in s for s in template.default_scopes)
 
     def test_auto_discover_is_idempotent(self) -> None:
         registry = MCPRegistry()
