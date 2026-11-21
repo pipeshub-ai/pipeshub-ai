@@ -940,6 +940,30 @@ their own HTTP clients.
   or an SDK, never `upstreamFetch`, and the request id and MCP relay header must not reach it (the axios adapter adds them
   only for registered internal targets).
 
+## Routes that answer their own errors (Node)
+
+Some routes write their error answer themselves instead of passing it to the error middleware, so `http.request.error` does not
+run. Each says why it failed on the request's lines:
+
+- **The OpenAI-compatible API** (`modules/openai_compat`) answers in OpenAI's error shape, before or inside its stream.
+  `noteRunFailure` marks the access line with the failure's class (`markRequestError`), so a failure inside a 200 stream is
+  `outcome=failure`, and a client that went away (an abort, "stop generating") is `cancelled`. Our own bug is one ERROR
+  `openai_compat.request.failed` with the stack. A failure no HTTP answer stands behind, whatever its status (a `RUN_ERROR` frame, a stream
+  that ended without an answer, a 204 with no body, an upload with no result), is one WARNING `openai_compat.request.failed` with `code` (a snake_case code, else
+  `unknown_error`). So is our API unreachable, slow, or dropping the connection midway: `code` is `upstream_disconnected` for a
+  connection dropped after the answer started, else the class, with `network_code` (`UND_ERR_SOCKET`, `ECONNREFUSED`). A failure our own API
+  answered (a 404, a 500) adds no line: that request logged it, and it carries this request's id, because these calls go
+  through `upstreamFetch` with `injectRequestHeaders` and so also write `upstream.call.end`.
+- **The skills proxy** passes the skills service's answer through as it came. A 5xx there marks the access line `upstream_5xx`,
+  as its `upstream.call.end` says, not `internal`.
+- **The desktop proxy** answers a desktop that is offline (409), slow (504) or refusing (502) itself; the access line's class
+  comes from that status.
+
+The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
+call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and
+`argument_names` (never the values), with the caller's `org_id` and `user_id` from the request. `MCP request completed` is DEBUG,
+with `jsonrpc_method`.
+
 ## Chat streams (Node)
 
 Each enterprise-search chat stream (`streamChat`, `addMessageStream`, `streamAgentConversation`,
