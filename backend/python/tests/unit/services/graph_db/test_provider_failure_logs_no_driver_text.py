@@ -1,12 +1,15 @@
-"""A graph provider method that re-raises a failure does not log it (docs/logging.md, "Database queries").
+"""A graph provider method that re-raises a failure does not log it, and one that carries on logs it once, without its text
+(docs/logging.md, "Database queries").
 
 The client already wrote the text-free ``db.query.failed`` record and stamped the exception ``hide_text``; the handler that
 catches the exception upstream writes the one failure line. The provider's own ``❌ <method> failed: {str(e)}`` line was a
 duplicate that also printed the driver's text, which can quote the query's bound values (an email, a record name, a path).
+A step that fails and carries on writes ``graph.provider.step_failed`` through ``log_failure(..., include_error_text=False)``.
 """
 from __future__ import annotations
 
 import ast
+import contextvars
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,6 +21,7 @@ from app.core.org_context import OrgContext, bind
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from app.utils import error_class
 from app.utils.error_class import mark_error
 
 if TYPE_CHECKING:
@@ -34,10 +38,10 @@ PROVIDER_FILES = [
 LEVELS = frozenset({"debug", "info", "warning", "warn", "error", "exception", "critical", "log"})
 
 
-def _driver_error(*, stamped: bool) -> Exception:
+def _driver_error(*, stamped: bool, error_class: str = "internal") -> Exception:
     exc = RuntimeError(f"MATCH (u:User {{email: '{SENTINEL}'}}) RETURN u")
     if stamped:  # as neo4j_client / arango_http_client / uow leave it after db.query.failed
-        mark_error(exc, "internal", hide_text=True)
+        mark_error(exc, error_class, hide_text=True)
     return exc
 
 
@@ -165,3 +169,199 @@ def test_the_guard_finds_a_planted_log_before_a_reraise(handler: str) -> None:
 ])
 def test_the_guard_leaves_handling_layers_alone(handler: str) -> None:
     assert log_calls_before_reraise(f"async def f(self):\n    try:\n        await q()\n    {handler}\n") == []
+
+
+# ---- PR 2: a handler that carries on (no ``return`` on any path) logs only through log_failure, text-free ----
+
+PROVIDER_EVENTS = frozenset({"graph.provider.step_failed", "graph.provider.failed"})
+
+
+def _mentions_the_exception(call: ast.Call, name: str | None) -> bool:
+    """Whether the call reads the caught exception other than through ``type(<name>)`` or ``classify_error(<name>)``."""
+    read_safely = {
+        id(n.args[0]) for n in ast.walk(call)
+        if isinstance(n, ast.Call) and n.args and (
+            (isinstance(n.func, ast.Name) and n.func.id == "type")
+            or (isinstance(n.func, ast.Attribute) and n.func.attr == "classify_error"))
+    }
+    return any(isinstance(n, ast.Name) and n.id == name and id(n) not in read_safely for n in ast.walk(call))
+
+
+def _bad_carry_on_log(call: ast.Call, handler: ast.ExceptHandler) -> bool:
+    """A plain logger call; a ``log_failure`` that may print the text, names an event outside the provider's, or logs an
+    exception other than the one this handler caught; or a ``log_event`` that carries the exception (its text in a field)."""
+    func = call.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    if name == "log_event":
+        return _mentions_the_exception(call, handler.name)
+    if name == "log_failure":
+        event, exc = (call.args[i] if len(call.args) > i else None for i in (1, 2))
+        return not (
+            any(k.arg == "include_error_text" and isinstance(k.value, ast.Constant) and k.value.value is False for k in call.keywords)
+            and isinstance(event, ast.Constant) and event.value in PROVIDER_EVENTS
+            and isinstance(exc, ast.Name) and exc.id == handler.name
+        )
+    return name in LEVELS and isinstance(func, ast.Attribute) and "logger" in ast.unparse(func.value)
+
+
+def bad_logs_in_carry_on_handlers(source: str) -> list[int]:
+    """Lines of logger calls inside an ``except`` handler with no ``return`` (it goes on, retries or re-raises) that are not a
+    text-free ``log_failure`` of the caught exception under a provider event. Handlers that answer a default are not checked."""
+    hits: list[int] = []
+    for handler in (n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.ExceptHandler)):
+        nodes = list(_own_nodes(handler))
+        if any(isinstance(n, ast.Return) for n in nodes):
+            continue
+        hits += [n.lineno for n in nodes if isinstance(n, ast.Call) and _bad_carry_on_log(n, handler)]
+    return sorted(hits)
+
+
+@pytest.mark.parametrize("path", PROVIDER_FILES, ids=lambda p: p.name)
+def test_no_provider_handler_that_carries_on_logs_the_failure_text(path: Path) -> None:
+    hits = bad_logs_in_carry_on_handlers(path.read_text())
+    assert not hits, f"{path.name}: plain log calls in handlers that carry on, lines {hits[:10]}"
+
+
+_STEP = 'error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, op="f", step="s")'
+
+
+@pytest.mark.parametrize("handler", [
+    'except Exception as e:\n        self.logger.warning(f"step failed: {e}")',
+    'except Exception:\n        self.logger.warning("step failed for %s", key)',
+    'except Exception:\n        self.logger.exception("step failed")',
+    'except Exception as e:\n        msg = f"failed: {e}"\n        self.logger.error(msg)\n        failed += 1',
+    'except Exception as e:\n        self.logger.warning("failed", extra={"err": str(e)})',
+    'except Exception as e:\n        self.logger.debug("full-text unavailable, using scan", exc_info=True)',
+    'except Exception as e:\n        if raise_on_error:\n            raise\n        self.logger.error(f"batch failed: {e}")',
+    'except Exception as e:\n        error_class.log_failure(self.logger, "graph.provider.step_failed", e, op="f", step="s")',
+    'except Exception as e:\n        error_class.log_failure(self.logger, "graph.f.failed", e, include_error_text=False)',
+    'except Exception as rb_err:\n        error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False)',
+    'except Exception as e:\n        log_event(self.logger, "graph.provider.step_failed", op="f", error=str(e))',
+    'except Exception as e:\n        log_event(self.logger, "graph.provider.step_failed", op="f", cause=e)',
+])
+def test_the_guard_finds_a_planted_log_in_a_handler_that_carries_on(handler: str) -> None:
+    source = f"async def f(self):\n    for key in keys:\n        try:\n            await q()\n        {handler.replace(chr(10), chr(10) + '    ')}\n"
+    hits = bad_logs_in_carry_on_handlers(source)
+    assert len(hits) == 1, source
+    assert "log" in source.splitlines()[hits[0] - 1]
+
+
+@pytest.mark.parametrize("handler", [
+    f"except Exception as e:\n        {_STEP}",
+    f"except Exception as e:\n        if raise_on_error:\n            raise\n        {_STEP}\n        failed += 1",
+    'except Exception as e:\n        log_event(self.logger, "graph.provider.duplicates_removed", level=logging.WARNING, removed=1)',
+    'except Exception as e:\n        log_event(self.logger, "graph.provider.step_failed", error_class=error_class.classify_error(e),'
+    ' error_type=type(e).__name__)',
+    'except Exception as e:\n        self.logger.error(f"failed: {e}")\n        return None',  # answers a default: PR 3's guard
+    'except Exception:\n        pass',
+])
+def test_the_carry_on_guard_leaves_text_free_and_returning_handlers_alone(handler: str) -> None:
+    assert bad_logs_in_carry_on_handlers(f"async def f(self):\n    try:\n        await q()\n    {handler}\n") == []
+
+
+def _provider_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name == LOGGER]
+
+
+def _assert_text_free(caplog: pytest.LogCaptureFixture) -> None:
+    for r in _provider_records(caplog):
+        assert SENTINEL not in r.getMessage()
+        assert SENTINEL not in str(r.exc_text or "")
+        assert SENTINEL not in str(r.__dict__)
+        assert getattr(r, "error_message", None) is None
+
+
+def _the_one(caplog: pytest.LogCaptureFixture, event: str) -> logging.LogRecord:
+    records = [r for r in _provider_records(caplog) if getattr(r, "event_name", None) == event]
+    assert len(records) == 1, [r.getMessage() for r in _provider_records(caplog)]
+    return records[0]
+
+
+FAILURES = [
+    pytest.param(lambda: _driver_error(stamped=True), logging.ERROR, "internal", id="stamped-internal"),
+    pytest.param(lambda: _driver_error(stamped=True, error_class="timeout"), logging.WARNING, "timeout", id="stamped-timeout"),
+    pytest.param(lambda: _driver_error(stamped=False), logging.ERROR, "internal", id="unstamped"),
+    pytest.param(lambda: KeyError(SENTINEL), logging.ERROR, "internal", id="non-db-keyerror"),
+]
+
+
+def _assert_level_and_stack(record: logging.LogRecord, level: int, cls: str) -> None:
+    assert (record.levelno, record.error_class, record.outcome) == (level, cls, "failure")
+    if level >= logging.ERROR:  # the stack once, every exception shown as ``Type: <message omitted>``
+        assert record.exc_info is None
+        assert "<message omitted>" in record.exc_text
+    else:
+        assert not record.exc_text
+
+
+@pytest.mark.parametrize(("make", "level", "cls"), FAILURES)
+@pytest.mark.parametrize("backend", ["neo4j", "arango", "postgres"])
+async def test_a_swallowed_status_update_logs_once_without_the_text(caplog, backend, make, level, cls) -> None:
+    exc = make()
+    provider = _provider(backend, exc)
+    provider.validator = MagicMock()  # Neo4j validates the status before the query
+
+    assert await provider.update_indexing_status_for_record_ids(["r1"], "QUEUED") is None
+
+    record = _the_one(caplog, "graph.provider.failed")
+    assert record.op == "update_indexing_status_for_record_ids"
+    assert record.error_type == type(exc).__name__
+    _assert_level_and_stack(record, level, cls)
+    _assert_text_free(caplog)
+
+
+async def _a_failing_step(backend: str, exc: Exception) -> tuple[object, str, str]:
+    """Runs one best-effort step of each store against a failing database: what the method answered, and the op and step."""
+    provider = _provider(backend, exc)
+    if backend == "postgres":
+        provider._create_deleted_record_event_payload = AsyncMock(side_effect=exc)
+        return await provider._delete_events([({"virtualRecordId": "v1"}, None)], {}), "_delete_events", "deletion_event_payload"
+    return await provider._delete_nodes_by_keys(None, ["k1"], "records"), "_delete_nodes_by_keys", "batch_delete"
+
+
+@pytest.mark.parametrize(("make", "level", "cls"), FAILURES)
+@pytest.mark.parametrize("backend", ["neo4j", "arango", "postgres"])
+async def test_a_failed_step_goes_on_and_logs_once_without_the_text(caplog, backend, make, level, cls) -> None:
+    answer, op, step = await _a_failing_step(backend, make())
+
+    assert answer == (None if backend == "postgres" else (0, 1))  # nothing deleted, one batch failed: the method went on
+    record = _the_one(caplog, "graph.provider.step_failed")
+    assert (record.op, record.step) == (op, step)
+    if backend != "postgres":
+        assert record.collection == "records"
+    _assert_level_and_stack(record, level, cls)
+    _assert_text_free(caplog)
+
+
+@pytest.mark.parametrize(("method", "args"), [
+    ("_delete_nodes_by_keys", (None, ["k1"], "records")),
+    ("_delete_edges_by_node_ids", (None, ["records/k1"], ["permission"])),
+])
+async def test_a_batch_delete_that_re_raises_writes_no_step_line(caplog, method, args) -> None:
+    """ArangoDB's ``raise_on_error`` paths re-raise before the step line: the caller's handler logs it once (plan H3)."""
+    exc = _driver_error(stamped=True)
+    with pytest.raises(RuntimeError) as raised:
+        await getattr(_provider("arango", exc), method)(*args, raise_on_error=True)
+    assert raised.value is exc
+    assert not [r.getMessage() for r in _provider_records(caplog) if r.levelno >= logging.INFO]
+    assert error_class.logged_level(exc) is None  # not marked logged: the handler that catches it keeps its level
+
+
+def test_a_per_org_sweep_failure_is_left_to_the_pass_to_log(caplog) -> None:
+    """The code-graph sweep raises its first organisation's failure after the loop: its per-org line is a stackless WARNING
+    that does not mark the exception logged, so the handler of the raise writes the one stack at its own level."""
+    provider = _provider("postgres", RuntimeError())
+    exc, errors = _driver_error(stamped=True), []
+
+    def one_org_fails() -> None:
+        with provider._sweep("org-2", errors):
+            raise exc
+
+    contextvars.Context().run(one_org_fails)  # a sweep binds each org itself, outside any org of the test's
+
+    record = _the_one(caplog, "graph.provider.step_failed")
+    assert (record.levelno, record.op, record.step, record.target_org_id) == (logging.WARNING, "_sweep", "org_sweep", "org-2")
+    assert (record.error_class, record.error_type, record.exc_text) == ("internal", "RuntimeError", None)
+    assert errors == [("org-2", exc)]
+    assert error_class.logged_level(exc) is None
+    _assert_text_free(caplog)

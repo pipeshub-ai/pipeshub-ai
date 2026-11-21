@@ -36,6 +36,7 @@ from app.services.graph_db.arango.arango_http_provider import (
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.team_grant_role import aql_team_grant_role
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.log_capture import failure_line
 
 
 def _grant_asked(user_key, org_id, *, node_ids=(), **_kwargs):
@@ -16566,13 +16567,15 @@ class TestUpdateIndexingStatusForRecordIds:
         connected_provider.logger.error.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_failed_statement_is_logged_not_raised(self, connected_provider):
+    async def test_a_failed_statement_is_logged_not_raised(self, connected_provider, caplog):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("Query failed"))
-        connected_provider.logger = MagicMock()
+        connected_provider.logger = logging.getLogger("tests.arango_provider.update_indexing_status")
 
-        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
+        with caplog.at_level(logging.DEBUG, logger=connected_provider.logger.name):
+            await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
 
-        connected_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Query failed")
+        assert fields["op"] == "update_indexing_status_for_record_ids"
 
 class TestEnsureEdgeDefinitionsUpToDate:
     """Tests for _ensure_edge_definitions_up_to_date method."""
@@ -16843,17 +16846,18 @@ class TestEnsureEdgeDefinitionsUpToDate:
         assert "Failed to update edge definition" in warning_msg
 
     @pytest.mark.asyncio
-    async def test_exception_during_update_logs_warning(self, connected_provider):
-        """Should log warning and continue when exception occurs."""
+    async def test_exception_during_update_is_logged_and_skipped(self, connected_provider, caplog):
+        """A failed migration is logged once, without its text, and startup goes on."""
         connected_provider.http_client.get_graph = AsyncMock(
             side_effect=Exception("Connection error")
         )
-        
-        await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
-        
-        connected_provider.logger.warning.assert_called_once()
-        warning_msg = connected_provider.logger.warning.call_args[0][0]
-        assert "Edge definition migration failed" in warning_msg
+        connected_provider.logger = logging.getLogger("tests.arango_provider.edge_definitions")
+
+        with caplog.at_level(logging.DEBUG, logger=connected_provider.logger.name):
+            await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
+
+        fields = failure_line(caplog.records, "graph.provider.step_failed", "internal", logging.ERROR, "Connection error")
+        assert (fields["op"], fields["step"]) == ("_ensure_edge_definitions_up_to_date", "edge_definition_migration")
 
     @pytest.mark.asyncio
     async def test_multiple_edge_definitions_processed(self, connected_provider):
@@ -17388,8 +17392,9 @@ class TestExecuteLocalFsRecordDeletion:
         connected_provider._delete_main_record.assert_called_once_with("rec1", "txn_123")
 
     @pytest.mark.asyncio
-    async def test_event_payload_creation_failure_handled(self, connected_provider):
+    async def test_event_payload_creation_failure_handled(self, connected_provider, caplog):
         """Should handle event payload creation failure gracefully."""
+        connected_provider.logger = logging.getLogger("tests.arango_provider.local_fs_deletion")
         connected_provider.http_client.get_document = AsyncMock(return_value=None)
         connected_provider._delete_local_fs_edges = AsyncMock()
         connected_provider._delete_main_record = AsyncMock()
@@ -17397,14 +17402,16 @@ class TestExecuteLocalFsRecordDeletion:
             side_effect=Exception("Event creation failed")
         )
         
-        result = await connected_provider._execute_local_fs_record_deletion(
-            record_id="rec1",
-            record={"_key": "rec1"}
-        )
-        
+        with caplog.at_level(logging.DEBUG, logger=connected_provider.logger.name):
+            result = await connected_provider._execute_local_fs_record_deletion(
+                record_id="rec1",
+                record={"_key": "rec1"}
+            )
+
         assert result["success"] is True
         assert result["eventData"] is None
-        connected_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.step_failed", "internal", logging.ERROR, "Event creation failed")
+        assert (fields["op"], fields["step"]) == ("_execute_local_fs_record_deletion", "deletion_event_payload")
 
     @pytest.mark.asyncio
     async def test_none_event_payload_handled(self, connected_provider):
