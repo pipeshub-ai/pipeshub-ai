@@ -103,7 +103,7 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
             except Exception as e:
                 if flag and k.get("raise_on_error"):  # raised before logging: the caller that handles it logs it once
                     raise
-                error_class.log_failure(self.logger, f"graph.{fn.__name__}.failed", e, include_error_text=False)
+                error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op=fn.__name__)
                 return default() if callable(default) else default
         return wrapper
     return deco
@@ -437,9 +437,9 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.error("get_app_users failed: %s", e)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_app_users")
             return []
 
     async def get_app_user_links(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
@@ -1083,7 +1083,8 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.error("Error checking name uniqueness: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_connector_name_uniqueness")
             return True
 
     @_soft(0)
@@ -1193,7 +1194,7 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.error("Failed to get agent: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_agent")
             return None
 
     async def get_agents_by_model_key(self, org_id: str, model_key: str) -> list[dict]:
