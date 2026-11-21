@@ -1041,7 +1041,8 @@ export class MongoConversationRepository implements ConversationRepository {
       }),
       // Readers learn of a change by `rev`, a rename too.
       { $set: { title }, $inc: { rev: 1 } },
-      opts(tx),
+      // Not an edit of the chat, so `updatedAt` stays.
+      { ...opts(tx), timestamps: false },
     ).exec();
     return result.modifiedCount > 0;
   }

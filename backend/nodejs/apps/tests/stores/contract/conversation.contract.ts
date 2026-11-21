@@ -345,6 +345,18 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(await titleOf()).to.equal(fx.transactional ? 'new' : 'rolled back');
     });
 
+    it('replaceTitle leaves updatedAt as it was: a title rewritten for its readers is no edit of the chat', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user, { title: 'old' });
+      const updatedAt = async () => (await repo.findById(s._id))!.updatedAt;
+      const before = await updatedAt();
+      expect(before).to.be.instanceOf(Date);
+      // A write that dated the chat would date it at least this much later.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(await repo.replaceTitle(s._id, org, 'old', 'new')).to.equal(true);
+      expect(await updatedAt()).to.deep.equal(before);
+    });
+
     it('softDelete marks the row, hides it, and reports the citations of its messages', async () => {
       const org = fx.newId(), user = fx.newId();
       const s = await open(org, user);

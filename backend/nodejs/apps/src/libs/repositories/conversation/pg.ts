@@ -1228,16 +1228,11 @@ export class PgConversationRepository
     if (!oid) return false;
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
+      // No `updated_at`: this rewrite is not an edit of the chat.
       const r = await k.query(
-        SQL(`/* pipeshub:conversation.replace_title */ UPDATE conversation.chat_sessions s SET title = $4, updated_at = $5
+        SQL(`/* pipeshub:conversation.replace_title */ UPDATE conversation.chat_sessions s SET title = $4
           WHERE s.org_id = $1 AND s.id = $2::text AND s.title = $3`),
-        [
-          k.orgId,
-          oid,
-          expected,
-          stripNul(title, 'conversation', 'title'),
-          new Date(),
-        ],
+        [k.orgId, oid, expected, stripNul(title, 'conversation', 'title')],
       );
       return (r.rowCount ?? 0) > 0;
     });

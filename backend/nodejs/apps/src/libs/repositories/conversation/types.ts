@@ -692,7 +692,8 @@ export interface ConversationRepository {
   setTitle(id: string, title: string, tx?: Tx): Promise<ChatSessionDto | null>;
   /**
    * Sets the title only while it is still `expected`, so a rename made meanwhile is never overwritten, and moves the
-   * session's change marker where the store keeps one. False when the title changed or the session is gone.
+   * session's change marker where the store keeps one. Not an edit of the chat: `updatedAt` stays. False when the
+   * title changed or the session is gone.
    */
   replaceTitle(
     sessionId: string,
