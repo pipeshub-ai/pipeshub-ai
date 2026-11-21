@@ -246,7 +246,8 @@ export class UploadDocumentService {
 
     res.setHeader('Location', storageURL);
     res.setHeader('x-document-id', documentId);
-    res.setHeader('x-document-name', documentName as string);
+    // Node rejects header values above U+00FF; the KB reader decodes this.
+    res.setHeader('x-document-name', encodeURIComponent(documentName));
     res.status(HTTP_STATUS.PERMANENT_REDIRECT).json({ document: saved });
   }
 
