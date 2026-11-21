@@ -322,7 +322,7 @@ describe('notification/service/notification.consumer', () => {
           mockConsumer.isConnected.returns(true);
           sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user), new mongoose.Types.ObjectId(other)]);
           const insertMany = sinon.stub(NotificationSchema.Notifications, 'insertMany').resolves([]);
-          const before = await refusedCount();
+          const refused = sinon.spy(notificationEventRefused, 'inc');
           const handler = sinon.stub().resolves();
           await consumer.consume(handler);
           await mockConsumer.consume.firstCall.args[0]({ value: { ...event, _id: 'fixed-id', recipientUserIds: [user, other] } });
