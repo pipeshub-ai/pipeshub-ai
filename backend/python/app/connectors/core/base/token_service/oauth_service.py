@@ -64,6 +64,11 @@ def _require_access_token(data: object) -> None:
         raise TokenResponseError("OAuth token response missing required 'access_token' field. ")
 
 
+class OAuthStateError(ValueError):
+    """The callback is not for the sign-in in progress: its state is stale, replayed or forged, or its code was used.
+    Nothing was exchanged or saved."""
+
+
 class MalformedTokenError(ValueError):
     """A token field is not what OAuth defines (a provider's answer or a saved record). Names the field, never its value."""
 
@@ -595,11 +600,12 @@ class OAuthProvider:
                     self.token = token
                     return token
                 except (TypeError, ValueError, KeyError):
-                    # If stored creds are malformed, fall back to error
+                    # Not an OAuthStateError: this code was used and the saved credentials no longer load, so
+                    # the connector is marked signed out.
                     raise ValueError("Invalid or expired state")
 
-            # State mismatch and not a duplicate callback -> genuine error
-            raise ValueError("Invalid or expired state")
+            # State mismatch and not a duplicate callback
+            raise OAuthStateError("Invalid or expired state")
 
         # Check if this specific code has already been used (prevent duplicate code usage)
         used_codes = oauth_data.get("used_codes", [])
@@ -613,9 +619,10 @@ class OAuthProvider:
                     self.token = token
                     return token
                 except (TypeError, ValueError, KeyError):
-                    pass
-            # Code was used but no valid credentials - treat as error
-            raise ValueError("Authorization code has already been used")
+                    # Not an OAuthStateError: the saved credentials no longer load, so the connector is marked signed out.
+                    raise ValueError("Authorization code has already been used") from None
+            # Code was used and nothing was saved
+            raise OAuthStateError("Authorization code has already been used")
         try:
             token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
             self.token = token
