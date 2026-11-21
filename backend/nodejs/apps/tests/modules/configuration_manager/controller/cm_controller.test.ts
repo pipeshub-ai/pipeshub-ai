@@ -88,6 +88,14 @@ import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { startFakeSmtpServer, FakeSmtpServer } from '../../../helpers/fake-smtp-server'
 import * as smtpTransportModule from '../../../../src/modules/mail/utils/smtp-transport'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { TelemetryService } from '../../../../src/libs/services/telemetry/telemetry.service'
+import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend'
+import { eventBuffer, recordEvent } from '../../../../src/libs/services/telemetry/event-buffer'
+import * as telemetryFlag from '../../../../src/libs/services/telemetry/flag'
+import axios from 'axios'
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import yaml from 'js-yaml'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1349,6 +1357,128 @@ describe('ConfigurationManager Controller', () => {
     })
   })
 
+  describe('toggleMetricsCollection consent handling', () => {
+    afterEach(() => {
+      sinon.restore()
+      telemetryFlag.setCollectionConsent(true)
+      eventBuffer.drain()
+    })
+
+    it('sends nothing on opt-out and discards what was gathered', async () => {
+      const post = sinon.stub(axios, 'post').resolves({ data: {} })
+      const discard = sinon.stub().callsFake(() => {
+        metricsBackend.reset()
+        eventBuffer.drain()
+      })
+      sinon.stub(TelemetryService, 'current').returns({ discardCollected: discard } as never)
+      recordEvent('gathered_before')
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: true })),
+      })
+      const res = createMockResponse()
+
+      await toggleMetricsCollection(kvs)(
+        createMockRequest({ body: { enableMetricCollection: false } }), res, createMockNext())
+
+      expect(post.called, 'opt-out must not send anything').to.be.false
+      expect(discard.calledOnce).to.be.true
+      expect(eventBuffer.size()).to.equal(0)
+      expect(telemetryFlag.isCollecting()).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('records the consent gauge after an opt-in', async () => {
+      const saved = process.env.TELEMETRY_COLLECTION_FLAG
+      process.env.TELEMETRY_COLLECTION_FLAG = 'true'
+      try {
+        telemetryFlag.setCollectionConsent(false)
+        const kvs = createMockKeyValueStore({
+          get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: false })),
+        })
+
+        await toggleMetricsCollection(kvs)(
+          createMockRequest({ body: { enableMetricCollection: true } }),
+          createMockResponse(), createMockNext())
+
+        expect(telemetryFlag.isCollecting()).to.be.true
+        expect(await metricsBackend.serialize()).to.match(
+          /pipeshub_metric_collection_enabled\{service="node_api",org="[^"]*"\} 1$/m)
+      } finally {
+        if (saved === undefined) delete process.env.TELEMETRY_COLLECTION_FLAG
+        else process.env.TELEMETRY_COLLECTION_FLAG = saved
+      }
+    })
+  })
+
+  describe('getMetricsCollection telemetryEnabled', () => {
+    afterEach(() => {
+      sinon.restore()
+    })
+    const read = async (flagValue: string) => {
+      const saved = process.env.TELEMETRY_COLLECTION_FLAG
+      process.env.TELEMETRY_COLLECTION_FLAG = flagValue
+      try {
+        const kvs = createMockKeyValueStore({
+          get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: 'true' })),
+        })
+        const res = createMockResponse()
+        await getMetricsCollection(kvs)(createMockRequest(), res, createMockNext())
+        return res.json.firstCall.args[0]
+      } finally {
+        if (saved === undefined) delete process.env.TELEMETRY_COLLECTION_FLAG
+        else process.env.TELEMETRY_COLLECTION_FLAG = saved
+      }
+    }
+
+    it('reports telemetryEnabled true and the stored switch while the deployment flag is on', async () => {
+      const body = await read('true')
+      expect(body.telemetryEnabled).to.equal(true)
+      expect(body.enableMetricCollection).to.equal('true')
+    })
+
+    it('documents telemetryEnabled in the published response schema', () => {
+      const spec = yaml.load(readFileSync(
+        join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'), 'utf8')) as any
+      const get = spec.paths['/configurationManager/metricsCollection'].get
+      expect(get.responses['200'].content['application/json'].schema.$ref)
+        .to.equal('#/components/schemas/MetricsCollectionConfig')
+      expect(spec.components.schemas.MetricsCollectionConfig.properties.telemetryEnabled.type)
+        .to.equal('boolean')
+    })
+
+    it('reports telemetryEnabled false and the switch off while the deployment flag is off', async () => {
+      const body = await read('false')
+      expect(body.telemetryEnabled).to.equal(false)
+      expect(body.enableMetricCollection).to.equal('false')
+    })
+
+    it('with nothing stored the body is the flag alone while telemetry is allowed, and the switch off too while it is not', async () => {
+      const saved = process.env.TELEMETRY_COLLECTION_FLAG
+      try {
+        for (const [flagValue, expected] of [
+          ['true', { telemetryEnabled: true }],
+          ['false', { enableMetricCollection: 'false', telemetryEnabled: false }],
+        ] as const) {
+          process.env.TELEMETRY_COLLECTION_FLAG = flagValue
+          const res = createMockResponse()
+          await getMetricsCollection(createMockKeyValueStore({ get: sinon.stub().resolves(null) }))(
+            createMockRequest(), res, createMockNext())
+          expect(res.json.firstCall.args[0], `flag=${flagValue}`).to.deep.equal(expected)
+        }
+      } finally {
+        if (saved === undefined) delete process.env.TELEMETRY_COLLECTION_FLAG
+        else process.env.TELEMETRY_COLLECTION_FLAG = saved
+      }
+    })
+
+    it('the published text says what the body is with nothing stored', () => {
+      const spec = yaml.load(readFileSync(
+        join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'), 'utf8')) as any
+      const description = spec.paths['/configurationManager/metricsCollection'].get.description as string
+      expect(description).to.contain('"enableMetricCollection": "false"')
+    })
+  })
+
   describe('getMetricsCollection', () => {
     it('should return empty object when no config exists', async () => {
       const kvs = createMockKeyValueStore()
@@ -1363,6 +1493,7 @@ describe('ConfigurationManager Controller', () => {
     })
 
     it('should fall back to the raw stored value when decryption fails (unencrypted config)', async () => {
+      sinon.stub(telemetryFlag, 'isTelemetryEnabled').returns(true)
       const kvs = createMockKeyValueStore({
         get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: true })),
       })
@@ -1375,7 +1506,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.calledWith({ enableMetricCollection: true })).to.be.true
+      expect(res.json.calledWith({ enableMetricCollection: true, telemetryEnabled: true })).to.be.true
     })
   })
 
@@ -3192,6 +3323,7 @@ describe('ConfigurationManager Controller', () => {
 
   describe('getMetricsCollection (additional)', () => {
     it('should return stored config', async () => {
+      sinon.stub(telemetryFlag, 'isTelemetryEnabled').returns(true)
       const kvs = createMockKeyValueStore({
         get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: true, pushIntervalMs: 5000 })),
       })

@@ -1,0 +1,2 @@
+# Schemas of the extra migration modules that own SECURITY DEFINER functions, one per line: pg-roles.sh creates the vetted owner role
+# pipeshub_vetted_<schema> of each. Must list the same schemas as EXTRA_VETTED_SCHEMAS in backend/python/app/edition.py (a test checks it).

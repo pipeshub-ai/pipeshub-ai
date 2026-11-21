@@ -2634,7 +2634,8 @@
         "message": "Wenn Sie verwerfen, werden Ihre Änderungen nicht gespeichert",
         "confirm": "Verwerfen",
         "cancel": "Weiter bearbeiten"
-      }
+      },
+      "dataCollectionActive": "Nutzungsdaten werden erfasst und an den konfigurierten Metrikserver gesendet. Schalten Sie dies aus, um es zu beenden."
     },
     "mcpAccess": {
       "title": "MCP-Zugriff",

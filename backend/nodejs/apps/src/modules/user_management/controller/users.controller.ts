@@ -117,6 +117,7 @@ import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { getOAuthAppRepository } from '../../../libs/repositories/oauth-app';
 import { getOAuthTokenRepository } from '../../../libs/repositories/oauth-token';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
+import { withoutHiddenEmail } from '../utils/hide-email';
 import { ProjectService } from '../../projects/services/project.service';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
 
@@ -124,15 +125,7 @@ import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.
 // tokens it issues, the sign-in checks, and the first-login update.
 export const USER_LOOKUP_FIELDS = '_id orgId email fullName role hasLoggedIn';
 
-/**
- * With HIDE_EMAIL=true no read of other users carries their email: the single read, the
- * directory list and the bulk lookup alike, or the list would give away what the single read hides.
- */
-export function withoutHiddenEmail<T extends object>(user: T): T {
-  if (process.env.HIDE_EMAIL !== 'true') return user;
-  const { email: _email, ...rest } = user as T & { email?: unknown };
-  return rest as T;
-}
+export { withoutHiddenEmail };
 
 export const USER_LOOKUP_EMAIL_MISMATCH_MESSAGE =
   'This lookup token was issued for a different email address.';
@@ -2743,7 +2736,14 @@ export class UserController {
         }
       }
 
-      res.status(HTTP_STATUS.OK).json(data);
+      // The same rule as the other directory reads: with HIDE_EMAIL on, no row carries an email.
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          Array.isArray(data?.users)
+            ? { ...data, users: data.users.map(withoutHiddenEmail) }
+            : data,
+        );
     } catch (error: any) {
       next(error);
     }

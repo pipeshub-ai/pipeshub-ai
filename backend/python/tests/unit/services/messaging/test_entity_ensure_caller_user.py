@@ -64,6 +64,19 @@ class TestEnsureCallerUser:
         )
         assert [c.args[3] for c in fetch.await_args_list] == [f"/api/v1/users/internal/{USER}", "/api/v1/org/internal"]
 
+    @pytest.mark.parametrize(("written", "says_wrote"), [(True, True), (False, False)])
+    async def test_the_log_says_wrote_only_when_a_user_was_written(self, written: bool, says_wrote: bool) -> None:
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(return_value={"_key": ORG})
+        svc = _service(graph)
+        _, user_added = _handlers(svc)
+        user_added.return_value = written
+        with _node():
+            assert await svc.ensure_user(ORG, USER) is written
+        messages = [c.args[0] % c.args[1:] for c in svc.logger.info.call_args_list]
+        assert any(m.startswith("Wrote the graph user") for m in messages) is says_wrote
+        assert any(m.startswith("Wrote no graph user") for m in messages) is not says_wrote
+
     async def test_an_org_already_in_the_graph_is_not_rewritten(self) -> None:
         graph = AsyncMock()
         graph.get_document = AsyncMock(return_value={"_key": ORG})
@@ -133,8 +146,12 @@ class _Graph:
     def __init__(self) -> None:
         self.users: dict[str, dict] = {}
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
-        found = next((u for u in self.users.values() if u.get("userId") == user_id), None)
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict | None:
+        found = next(
+            (u for u in self.users.values() if u.get("userId") == user_id and org_id in (None, u.get("orgId"))), None,
+        )
         await asyncio.sleep(0.01)
         return found
 

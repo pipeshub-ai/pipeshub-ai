@@ -173,7 +173,7 @@ class TestConfluencePersonalConnectorSync:
             
             # Verify creator email was resolved
             assert connector.creator_email == "creator@example.com"
-            connector.data_entities_processor.get_user_by_user_id.assert_called_once_with("test-user-123")
+            connector.data_entities_processor.get_user_by_user_id.assert_called_once_with("test-user-123", org_id="org-conf-personal-1")
 
     @pytest.mark.asyncio
     async def test_run_sync_skips_user_and_group_sync(self):

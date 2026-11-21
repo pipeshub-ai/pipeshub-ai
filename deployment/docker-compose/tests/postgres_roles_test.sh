@@ -51,9 +51,21 @@ for major in 17 18; do
     "pipeshub_backup,pipeshub_connectors_login,pipeshub_indexing_login,pipeshub_jobs,pipeshub_kv_login,pipeshub_migrate,pipeshub_node_login,pipeshub_query_login,pipeshub_ro"
   check "$major: a login holds a service role by SET only, never by inheritance" \
     "$(sql "select count(*) from pg_auth_members m join pg_roles r on r.oid=m.roleid join pg_roles u on u.oid=m.member where u.rolname like '%\\_login' and (m.inherit_option or not m.set_option)")" 0
+  # the shipped schemas plus those the build registers (postgres/extra-vetted-schemas), in the database's own (C) order
+  vetted_expected="$(for n in graph identity kernel kg platform retrieval $(sed -e 's/#.*//' postgres/extra-vetted-schemas); do echo "pipeshub_vetted_$n:false"; done | LC_ALL=C sort | paste -sd, -)"
   check "$major: the roles that own the schemas' SECURITY DEFINER functions exist, and none can log in" \
-    "$(sql "select string_agg(rolname||':'||rolcanlogin, ',' order by rolname) from pg_roles where rolname like 'pipeshub\\_vetted\\_%'")" \
-    "pipeshub_vetted_graph:false,pipeshub_vetted_identity:false,pipeshub_vetted_kernel:false,pipeshub_vetted_kg:false,pipeshub_vetted_platform:false,pipeshub_vetted_retrieval:false"
+    "$(sql "select string_agg(rolname||':'||rolcanlogin, ',' order by rolname collate \"C\") from pg_roles where rolname like 'pipeshub\\_vetted\\_%'")" \
+    "$vetted_expected"
+  # A schema listed in the extra file gets its vetted owner on the next run of the role script, which stays idempotent; a bad name changes nothing.
+  rolescript() { $DOCKER exec -u postgres -e PG_EXTRA_VETTED_FILE=/tmp/extra "$proj-postgres-1" sh -c "printf '%s\n' \"\$1\" > /tmp/extra && /usr/local/bin/pg-roles.sh" _ "$1" 2>&1; }
+  probe() { sql "select string_agg(r.rolname||':'||r.rolcanlogin||':'||coalesce(m.admin_option::text,'-')||':'||coalesce(m.inherit_option::text,'-')||':'||coalesce(m.set_option::text,'-'), ',') from pg_roles r left join pg_auth_members m on m.roleid=r.oid and m.member=(select oid from pg_roles where rolname='pipeshub_owner') where r.rolname='pipeshub_vetted_zz_probe'"; }
+  check "$major: before the extra schema is listed there is no owner role for it" "$(probe)" ""
+  rolescript zz_probe >/dev/null; check "$major: the role script creates the owner role of a listed schema (no login, ADMIN only for the owner role)" "$(probe)" "pipeshub_vetted_zz_probe:false:true:false:false"
+  rolescript zz_probe >/dev/null; check "$major: and a second run leaves it as it is" "$(probe)" "pipeshub_vetted_zz_probe:false:true:false:false"
+  out="$(rolescript 'Bad;name' || true)"; check "$major: a bad schema name stops the role script with a message" "$(echo "$out" | grep -c 'not a schema name')" 1
+  sql "drop role pipeshub_vetted_zz_probe" >/dev/null
+  out="$(rolescript $'zz_probe\nzz_probe' || true)"; check "$major: a name listed twice stops the role script before it creates anything" "$(echo "$out" | grep -c 'listed twice') $(probe)" "1 "
+  out="$(rolescript 'zz probe' || true)"; check "$major: a name with a space inside is refused, not joined" "$(echo "$out" | grep -c 'not a schema name') $(sql "select count(*) from pg_roles where rolname like 'pipeshub\\_vetted\\_zz%'")" "1 0"
   check "$major: pipeshub_ro has no password" "$(sql "select rolpassword is null from pg_authid where rolname='pipeshub_ro'")" t
   check "$major: stored verifiers are SCRAM" "$(sql "select count(*) from pg_authid where rolname like 'pipeshub\\_%' and rolpassword is not null and rolpassword not like 'SCRAM-SHA-256\$%'")" 0
   check "$major: pg_trgm and vector sit in schema ext" "$(sql "select string_agg(extname,',' order by extname) from pg_extension e join pg_namespace n on n.oid=e.extnamespace where n.nspname='ext' and extname in ('vector','pg_trgm')")" "pg_trgm,vector"

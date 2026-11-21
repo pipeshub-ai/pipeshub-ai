@@ -542,7 +542,7 @@ class TrashMixin(PgBase):
             self.logger.debug(f"📋 Record details - Origin: {origin}, Connector: {connector_name}, ConnectorId: {connector_id}")
 
             # Get user
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             if not user:
                 return {
                     "success": False,
@@ -746,7 +746,7 @@ class TrashMixin(PgBase):
                 }
 
             # Get user
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, org_id=org_id)
             if not user:
                 return {
                     "success": False,

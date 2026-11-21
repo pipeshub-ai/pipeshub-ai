@@ -70,7 +70,7 @@ class FakeGraphProvider:
     def add_user(self, user_id: str, *, key: str | None = None) -> None:
         self.users[user_id] = {"_key": key or user_id, "userId": user_id}
 
-    async def get_user_by_user_id(self, user_id: str) -> dict | None:
+    async def get_user_by_user_id(self, user_id: str, org_id: str | None = None) -> dict | None:
         return self.users.get(user_id)
 
     async def get_document(self, doc_id: str, collection: str) -> dict | None:

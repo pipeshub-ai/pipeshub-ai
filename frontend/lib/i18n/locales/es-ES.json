@@ -2666,7 +2666,8 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue editing"
-      }
+      },
+      "dataCollectionActive": "Se están recopilando datos de uso y se envían al servidor de métricas configurado. Desactívalo para detenerlo."
     },
     "mcpAccess": {
       "title": "Acceso MCP",

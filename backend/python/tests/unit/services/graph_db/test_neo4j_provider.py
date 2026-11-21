@@ -3470,14 +3470,14 @@ class TestVirtualAccessAndRecordLookup:
     @pytest.mark.asyncio
     async def test_get_accessible_kb_ids_excludes_hidden_by_default(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
-        await neo4j_provider._get_accessible_kb_ids("user-1")
+        await neo4j_provider._get_accessible_kb_ids("user-1", "org-1")
         params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
         assert params["includeHidden"] is False
 
     @pytest.mark.asyncio
     async def test_get_accessible_kb_ids_includes_hidden_when_flagged(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
-        await neo4j_provider._get_accessible_kb_ids("user-1", include_hidden=True)
+        await neo4j_provider._get_accessible_kb_ids("user-1", "org-1", include_hidden=True)
         params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
         assert params["includeHidden"] is True
 

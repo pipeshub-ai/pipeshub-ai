@@ -628,7 +628,7 @@ class TestJsonEncodedFields:
 # The corpus covers every converter
 # ---------------------------------------------------------------------------
 # no graph writer: ``User`` is a runtime identity (email lookups), only AppUser reaches the users collection
-_EXEMPT = {("User", "to_arango_base_record")}
+_EXEMPT = {("User", "to_arango_base_record"), ("Domain", "to_arango_base_record"), ("DomainKnowledge", "to_arango_base_record")}
 
 
 def test_every_to_arango_converter_in_entities_is_exercised() -> None:

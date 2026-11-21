@@ -402,8 +402,8 @@ async def test_an_org_argument_other_than_the_ambient_org_reaches_no_collection_
     await w.nodes("recordGroups", {"_key": "rgm", "connectorId": "conn"})
     await w.edge("permission", ("users", "c1"), ("recordGroups", "rgm"), type="USER", role="READER")
     assert (await w.p.get_entity_access_context("uid-c1", w.org))["record_group_ids"] == ["rgm"]
-    got = await w.p.get_entity_access_context("uid-c1", "another-org")
-    assert got["record_group_ids"] == [] and got["apps"] == []                                      # nothing of this org is reached under another org's name
+    # Under another org's name the user is not found in that org, so nothing of this org is reached.
+    assert await w.p.get_entity_access_context("uid-c1", "another-org") is None
 
 
 async def test_the_record_groups_a_user_reaches_by_each_grant_and_what_inherits_from_them(w: World) -> None:

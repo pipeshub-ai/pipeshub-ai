@@ -402,8 +402,72 @@ def test_extra_locations_read_from_the_edition_file(tmp_path, monkeypatch):
     assert locations.version_locations()[-1] == str(mod)
 
 
-def test_shipped_edition_seam_is_empty():
-    assert locations.extra_locations() == []
+def test_extra_vetted_schemas_read_from_the_edition_file(tmp_path, monkeypatch):
+    ed = tmp_path / "edition.py"
+    ed.write_text('EXTRA_VETTED_SCHEMAS = ["zz_a", "zz_b"]\n')
+    monkeypatch.setenv("PIPESHUB_EDITION_FILE", str(ed))
+    assert locations.extra_vetted_schemas() == ["zz_a", "zz_b"]
+    ed.write_text("EXTRA_MIGRATION_LOCATIONS = []\n")                  # an edition file that does not define it
+    assert locations.extra_vetted_schemas() == []
+    monkeypatch.setenv("PIPESHUB_EDITION_FILE", str(tmp_path / "missing.py"))
+    assert locations.extra_vetted_schemas() == []
+
+
+def test_extra_vetted_schemas_must_be_a_list(tmp_path, monkeypatch):
+    ed = tmp_path / "edition.py"
+    monkeypatch.setenv("PIPESHUB_EDITION_FILE", str(ed))
+    for value in ('"zzmod"', "None", "{'zz': 1}", "5"):
+        ed.write_text(f"EXTRA_VETTED_SCHEMAS = {value}\n")
+        with pytest.raises(TypeError, match="EXTRA_VETTED_SCHEMAS must be a list"):
+            locations.extra_vetted_schemas()
+
+
+@pytest.mark.parametrize("bad", ["zz_nl\n", "zz\n\n", " zz", "zz ", "Zz", "1zz", "zz-x", "zz;x", 'x"; DROP ROLE postgres; --', "", "é", 5, None, b"zz"])
+def test_bootstrap_refuses_a_malformed_schema_name_before_touching_the_server(bad, tmp_path, monkeypatch):
+    """Names come from the edition file or --vetted; none is created if any is malformed (no connection is used: it is checked first)."""
+    from db import bootstrap_roles
+
+    ed = tmp_path / "edition.py"
+    ed.write_text(f"EXTRA_VETTED_SCHEMAS = [{bad!r}]\n")
+    for edition, argument in ((str(ed), []), (str(tmp_path / "none.py"), [bad])):
+        monkeypatch.setenv("PIPESHUB_EDITION_FILE", edition)
+        with pytest.raises(ValueError, match="not a schema name"):
+            bootstrap_roles.bootstrap(None, argument)
+
+
+def test_bootstrap_refuses_a_string_where_a_list_is_expected(tmp_path, monkeypatch):
+    from db import bootstrap_roles
+
+    monkeypatch.setenv("PIPESHUB_EDITION_FILE", str(tmp_path / "none.py"))
+    with pytest.raises(TypeError, match="list of schema names"):
+        bootstrap_roles.bootstrap(None, "zzmod")
+
+
+def _build_defaults():
+    """What a build of the product registers: ``tests/support/edition_defaults.py`` (the one file a build that differs replaces), read by path."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "python" / "tests" / "support" / "edition_defaults.py"
+    spec = importlib.util.spec_from_file_location("_edition_defaults", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_shipped_edition_seam_is_empty(monkeypatch):
+    """The shipped edition file registers exactly what the build declares in edition_defaults (nothing in the default build)."""
+    monkeypatch.delenv("PIPESHUB_EDITION_FILE", raising=False)             # the shipped file, not the empty one the shared tests run with
+    defaults = _build_defaults()
+    assert locations.extra_locations() == [str(locations.BACKEND_DIR / p) for p in defaults.SHIPPED_MIGRATION_LOCATIONS]
+    assert locations.extra_vetted_schemas() == list(defaults.SHIPPED_VETTED_SCHEMAS)
+
+
+def test_the_compose_role_script_lists_the_vetted_schemas_the_edition_file_registers(monkeypatch):
+    """pg-roles.sh cannot read edition.py, so deployment/docker-compose/postgres/extra-vetted-schemas repeats EXTRA_VETTED_SCHEMAS."""
+    monkeypatch.delenv("PIPESHUB_EDITION_FILE", raising=False)
+    listed = [ln.split("#")[0].strip() for ln in (Path(__file__).resolve().parents[3] / "deployment/docker-compose/postgres/extra-vetted-schemas").read_text().splitlines()]
+    assert [x for x in listed if x] == locations.extra_vetted_schemas()
+
 
 
 def test_url_is_required_and_normalised(monkeypatch):

@@ -325,7 +325,9 @@ class FolderConnector(BaseConnector):
         return rec
 
     async def _owner_and_group(self) -> None:
-        raw = await self.data_entities_processor.get_user_by_user_id(user_id=self.created_by)
+        raw = await self.data_entities_processor.get_user_by_user_id(
+            user_id=self.created_by, org_id=self.data_entities_processor.org_id
+        )
         if raw is None:
             raise HTTPException(HttpStatusCode.BAD_REQUEST.value, "Folder owner could not be resolved")
         user = raw if isinstance(raw, User) else User.from_arango_user(raw)

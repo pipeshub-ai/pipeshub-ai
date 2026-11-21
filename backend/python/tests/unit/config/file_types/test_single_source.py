@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from app.config import file_types
+from tests.support.edition_defaults import hand_kept_file_type_lists_extra
 
 _APP = Path(__file__).resolve().parents[4] / "app"
 _REGISTRY = _APP / "config" / "file_types.py"
@@ -121,7 +122,7 @@ def _scan() -> Counter[str]:
 @pytest.mark.timeout(180)  # parses every module under app/
 def test_no_new_hand_kept_list_of_file_types() -> None:
     found = _scan()
-    allowed = {path: count for path, (count, _) in ALLOWED.items()}
+    allowed = {path: count for path, (count, _) in {**ALLOWED, **hand_kept_file_type_lists_extra()}.items()}
     new = {p: n for p, n in found.items() if n > allowed.get(p, 0)}
     stale = {p: n for p, n in allowed.items() if found.get(p, 0) < n}
     assert new == {}, f"derive these from app.config.file_types: {new}"

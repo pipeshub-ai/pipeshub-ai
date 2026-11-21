@@ -5,10 +5,11 @@ import inspect
 from unittest.mock import MagicMock
 
 from app import indexing_main
-from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
 from app.containers.utils.utils import ContainerUtils
+from app.edition_containers import ConnectorAppContainer
+from tests.support.edition_defaults import connector_service_keeps_an_entity_store
 
 
 async def test_factory_defaults_to_raising_on_mismatch() -> None:
@@ -33,7 +34,7 @@ def test_only_indexing_recreates() -> None:
 
 def test_the_connector_service_has_no_entity_store() -> None:
     """Its entity cleanup is published to the indexing service."""
-    assert not hasattr(ConnectorAppContainer, "entity_vector_store")
+    assert hasattr(ConnectorAppContainer, "entity_vector_store") is connector_service_keeps_an_entity_store()
 
 
 def test_indexing_starts_and_stops_the_rebuild_loop() -> None:
