@@ -3963,7 +3963,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     cancellation_owner=(
                         RunOwner(
                             user_id=user_context.get("userId", ""),
-                            org_id=user_context.get("orgId", ""),
+                            org_id=org_key,
                             conversation_id=chat_query.conversationId,
                         ) if is_service_account else None
                     ),
