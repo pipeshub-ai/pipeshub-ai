@@ -11,6 +11,7 @@ import itertools
 import pytest
 
 from app.config import file_types
+from app.modules.parsers.file_prep import prepare_file, prepared_labels
 from app.modules.pipeline import parser_identity as pi
 
 MIMES = [m for m in sorted(file_types.MIME_FORMATS) if m] + ["text/plain", "application/octet-stream", None]
@@ -27,7 +28,12 @@ def test_a_service_key_is_the_service_format_for_every_label_pair() -> None:
         key = pi.parser_key(mime, ext, _name(ext), "FILE", service=True)
         if key is None:
             continue
-        assert key.split("@")[0] == file_types.parse_format(mime, ext), (mime, ext)
+        # The service is sent the file as prepared: for a type that is prepared, the format of the prepared labels.
+        allowed = {file_types.parse_format(mime, ext)}
+        for file_type in (file_types.by_extension(ext), file_types.by_mime(mime)):
+            sent_ext, sent_mime = prepared_labels(file_type, ext, mime)
+            allowed.add(file_types.parse_format(sent_mime, sent_ext))
+        assert key.split("@")[0] in allowed, (mime, ext)
         checked += 1
     assert checked > 1000
 
@@ -48,3 +54,30 @@ def test_the_store_side_follows_the_process_setting(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("USE_PARSING_SERVICE", flag)
     assert pi.service_pipeline_configured() is expected
     assert (pi.parser_key("application/json", "csv", "a.csv", "FILE") == "json@1") is expected
+
+
+@pytest.mark.parametrize(
+    ("mime", "ext", "sent"),
+    [
+        ("application/vnd.ms-word.document.macroEnabled.12", "docm", "docx"),
+        ("application/vnd.openxmlformats-officedocument.wordprocessingml.template", "dotx", "docx"),
+        ("application/vnd.openxmlformats-officedocument.presentationml.template", "potx", "pptx"),
+        ("application/vnd.ms-powerpoint.presentation.macroEnabled.12", "pptm", "pptx"),
+    ],
+)
+def test_a_prepared_package_is_keyed_by_the_format_the_service_is_sent(mime: str, ext: str, sent: str) -> None:
+    """The service receives the plain package a macro-enabled or template file holds, so its key is the plain format's."""
+    assert pi.parser_key(mime, ext, f"f.{ext}", "FILE", service=True) == f"{sent}@1"
+
+
+def test_a_revision_bump_of_the_plain_format_reaches_the_prepared_ones(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(pi.PARSER_ROUTE_REV, "docx", 2)
+    assert pi.parser_key("application/vnd.ms-word.document.macroEnabled.12", "docm", "f.docm", "FILE", service=True) == "docx@2"
+
+
+@pytest.mark.asyncio
+async def test_the_labels_of_a_prepared_file_are_the_ones_the_key_assumes() -> None:
+    log = file_types.by_extension("log")
+    prepared = await prepare_file(b"a line\n", log, extension="unknown", mime_type="text/plain")
+    assert prepared is not None
+    assert (prepared.extension, prepared.mime_type) == prepared_labels(log, "unknown", "text/plain")

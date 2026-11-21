@@ -39,6 +39,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.file_types import Route
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
+from app.modules.parsers.file_prep import prepared_labels
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -137,7 +138,9 @@ def parser_key(
     if mime in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value):
         return None
     if service:
-        fmt = file_types.parse_format(mime, ext)
+        # The service is sent the file as prepared (a macro-enabled or template package as the plain one it holds).
+        sent_ext, sent_mime = prepared_labels(dispatch.file_type, ext, mime)
+        fmt = file_types.parse_format(sent_mime, sent_ext)
         return None if not fmt or fmt == "code" else f"{fmt}@{PARSER_ROUTE_REV.get(fmt, 1)}"
     return f"{dispatch.route.value}@{PARSER_ROUTE_REV.get(dispatch.route, 1)}"
 
