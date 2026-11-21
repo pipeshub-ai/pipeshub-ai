@@ -878,6 +878,17 @@ describe('the reader check: who may see an answer', () => {
       expect(JSON.stringify(withoutSteps(a))).to.not.include('thinking').and.not.include('step')
     })
 
+    it("says another person's answer lost its steps when it did, and only then", () => {
+      const steps = answer('R says.', { reasoning: [{ content: 'thinking' }], parts: [{ type: 'tool_call', resultSummary: 'step' }, { type: 'text', content: 'R says.' }] }, null)
+      expect(withoutSteps(steps)).to.include({ activityWithheld: true })
+      expect(withoutSteps(answer('R says.', { tools: [{ toolName: 'read' }] }, null))).to.include({ activityWithheld: true })
+      const plain = answer('R says.', { reasoning: [], tools: [] }, null)
+      expect(withoutSteps(plain)).to.not.have.property('activityWithheld')
+      // Cut already by the per-record view, which said so: it still says so.
+      expect(withoutSteps({ ...plain, activityWithheld: true })).to.include({ activityWithheld: true })
+      expect(withoutSteps(question('What does R say?'))).to.not.have.property('activityWithheld')
+    })
+
     describe("a call waiting on its asker's approval card", () => {
       const ARGUMENT = 'TITLE-FROM-THE-BOARD-DECK'
       const EXPIRES = 1_900_000_000_000
@@ -1533,6 +1544,23 @@ describe('the reader check: who may see an answer', () => {
       expect(JSON.stringify(carol.rows[1])).to.not.include('thinking about R')
       const dana = await readerView(reader(DANA), session, [q, a], { deps: w.deps, member: true, perRecordView })
       expect(JSON.stringify(dana.rows[1])).to.include('R-step')
+    })
+
+    it("tells a reader of another person's answer that its steps were left out, and never its asker", async () => {
+      const q = question('What does R say?')
+      const a = answer('R says.', { reasoning: [{ content: 'thinking about R' }], parts: [{ type: 'tool_call', resultSummary: 'R-step' }, { type: 'text', content: 'R says.' }] }, { direct: { records: [R] } })
+      a.provenance = label({ direct: { records: [R] } }, String(a.labelVer), labelContentHash(String(a.content), a.parts))
+      const plain = answer('R says it plainly.', {}, { direct: { records: [R] } })
+      const w = world([q, a, plain])
+      const perRecordView = async <M extends object>(rows: M[]): Promise<M[]> => rows
+      const carol = await readerView(reader(CAROL), session, [q, a, plain], { deps: w.deps, member: true, perRecordView })
+      expect(carol.rows[1]).to.include({ activityWithheld: true })
+      expect(carol.rows[2], 'nothing was left out').to.not.have.property('activityWithheld')
+      expect(carol.rows[0]).to.not.have.property('activityWithheld')
+      const dana = await readerView(reader(DANA), session, [q, a, plain], { deps: w.deps, member: true, perRecordView })
+      for (const row of dana.rows) expect(row).to.not.have.property('activityWithheld')
+      const bob = await readerView(reader(BOB), session, [q, a], { deps: w.deps, member: true, perRecordView })
+      expect(bob.rows[1], 'a hidden answer says nothing of its steps').to.not.have.property('activityWithheld')
     })
 
     it("another person's quoted excerpt is left out; a reply's excerpt shows only to readers of the answer it quotes", async () => {

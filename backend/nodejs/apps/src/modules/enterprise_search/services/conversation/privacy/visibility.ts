@@ -4041,7 +4041,8 @@ const approvalCardStubs = (
 /**
  * Another person's answer as a reader who may see it gets it: no steps, reasoning or tool output. A call that waited
  * on its asker's approval card stays as a stub (`approvalCardStub`), read from `stored`, the row as it is stored: the
- * per-record view has already cut another person's parts to their text.
+ * per-record view has already cut another person's parts to their text. An answer that loses any of it here says so
+ * (`activityWithheld`), as one the per-record view cut already does.
  */
 export function withoutSteps<T extends object>(
   row: T,
@@ -4053,6 +4054,12 @@ export function withoutSteps<T extends object>(
   // carries the steps of a run.
   if (r.messageType !== 'bot_response' && r.messageType !== 'error') return row;
   const view: Plain = { ...r };
+  const withheld =
+    (Array.isArray(r.reasoning) && r.reasoning.length > 0) ||
+    (Array.isArray(r.tools) && r.tools.length > 0) ||
+    (Array.isArray(r.parts) &&
+      (r.parts as unknown[]).some((p) => isPlain(p) && p.type !== 'text'));
+  if (withheld) view.activityWithheld = true;
   if ('reasoning' in view) view.reasoning = [];
   if ('tools' in view) view.tools = [];
   if (Array.isArray(r.parts)) {
