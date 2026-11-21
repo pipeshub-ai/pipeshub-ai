@@ -122,5 +122,3 @@ export const feedbackReceived = (
 ): string => compileTemplate(feedbackReceivedTemplate, templateData);
 export const feedbackCopy = (templateData: Record<string, unknown>): string =>
   compileTemplate(feedbackCopyTemplate, templateData);
-
-
