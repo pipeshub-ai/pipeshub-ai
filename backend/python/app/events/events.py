@@ -1898,6 +1898,7 @@ class EventProcessor:
             record_version = event_data.get("version", 0)
             connector = event_data.get("connectorName", "")
             extension = event_data.get("extension", "unknown")
+            # Resolved by the record handler: the stored mime when the event names none.
             mime_type = event_data.get("mimeType", "unknown")
             origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")

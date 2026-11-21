@@ -266,6 +266,13 @@ const fetchConnectorSnapshot = async (
 /** Waits (ms) before each attempt to read the connector settings for a schedule reconcile. */
 const RECONCILE_RETRY_WAITS_MS = [0, 5_000, 30_000];
 
+/** With the instance read before it, under the ~90 s a browser or proxy waits, so the user gets
+ * an answer rather than a dropped connection. A timed-out toggle is not retried: the connector
+ * service may still be writing it. */
+export const CONNECTOR_TOGGLE_TIMEOUT_MS = 60_000;
+/** The read a sync toggle makes before it; a plain lookup, so far shorter than the toggle. */
+export const CONNECTOR_TOGGLE_READ_TIMEOUT_MS = 10_000;
+
 const fireConnectorScheduleReconcile = (
   scheduler: CrawlingSchedulerService,
   req: AuthenticatedUserRequest,
@@ -1413,7 +1420,7 @@ export const toggleConnectorInstance =
   ): Promise<void> => {
     try {
       const { connectorId } = req.params;
-      const { type, fullSync, deviceId, deviceName } = req.body;
+      const { type, enabled, fullSync, deviceId, deviceName } = req.body;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
@@ -1435,9 +1442,12 @@ export const toggleConnectorInstance =
           connectorId,
           appConfig,
           headers,
+          { timeoutMs: CONNECTOR_TOGGLE_READ_TIMEOUT_MS },
         );
         ownerDeviceName = instance.ownerDeviceName;
-        if (instance.isActive === false) {
+        // An off connector asked to stay off is left alone by the service, so
+        // only a real enable needs a device that can serve the pull.
+        if (instance.isActive === false && enabled !== false) {
           const refusal = localFsSyncRefusal(req.user?.orgId, instance, {
             fallbackUserId: req.user?.userId,
             requestDeviceId: deviceId,
@@ -1455,10 +1465,12 @@ export const toggleConnectorInstance =
       }
       const body: {
         type: string;
+        enabled?: boolean;
         fullSync?: boolean;
         deviceId?: string;
         deviceName?: string;
       } = { type };
+      if (typeof enabled === 'boolean') body.enabled = enabled;
       if (typeof fullSync === 'boolean') {
         body.fullSync = fullSync;
       }
@@ -1469,6 +1481,12 @@ export const toggleConnectorInstance =
         HttpMethod.POST,
         headers,
         body,
+        {
+          timeoutMs: CONNECTOR_TOGGLE_TIMEOUT_MS,
+          // A request naming the state it wants can be sent again after a
+          // dropped connection; a flip sent twice turns the connector back.
+          retries: typeof enabled === 'boolean' ? 3 : 1,
+        },
       );
 
       const isSuccess =

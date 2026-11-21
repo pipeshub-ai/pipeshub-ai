@@ -31,6 +31,7 @@ from app.services.graph_db.postgres.base import (
     _node,
     _pgbool,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -407,7 +408,7 @@ class RecordsMixin(PgBase):
         except Exception as e:
             if fields:
                 raise        # with ``fields`` (a Force reindex's request) a lost write must not be read as a request that was made
-            self.logger.error("Failed to update records to %s: %s", status, e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
 
     async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
         """Set ``fields`` on each existing record that is neither internal nor a placeholder, whatever its status; the

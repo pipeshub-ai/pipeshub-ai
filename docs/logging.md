@@ -673,8 +673,8 @@ sign-in belongs to; MCP: `mcp_server_id` and `owner_id`), `provider` (the connec
 `provider`), and the org as a job context when nothing else bound one. A timer
 firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
 written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
-rejected our client, a token URL that cannot be sent to, a 2xx answer with no token, or a token whose `created_at` or
-`expires_in` cannot be parsed, `reason=malformed_token`) is ERROR with a stack once per credential
+rejected our client, a token URL that cannot be sent to, a 2xx answer with no token, or a token field that cannot be
+parsed, `reason=malformed_token`: `created_at` or `expires_in` for connectors and toolsets, any token field for MCP) is ERROR with a stack once per credential
 per hour and DEBUG in between. A 2xx answer whose `error` is a dead-grant code (`invalid_grant`, `bad_refresh_token`, ...) is
 `auth_expired`, like the same code on a 400: the user signs in again. A 2xx answer whose `error` says the provider is busy or down is `unavailable`, `rate_limited` or `upstream_5xx`,
 and a programming error raised while handling one stays `internal`. `trigger` is set by the refresh
@@ -712,13 +712,21 @@ which every Postgres graph provider runs through) write one record per call that
 | `db.query.slow` | WARNING | `backend`, `op`, `site`, `caller`, `duration_ms`, `threshold_ms`; Postgres `db_request_id` |
 | `db.query.retry` | WARNING | `backend=neo4j`, `op`, `reason=connection_lost`, `error_type` |
 | `db.connect.failed`, `db.disconnect.failed`, `db.schema.failed`, `db.edge.failed` | `log_failure` | `backend`, `op` (schema or edge) |
+| `graph.provider.step_failed` | `log_failure` with `include_error_text=False`; an explicit level where the step says so (DEBUG for an expected fallback such as full-text search being unavailable); the PostgreSQL code-graph sweep's per-org line is a `log_event` at WARNING, with `error_class` and `error_type` and no stack, because the pass raises its first failure after the loop and that handler logs it | `op` (the provider method), `step` (snake_case: `departments_seed`, `kh_scope_page_enrichment`, `rollback`, `batch_delete`, ...; Neo4j schema setup names the statement group, such as `unique id constraints`, and adds `statement`, our own DDL), and the step's id fields (`connector_id`, `record_id`, `agent_id`, `kb_id`, `collection`, `target_org_id`, `attempt`) |
+| `graph.provider.failed` | `log_failure` with `include_error_text=False` | `op` (the provider method that answered its default instead of raising) |
+| `graph.provider.duplicates_removed` | WARNING | `op=ensure_pipeline_schema`, `removed` (stage states removed so their unique constraint could be created) |
 
 - **A graph provider that re-raises writes nothing.** A Neo4j, ArangoDB or PostgreSQL provider method whose handler re-raises
   (as is, or `raise … from e`) has no log line of its own: `db.query.failed` (with `caller`, the provider line) and the handler
   that catches the exception are the record of that failure. A Neo4j knowledge-hub listing that ran out of transaction memory
   still writes `kh.listing.out_of_memory` (WARNING, `connector_id`, `duration_ms`, no error) before it is refused as too large or
-  busy. A handler that logs and carries on with a fallback is not a re-raising handler: the knowledge-hub listing's scope-page
-  enrichment still logs a WARNING (with the driver's text, for now) before it runs the full query, which may then re-raise.
+  busy.
+- **A graph provider step that fails and carries on writes one text-free line.** A handler that goes on (a best-effort step,
+  a fallback, a rollback after a failure, one batch of several) writes `graph.provider.step_failed` with `op` and `step`
+  through `log_failure(..., include_error_text=False)`, never a logger call of its own: the provider also catches errors that are
+  not the driver's (a row's validation, a `KeyError` naming a value), so the text is left out even when nothing stamped it.
+  Where such a handler can also re-raise (`if raise_on_error: raise`), the raise comes first, so a re-raised failure is logged
+  once, by the handler that catches it. A public method whose whole body is the `try` writes `graph.provider.failed`.
 
 - **One record per call, outside the client's own retries.** A write conflict the ArangoDB or Neo4j client retries and wins
   writes nothing; one it gives up on writes one record. Retries above the client (`KernelDB.run`, the KB push, a provider
@@ -1044,7 +1052,7 @@ with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest 
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
   `mcp_server_id`, `toolset_id`, `job`, `template_id`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
   `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Node
-  audit lines also have `actor`, `target`, `group_id` and `auth_method`. Python also has `ctx_kind`, `ctx_source`, `error_message`
+  audit lines also have `actor`, `target`, `group_id` and `auth_method`. Python also has `ctx_kind`, `ctx_source`, `target_org_id` (the org a cross-org job acted on, outside its bound context), `error_message`
   and `cause_type`; Node's `error` is an object (`error.message`). Node also has `upstream` and `network_code` (on
   `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on `chat_stream.*`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.

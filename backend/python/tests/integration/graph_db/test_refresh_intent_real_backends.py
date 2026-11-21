@@ -266,3 +266,46 @@ async def test_a_clear_that_names_the_time_it_read_does_not_undo_a_renewal(store
     assert (await store.doc("t"))[ri.ID_FIELD] == "mine"
     assert await ri.clear_intent(store.graph, k, "mine", expected_at=9)
     assert ri.ID_FIELD not in await store.doc("t")
+
+
+def _previous_release_schema() -> dict:
+    """The record schema of the release before the refresh fields (generation 3): without them, closed."""
+    import copy
+
+    from app.schema.arango.documents import RECORD_SCHEMA_GENERATION, record_schema
+
+    previous = copy.deepcopy(record_schema)
+    for name in (ri.ID_FIELD, ri.AT_FIELD, ri.DONE_ID_FIELD):
+        previous["rule"]["properties"].pop(name)
+    previous["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION - 1}"
+    return previous
+
+
+async def test_an_older_process_starting_does_not_narrow_away_the_refresh_fields_and_a_newer_one_widens_them_back(arango_store: _Store) -> None:
+    """Rolling deploy with the schema guard: a process of the previous release applies its (generation 3) schema at start, which must not
+    replace the live generation that lists the fields; and when the live schema is that older one, this release's start widens it."""
+    from app.schema.arango.documents import RECORD_SCHEMA_GENERATION, record_schema
+    from app.services.graph_db.arango.record_schema_guard import generation_of_schema
+
+    store = arango_store
+    provider = store.graph
+    client = provider.http_client  # type: ignore[attr-defined]
+    k = await store.add("rd", **ri.intent_fields("A", 1))
+    assert RECORD_SCHEMA_GENERATION >= 4
+
+    async def live_generation() -> int:
+        session = await client._get_session()
+        async with session.get(f"{client.base_url}/_db/{client.database}/_api/collection/{RECORDS}/properties") as resp:
+            return generation_of_schema({"rule": (await resp.json()).get("schema", {}).get("rule", {})}) or 0
+
+    assert await provider._apply_schema(RECORDS, _previous_release_schema()) is True        # type: ignore[attr-defined]
+    assert await live_generation() == RECORD_SCHEMA_GENERATION, "an older generation must not narrow the live one"
+    await ri.clear_intent(provider, k, "A", {ri.DONE_ID_FIELD: "A"})                        # a record holding the new fields stays writable
+    assert (await store.doc("rd"))[ri.DONE_ID_FIELD] == "A"
+
+    await _put_record_schema(store, _previous_release_schema())                              # the live schema is the older release's
+    assert await live_generation() == RECORD_SCHEMA_GENERATION - 1
+    assert await provider._apply_schema(RECORDS, record_schema) is True                      # type: ignore[attr-defined]
+    assert await live_generation() == RECORD_SCHEMA_GENERATION
+    await provider.update_record_fields_for_ids([k], ri.intent_fields("B", 2))              # and the fields are writable again
+    assert (await store.doc("rd"))[ri.ID_FIELD] == "B"

@@ -236,6 +236,14 @@ class TestStoreOnlyRun:
         sent = harness.runs[0]["payload"]
         assert sent["recordName"] == "deck.pptx" and sent["origin"] == "CONNECTOR" and sent["extension"] == "pptx"
 
+    @pytest.mark.parametrize("mime", [None, "", "unknown"])
+    async def test_an_event_without_a_mime_is_read_with_the_stored_one(self, mime: str | None) -> None:
+        harness = Harness(_record())
+
+        await harness.run(_payload(mimeType=mime))
+
+        assert harness.runs[0]["payload"]["mimeType"] == PPTX
+
     async def test_an_unsupported_type_is_marked_and_its_status_is_left_alone(self) -> None:
         harness = Harness(_record(mimeType="application/x-unknown", extension="xyz", recordName="data.xyz"))
 

@@ -18344,7 +18344,10 @@ components:
           enum:
             - sync
             - agent
-          description: '''sync'' flips data synchronization; ''agent'' flips use by agents'
+          description: '''sync'' is data synchronization; ''agent'' is use by agents'
+        enabled:
+          type: boolean
+          description: The state wanted. Omitted, the current state is flipped.
         fullSync:
           type: boolean
           description: When turning sync on, start from scratch
@@ -60916,9 +60919,12 @@ paths:
         - Connector Control
       summary: Toggle connector sync or agent
       description: |
-        Flip a connector's sync or agent use: each call turns it on when it is off and
-        off when it is on. Read <code>isActive</code> / <code>isAgentActive</code> first. Turning sync on
-        starts the first sync.<br><br>
+        Turn a connector's sync or agent use on or off. Send <code>enabled</code> with the state you
+        want: a call for the state the connector is already in changes nothing and answers
+        <code>changed: false</code>, so a request can be sent again safely after a dropped connection
+        or a timeout. Without <code>enabled</code> the call flips the current state (on when off, off
+        when on); sent twice, that turns the connector back, so read <code>isActive</code> /
+        <code>isAgentActive</code> first. Turning sync on starts the first sync.<br><br>
         <b>Toggle Types:</b><br>
         <ul>
         <li><code>sync</code> - data synchronization</li>
@@ -60961,7 +60967,7 @@ paths:
               $ref: '#/components/schemas/ConnectorToggleRequest'
       responses:
         '200':
-          description: Flipped
+          description: The connector is in the requested state
           content:
             application/json:
               schema:
@@ -60969,6 +60975,12 @@ paths:
                 properties:
                   success:
                     type: boolean
+                  enabled:
+                    type: boolean
+                    description: The state sync or agent use is in now
+                  changed:
+                    type: boolean
+                    description: False when the connector was already in the requested state
                   message:
                     type: string
                 required:
@@ -61008,6 +61020,13 @@ paths:
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '504':
+          description: The connector service did not answer in time. The change may still have
+            been made; read the connector before sending a flip again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:

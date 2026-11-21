@@ -15,6 +15,10 @@ instead of admitting more work it can't yet process.
 One coordinator per process, shared by every service client and consumer:
 clients signal it from the worker loop and consumers read it on the main
 loop, so every access takes a thread lock.
+
+``BackpressureEpisode`` is the other half: per consumer, it decides when the
+indexing consumers log that their own reads are held back (engaged / cleared),
+once per episode rather than once per loop turn.
 """
 from __future__ import annotations
 
@@ -30,6 +34,43 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+# A finish frees an index permit for one loop turn and that turn's dispatch takes it back, so a backpressure
+# episode ends only once later turns have seen it stay clear for this long: one WARNING and one INFO per episode.
+BACKPRESSURE_CLEAR_SETTLE_SECONDS = 5.0
+
+
+class BackpressureEpisode:
+    """When a consumer logs backpressure: ``engaged()`` is True on the turn an episode starts, ``cleared(now)`` on
+    the turn it ends. Log state only; pausing reads stays with the caller."""
+
+    def __init__(self) -> None:
+        self._open = False
+        self._clear_since: float | None = None
+
+    @property
+    def open(self) -> bool:
+        return self._open
+
+    def engaged(self) -> bool:
+        self._clear_since = None
+        started = not self._open
+        self._open = True
+        return started
+
+    def cleared(self, now: float) -> bool:
+        if not self._open:
+            return False
+        if self._clear_since is None:
+            self._clear_since = now
+        if now - self._clear_since < BACKPRESSURE_CLEAR_SETTLE_SECONDS:
+            return False
+        self.reset()
+        return True
+
+    def reset(self) -> None:
+        self._open = False
+        self._clear_since = None
 
 
 class BackpressureCoordinator:
