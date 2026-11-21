@@ -297,6 +297,13 @@ the auth middleware bound.
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
   is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
   token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.
+- `connector.route.failed` (`log_failure`, no text), `op=rollback`: a connector create (`connectors/api/router.py`) that fails
+  after its instance write takes back its config and then the instance (an OAuth app it created or updated is left as it is).
+  `step` is the one it could not undo, `config` or `instance` (also when the instance's own org edge was not written), with
+  `connector_id`. It stops there, and the instance stays for the admin to finish or delete. After a failed `step=instance` the
+  org edge is put back when the graph answers. Where it did not (ArangoDB removes a connector's edges before its node), the
+  instance is missing from the connector list but still holds its name: `DELETE /api/v1/connectors/<connector_id>` with the
+  logged id starts its removal. The request's failure is on its own line.
 
 ## Connector sync runs
 
