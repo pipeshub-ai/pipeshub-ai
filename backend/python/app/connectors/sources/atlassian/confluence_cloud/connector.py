@@ -102,9 +102,18 @@ from app.connectors.sources.atlassian.core.auth_fields import (
 from app.connectors.sources.atlassian.core.confluence_access import (
     _is_folder,
     apply_page_access_to_dependents,
+    group_key,
     listing_modified_after,
+    read_page,
     unresolved_principal_permission,
+    user_key,
     v1_next_start,
+)
+from app.connectors.sources.atlassian.core.confluence_access import (
+    content_id as listed_item_id,
+)
+from app.connectors.sources.atlassian.core.confluence_access import (
+    principal_id as listed_principal_id,
 )
 from app.connectors.sources.atlassian.core.confluence_html import (
     HtmlImageContext,
@@ -222,8 +231,15 @@ RESTRICTION_LISTING_LIMIT = 100
 def read_restriction_fingerprint(item: dict[str, Any]) -> str | None:
     """Who a listed item's own read restriction names; None when it has none."""
     read = ((item.get("restrictions") or {}).get("read") or {}).get("restrictions") or {}
-    users = read.get("user") or {}
-    groups = read.get("group") or {}
+    users = read.get("user", {"results": []})
+    groups = read.get("group", {"results": []})
+    if any(
+        read_page({k: v for k, v in listing.items() if k not in ("size", "totalSize")} if isinstance(listing, dict) else listing)
+        is None
+        for listing in (users, groups)
+    ):
+        # Not read in full: it can't be compared, so the item is always checked again.
+        return f"unlisted@{time.time()}"
     names = sorted(str(u.get("accountId")) for u in users.get("results") or [] if isinstance(u, dict))
     names += sorted(
         f"group:{g.get('id') or g.get('name')}" for g in groups.get("results") or [] if isinstance(g, dict)
@@ -1282,7 +1298,12 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 response_data = response.json()
-                users_data = response_data.get("results", [])
+                page = read_page(response_data, lambda r: user_key(r["user"] if isinstance(r.get("user"), dict) else r))
+                if page is None:
+                    self._note_problem("A page of the Confluence user list was not read in full")
+                    user_list_complete = False
+                    break
+                users_data = page.results
 
                 if not users_data:
                     break
@@ -1641,13 +1662,16 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 response_data = response.json()
-                groups_data = response_data.get("results", [])
+                page = read_page(response_data, group_key)
+                if page is None:
+                    # Removal must not see a page it could not read as deletions.
+                    self._note_problem("A page of the Confluence group list was not read in full")
+                    every_member_list_read = False
+                    group_list_complete = False
+                    break
+                groups_data = page.results
 
                 if not groups_data:
-                    if (response_data.get("_links") or {}).get("next"):
-                        # Only a missing next link ends the list; removal must not see a gap as deletions.
-                        group_list_complete = False
-                        self._note_problem("The Confluence group list stopped early")
                     break
 
                 for group_data in groups_data:
@@ -1803,12 +1827,13 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 response_data = response.json()
-                spaces_data = response_data.get("results") if isinstance(response_data, dict) else None
-                if not isinstance(spaces_data, list):
-                    self.logger.error("❌ Space listing had no results list")
-                    self._note_problem("The Confluence space list came back without results; no space was removed")
+                space_page = read_page(response_data, listed_item_id)
+                if space_page is None:
+                    self.logger.error("A page of the space listing was not read in full")
+                    self._note_problem("A page of the Confluence space list was not read in full; no space was removed")
                     listing_complete = False
                     break
+                spaces_data = space_page.results
 
                 # Extract base URL from first response
                 self._remember_site_wiki_url(response_data)
@@ -1994,13 +2019,14 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 response_data = response.json()
-                items_data = response_data.get("results", [])
+                page = read_page(response_data, listed_item_id)
+                if page is None:
+                    listing_complete = False
+                    self._note_problem(f"Space {space_key}: a page of the folder list was not read in full")
+                    break
+                items_data = page.results
 
                 if not items_data:
-                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
-                    if (response_data.get("_links") or {}).get("next"):
-                        listing_complete = False
-                        self._note_problem(f"Space {space_key}: the folder list stopped early")
                     break
 
                 # Transform folders to FileRecords with permissions
@@ -2273,18 +2299,15 @@ class ConfluenceConnector(BaseConnector):
 
                 response_data = response.json()
                 self._remember_site_wiki_url(response_data)
-                items_data = response_data.get("results") if isinstance(response_data, dict) else None
-                if not isinstance(items_data, list):
-                    self.logger.error(f"❌ {content_type.capitalize()} listing for space {space_key} had no results list")
-                    self._note_problem(f"Space {space_key}: the {content_type} list came back without results")
+                content_page = read_page(response_data, listed_item_id)
+                if content_page is None:
+                    self.logger.error(f"A page of the {content_type} listing of space {space_key} was not read in full")
+                    self._note_problem(f"Space {space_key}: a page of the {content_type} list was not read in full")
                     listing_complete = False
                     break
+                items_data = content_page.results
 
                 if not items_data:
-                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
-                    if (response_data.get("_links") or {}).get("next"):
-                        listing_complete = False
-                        self._note_problem(f"Space {space_key}: the {content_type} list stopped early")
                     break
 
 
@@ -2357,7 +2380,10 @@ class ConfluenceConnector(BaseConnector):
                         # Process attachments - skip embedded images
                         children = item_data.get("children", {})
                         attachment_data = children.get("attachment", {})
-                        attachments = attachment_data.get("results", [])
+                        attachments = attachment_data.get("results", []) if isinstance(attachment_data, dict) else None
+                        if not isinstance(attachments, list) or not all(isinstance(a, dict) for a in attachments):
+                            attachments = []  # unread, not empty: attachments_complete stays False below
+                            attachment_data = {"size": 1}
                         # Only a list read in full can say an attachment is gone.
                         attachments_complete = not attachments and not attachment_data.get("size") and not (
                             attachment_data.get("_links") or {}
@@ -2689,10 +2715,11 @@ class ConfluenceConnector(BaseConnector):
             except Exception as e:
                 self.logger.warning(f"Could not search the {content_type}s of space {space_key}: {e}")
                 data = None
-            results = data.get("results") if isinstance(data, dict) else None
-            if not isinstance(results, list):
+            found_page = read_page(data, listed_item_id)
+            if found_page is None:
                 self._note_problem(problem, unread=False)
                 return None
+            results = found_page.results
             for item in results:
                 container = item.get("container") or {}
                 # An attachment on a comment names the comment; only pages and blog posts are synced.
@@ -3085,13 +3112,14 @@ class ConfluenceConnector(BaseConnector):
             except Exception as e:
                 self.logger.warning(f"Could not list the content of space {space_id}; nothing removed: {e}")
                 return None
-            results = data.get("results") if isinstance(data, dict) else None
-            if not isinstance(results, list):
+            listed_page = read_page(data, listed_item_id)
+            if listed_page is None:
                 self.logger.warning(
                     f"Could not list the content of space {space_id} "
-                    f"(HTTP {response.status if response else 'no response'}); nothing removed"
+                    f"(HTTP {response.status if response else 'no response'}, or a page not read in full); nothing removed"
                 )
                 return None
+            results = listed_page.results
             for item in results:
                 if isinstance(item, dict) and item.get("id"):
                     statuses[str(item["id"])] = str(item.get("status") or "current")
@@ -3199,10 +3227,11 @@ class ConfluenceConnector(BaseConnector):
                 except Exception as e:
                     self.logger.warning(f"Could not search space {space_key} for filtered-out content: {e}")
                     return None
-                results = data.get("results") if isinstance(data, dict) else None
-                if not isinstance(results, list):
+                found_page = read_page(data, listed_item_id)
+                if found_page is None:
                     self.logger.warning(f"Could not search space {space_key} for filtered-out content; nothing removed")
                     return None
+                results = found_page.results
                 found.update(str(item["id"]) for item in results if isinstance(item, dict) and item.get("id"))
                 next_url = (data.get("_links") or {}).get("next")
                 if not next_url:
@@ -3225,9 +3254,10 @@ class ConfluenceConnector(BaseConnector):
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_folders_v1(space_key=space_key, start=offset, cursor=cursor, limit=250)
             data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
-            results = data.get("results") if isinstance(data, dict) else None
-            if not isinstance(results, list):
+            folder_page = read_page(data, listed_item_id)
+            if folder_page is None:
                 return None
+            results = folder_page.results
             ids.update(str(item["id"]) for item in results if isinstance(item, dict) and item.get("id"))
             next_url = (data.get("_links") or {}).get("next")
             if not next_url:
@@ -3687,7 +3717,14 @@ class ConfluenceConnector(BaseConnector):
                 return None
 
             response_data = response.json()
-            audit_records = response_data.get("results", [])
+            audit_page = read_page(response_data)
+            if audit_page is None:
+                self._note_problem(
+                    "A page of the Confluence audit log was not read in full; restriction changes are read again next sync",
+                    unread=False,
+                )
+                return None
+            audit_records = audit_page.results
 
             if not audit_records:
                 break
@@ -3857,9 +3894,10 @@ class ConfluenceConnector(BaseConnector):
                 except Exception as e:
                     self.logger.warning(f"Could not read items of space {space_key} to update their access: {e}")
                     break
-                results = data.get("results") if isinstance(data, dict) else None
-                if not isinstance(results, list):
+                items_page = read_page(data, listed_item_id)
+                if items_page is None:
                     break
+                results = items_page.results
                 batch: list[tuple[Record, list[Permission]]] = []
                 for item in results:
                     item_id = str(item.get("id")) if isinstance(item, dict) else None
@@ -3911,10 +3949,11 @@ class ConfluenceConnector(BaseConnector):
             except Exception as e:
                 self.logger.warning(f"Could not list the restrictions in space {space_key}: {e}")
                 return None
-            results = data.get("results") if isinstance(data, dict) else None
-            if not isinstance(results, list):
+            restricted_page = read_page(data, listed_item_id)
+            if restricted_page is None:
                 self.logger.warning(f"Could not list the restrictions in space {space_key}")
                 return None
+            results = restricted_page.results
             for item in results:
                 if not isinstance(item, dict) or not item.get("id"):
                     continue
@@ -4015,7 +4054,12 @@ class ConfluenceConnector(BaseConnector):
                         break
 
                     response_data = response.json()
-                    content_items = response_data.get("results", [])
+                    titles_page = read_page(response_data, listed_item_id)
+                    if titles_page is None:
+                        self.logger.warning("The content found by titles was not read in full")
+                        has_failures = True
+                        break
+                    content_items = titles_page.results
 
                     if not content_items:
                         self.logger.debug(f"No content found for titles batch {i // batch_size + 1}")
@@ -4130,8 +4174,13 @@ class ConfluenceConnector(BaseConnector):
                     return None
 
                 response_data = response.json()
-                permissions_data = response_data.get("results", [])
-                next_url = (response_data.get("_links") or {}).get("next")
+                permissions_page = read_page(response_data, listed_principal_id)
+                if permissions_page is None:
+                    # Saving a list read only in part would take the rest of the grants away.
+                    self.logger.warning(f"A page of the permissions of space {space_name} was not read in full")
+                    return None
+                permissions_data = permissions_page.results
+                next_url = permissions_page.next_url
 
                 if not permissions_data:
                     if next_url:
@@ -4198,15 +4247,24 @@ class ConfluenceConnector(BaseConnector):
             more = False
             new = False
             step = self._RESTRICTION_PAGE
-            for restriction in response.json().get("results", []) or []:
+            restrictions_page = read_page(response.json())
+            if restrictions_page is None:
+                self.logger.warning(f"Restrictions of {page_id} were not read in full")
+                return None
+            for restriction in restrictions_page.results:
                 operation = restriction.get("operation")
                 target = merged.setdefault(operation, {
                     "operation": operation,
                     "restrictions": {"user": {"results": []}, "group": {"results": []}},
                 })
-                for kind in ("user", "group"):
-                    listing = (restriction.get("restrictions") or {}).get(kind) or {}
-                    entries = listing.get("results") or []
+                for kind, identify in (("user", user_key), ("group", group_key)):
+                    listing = (restriction.get("restrictions") or {}).get(kind, {"results": []})
+                    # A listing that isn't a page read in full, or names someone without an id, is unread.
+                    entries_page = read_page(listing, identify)
+                    if entries_page is None:
+                        self.logger.warning(f"The {kind} restrictions of {page_id} were not read in full")
+                        return None
+                    entries = entries_page.results
                     if isinstance(listing.get("totalSize"), int):
                         expected[(str(operation), kind)] = listing["totalSize"]
                     for entry in entries:
@@ -5468,7 +5526,13 @@ class ConfluenceConnector(BaseConnector):
                     return None
 
                 response_data = response.json()
-                members_data = response_data.get("results", [])
+                # A member page that isn't read in full (no results, a member without an id, an empty page that links
+                # onward) would save the group without the members it never read.
+                members_page = read_page(response_data, lambda m: user_key(m) or m.get("email"))
+                if members_page is None:
+                    self.logger.warning(f"A page of the members of group {group_name} was not read in full")
+                    return None
+                members_data = members_page.results
 
                 if not members_data:
                     break
@@ -6068,9 +6132,15 @@ class ConfluenceConnector(BaseConnector):
                         "listing failed; the rest are read again next sync"
                     )
                 return attachments, base_url, bool(attachments) or temporary
-            data = response.json() or {}
-            attachments.extend(data.get("results") or [])
-            links = data.get("_links") or {}
+            attachment_page = read_page(response.json(), listed_item_id)
+            if attachment_page is None:
+                self.logger.warning(
+                    f"A page of the attachments of {content_type} {content_id} was not read in full; "
+                    "the rest are read again next sync"
+                )
+                return attachments, base_url, True
+            attachments.extend(attachment_page.results)
+            links = attachment_page.links
             base_url = base_url or links.get("base")
             if not links.get("next"):
                 return attachments, base_url, False
@@ -6541,7 +6611,10 @@ class ConfluenceConnector(BaseConnector):
                     )
 
                 response_data = response.json()
-                comments_data = response_data.get("results", [])
+                comments_page = read_page(response_data, listed_item_id)
+                if comments_page is None:
+                    raise CommentsUnreadable(f"{comment_type} comments of {page_id}: a page was not read in full")
+                comments_data = comments_page.results
 
                 if not comments_data:
                     break
@@ -6628,7 +6701,10 @@ class ConfluenceConnector(BaseConnector):
                     )
 
                 response_data = response.json()
-                children_data = response_data.get("results", [])
+                children_page = read_page(response_data, listed_item_id)
+                if children_page is None:
+                    raise CommentsUnreadable(f"replies to comment {comment_id}: a page was not read in full")
+                children_data = children_page.results
 
                 if not children_data:
                     break

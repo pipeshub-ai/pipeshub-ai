@@ -838,6 +838,88 @@ class TestUsersAndGroups:
         assert db.members_of("eng") == ["alice@example.com", "bob@example.com"]
 
 
+NOT_A_PAGE = [
+    pytest.param({"size": 0, "_links": {"base": BASE}}, id="no-results"),
+    pytest.param({"results": None, "_links": {"base": BASE}}, id="null-results"),
+    pytest.param([], id="a-list-body"),
+    pytest.param({"results": [{}], "size": 1, "_links": {"base": BASE}}, id="an-item-without-an-id"),
+]
+
+
+class TestAnswersThatAreNotAPage:
+    """A 200 that isn't a page of results read in full is an unread read: stored state stays, the sync is incomplete."""
+
+    @pytest.mark.parametrize("answer", NOT_A_PAGE)
+    async def test_a_group_listing_that_is_not_a_page_is_incomplete(self, atlassian_api, db, store, answer) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/group", json_response(answer))
+
+        await connector._sync_user_groups()
+
+        assert connector.full_sync_coverage().complete is False, "no next link is not the end of a list it never read"
+
+    @pytest.mark.parametrize("answer", NOT_A_PAGE)
+    async def test_a_member_page_that_is_not_a_page_keeps_the_stored_members(self, atlassian_api, db, store, answer) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        people = [user("ana", "ana@example.com"), user("bob", "bob@example.com")]
+        with_directory(atlassian_api, people, {"eng": people})
+        await connector._sync_users()
+        await connector._sync_user_groups()
+        assert db.members_of("eng") == ["ana@example.com", "bob@example.com"]
+
+        atlassian_api.on("GET", f"{API}/group/eng/member", json_response(answer))
+        await connector._sync_user_groups()
+
+        assert db.members_of("eng") == ["ana@example.com", "bob@example.com"]
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.parametrize("answer", [
+        pytest.param({"results": []}, id="an-object-not-a-list"),
+        pytest.param(None, id="null"),
+        pytest.param("busy", id="a-string"),
+    ])
+    async def test_a_space_permission_body_that_is_not_a_list_keeps_the_stored_access(
+        self, atlassian_api, db, store, search, answer
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": []})
+        view = {"operationKey": "read", "targetType": "space"}
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response(
+            [{"operation": view, "subject": {"type": "group", "name": "eng"}}]))
+        await connector.run_sync()
+        assert {p.external_id for p in db.record_group_permissions["10"]} == {"eng"}
+
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response(answer))
+        await connector.run_sync()
+
+        assert {p.external_id for p in db.record_group_permissions["10"]} == {"eng"}, "not saved as no grants"
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.parametrize("listing", [
+        pytest.param({"results": [{}], "size": 1}, id="a-subject-without-an-id"),
+        pytest.param({"results": [{"name": ""}], "size": 1}, id="an-empty-name"),
+        pytest.param({"results": None}, id="null-results"),
+        pytest.param({"size": 1}, id="no-results"),
+    ])
+    async def test_a_bundled_subject_it_cannot_name_keeps_the_stored_access(
+        self, atlassian_api, db, store, search, listing
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": [], "ops": []})
+        read = {"operation": "read", "targetType": "space"}
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response([
+            {"operation": read, "subjects": {"group": {"results": [{"name": "eng"}, {"name": "ops"}], "size": 2}}}]))
+        await connector.run_sync()
+        assert {p.external_id for p in db.record_group_permissions["10"]} == {"eng", "ops"}
+
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response([
+            {"operation": read, "subjects": {"group": {"results": [{"name": "eng"}], "size": 1}, "user": listing}}]))
+        await connector.run_sync()
+
+        assert {p.external_id for p in db.record_group_permissions["10"]} == {"eng", "ops"}
+        assert connector.full_sync_coverage().complete is False
+
+
 class TestFullSyncCoverage:
     """A full sync that read only part of Confluence must not let the platform unlink what it did not see."""
 
@@ -939,8 +1021,11 @@ class TestSpacePermissions:
         {"operation": {"operation": "read", "targetType": "space"},
          "subjects": {"group": {"results": [], "size": 1}, "user": {"results": []}}},
         {"operation": {"operation": "read", "targetType": "space"}, "subjects": {"group": None, "user": {"results": []}}},
+        {"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "group"}},
+        {"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "user", "userKey": ""}},
     ], ids=["no-subject", "no-operation-key", "no-operation", "not-an-object", "bundled-no-results",
-            "bundled-results-not-a-list", "bundled-fewer-than-size", "bundled-listing-not-an-object"])
+            "bundled-results-not-a-list", "bundled-fewer-than-size", "bundled-listing-not-an-object",
+            "a-group-without-a-name", "a-user-with-an-empty-key"])
     async def test_an_unreadable_space_permission_keeps_the_stored_access(
         self, atlassian_api, db, store, search, entry
     ) -> None:
@@ -1868,13 +1953,14 @@ class TestSpaceGrantFailures:
 
         assert [p.email for p in db.record_group_permissions["10"]] == ["alice@example.com"]
 
-    async def test_unexpected_permission_payload_grants_nothing(self, atlassian_api, db, store, search) -> None:
+    async def test_an_unexpected_permission_payload_keeps_the_stored_access(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         atlassian_api.on("GET", f"{API}/space/ENG/permissions", {"unexpected": "shape"})
 
         await connector.run_sync()
 
-        assert db.record_group_permissions["10"] == []
+        assert "10" not in db.record_group_permissions, "a body that isn't a list is not \"no grants\""
+        assert connector.full_sync_coverage().complete is False
 
 
 class TestReindexMore:

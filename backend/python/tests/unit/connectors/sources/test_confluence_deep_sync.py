@@ -847,7 +847,7 @@ class TestFetchSpacePermissions:
         connector = _make_connector()
         ds = MagicMock()
         ds.get_space_permissions_assignments = AsyncMock(return_value=_resp(200, {
-            "results": [{"group": {"id": "g1"}, "operations": ["read"]}],
+            "results": [{"principal": {"type": "group", "id": "g1"}, "group": {"id": "g1"}, "operations": ["read"]}],
             "_links": {},
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -869,11 +869,11 @@ class TestFetchSpacePermissions:
             call_count += 1
             if call_count == 1:
                 return _resp(200, {
-                    "results": [{"group": {"id": "g1"}}],
+                    "results": [{"principal": {"type": "group", "id": "g1"}, "group": {"id": "g1"}}],
                     "_links": {"next": "/rest?cursor=abc"},
                 })
             return _resp(200, {
-                "results": [{"group": {"id": "g2"}}],
+                "results": [{"principal": {"type": "group", "id": "g2"}, "group": {"id": "g2"}}],
                 "_links": {},
             })
 

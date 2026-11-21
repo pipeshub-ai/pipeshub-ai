@@ -7,8 +7,8 @@ Authentication: API token (personal access token or HTTP basic with API token).
 """
 
 import asyncio
-import uuid
 import re
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
@@ -28,19 +28,24 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
-from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -49,7 +54,6 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -63,16 +67,24 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterApp
 from app.connectors.sources.atlassian.core.confluence_access import (
     _is_folder,
     apply_page_access_to_dependents,
+    group_key,
     listing_modified_after,
+    read_page,
     unresolved_principal_permission,
+    user_key,
     v1_next_start,
 )
-from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
-from app.connectors.sources.atlassian.core.people import confluence_people
+from app.connectors.sources.atlassian.core.confluence_access import (
+    content_id as listed_item_id,
+)
+from app.connectors.sources.atlassian.core.confluence_access import (
+    principal_id as listed_principal_id,
+)
 from app.connectors.sources.atlassian.core.confluence_dc_removal import (
     ConfluenceDataCenterRemovalMixin,
     ContentListing,
@@ -81,11 +93,12 @@ from app.connectors.sources.atlassian.core.confluence_dc_removal import (
     item_revision_marker,
     stored_map,
 )
+from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
 from app.connectors.sources.atlassian.core.confluence_sync import (
     save_synced_records,
     synced,
 )
-from app.sources.client.http.http_retry import call_with_retry
+from app.connectors.sources.atlassian.core.people import confluence_people
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -102,14 +115,9 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
+from app.sources.client.http.http_retry import call_with_retry
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
-from app.connectors.core.base.error.stream_errors import (
-    connector_not_ready,
-    map_source_status,
-    not_found_at_source,
-    to_stream_error,
-)
 
 # How far back each incremental sync re-reads before its checkpoint. CQL reads dates
 # in the site's time zone, not UTC; the admin's date filters are used as set.
@@ -737,19 +745,17 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     break
 
                 response_data = response.json()
-                users_data = response_data.get("results") if isinstance(response_data, dict) else None
-                if not isinstance(users_data, list):
-                    self.logger.error("Failed to fetch users: the user listing is not a page of results")
+                # An unread page (no results list, a user without an id, an empty page that links onward) withdraws
+                # nobody this run.
+                page = read_page(response_data, user_key if USE_DATA_CENTER_APIS else None)
+                if page is None:
+                    self.logger.error("Failed to fetch users: the user listing is not a page of results read in full")
                     self._sync_read_incomplete = True
                     read_complete = False
                     break
+                users_data = page.results
 
                 if not users_data:
-                    # An empty page that still links onward leaves users unread: withdraw nobody.
-                    if ((response_data.get("_links") or {}) if isinstance(response_data, dict) else {}).get("next"):
-                        self.logger.error("Failed to fetch users: an empty page of the user listing links to a next one")
-                        self._sync_read_incomplete = True
-                        read_complete = False
                     break
 
                 # Transform users (skip users without email)
@@ -863,13 +869,15 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     break
 
                 response_data = response.json()
-                groups_data = response_data.get("results", [])
+                page = read_page(response_data, group_key)
+                if page is None:
+                    # The groups after it would be left unwritten, and a full sync would unlink them.
+                    self.logger.error("Failed to fetch groups: a page of the group listing was not read in full")
+                    self._sync_read_incomplete = True
+                    break
+                groups_data = page.results
 
                 if not groups_data:
-                    if (response_data.get("_links") or {}).get("next"):
-                        # An empty page that links onward leaves groups unread.
-                        self.logger.error("Failed to fetch groups: an empty page of the group listing links to a next one")
-                        self._sync_read_incomplete = True
                     break
 
                 # Process each group and its members
@@ -991,10 +999,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     break
 
                 response_data = response.json()
-                spaces_data = response_data.get("results") if isinstance(response_data, dict) else None
-                if not isinstance(spaces_data, list):
-                    self.logger.error("❌ The space listing had no results list; no space is removed this sync")
+                page = read_page(response_data)
+                if page is None:
+                    self.logger.error("A page of the space listing was not read in full; no space is removed this sync")
                     break
+                spaces_data = page.results
                 listed_count = len(spaces_data)
 
                 # Extract base URL from first response
@@ -1112,9 +1121,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             )
             if not space_resp or space_resp.status != HttpStatusCode.SUCCESS.value:
                 return None, None, None
-            space_results = space_resp.json().get("results", [])
-            if not space_results:
+            space_page = read_page(space_resp.json())
+            if space_page is None or not space_page.results:
                 return None, None, None
+            space_results = space_page.results
             homepage = space_results[0].get("homepage") or {}
             homepage_id = str(homepage.get("id")) if homepage.get("id") else None
             homepage_title = homepage.get("title")
@@ -1408,19 +1418,17 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     break
 
                 response_data = response.json()
-                items_data = response_data.get("results") if isinstance(response_data, dict) else None
-                if not isinstance(items_data, list):
-                    self.logger.error(f"❌ {content_type.capitalize()} listing for space {space_key} had no results list")
+                page = read_page(response_data, listed_item_id)
+                if page is None:
+                    self.logger.error(f"A page of the {content_type} listing of space {space_key} was not read in full")
                     listing_complete = False
                     break
+                items_data = page.results
 
                 # Extract api_base_url from response root for URL construction
-                api_base_url = (response_data.get("_links") or {}).get("base")
+                api_base_url = page.base
 
                 if not items_data:
-                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
-                    if (response_data.get("_links") or {}).get("next"):
-                        listing_complete = False
                     break
 
 
@@ -1510,12 +1518,15 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         # Process attachments first (keep list in memory for comment embedded attachment resolution)
                         children = item_data.get("children", {})
                         attachment_data = children.get("attachment", {})
-                        inline_attachments = attachment_data.get("results", [])
-                        attachment_size = attachment_data.get("size", 0)
+                        inline_attachments = attachment_data.get("results") if isinstance(attachment_data, dict) else None
+                        attachment_size = attachment_data.get("size", 0) if isinstance(attachment_data, dict) else 0
+                        inline_readable = isinstance(inline_attachments, list) and all(
+                            isinstance(a, dict) and listed_item_id(a) for a in inline_attachments
+                        ) and isinstance(attachment_size, int)
 
-                        # Check if inline results are truncated (Confluence limits inline expansion to ~5-25 items)
-                        # If so, fetch attachments separately to avoid silent data loss
-                        if inline_attachments and len(inline_attachments) < attachment_size:
+                        # Check if inline results are truncated (Confluence limits inline expansion to ~5-25 items),
+                        # or not readable: then fetch attachments separately to avoid silent data loss
+                        if not inline_readable or (inline_attachments and len(inline_attachments) < attachment_size):
                             self.logger.debug(
                                 f"Inline attachments truncated for {content_type} {item_title} "
                                 f"({len(inline_attachments)}/{attachment_size}), fetching separately"
@@ -2040,11 +2051,15 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     self.logger.warning(f"⚠️ Failed to search content by titles: {response.status if response else 'No response'}")
                     continue
 
-                response_data = response.json()
-                content_items = response_data.get("results", [])
+                page = read_page(response.json(), listed_item_id)
+                if page is None:
+                    self.logger.warning(f"The content found by titles was not read in full (batch {i // batch_size + 1})")
+                    has_failures = True
+                    continue
+                content_items = page.results
 
                 # Extract api_base_url from response root for URL construction
-                api_base_url = (response_data.get("_links") or {}).get("base")
+                api_base_url = page.base
 
                 if not content_items:
                     self.logger.debug(f"No content found for titles batch {i // batch_size + 1}")
@@ -2302,14 +2317,14 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     return None
                 full_page = new = False
                 step = self._RESTRICTION_PAGE
-                for kind, out in (("user", users), ("group", groups)):
+                for kind, out, identify in (("user", users, user_key), ("group", groups, group_key)):
                     listing = restrictions.get(kind)
-                    entries = listing.get("results") if isinstance(listing, dict) else None
-                    count = listing.get("size") if isinstance(listing, dict) else None
-                    if not isinstance(entries, list) or (isinstance(count, int) and count > len(entries)):
-                        # A listing that is missing, or says it holds more than it returned, is unread, not empty.
-                        self.logger.error(f"View permissions of page {page_id} came back without their {kind} list")
+                    entries_page = read_page(listing, identify)
+                    if entries_page is None:
+                        # A listing that is missing, cut short, or names someone without an id is unread, not empty.
+                        self.logger.error(f"View permissions of page {page_id} came back without a readable {kind} list")
                         return None
+                    entries = entries_page.results
                     for entry in entries:
                         key = (kind, str(entry.get("userKey") or entry.get("username") or entry.get("name")
                                          or entry.get("id") or entry))
@@ -2383,13 +2398,17 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     )
                     break
 
-                response_data = response.json()
-                
+                page = read_page(response.json(), listed_item_id)
+                if page is None:
+                    self.logger.warning(f"A page of the attachments of content {content_id} was not read in full")
+                    self._sync_read_incomplete = True
+                    break
+
                 # Capture api_base_url from first response
                 if api_base_url is None:
-                    api_base_url = (response_data.get("_links") or {}).get("base")
-                
-                attachments = response_data.get("results", [])
+                    api_base_url = page.base
+
+                attachments = page.results
 
                 if not attachments:
                     break
@@ -2524,13 +2543,18 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     )
                     break
 
-                response_data = response.json()
-                comments_data = response_data.get("results", [])
+                page = read_page(response.json(), listed_item_id)
+                if page is None:
+                    # The comments it did not read would read as gone to a full sync.
+                    self.logger.warning(f"A page of the {comment_type} comments of {page_title} was not read in full")
+                    self._sync_read_incomplete = True
+                    break
+                comments_data = page.results
 
                 if not comments_data:
                     break
 
-                response_links = response_data.get("_links", {})
+                response_links = page.links
                 base_url = response_links.get("base")
 
                 for comment_data in comments_data:
@@ -2654,7 +2678,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
                         continue
 
-                next_url = response_data.get("_links", {}).get("next")
+                next_url = page.next_url
                 token = self._pagination_token_from_next_link(next_url) if next_url else None
                 if token is not None:
                     try:
@@ -2717,13 +2741,17 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     break
 
-                response_data = response.json()
-                children_data = response_data.get("results", [])
+                page = read_page(response.json(), listed_item_id)
+                if page is None:
+                    self.logger.warning(f"A page of the replies to comment {comment_id} was not read in full")
+                    self._sync_read_incomplete = True
+                    break
+                children_data = page.results
 
                 if not children_data:
                     break
 
-                response_links = response_data.get("_links", {})
+                response_links = page.links
                 base_url = response_links.get("base")
 
                 for child_data in children_data:
@@ -2841,7 +2869,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
                         continue
 
-                next_url = response_data.get("_links", {}).get("next")
+                next_url = page.next_url
                 token = self._pagination_token_from_next_link(next_url) if next_url else None
                 if token is not None:
                     try:
@@ -3365,12 +3393,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                 perm_entries = response.json()
                 if not isinstance(perm_entries, list):
+                    # A body that isn't the documented list is unread, not "no grants": the space keeps its stored grants.
                     self.logger.warning(
                         "Unexpected space permissions response shape for %s: expected list, got %s",
                         space_name,
                         type(perm_entries).__name__,
                     )
-                    return []
+                    return None
 
                 grants: list[tuple[dict[str, Any], str, Optional[str]]] = []
                 for entry in perm_entries:
@@ -3431,8 +3460,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         )
                         return None
 
-                    response_data = response.json()
-                    permissions_data = response_data.get("results", [])
+                    page = read_page(response.json(), listed_principal_id)
+                    if page is None:
+                        self.logger.warning("Cloud v2 space permissions of %s were not read in full", space_name)
+                        return None
+                    permissions_data = page.results
 
                     if not permissions_data:
                         break
@@ -3442,7 +3474,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         if permission:
                             permissions.append(permission)
 
-                    next_url = response_data.get("_links", {}).get("next")
+                    next_url = page.next_url
                     if not next_url:
                         break
 
@@ -3509,19 +3541,21 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             return None
         target_type = operation.get("targetType")
         if isinstance(entry.get("subject"), dict):
-            subjects = [entry["subject"]]
+            subject = entry["subject"]
+            identify = {"user": user_key, "group": group_key}.get(subject.get("type"))
+            if identify is not None and not identify(subject):
+                return None  # a user or group it can't name is unread, not nobody
+            subjects = [subject]
         elif isinstance(entry.get("subjects"), dict) or entry.get("anonymousAccess") is True:
             bundled = entry.get("subjects") or {}
             subjects = []
-            for kind in ("user", "group"):
-                # A listing that isn't there names nobody of that kind; one that is there must be read in full.
-                listing = bundled.get(kind, {"results": []})
-                results = listing.get("results") if isinstance(listing, dict) else None
-                count = listing.get("size") if isinstance(listing, dict) else None
-                if not isinstance(results, list) or (isinstance(count, int) and count > len(results)) or \
-                        not all(isinstance(r, dict) for r in results):
-                    return None  # a listing missing, cut short or of another shape is unread, not empty
-                subjects += [{**r, "type": kind} for r in results]
+            for kind, identify in (("user", user_key), ("group", group_key)):
+                # A listing that isn't there names nobody of that kind; one that is there must be read in full, and
+                # each subject in it must say who it is.
+                listing = read_page(bundled.get(kind, {"results": []}), identify)
+                if listing is None:
+                    return None
+                subjects += [{**r, "type": kind} for r in listing.results]
             if entry.get("anonymousAccess") is True:
                 subjects.append({"type": "anonymous"})
         else:
@@ -3561,13 +3595,14 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             elif subject.get("type") == "group" and subject.get("name"):
                 start = 0
                 while True:
-                    page = await datasource.get_group_members_by_name(group_name=subject["name"], start=start, limit=200)
-                    data = page.json() if page and page.status == HttpStatusCode.SUCCESS.value else None
-                    members = data.get("results") if isinstance(data, dict) else None
-                    if not isinstance(members, list):
+                    response = await datasource.get_group_members_by_name(group_name=subject["name"], start=start, limit=200)
+                    data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+                    member_page = read_page(data, user_key)
+                    if member_page is None:
                         self.logger.error(f"Could not read the members of {subject['name']}, which holds \"Can use\"")
                         return None
-                    holders.update(str(m.get("userKey") or m.get("key")) for m in members if m.get("userKey") or m.get("key"))
+                    members = member_page.results
+                    holders.update(user_key(m) for m in members)
                     try:
                         next_start = v1_next_start(data, start, len(members), 200, use_link_offset=False)
                     except ValueError as e:
@@ -4526,13 +4561,15 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     return None
 
                 response_data = response.json()
-                members_data = response_data.get("results", [])
+                # A member is named by user key or, where the listing gives no key, by email.
+                page = read_page(response_data, (lambda m: user_key(m) or m.get("email")) if USE_DATA_CENTER_APIS else None)
+                if page is None:
+                    # Saving the members read so far would drop the ones on the pages it never read.
+                    self.logger.warning(f"Keeping the stored members of group {group_name}: a page of them was not read in full")
+                    return None
+                members_data = page.results
 
                 if not members_data:
-                    if (response_data.get("_links") or {}).get("next"):
-                        # Saving the members read so far would drop the ones on the pages it never read.
-                        self.logger.warning(f"Keeping the stored members of group {group_name}: an empty page links onward")
-                        return None
                     break
 
                 for member_data in members_data:

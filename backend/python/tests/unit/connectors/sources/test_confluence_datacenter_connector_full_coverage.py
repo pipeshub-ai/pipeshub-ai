@@ -545,14 +545,14 @@ class TestFetchGroupMembers:
         assert await c._fetch_group_members("g1", "devs") is None
 
     @pytest.mark.asyncio
-    async def test_skips_no_email(self):
+    async def test_a_member_it_cannot_name_keeps_the_stored_members(self):
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_group_members_by_name = AsyncMock(return_value=_resp(200, {
             "results": [{"email": "", "displayName": "NoEmail"}], "size": 1,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        assert await c._fetch_group_members("g1", "devs") == []
+        assert await c._fetch_group_members("g1", "devs") is None
 
 
 class TestGetAppUsersByEmails:

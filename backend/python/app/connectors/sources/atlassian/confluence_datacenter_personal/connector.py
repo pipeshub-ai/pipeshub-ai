@@ -6,8 +6,8 @@ Single-user sync without permission APIs. Inherits from BaseConnector directly.
 Authentication: API token (personal access token or HTTP basic with API token).
 """
 
-import uuid
 import re
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
@@ -20,24 +20,30 @@ from fastapi.responses import StreamingResponse
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccessRule,
-    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
@@ -47,7 +53,6 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -61,8 +66,15 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterPersonalApp
-from app.connectors.sources.atlassian.core.confluence_access import listing_modified_after
+from app.connectors.sources.atlassian.core.confluence_access import (
+    content_id as listed_item_id,
+)
+from app.connectors.sources.atlassian.core.confluence_access import (
+    listing_modified_after,
+    read_page,
+)
 from app.connectors.sources.atlassian.core.confluence_dc_removal import (
     ConfluenceDataCenterRemovalMixin,
     ContentListing,
@@ -76,7 +88,6 @@ from app.connectors.sources.atlassian.core.confluence_sync import (
     synced,
 )
 from app.connectors.sources.atlassian.core.people import confluence_people
-from app.sources.client.http.http_retry import call_with_retry
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     CommentRecord,
@@ -91,14 +102,9 @@ from app.models.permission import Permission, PermissionType
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
+from app.sources.client.http.http_retry import call_with_retry
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
-from app.connectors.core.base.error.stream_errors import (
-    connector_not_ready,
-    map_source_status,
-    not_found_at_source,
-    to_stream_error,
-)
 
 # How far back each incremental sync re-reads before its checkpoint. CQL reads dates
 # in the site's time zone, not UTC; the admin's date filters are used as set.
@@ -332,6 +338,8 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self._space_listing_complete = False
+        # Set when a sync carried on past a part of Confluence it could not read (full_sync_coverage).
+        self._sync_read_incomplete = False
         # Spaces this sync wrote to the graph, which the space sweep expects to read back.
         self._saved_space_ids: set[str] = set()
         # Items the by-id syncs of the current space listing failed to save; counted in failedPages.
@@ -414,6 +422,10 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
 
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that left part of Confluence unread unlinks nothing it did not see."""
+        return FullSyncCoverage(complete=not self._sync_read_incomplete)
+
     async def run_sync(self) -> None:
         """
         Run simplified sync for Confluence DC Personal connector.
@@ -432,6 +444,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 f"▶️ Confluence DC Personal connector {self.connector_id}: run_sync starting for org {org_id}"
             )
 
+            self._sync_read_incomplete = False
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
                 if not await self.init():
@@ -584,10 +597,11 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     break
 
                 response_data = response.json()
-                spaces_data = response_data.get("results") if isinstance(response_data, dict) else None
-                if not isinstance(spaces_data, list):
-                    self.logger.error("❌ The space listing had no results list; no space is removed this sync")
+                page = read_page(response_data)
+                if page is None:
+                    self.logger.error("A page of the space listing was not read in full; no space is removed this sync")
                     break
+                spaces_data = page.results
                 listed_count = len(spaces_data)
 
                 # Extract base URL from first response
@@ -668,6 +682,8 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         break
 
             self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}")
+            if not self._space_listing_complete:
+                self._sync_read_incomplete = True
 
             return record_groups
 
@@ -686,9 +702,10 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             )
             if not space_resp or space_resp.status != HttpStatusCode.SUCCESS.value:
                 return None, None, None
-            space_results = space_resp.json().get("results", [])
-            if not space_results:
+            space_page = read_page(space_resp.json())
+            if space_page is None or not space_page.results:
                 return None, None, None
+            space_results = space_page.results
             homepage = space_results[0].get("homepage") or {}
             homepage_id = str(homepage.get("id")) if homepage.get("id") else None
             homepage_title = homepage.get("title")
@@ -972,19 +989,17 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     break
 
                 response_data = response.json()
-                items_data = response_data.get("results") if isinstance(response_data, dict) else None
-                if not isinstance(items_data, list):
-                    self.logger.error(f"❌ {content_type.capitalize()} listing for space {space_key} had no results list")
+                page = read_page(response_data, listed_item_id)
+                if page is None:
+                    self.logger.error(f"A page of the {content_type} listing of space {space_key} was not read in full")
                     listing_complete = False
                     break
+                items_data = page.results
 
                 # Extract api_base_url from response root for URL construction
-                api_base_url = (response_data.get("_links") or {}).get("base")
+                api_base_url = page.base
 
                 if not items_data:
-                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
-                    if (response_data.get("_links") or {}).get("next"):
-                        listing_complete = False
                     break
 
                 # Transform items to WebpageRecords with permissions
@@ -1057,12 +1072,15 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         # Process attachments first (keep list in memory for comment embedded attachment resolution)
                         children = item_data.get("children", {})
                         attachment_data = children.get("attachment", {})
-                        inline_attachments = attachment_data.get("results", [])
-                        attachment_size = attachment_data.get("size", 0)
+                        inline_attachments = attachment_data.get("results") if isinstance(attachment_data, dict) else None
+                        attachment_size = attachment_data.get("size", 0) if isinstance(attachment_data, dict) else 0
+                        inline_readable = isinstance(inline_attachments, list) and all(
+                            isinstance(a, dict) and listed_item_id(a) for a in inline_attachments
+                        ) and isinstance(attachment_size, int)
 
-                        # Check if inline results are truncated (Confluence limits inline expansion to ~5-25 items)
-                        # If so, fetch attachments separately to avoid silent data loss
-                        if inline_attachments and len(inline_attachments) < attachment_size:
+                        # Check if inline results are truncated (Confluence limits inline expansion to ~5-25 items),
+                        # or not readable: then fetch attachments separately to avoid silent data loss
+                        if not inline_readable or (inline_attachments and len(inline_attachments) < attachment_size):
                             self.logger.debug(
                                 f"Inline attachments truncated for {content_type} {item_title} "
                                 f"({len(inline_attachments)}/{attachment_size}), fetching separately"
@@ -1203,6 +1221,9 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     full=not last_sync_time, complete=listing_complete, seen=frozenset(seen | set(given_up)),
                     checkpoint_key=sync_point_key,
                 ))
+            # Unread, unsettled, or read from a checkpoint: a full sync must not unlink what it did not see.
+            if not listing_complete or not settled or last_sync_time:
+                self._sync_read_incomplete = True
             if not listing_complete:
                 self.logger.warning(
                     f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
@@ -1264,13 +1285,17 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     )
                     break
 
-                response_data = response.json()
-                
+                page = read_page(response.json(), listed_item_id)
+                if page is None:
+                    self.logger.warning(f"A page of the attachments of content {content_id} was not read in full")
+                    self._sync_read_incomplete = True
+                    break
+
                 # Capture api_base_url from first response
                 if api_base_url is None:
-                    api_base_url = (response_data.get("_links") or {}).get("base")
-                
-                attachments = response_data.get("results", [])
+                    api_base_url = page.base
+
+                attachments = page.results
 
                 if not attachments:
                     break
@@ -1404,13 +1429,18 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     )
                     break
 
-                response_data = response.json()
-                comments_data = response_data.get("results", [])
+                page = read_page(response.json(), listed_item_id)
+                if page is None:
+                    # The comments it did not read would read as gone to a full sync.
+                    self.logger.warning(f"A page of the {comment_type} comments of {page_title} was not read in full")
+                    self._sync_read_incomplete = True
+                    break
+                comments_data = page.results
 
                 if not comments_data:
                     break
 
-                response_links = response_data.get("_links", {})
+                response_links = page.links
                 base_url = response_links.get("base")
 
                 for comment_data in comments_data:
@@ -1535,7 +1565,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
                         continue
 
-                next_url = response_data.get("_links", {}).get("next")
+                next_url = page.next_url
                 token = self._pagination_token_from_next_link(next_url) if next_url else None
                 if token is not None:
                     try:
@@ -1598,13 +1628,17 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     break
 
-                response_data = response.json()
-                children_data = response_data.get("results", [])
+                page = read_page(response.json(), listed_item_id)
+                if page is None:
+                    self.logger.warning(f"A page of the replies to comment {comment_id} was not read in full")
+                    self._sync_read_incomplete = True
+                    break
+                children_data = page.results
 
                 if not children_data:
                     break
 
-                response_links = response_data.get("_links", {})
+                response_links = page.links
                 base_url = response_links.get("base")
 
                 for child_data in children_data:
@@ -1723,7 +1757,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
                         continue
 
-                next_url = response_data.get("_links", {}).get("next")
+                next_url = page.next_url
                 token = self._pagination_token_from_next_link(next_url) if next_url else None
                 if token is not None:
                     try:

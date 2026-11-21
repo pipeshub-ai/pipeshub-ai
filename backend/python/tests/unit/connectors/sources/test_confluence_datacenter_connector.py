@@ -516,8 +516,8 @@ class TestSyncUserGroups:
         await connector._sync_user_groups()
 
     @pytest.mark.asyncio
-    async def test_sync_groups_skips_without_id(self):
-        """Groups without id or name are skipped."""
+    async def test_a_group_without_id_or_name_leaves_the_listing_unread(self):
+        """A listed group it can't name could be a stored one: the page is unread, not that group skipped."""
         connector = _make_connector()
         mock_ds = MagicMock()
         groups_response = {
@@ -539,8 +539,8 @@ class TestSyncUserGroups:
         connector._get_app_users_by_emails = AsyncMock(return_value=[])
 
         await connector._sync_user_groups()
-        # Only one group should be processed
-        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        assert connector.full_sync_coverage().complete is False
 
 
 # ===========================================================================
@@ -2363,7 +2363,8 @@ class TestFetchGroupMembers:
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         emails = await c._fetch_group_members("g1", "Group 1")
-        assert emails == ["a@t.com"]
+        # A member with neither a user key nor an email can't be told apart: the stored members are kept.
+        assert emails is None
 
     @pytest.mark.asyncio
     async def test_api_failure(self):

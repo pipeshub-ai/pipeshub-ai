@@ -20,6 +20,10 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.filters import SyncFilterKey
+from app.connectors.sources.atlassian.core.confluence_access import (
+    content_id,
+    read_page,
+)
 from app.models.entities import Record, RecordGroup, RecordGroupType, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
@@ -295,23 +299,20 @@ class ConfluenceDataCenterRemovalMixin:
                     )
                     return None
                 data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
-                results = data.get("results") if isinstance(data, dict) else None
-                if not isinstance(results, list):
+                # An item without an id could not be told apart from one that left: the page is unread.
+                page = read_page(data, content_id)
+                if page is None:
                     self.logger.warning(
                         f"Could not list the {content_type}s of space {space_key} "
-                        f"(HTTP {response.status if response else 'no response'}); nothing removed"
+                        f"(HTTP {response.status if response else 'no response'}, or a page not read in full); "
+                        "nothing removed"
                     )
                     return None
-                for item in results:
-                    if isinstance(item, dict) and item.get("id"):
-                        listed[str(item["id"])] = self._listed_item(item, status)
-                next_url = (data.get("_links") or {}).get("next")
-                if not next_url:
+                for item in page.results:
+                    listed[str(item["id"])] = self._listed_item(item, status)
+                if not page.next_url:
                     break
-                if not results:
-                    self.logger.warning(f"Can't follow the {content_type} listing of space {space_key}; nothing removed")
-                    return None
-                start += len(results)
+                start += len(page.results)
         return listed
 
     @staticmethod

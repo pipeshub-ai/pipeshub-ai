@@ -541,6 +541,24 @@ class TestPartialFailures:
 
         assert set(saved(records_db, RecordType.CONFLUENCE_PAGE)) == {"p1", "p3"}
 
+    @pytest.mark.parametrize("answer", [
+        pytest.param(json_response({"results": None}), id="null-results"),
+        pytest.param(json_response([content("p2")]), id="a-list-body"),
+        pytest.param(json_response({"results": [{"title": "no id"}], "size": 1}), id="an-item-without-an-id"),
+    ])
+    async def test_a_content_page_that_is_not_a_page_leaves_the_full_sync_incomplete(
+        self, atlassian_api, records_db, checkpoints, search, answer
+    ) -> None:
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1")], next_start=1))
+        search.add("page", "ENG", 1, answer)
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "p1" in records_db.records
+        assert connector.full_sync_coverage().complete is False, "the pages it never read must not be unlinked"
+
     async def test_a_failing_space_listing_page_keeps_what_was_already_synced(
         self, atlassian_api, records_db, checkpoints, search
     ) -> None:

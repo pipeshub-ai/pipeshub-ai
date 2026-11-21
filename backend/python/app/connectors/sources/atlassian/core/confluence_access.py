@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import parse_qs, urlparse
@@ -11,6 +12,8 @@ from app.models.entities import Record, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
@@ -24,6 +27,75 @@ def _is_folder(record: Record) -> bool:
     return record.record_type == RecordType.FILE and (
         getattr(record, "is_file", True) is False or record.mime_type == MimeTypes.FOLDER.value
     )
+
+
+@dataclass(frozen=True)
+class Page:
+    """One page of a Confluence listing, read in full (``read_page``)."""
+
+    results: list[dict[str, Any]]
+    links: dict[str, Any]
+
+    @property
+    def next_url(self) -> Optional[str]:
+        return self.links.get("next")
+
+    @property
+    def base(self) -> Optional[str]:
+        return self.links.get("base")
+
+
+def user_key(item: dict[str, Any]) -> Optional[str]:
+    """The id of a user: ``userKey`` / ``key`` (Data Center), ``accountId`` (Cloud) or ``username``."""
+    value = item.get("userKey") or item.get("key") or item.get("accountId") or item.get("username")
+    return value if isinstance(value, str) and value else None
+
+
+def group_key(item: dict[str, Any]) -> Optional[str]:
+    """The id of a group: ``name`` (Data Center) or ``id``."""
+    value = item.get("name") or item.get("id")
+    return value if isinstance(value, str) and value else None
+
+
+def content_id(item: dict[str, Any]) -> Optional[str]:
+    """The id of a page, blog post, comment or attachment."""
+    value = item.get("id")
+    return str(value) if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value) else None
+
+
+def principal_id(item: dict[str, Any]) -> Optional[str]:
+    """Who a Cloud v2 space permission row names: ``principal.id``."""
+    principal = item.get("principal")
+    return content_id(principal) if isinstance(principal, dict) else None
+
+
+def read_page(body: object, item_id: Optional[Callable[[dict[str, Any]], Optional[str]]] = None) -> Optional[Page]:
+    """A listing page, or None when it is not one read in full: unknown is not empty.
+
+    The shape every Confluence REST listing documents (Data Center PageResponse, Cloud v1 and v2 lists):
+    ``results`` a list of objects; ``size``, when given, the number of those results; ``_links``, when given,
+    an object whose ``next``, when given, is a link. An empty page that still links onward is not the end of
+    the listing, and with ``item_id``, an item without a usable id is not a readable item.
+    """
+    if not isinstance(body, dict):
+        return None
+    results = body.get("results")
+    if not isinstance(results, list) or not all(isinstance(item, dict) for item in results):
+        return None
+    size = body.get("size")
+    if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size != len(results)):
+        return None
+    links = body.get("_links", {})
+    if not isinstance(links, dict):
+        return None
+    next_url = links.get("next")
+    if next_url is not None and (not isinstance(next_url, str) or not next_url):
+        return None
+    if next_url and not results:
+        return None
+    if item_id is not None and not all(item_id(item) for item in results):
+        return None
+    return Page(results, links)
 
 
 def v1_next_start(
