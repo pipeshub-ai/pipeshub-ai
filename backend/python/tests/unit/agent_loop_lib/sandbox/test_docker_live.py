@@ -13,6 +13,7 @@ Run explicitly with:
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import patch
 
 import pytest
@@ -186,6 +187,48 @@ class TestLiveExecution:
             ))
             assert result.exit_code == 0, result.stderr
             assert "six:" in result.stdout
+        finally:
+            await sb.destroy()
+            sb._provider.close()
+
+
+class TestLiveInstallRunsNoPackageCode:
+    """An install must not run code from the package: pip refuses sdists
+    (building one runs its setup.py) and npm skips lifecycle scripts."""
+
+    async def test_sdist_only_release_is_refused(
+        self, tmp_path, no_leaked_containers,
+    ) -> None:
+        # docopt 0.6.2 is published only as docopt-0.6.2.tar.gz.
+        sb = _make_sandbox(tmp_path, "sdist", allow_network=True)
+        await sb.provision()
+        try:
+            install = await sb.install_packages(["docopt==0.6.2"], "python")
+            print(f"success={install.success}\nstderr={install.stderr}")
+            assert not install.success
+            assert "no matching distribution found for docopt==0.6.2" in install.stderr.lower()
+        finally:
+            await sb.destroy()
+            sb._provider.close()
+
+    async def test_npm_install_script_does_not_run(
+        self, tmp_path, no_leaked_containers,
+    ) -> None:
+        # sharp 0.32.6's install script fetches libvips into vendor/ and a
+        # prebuilt binding into build/Release/; neither exists without it.
+        sb = _make_sandbox(tmp_path, "npmscripts", allow_network=True)
+        await sb.provision()
+        try:
+            install = await sb.install_packages(["sharp@0.32.6"], "typescript")
+            assert install.success, install.stderr
+            installed = [
+                os.path.relpath(os.path.join(root, d), sb._deps_node_dir)
+                for root, dirs, _ in os.walk(sb._deps_node_dir) for d in dirs
+            ]
+            print("sharp dirs:", sorted(p for p in installed if p.count(os.sep) <= 2 and "sharp" in p))
+            assert any(p.endswith(os.path.join("sharp", "lib")) for p in installed)
+            assert not any(p.endswith(os.path.join("sharp", "vendor")) for p in installed)
+            assert not any(p.endswith(os.path.join("sharp", "build")) for p in installed)
         finally:
             await sb.destroy()
             sb._provider.close()
