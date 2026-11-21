@@ -785,7 +785,7 @@ is always text-hidden, so an `exc_info` record of it prints each exception as `T
 | `search.access_unreadable`, `search.selection_unreadable`, `search.entity_filter_unavailable`, `search.hit_check_failed` | answers that access could not be checked (an entity lookup: a search error) | the `log_failure` fields |
 | `search.remembered_scope_unreadable`, `search.record_id_retry_failed` | clears the memo and retries normal scope resolution / keeps the container results | the `log_failure` fields |
 | `container_search.verification_unavailable` | marks the attempt degraded | `vrid_count` |
-| `search.notice_gate_failed`, `search.demo_setting_failed`, `demo_data.list_failed` | no access notices / excludes no demo connector | the `log_failure` fields |
+| `search.notice_gate_failed`, `search.demo_setting_failed`, `demo_data.list_failed`, `record_open.demo_setting_failed` | no access notices / excludes no demo connector / opens the record by id (a record route) | the `log_failure` fields |
 | `search.batch_fetch_failed` | fetches the records one by one | `collection` (`files`, `mails`) |
 | `search.diversity_read_failed`, `search.connector_types_unreadable` | keeps the plain result / searches every collection | the `log_failure` fields |
 | `search.location_access_failed`, `search.location_failed` | shows an App-only Location when permitted and available; otherwise omits it | the `log_failure` fields |
