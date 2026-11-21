@@ -4629,6 +4629,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     async with concurrency.parse_admission_wait(
                                         self, budget, message_id
                                     ) as wait:
+                                        await concurrency.wait_out_held_service(
+                                            self, parse_tier, parsed_message, wait, scoped=self._scheduler is not None
+                                        )
                                         size_bytes = event.data.size_bytes if event.data else None
                                         # The size and what the inspection found are known now: the index permit
                                         # moves to its class in place.
