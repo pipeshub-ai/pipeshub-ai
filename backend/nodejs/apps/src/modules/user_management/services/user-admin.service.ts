@@ -198,17 +198,24 @@ export const saveUserEnsuringOrgRetainsAdmin = async (
 };
 
 /**
- * Run a write that makes one user an admin without taking the org past MAX_ORG_ADMINS.
- * - Replica set / PostgreSQL: lock the org's admin changes + check + write in one txn.
- * - Non-RS: check, write, re-count, and `undo` the write if the org went over or the re-count failed.
+ * Run a write that makes users admins without taking the org past MAX_ORG_ADMINS.
+ * - Replica set / PostgreSQL: lock the org's admin changes, write, then count inside
+ *   the same transaction; over the cap the transaction rolls back. Counting after
+ *   the write makes the check exact however many admins the write grants.
+ * - Non-RS: check, write, re-count, and `undo` the write if the org went over or
+ *   the re-count failed.
+ * The non-RS pre-check assumes one new admin, so a write that grants none must
+ * not come through here.
  */
-const writeEnsuringAdminCap = async <T>(
+export const writeEnsuringAdminCap = async <T>(
   orgId: string,
   rsAvailable: boolean,
   write: (tx?: Tx) => Promise<T>,
   undo: (saved: T) => Promise<void>,
 ): Promise<T> => {
   const users = getUserRepository();
+  const overTheCap = (): BadRequestError =>
+    userRefusal(new BadRequestError(MAX_ORG_ADMINS_MESSAGE), 'admin_limit');
 
   if (!unitsAreAtomic(rsAvailable)) {
     await assertCanPromoteAdmin(orgId);
@@ -223,17 +230,17 @@ const writeEnsuringAdminCap = async <T>(
     }
     if (adminCount > MAX_ORG_ADMINS) {
       await undo(saved);
-      throw userRefusal(
-        new BadRequestError(MAX_ORG_ADMINS_MESSAGE),
-        'admin_limit',
-      );
+      throw overTheCap();
     }
     return saved;
   }
   return createUnitOfWork(true).run(async (tx) => {
     await users.lockOrgAdminChanges(orgId, tx);
-    await assertCanPromoteAdmin(orgId, 1, tx);
-    return write(tx);
+    const saved = await write(tx);
+    if ((await users.countActiveAdmins(orgId, tx)) > MAX_ORG_ADMINS) {
+      throw overTheCap();
+    }
+    return saved;
   });
 };
 

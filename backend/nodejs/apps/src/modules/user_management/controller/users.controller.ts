@@ -76,7 +76,9 @@ import {
   saveUserEnsuringAdminCap,
   createUserEnsuringAdminCap,
   assertCanPromoteAdmin,
+  writeEnsuringAdminCap,
 } from '../services/user-admin.service';
+import type { Tx } from '../../../libs/repositories/uow';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { AuthService } from '../services/auth.service';
@@ -200,6 +202,12 @@ export function isValidEmail(email: unknown): boolean {
     email.length <= MAX_EMAIL_LENGTH &&
     EMAIL_REGEX.test(email)
   );
+}
+
+/** The accounts an invite's grant restored and created. */
+interface InviteGrant {
+  restoredUsers: UserDto[];
+  newUsers: UserDto[];
 }
 
 export interface InviteResult {
@@ -2231,17 +2239,25 @@ export class UserController {
         !activeEmails.includes(email) && !deletedEmails.includes(email),
     );
 
-    if (inviteRole === 'admin') {
-      const additionalAdmins =
-        emailsForNewAccounts.length +
-        deletedUsers.length +
-        pendingUsersToReinvite.filter(
-          (user) => normalizeUserRole(user.role) !== 'admin',
-        ).length;
-      await assertCanPromoteAdmin(orgId, additionalAdmins);
-    }
+    // The pending accounts this invite makes admins: one list for the count,
+    // the promotion and the undo, so an account that already was an admin is
+    // never demoted by a refused batch.
+    const pendingToPromote =
+      inviteRole === 'admin'
+        ? pendingUsersToReinvite.filter(
+            (user) => normalizeUserRole(user.role) !== 'admin',
+          )
+        : [];
+    const additionalAdmins =
+      inviteRole === 'admin'
+        ? emailsForNewAccounts.length +
+          deletedUsers.length +
+          pendingToPromote.length
+        : 0;
+    // Fast refusal before anything is written; the count that holds is the
+    // one writeEnsuringAdminCap makes after the grant.
+    await assertCanPromoteAdmin(orgId, additionalAdmins);
 
-    let restoredUsers: UserDto[] = [];
     if (deletedUsers.length > 0) {
       // Recorded before the accounts come back, and nothing is restored without it:
       // it ends every token issued before the restore, including any minted while
@@ -2255,10 +2271,66 @@ export class UserController {
           ipAddress: 'system',
         })),
       );
-      restoredUsers = await users.restoreByEmails(orgId, deletedEmails);
-      for (const restored of restoredUsers) {
-        auditUserChange('user.restore', restored._id, 'invite');
+    }
+
+    // Every write that can make an admin, with the role granted last in one
+    // statement: without a replica set, a batch that fails partway has made
+    // nobody an admin.
+    const grant = async (tx?: Tx): Promise<InviteGrant> => {
+      const restored =
+        deletedUsers.length > 0
+          ? await users.restoreByEmails(orgId, deletedEmails, tx)
+          : [];
+      const created =
+        emailsForNewAccounts.length > 0
+          ? await users.createMany(
+              orgId,
+              emailsForNewAccounts.map((email) => ({
+                email,
+                isDeleted: false,
+                hasLoggedIn: false,
+                role: 'member' as const,
+              })),
+              tx,
+            )
+          : [];
+      if (inviteRole === 'admin') {
+        const ids = [...restored, ...created, ...pendingToPromote]
+          .map((user) => user._id)
+          .filter(Boolean);
+        if (ids.length > 0) await users.promoteToAdmin(orgId, ids, tx);
       }
+      return { restoredUsers: restored, newUsers: created };
+    };
+    // Without a replica set, a batch that went over the cap (or whose re-count
+    // failed, see writeEnsuringAdminCap) is taken back: new accounts deleted,
+    // promoted accounts demoted, restored accounts demoted and then removed
+    // again (only members are ever removed, and setRole skips removed rows).
+    const undoGrant = async ({
+      restoredUsers: restored,
+      newUsers: created,
+    }: InviteGrant): Promise<void> => {
+      for (const user of created) await users.deleteById(user._id);
+      for (const user of pendingToPromote) {
+        await users.setRole(orgId, user._id, 'member');
+      }
+      for (const user of restored) {
+        await users.setRole(orgId, user._id, 'member');
+        await users.markDeleted(orgId, user._id);
+      }
+    };
+    const { restoredUsers, newUsers } =
+      additionalAdmins > 0
+        ? await writeEnsuringAdminCap(
+            orgId,
+            this.config.rsAvailable === 'true',
+            grant,
+            undoGrant,
+          )
+        : await grant();
+
+    for (const restored of restoredUsers) {
+      auditUserChange('user.restore', restored._id, 'invite');
     }
 
     for (let i = 0; i < existingUsers.length; ++i) {
@@ -2275,38 +2347,18 @@ export class UserController {
       await groups.addToEveryone(orgId, userId as string);
     }
 
-    let newUsers: UserDto[] = [];
-    if (emailsForNewAccounts.length > 0) {
-      newUsers = await users.createMany(
-        orgId,
-        emailsForNewAccounts.map((email) => ({
-          email,
-          isDeleted: false,
-          hasLoggedIn: false,
-          role: inviteRole,
-        })),
-      );
-      for (const created of newUsers) {
-        auditUserChange('user.invite', created._id, 'new');
-        if (inviteRole === 'admin') {
-          auditUserChange('user.role.change', created._id, 'new_admin');
-        }
+    for (const created of newUsers) {
+      auditUserChange('user.invite', created._id, 'new');
+      if (inviteRole === 'admin') {
+        auditUserChange('user.role.change', created._id, 'new_admin');
       }
     }
-
-    // Apply invite role to restored / re-invited pending users when promoting to admin
     if (inviteRole === 'admin') {
-      const promoteIds = [
-        ...restoredUsers.map((u) => u._id),
-        ...pendingUsersToReinvite.map((u) => u._id),
-      ].filter(Boolean);
-      if (promoteIds.length > 0) {
-        await users.promoteToAdmin(orgId, promoteIds);
-        for (const promoted of [...restoredUsers, ...pendingUsersToReinvite]) {
-          if (normalizeUserRole(promoted.role) !== 'admin') {
-            auditUserChange('user.role.change', promoted._id, 'promote');
-          }
-        }
+      const restoredMembers = restoredUsers.filter(
+        (user) => normalizeUserRole(user.role) !== 'admin',
+      );
+      for (const promoted of [...restoredMembers, ...pendingToPromote]) {
+        auditUserChange('user.role.change', promoted._id, 'promote');
       }
     }
 

@@ -23,6 +23,7 @@ import {
   saveUserEnsuringAdminCap,
 } from '../../src/modules/user_management/services/user-admin.service';
 import { createOrgLikeSignUp } from './contract/rest.contract';
+import { adminInviter, withoutSideStores } from './admin-invite-race';
 import { IdentityWorld } from './pg-identity-harness';
 import {
   OrgLedger,
@@ -235,13 +236,16 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       describe('the admin limit, through the services that enforce it', () => {
         const ROUNDS = 5;
         let savedDocStore: string | undefined;
+        let restoreSideStores: () => void;
         before(() => {
+          restoreSideStores = withoutSideStores();
           // The services pick the unit of work and the repository from DOC_STORE.
           savedDocStore = process.env.DOC_STORE;
           process.env.DOC_STORE = 'postgres';
           setUserRepository(users);
         });
         after(() => {
+          restoreSideStores();
           setUserRepository();
           if (savedDocStore === undefined) delete process.env.DOC_STORE;
           else process.env.DOC_STORE = savedDocStore;
@@ -287,6 +291,57 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             ]);
             expect(ok, `round ${round}`).to.equal(1);
             expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(MAX_ORG_ADMINS);
+          }
+        });
+
+        it('two bulk admin invites for the last seats: exactly one batch wins, and the other leaves no trace', async () => {
+          for (let round = 0; round < ROUNDS; round += 1) {
+            const org = await world.newOrg();
+            const actor = await world.adminOf(org);
+            await account(org, { role: 'admin' });
+            // Each batch makes three admins: a removed member, a pending member and a new address. Three seats are free.
+            const batch = async () => ({
+              removed: await account(org, { isDeleted: true }),
+              pending: await account(org),
+              fresh: email('fresh'),
+            });
+            const [a, b] = [await batch(), await batch()];
+            const invite = adminInviter(false);
+            const done = await Promise.allSettled(
+              [a, b].map((x) => inOrg(org, () => invite(org, [x.removed.email, x.pending.email, x.fresh]), actor)),
+            );
+            for (const d of done) if (d.status === 'rejected') expect(d.reason).to.be.instanceOf(BadRequestError);
+            expect(done.filter((d) => d.status === 'fulfilled'), `round ${round}`).to.have.length(1);
+            expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(MAX_ORG_ADMINS);
+            const loser = done[0].status === 'rejected' ? a : b;
+            const removed = await inOrg(org, () => users.getAny(org, loser.removed._id));
+            const pending = await inOrg(org, () => users.getAny(org, loser.pending._id));
+            expect([removed?.isDeleted, removed?.role, pending?.role]).to.deep.equal([true, 'member', 'member']);
+            expect(await count('SELECT count(*) AS n FROM identity.users WHERE email = $1', [loser.fresh])).to.equal(0);
+          }
+        });
+
+        // Every PostgreSQL user insert locks the org's slug counter until commit, which serialises two batches that
+        // insert on its own. Batches of removed and pending accounts insert nothing, so only the org lock orders them.
+        it('two bulk admin invites of removed and pending accounts only: the organisation row lock lets exactly one batch in', async () => {
+          for (let round = 0; round < ROUNDS; round += 1) {
+            const org = await world.newOrg();
+            const actor = await world.adminOf(org);
+            await account(org, { role: 'admin' });
+            // Each batch makes two admins; three seats are free.
+            const batch = async () => ({ removed: await account(org, { isDeleted: true }), pending: await account(org) });
+            const [a, b] = [await batch(), await batch()];
+            const invite = adminInviter(false);
+            const done = await Promise.allSettled(
+              [a, b].map((x) => inOrg(org, () => invite(org, [x.removed.email, x.pending.email]), actor)),
+            );
+            for (const d of done) if (d.status === 'rejected') expect(d.reason).to.be.instanceOf(BadRequestError);
+            expect(done.filter((d) => d.status === 'fulfilled'), `round ${round}`).to.have.length(1);
+            expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(4);
+            const loser = done[0].status === 'rejected' ? a : b;
+            const removed = await inOrg(org, () => users.getAny(org, loser.removed._id));
+            const pending = await inOrg(org, () => users.getAny(org, loser.pending._id));
+            expect([removed?.isDeleted, removed?.role, pending?.role]).to.deep.equal([true, 'member', 'member']);
           }
         });
 
