@@ -95,7 +95,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
 
         expect(await refresh()).to.equal(500)
 
-        // How many POSTs is a behaviour of the route and of the shared axios-retry, not of this logging.
+        // How many POSTs is a behaviour of the route, not of this logging.
         expect(google.isDone()).to.equal(true)
         expect(errors().map((r) => r.message)).to.deep.equal(['http.request.error'])
         expect(records.filter((r) => String(r.message).startsWith('Error refreshing'))).to.deep.equal([])

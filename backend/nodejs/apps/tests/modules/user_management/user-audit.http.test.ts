@@ -56,9 +56,6 @@ const SCOPED_SECRET = 'user-audit-scoped-secret';
 const CM = 'http://cm.user-audit.test';
 const COMM = 'http://comm.user-audit.test';
 const oid = () => new mongoose.Types.ObjectId().toHexString();
-// connectors.routes installs axios-retry (3 retries on a 5xx) on the global axios when a worker loads it, so a
-// failing mail interceptor must outlast the retries; an unmatched retry's nock error would quote the request body.
-const MAIL_TRIES = 4;
 const orgId = oid();
 /** Every request this file makes carries a request id with this prefix; only those lines are captured. */
 const OUR_REQUESTS = 'n4btest';
@@ -714,7 +711,7 @@ describe('user and group audit lines (HTTP)', function () {
     });
 
     it('T10 resend fails at the mail service → no audit line, one failure line, no address', async () => {
-      nock(COMM).post(/sendEmail/).times(MAIL_TRIES).reply(500, { error: { message: `mailbox ${mia.email} unavailable` } });
+      nock(COMM).post(/sendEmail/).reply(500, { error: { message: `mailbox ${mia.email} unavailable` } });
       expect((await call('POST', `${U}/${mia._id}/resend-invite`, ada)).status).to.equal(500);
       expect(audits()).to.deep.equal([]);
       // The mail service's own line keeps the upstream cause (status, no body); the controller adds none.
@@ -831,7 +828,7 @@ describe('user and group audit lines (HTTP)', function () {
     });
 
     it('T20c [guard] email change through PUT whose mail fails → 200 with status failed, no request line', async () => {
-      nock(COMM).post(/sendEmail/).times(MAIL_TRIES).reply(500, { error: { message: 'smtp down' } });
+      nock(COMM).post(/sendEmail/).reply(500, { error: { message: 'smtp down' } });
       const res = await call('PUT', `${U}/${mia._id}`, mia, { email: 'mia.new@acme.test' });
       expect(res.status).to.equal(200);
       expect(res.body.meta.emailChangeMailStatus).to.equal('failed');
