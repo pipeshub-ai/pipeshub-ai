@@ -167,6 +167,8 @@ CAN_USE_GROUPS = ("confluence-users", SUPER_GROUP)
 # GET /rest/api/admin/users/list/active is in the published REST docs from 9.3.0 (absent from 9.0.0-9.2.1 and the
 # 8.x docs) to 11.1.0, the newest published; a newer release is asked too, and a refusal links nobody.
 ACTIVE_USER_LIST_SINCE = (9, 3)
+# GET /rest/api/permissions, which lists who holds "Can use", is in the published docs from 9.2.5 (absent from 9.2.4).
+CAN_USE_LIST_SINCE = (9, 2, 5)
 
 
 @ConnectorBuilder("Confluence Data Center")\
@@ -385,7 +387,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         self._space_listing_complete = False
         # The source id of the account the connector signs in with, once read this run.
         self._authenticated_source_user_id: Optional[str] = None
-        self._authenticated_user: Optional[dict[str, Any]] = None
         # Set when a sync carried on past a part of Confluence it could not read (full_sync_coverage).
         self._sync_read_incomplete = False
         # Spaces this sync wrote to the graph; one whose permissions couldn't be read is listed but not saved.
@@ -480,7 +481,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             return
         email, source_user_id = "", None
         self._authenticated_source_user_id = None
-        self._authenticated_user = None
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_current_user_v1()
@@ -497,10 +497,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         except Exception as e:
             self.logger.debug("Could not read the authenticated Confluence account: %s", e)
             return
-        # Confluence has just let this account in ("Can use" is what lets a user log in), so it is a user the
-        # connector can vouch for even where the release documents no way to tell active users apart.
+        # Confluence has just let this account in ("Can use" is what lets a user log in).
         self._authenticated_source_user_id = source_user_id
-        self._authenticated_user = {**data, "email": email} if email and source_user_id else None
         await self.register_authenticated_source_user(email or None, source_user_id)
 
     async def run_sync(self) -> None:
@@ -668,6 +666,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             self.logger.info("Starting user synchronization...")
 
             active_list = False
+            can_use: Optional[set[str]] = None  # source ids that hold "Can use", where the release lists them
             if USE_DATA_CENTER_APIS:
                 if self._server_version_unreadable:
                     self._server_version = None   # a version a past run could not read is asked for again
@@ -691,32 +690,16 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # progress": a sync during a reindex can still link a just-disabled account, or withdraw an active
                 # one it misses, until the next sync after the reindex.
                 active_list = server_version[:2] >= ACTIVE_USER_LIST_SINCE
-                if not active_list:
-                    # Before 9.3 the REST docs give no way to tell an enabled user with "Can use" from a disabled
-                    # or unlicensed one: /rest/api/user/list lists "Disabled users" and "Enabled users which do not
-                    # have "can use" global permissions", and the user status has no documented values
-                    # (https://developer.atlassian.com/server/confluence/9.1.0.swagger.v3.json, 9.2.x the same).
-                    # So no listed user is linked and earlier links are withdrawn (fail closed): only the account
-                    # the connector signs in with, which Confluence has just let in, is linked. Upgrading the
-                    # server to 9.3 or later gives every active user their access.
-                    self.logger.error(
-                        "Confluence Data Center %s documents no way to tell active users from disabled or "
-                        "unlicensed ones (from 9.3 it does); no user is linked, so users get no access",
-                        ".".join(map(str, server_version)),
-                    )
-                    if self._authenticated_source_user_id is None:  # a user sync run on its own
-                        await self._register_authenticated_identity()
-                    gone = [
-                        u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
-                        if u.source_user_id != self._authenticated_source_user_id
-                    ]
-                    if gone:
-                        await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
-                    signed_in = self._transform_to_app_user(self._authenticated_user or {})
-                    if signed_in:
-                        await self.data_entities_processor.on_new_app_users([signed_in])
-                    return
-
+                if not active_list and server_version[:3] >= CAN_USE_LIST_SINCE:
+                    # From 9.2.5, GET /rest/api/permissions "Returns list of permissions granted to users and
+                    # groups"; "Can use" is the `application use` pair ("Supported targetType and operationKey
+                    # pairs: * application use", https://developer.atlassian.com/server/confluence/9.3.0.swagger.v3.json).
+                    # A user who holds it neither directly nor through a group is not linked.
+                    can_use = await self._can_use_holders()
+                    if can_use is None:
+                        # Neither link a user it can't check nor drop one it can't prove lost "Can use".
+                        self._sync_read_incomplete = True
+                        return
             # Pagination variables
             batch_size = 200 if USE_DATA_CENTER_APIS else 100
             start = 0
@@ -731,6 +714,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                 if active_list:
                     response = await datasource.get_active_users_v1(start=start, limit=batch_size)
+                elif USE_DATA_CENTER_APIS:
+                    # shortcut: before 9.3 the REST docs give no way to tell a disabled user from an enabled one:
+                    # /rest/api/user/list lists "Disabled users" and the user status has no documented values
+                    # (https://developer.atlassian.com/server/confluence/9.1.0.swagger.v3.json, to 9.2.x), so a
+                    # disabled user is linked and keeps their access; before 9.2.5 so is a user without "Can use".
+                    # The active users list of 9.3 and later tells them apart.
+                    response = await datasource.get_user_list_v1(start=start, limit=batch_size)
                 else:
                     # Cloud: Use CQL search
                     response = await datasource.search_users(
@@ -763,14 +753,17 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     # DC returns flat user objects; Cloud /search/user wraps in 'user' key
                     if USE_DATA_CENTER_APIS:
                         user_data = user_result
-                        if active_list:
-                            # "`type`: The type of user (e.g., `known`, `anonymous`)" (same page as above); any other
-                            # or missing value is not a user we can vouch for, so it is not linked.
-                            if user_data.get("type") != "known":
-                                total_skipped += 1
-                                continue
-                            if source_id := user_data.get("userKey") or user_data.get("key"):
-                                listed.add(source_id)
+                        # "`type`: The type of user (e.g., `known`, `anonymous`)" (same page as above); on the active
+                        # list any other or missing value is not a user we can vouch for, so it is not linked.
+                        if active_list and user_data.get("type") != "known":
+                            total_skipped += 1
+                            continue
+                        source_id = user_data.get("userKey") or user_data.get("key")
+                        if can_use is not None and source_id not in can_use:
+                            total_skipped += 1
+                            continue
+                        if source_id and (active_list or can_use is not None):
+                            listed.add(source_id)
                     else:
                         # Flatten: merge nested 'user' dict with top-level fields
                         user_data = {**user_result.get("user", {}), **{k: v for k, v in user_result.items() if k != "user"}}
@@ -818,7 +811,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             # A linked account the complete active list no longer shows was disabled, unlicensed or deleted since: it
             # loses the connector, as it is not linked either. A cut or empty list withdraws nobody. Enabled again, it
             # is linked on the next read. The account the connector signs in with keeps its link.
-            if active_list and read_complete and listed:
+            if (active_list or can_use is not None) and read_complete and listed:
                 gone = [
                     u for u in await self.data_entities_processor.get_app_user_links(self.connector_id)
                     if u.source_user_id not in listed and u.source_user_id != self._authenticated_source_user_id
@@ -3486,6 +3479,44 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         if kind == "group":
             return kind, str(subject.get("name") or subject.get("id") or "")
         return str(kind), ""
+
+    async def _can_use_holders(self) -> Optional[set[str]]:
+        """The source ids of the users who hold "Can use", directly or through a group; None when they can't be
+        read in full. Group members come from GET /rest/api/group/{name}/member, read page by page."""
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.get_global_permissions_v1()
+        entries = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+        if not isinstance(entries, list):
+            self.logger.error("Could not read who holds the Confluence \"Can use\" permission; no user is linked this run")
+            return None
+        holders: set[str] = set()
+        for entry in entries:
+            operation = (entry or {}).get("operation") or {}
+            if (operation.get("targetType"), operation.get("operationKey")) != ("application", "use"):
+                continue
+            subject = (entry or {}).get("subject") or {}
+            if subject.get("type") == "user" and (subject.get("userKey") or subject.get("key")):
+                holders.add(str(subject.get("userKey") or subject.get("key")))
+            elif subject.get("type") == "group" and subject.get("name"):
+                start = 0
+                while True:
+                    page = await datasource.get_group_members_by_name(group_name=subject["name"], start=start, limit=200)
+                    data = page.json() if page and page.status == HttpStatusCode.SUCCESS.value else None
+                    members = data.get("results") if isinstance(data, dict) else None
+                    if not isinstance(members, list):
+                        self.logger.error(f"Could not read the members of {subject['name']}, which holds \"Can use\"")
+                        return None
+                    holders.update(str(m.get("userKey") or m.get("key")) for m in members if m.get("userKey") or m.get("key"))
+                    next_start = v1_next_start(data, start, len(members), 200, use_link_offset=False)
+                    if next_start is None:
+                        break
+                    start = next_start
+        if self._authenticated_source_user_id and self._authenticated_source_user_id not in holders:
+            # The account the connector signs in with holds "Can use", or it could not have logged in: a list that
+            # leaves it out is not the one the docs describe.
+            self.logger.error("The \"Can use\" list leaves out the connector's own account; no user is linked this run")
+            return None
+        return holders
 
     async def _group_permissions(self, names: tuple[str, ...]) -> list[Permission]:
         """READ for each of these groups that the user sync saved; a group it didn't save grants nothing."""

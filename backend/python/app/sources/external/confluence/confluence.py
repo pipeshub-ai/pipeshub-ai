@@ -845,6 +845,21 @@ class ConfluenceDataSource:
         )
         return await self._client.execute(req)
 
+    async def get_global_permissions_v1(self, headers: dict[str, Any] | None = None) -> HTTPResponse:
+        """``GET /rest/api/permissions`` (Data Center 9.2.5+): every global permission, as a list of
+        ``{operation: {targetType, operationKey}, subject}``; "Can use" is ``application`` / ``use``."""
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        req = HTTPRequest(
+            method="GET",
+            url=f"{self._v1_rest_api_base()}/permissions",
+            headers=_as_str_dict(dict(headers or {})),
+            path={},
+            query={},
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def get_active_users_v1(
         self,
         start: int = 0,

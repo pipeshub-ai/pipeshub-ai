@@ -350,26 +350,62 @@ class TestUsersAndGroups:
 
         assert [(u.source_user_id, u.full_name) for u in db.app_users] == [("ana", "ana@example.com")]
 
-    @pytest.mark.parametrize("version", ["8.5.4", "9.0.0", "9.2.1", "9.2.15"])
-    async def test_before_9_3_only_the_sign_in_account_is_linked(self, atlassian_api, db, store, version) -> None:
-        # These docs give no way to tell an enabled user with "Can use" from a disabled or unlicensed one, so no
-        # listed user is linked (fail closed) and earlier links go; the account the connector signs in with is
-        # one Confluence just let in.
+    @pytest.mark.parametrize("version", ["8.5.4", "9.0.0", "9.2.1", "9.2.4"])
+    async def test_before_9_2_5_the_listed_users_are_linked(self, atlassian_api, db, store, version) -> None:
+        # These docs give no per-user status and no "Can use" list, so a disabled duplicate is linked too: a known
+        # limit, closed for "Can use" from 9.2.5 and in full from 9.3.
         connector = await make_connector(atlassian_api, db, store)
         numbers = [int(part) for part in version.split(".")]
         atlassian_api.on("GET", f"{API}/server-information", {"version": version, "versionNumbers": numbers})
-        atlassian_api.on("GET", f"{API}/user/current", {"type": "known", "userKey": "svc", "username": "svc",
-                                                         "displayName": "Sync", "email": "svc@example.com"})
         ana, disabled = user("ana", "ana@example.com"), user("ana-disabled", "ana@example.com")
         atlassian_api.on("GET", f"{API}/user/list", {"results": [ana, disabled]})
-        db.app_users.append(AppUser(app_name=Connectors.CONFLUENCE_DATA_CENTER, connector_id=CONNECTOR_ID,
-                                    source_user_id="ana", email="ana@example.com", full_name="Ana", org_id="org-1"))
 
         await connector._sync_users()
 
-        assert [u.source_user_id for u in db.withdrawn_users] == ["ana"], "a link an earlier release made goes"
-        assert [u.source_user_id for u in db.app_users if u.source_user_id != "ana"] == ["svc"]
-        assert atlassian_api.calls("GET", ACTIVE_USERS) == [] and atlassian_api.calls("GET", f"{API}/user/list") == []
+        assert [u.source_user_id for u in db.app_users] == ["ana", "ana-disabled"]
+        assert atlassian_api.calls("GET", ACTIVE_USERS) == [] and atlassian_api.calls("GET", f"{API}/permissions") == []
+        assert db.withdrawn_users == []
+
+    async def test_from_9_2_5_only_users_who_hold_can_use_are_linked(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/server-information", {"version": "9.2.5", "versionNumbers": [9, 2, 5]})
+        connector._authenticated_source_user_id = "svc"
+        use = {"targetType": "application", "operationKey": "use"}
+        atlassian_api.on("GET", f"{API}/permissions", json_response([
+            {"operation": use, "subject": {"type": "group", "name": "confluence-users"}},
+            {"operation": use, "subject": {"type": "user", "userKey": "svc"}},
+            {"operation": {"targetType": "space", "operationKey": "create"}, "subject": {"type": "group", "name": "nobody"}},
+        ]))
+        atlassian_api.on("GET", f"{API}/group/confluence-users/member", {"results": [user("ana", "ana@example.com")]})
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [user("ana", "ana@example.com"), user("nina", "nina@example.com"),
+                                                                user("svc", "svc@example.com")]})
+        db.app_users.append(AppUser(app_name=Connectors.CONFLUENCE_DATA_CENTER, connector_id=CONNECTOR_ID,
+                                    source_user_id="nina", email="nina@example.com", full_name="Nina", org_id="org-1"))
+
+        await connector._sync_users()
+
+        assert sorted(u.source_user_id for u in db.app_users if u.full_name != "Nina") == ["ana", "svc"]
+        assert [u.source_user_id for u in db.withdrawn_users] == ["nina"], "she lost \"Can use\" since she was linked"
+
+    @pytest.mark.parametrize("permissions", [
+        json_response({"message": "busy"}, status=503),
+        json_response([{"operation": {"targetType": "application", "operationKey": "use"},
+                        "subject": {"type": "group", "name": "staff"}}]),
+    ], ids=["unreadable", "leaves-out-the-sign-in-account"])
+    async def test_a_can_use_list_that_cannot_be_trusted_links_and_withdraws_nobody(
+        self, atlassian_api, db, store, permissions
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/server-information", {"version": "9.2.15", "versionNumbers": [9, 2, 15]})
+        connector._authenticated_source_user_id = "svc"
+        atlassian_api.on("GET", f"{API}/permissions", permissions)
+        atlassian_api.on("GET", f"{API}/group/staff/member", {"results": [user("ana", "ana@example.com")]})
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [user("ana", "ana@example.com")]})
+
+        await connector._sync_users()
+
+        assert db.app_users == [] and db.withdrawn_users == []
+        assert connector.full_sync_coverage().complete is False
 
     @pytest.mark.parametrize("info", [
         {},
@@ -990,14 +1026,14 @@ class TestPageRestrictions:
         atlassian_api.on("GET", f"{API}/server-information", {"version": "9.1.0"})
         atlassian_api.on_suffix("GET", "/restriction/relevantViewRestrictions", json_response({"message": "null for uri"}, status=404))
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [user("alice", "alice@example.com")]})  # before 9.3
         search.add("page", 0, listing([content("p1"), content("open")]))
         atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
 
         await connector.run_sync()
 
         assert db.records["p1"].access_rule == AccessRule.RESTRICTED
-        # Before 9.3 no listed user is linked, so alice's grant waits on her stand-in group.
-        assert [p.external_id for p in db.record_permissions["p1"]] == ["alice"]
+        assert [p.email for p in db.record_permissions["p1"]] == ["alice@example.com"]
         assert db.records["open"].access_rule == AccessRule.STRICT
 
     async def test_a_restriction_longer_than_a_page_is_read_to_the_end(self, atlassian_api, db, store, search) -> None:
