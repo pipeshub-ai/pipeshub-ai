@@ -231,6 +231,34 @@ function isDuplicateEmailKeyError(error: unknown): boolean {
   );
 }
 
+
+/**
+ * Refuses an email change to an address the organisation cannot give this account. An account
+ * removed from the organisation still holds its address (the unique index covers removed rows),
+ * so the confirmation link could never be applied: say so here, before one is mailed.
+ */
+async function assertEmailFreeForChange(
+  orgId: string,
+  newEmail: string,
+  userId: string,
+): Promise<void> {
+  const users = getUserRepository();
+  if (await users.emailTakenByOther(orgId, newEmail, userId)) {
+    throw userRefusal(
+      new BadRequestError('Email already exists for another user'),
+      'email_taken',
+    );
+  }
+  if (await users.hasRemovedAccount(orgId, newEmail)) {
+    throw userRefusal(
+      new BadRequestError(
+        'This email belongs to an account that was removed. Restore that account or use another address.',
+      ),
+      'email_taken',
+    );
+  }
+}
+
 @injectable()
 export class UserController {
   constructor(
@@ -1135,18 +1163,11 @@ export class UserController {
           // Stored addresses are lowercased and the unique index is
           // case-sensitive, so the raw request value can miss an existing
           // lowercase match and the change would only fail later on save.
-          if (
-            await getUserRepository().emailTakenByOther(
-              req.user.orgId as string,
-              newEmail as string,
-              id as string,
-            )
-          ) {
-            throw userRefusal(
-              new BadRequestError('Email already exists for another user'),
-              'email_taken',
-            );
-          }
+          await assertEmailFreeForChange(
+            req.user.orgId as string,
+            newEmail as string,
+            id as string,
+          );
 
           const emailSentResponse = await this.emailChange(
             email as string,
@@ -1504,18 +1525,11 @@ export class UserController {
         return;
       }
       assertEmailChangeIsSelf(req.user.userId, id);
-      if (
-        await getUserRepository().emailTakenByOther(
-          req.user.orgId as string,
-          newEmail,
-          id as string,
-        )
-      ) {
-        throw userRefusal(
-          new BadRequestError('Email already exists for another user'),
-          'email_taken',
-        );
-      }
+      await assertEmailFreeForChange(
+        req.user.orgId as string,
+        newEmail,
+        id as string,
+      );
       const emailSentResponse = await this.emailChange(
         requested,
         newEmail,
