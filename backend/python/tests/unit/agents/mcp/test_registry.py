@@ -141,7 +141,7 @@ class TestMCPRegistry:
         assert zapmail.supported_auth_modes == [MCPAuthMode.OAUTH]
         assert zapmail.supports_dcr
         assert not zapmail.require_oauth_client
-        assert zapmail.default_scopes == ["domains", "mailboxes", "inbox"]
+        assert zapmail.default_scopes == ["mailboxes", "inbox"]
         assert zapmail.icon == "/icons/connectors/zapmail.svg"
 
     def test_miro_catalog_entry(self) -> None:

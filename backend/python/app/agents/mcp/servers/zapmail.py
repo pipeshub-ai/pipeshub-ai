@@ -17,8 +17,9 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         # Discovery confirmed these endpoints and DCR via https://mcp.zapmail.ai/.well-known/oauth-authorization-server.
         authorization_url="https://mcp.zapmail.ai/authorize",
         token_url="https://mcp.zapmail.ai/token",
-        # workspaces_billing is left out: its tools buy plans and domains and load wallet balance.
-        default_scopes=["domains", "mailboxes", "inbox"],
+        # domains and workspaces_billing are opt-in: both hold tools that spend wallet balance (buy_domain, renew_domains,
+        # purchase_*, upgrade_*). The mailboxes and inbox tools only read, pause or delete.
+        default_scopes=["mailboxes", "inbox"],
         supports_dcr=True,
         documentation_url="https://docs.zapmail.ai/mcp-2107149m0",
         tags=["email", "outreach", "infrastructure"],
