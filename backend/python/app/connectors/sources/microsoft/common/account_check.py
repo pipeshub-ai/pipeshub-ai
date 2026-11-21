@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 
 UNCONFIRMED_SYNCS_BEFORE_CLOSE = 3
 ACCOUNT_CHECK_KEY = "unconfirmed-accounts"
-# Each read is one request on the app's directory budget (3,500 to 8,000 resource units per 10 seconds per app and
-# tenant, https://learn.microsoft.com/en-us/graph/throttling-limits); a listing cut on page one of a large directory would
+# Each read is one request on the app's directory budget (3,500 to 8,000 resource units per 10 seconds for one app in
+# one directory, https://learn.microsoft.com/en-us/graph/throttling-limits); a listing cut on page one of a large directory would
 # otherwise read every account in one sync. The rest wait for the next sync, the longest unconfirmed first.
 LOOKUPS_ENV = "MICROSOFT_USER_LOOKUPS_PER_SYNC"
 DEFAULT_LOOKUPS_PER_SYNC = 500
