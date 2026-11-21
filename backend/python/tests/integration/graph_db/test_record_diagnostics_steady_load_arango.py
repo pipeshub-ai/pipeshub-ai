@@ -214,26 +214,24 @@ async def test_rewiden_under_steady_load(env, monkeypatch: pytest.MonkeyPatch, s
     narrowed_at = time.monotonic()
     assert await p.http_client.update_collection_schema(RECORDS, narrow_schema(), timeout=30)  # the older image starts
     sent, begins_waited_out = running_at_each_widening(p.http_client, monkeypatch)
-    # the contended count when each guard call starts and when its change goes out: a call that went out after counting a
-    # contended try of its own was the forced one (a contended try that is not forced returns without sending)
+    # The contended count as each quiet-point wait starts and as each change goes out. The wait runs while the guard holds its
+    # lock and before a contended try is counted, so a change whose count rose since its own wait came from a try that counted
+    # itself and was still sent: the forced one (a contended try that is not forced returns without sending).
     contended_name = "pipeshub_record_schema_rewiden_contended_total"
-    call_start: contextvars.ContextVar[float | None] = contextvars.ContextVar("call_start", default=None)
+    wait_start: contextvars.ContextVar[float | None] = contextvars.ContextVar("wait_start", default=None)
     contended_at_send: list[tuple[float, float | None]] = []
     guard, widen = p.http_client.record_guard, p.http_client.update_collection_schema
-    ensure_wide = guard.ensure_wide
+    wait_quiet = guard._wait_quiet
 
-    async def snapshotted(*args: object, **kwargs: object) -> bool:
-        token = call_start.set(_counter(contended_name))
-        try:
-            return await ensure_wide(*args, **kwargs)
-        finally:
-            call_start.reset(token)
+    async def snapshotted() -> bool:
+        wait_start.set(_counter(contended_name))  # kept in this task's context until its change reads it
+        return await wait_quiet()
 
     async def counted(*args: object, **kwargs: object) -> bool:
-        contended_at_send.append((_counter(contended_name), call_start.get()))
+        contended_at_send.append((_counter(contended_name), wait_start.get()))
         return await widen(*args, **kwargs)
 
-    monkeypatch.setattr(guard, "ensure_wide", snapshotted)
+    monkeypatch.setattr(guard, "_wait_quiet", snapshotted)
     monkeypatch.setattr(p.http_client, "update_collection_schema", counted)
     trigger_started = time.monotonic()
     # What this is about is recovery, not how many tries it takes: skipped widenings, a forced one that timed out with its lease still held
@@ -266,9 +264,9 @@ async def test_rewiden_under_steady_load(env, monkeypatch: pytest.MonkeyPatch, s
         assert sent and len(contended_at_send) == len(sent), (sent, contended_at_send)
         previous = before_contended
         for running, (at, started) in zip(sent, contended_at_send, strict=True):
-            # a forced send: this call counted its own contended try, after FORCE_AFTER_SKIPS skips since the change before
+            # a forced send: its own try counted itself after its quiet-point wait, after FORCE_AFTER_SKIPS skips since the change before
             assert not running or (started is not None and at > started and at - previous >= FORCE_AFTER_SKIPS + 1), (
-                f"a widening was sent while the server listed {running} right before it (contended {started} at the call, {at:g} at "
+                f"a widening was sent while the server listed {running} right before it (contended {started} at its wait, {at:g} at "
                 f"the send, {previous:g} at the change before): only a forced send may go out with a transaction open ({sent})"
             )
             previous = at
