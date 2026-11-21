@@ -146,7 +146,9 @@ COMPOUND_DELETES = {"delete_connector_instance", "delete_user_group_by_id", "rem
                     "remove_unlinked_user_access_to_connector",
                     "remove_kb_permission", "delete_team_member_edges", "delete_all_team_permissions", "delete_kb_hub_app",
                     "reap_stale_external_app_relations"}
-# `delete_nodes_and_edges` is flagged when it removes nodes that hold or carry access.
+# `delete_nodes_and_edges` and `delete_node_if_match` (which also removes every edge of the node) are flagged when
+# they remove nodes that hold or carry access.
+NODE_DELETES = ("delete_nodes_and_edges", "delete_node_if_match")
 ACCESS_NODE_COLLECTIONS = ("GROUPS", "ROLES", "RECORD_GROUPS", "APPS", "TEAMS")
 SYNC = "connector writer: its sync end (`notify_connector_sync_completed`) or the permission hook (`_access_changed`) bumps"
 STORE = "pass-through wrapper of the data store: its callers are listed or bump"
@@ -219,7 +221,7 @@ def _flagged_delete_functions() -> dict[str, bool]:
         if _in_a_provider(rel) or rel.startswith(PROVIDER_DIRS):
             continue
         source = path.read_text(encoding="utf-8-sig")
-        if not any(name in source for name in (*DELETE_CALLS, *COMPOUND_DELETES, "delete_nodes_and_edges")):
+        if not any(name in source for name in (*DELETE_CALLS, *COMPOUND_DELETES, *NODE_DELETES)):
             continue
         for fn in _enclosing_functions(ast.parse(source)):
             for call in (n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
@@ -229,7 +231,7 @@ def _flagged_delete_functions() -> dict[str, bool]:
                 elif call.func.attr in COMPOUND_DELETES:
                     receiver = ast.unparse(call.func.value)
                     hit = any(w in receiver for w in ("graph", "store", "provider"))     # not a service in front of it
-                elif call.func.attr == "delete_nodes_and_edges":
+                elif call.func.attr in NODE_DELETES:
                     hit = any(f"CollectionNames.{c}." in text for c in ACCESS_NODE_COLLECTIONS) or "CollectionNames." not in text
                 else:
                     continue
