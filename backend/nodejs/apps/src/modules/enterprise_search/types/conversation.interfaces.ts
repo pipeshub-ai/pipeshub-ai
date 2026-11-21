@@ -10,6 +10,11 @@ import type {
   AnswerProvenance,
   LabelHistoryEntry,
 } from '../services/conversation/privacy/label.types';
+import type {
+  AnswerConsent,
+  AnswerConsentEntry,
+  ShareRequest,
+} from '../schema/answer-share.schema';
 
 export interface AiSearchResponse {
   searchResults: ICitation[];
@@ -341,6 +346,14 @@ export interface IMessage {
   provenance?: AnswerProvenance;
   /** The labels of earlier versions of this row, newest last. Never returned in a response. */
   labelHistory?: LabelHistoryEntry[];
+  /** The run that wrote the row: its archived label keeps it, and a file the run wrote names it. */
+  runId?: string;
+  /** A `bot_response` only: the asker shared this version in place. */
+  consent?: AnswerConsent;
+  /** A `bot_response` with a share with people only; never selected by default, never returned. */
+  consentTo?: AnswerConsentEntry[];
+  /** A `bot_response` only: members' asks to see it; never selected by default, never returned. */
+  shareRequests?: ShareRequest[];
 }
 
 export interface IConversation {
