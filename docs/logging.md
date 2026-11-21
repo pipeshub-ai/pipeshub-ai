@@ -834,7 +834,7 @@ role name, group name or field value: a role change is told by the event and its
 
 | Event | Outcome | `reason` | Notes |
 | --- | --- | --- | --- |
-| `user.create` | `success`, `failure` | success: `demo_password` (a demo account got a starting password), else none; failure: `email_taken`, `password_not_allowed` | |
+| `user.create` | `success`, `failure` | success: `demo_password` (a demo account got a starting password), else none; failure: `email_taken`, `password_not_allowed`, `admin_limit` (created as admin past the organisation's admin limit) | |
 | `user.invite` | `success`, `failure` | success: `new`, `reinvite`, `resend`; failure: `not_admin`, `admin_limit` | `new` is written when the account is created, even if its mail then fails; `reinvite` and `resend` only after the mail was accepted |
 | `user.restore` | `success` | `invite` | a removed account brought back by an invite |
 | `user.role.change` | `success`, `failure` | success: `promote`, `demote`, `new_admin` (created or invited as admin); failure: `not_admin`, `last_admin`, `admin_limit` | "who made U an admin" is this one event |

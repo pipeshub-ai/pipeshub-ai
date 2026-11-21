@@ -74,6 +74,7 @@ import {
   resolveOptionalUserRole,
   saveUserEnsuringOrgRetainsAdmin,
   saveUserEnsuringAdminCap,
+  createUserEnsuringAdminCap,
   assertCanPromoteAdmin,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
@@ -699,6 +700,10 @@ export class UserController {
           );
         }
         if (isDemoAccountEmail(email)) {
+          // The cleanup hard-deletes a removed sample account, so a create the
+          // cap will refuse must not get this far. The locked check at the
+          // write stays the one that counts.
+          if (fields.role === 'admin') await assertCanPromoteAdmin(orgId);
           await clearRemovedSampleAccount(email, orgId);
         }
       }
@@ -758,7 +763,14 @@ export class UserController {
       };
 
       try {
-        newUser = await users.create(orgId, fields);
+        newUser =
+          fields.role === 'admin'
+            ? await createUserEnsuringAdminCap(
+                orgId,
+                fields,
+                this.config.rsAvailable === 'true',
+              )
+            : await users.create(orgId, fields);
       } catch (saveError) {
         // The check above only sees live accounts, but the unique index covers
         // every row, so the email can still collide here: two concurrent

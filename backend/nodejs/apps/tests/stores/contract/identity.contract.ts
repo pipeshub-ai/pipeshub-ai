@@ -881,6 +881,23 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(d).to.equal(fx.transactional ? undefined : 'tx');
     });
 
+    it('create inside a failing unit of work rolls back only when transactional', async () => {
+      const org = await fx.newOrg();
+      const address = email();
+      let err: unknown;
+      try {
+        await fx.uow.run(async (tx) => {
+          await users.create(org, { email: address, fullName: 'In Tx' }, tx);
+          throw new Error('abort');
+        }, { org });
+      } catch (e) {
+        err = e;
+      }
+      expect((err as Error).message).to.equal('abort');
+      const rows = await users.listByEmails(org, [address]);
+      expect(rows).to.have.length(fx.transactional ? 0 : 1);
+    });
+
     it('listDirectory: search, service accounts, hasLoggedIn, paging and sort by name', async () => {
       const org = await fx.newOrg();
       const tag = uniq('Dir');
