@@ -5,6 +5,7 @@ loses the connector, found enabled keeps it), at most ``lookups_per_sync()`` per
 can confirm loses it after ``UNCONFIRMED_SYNCS_BEFORE_CLOSE`` syncs in a row.
 """
 
+import contextlib
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -24,7 +25,9 @@ from app.connectors.sources.microsoft.common.account_check import (
 from app.connectors.sources.microsoft.common.msgraph_client import UserListing
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
-from app.connectors.sources.microsoft.sharepoint_online.connector import SharePointConnector
+from app.connectors.sources.microsoft.sharepoint_online.connector import (
+    SharePointConnector,
+)
 from app.models.entities import AppUser
 
 CONNECTORS = ("outlook", "onedrive", "sharepoint")
@@ -137,10 +140,8 @@ class World:
             self.c.msgraph_client.get_all_users = AsyncMock(side_effect=_odata(500))
 
     async def sync(self) -> None:
-        try:
+        with contextlib.suppress(Exception):     # a failed listing still stops the user sync; what it withdrew is judged
             await self.c._sync_users()
-        except Exception:  # noqa: BLE001 - a failed listing still stops the user sync; what it withdrew is judged
-            pass
 
 
 def _closing_notices(w: World) -> list[object]:
@@ -268,6 +269,16 @@ async def test_without_the_saved_count_no_account_is_closed(world: Callable[[lis
     w = world(["a", "x"])
     w.status["x"] = _odata(500)
     w.c.user_sync_point.read_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
+    w.list(["a"], complete=True)
+    for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE + 1):
+        await w.sync()
+    assert set(w.stored) == {"a", "x"}
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_never_reached_microsoft_is_not_counted(world: Callable[[list[str]], World]) -> None:
+    w = world(["a", "x"])
+    w.status["x"] = RuntimeError("connection reset")
     w.list(["a"], complete=True)
     for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE + 1):
         await w.sync()

@@ -3656,7 +3656,7 @@ class SharePointConnector(BaseConnector):
         Returns whether the listing can be trusted."""
         return await withdraw_unconfirmed_accounts(
             self, self.user_sync_point, self.msgraph_client.get_user_status,
-            {u.source_user_id for u in listed if u.source_user_id}, set(), getattr(listed, "complete", True),
+            {u.source_user_id for u in listed if u.source_user_id}, set(), complete=getattr(listed, "complete", True),
         )
 
     async def _sync_users(self) -> None:

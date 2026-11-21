@@ -466,6 +466,20 @@ async def test_status_read_is_a_definite_404_or_it_raises() -> None:
     assert await read_user_status(found, "u") == "disabled"
 
 
+@pytest.mark.asyncio
+async def test_status_read_of_a_user_returned_with_a_deleted_date_is_gone() -> None:
+    from datetime import datetime, timezone
+
+    from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
+
+    found = MagicMock()
+    found.users.by_user_id.return_value.get = AsyncMock(
+        return_value=MagicMock(account_enabled=True, deleted_date_time=datetime(2026, 11, 1, tzinfo=timezone.utc)))
+    assert await read_user_status(found, "u") == "gone"
+    config = found.users.by_user_id.return_value.get.await_args.args[0]
+    assert set(config.query_parameters.select) == {"id", "accountEnabled", "deletedDateTime"}
+
+
 def _graph_answering(*answers: object) -> MagicMock:
     """A Graph client whose reads of one user answer in turn: an int is an ODataError with that status, anything else is returned."""
     g = MagicMock()

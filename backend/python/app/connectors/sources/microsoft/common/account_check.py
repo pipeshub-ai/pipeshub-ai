@@ -7,18 +7,23 @@ https://learn.microsoft.com/en-us/graph/api/user-get): one that is gone or disab
 enabled keeps it. A deleted user is moved to deleted items and is restorable for 30 days
 (https://learn.microsoft.com/en-us/graph/api/user-delete); restoring it lists it again, and the next sync links it again.
 
-A read that fails is not an answer. An account no read could confirm keeps its access for
-``UNCONFIRMED_SYNCS_BEFORE_CLOSE`` syncs in a row, then loses it: a failure that lasts may hide an account Microsoft
-has since removed. One confirming read starts the count again.
+A read that fails is not an answer. An account whose reads Microsoft refuses (an error status) keeps its access for
+``UNCONFIRMED_SYNCS_BEFORE_CLOSE`` syncs in a row, then loses it: a refusal that lasts may hide an account Microsoft
+has since removed. One confirming read starts the count again. A read that never reached Microsoft is not counted.
 """
 
 import json
 import os
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING
+
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from app.connectors.core.base.sync_point.sync_point import SyncPoint
 from app.services.notification.types import NotificationSeverity, NotificationType
+
+if TYPE_CHECKING:
+    from app.connectors.core.base.connector.connector_service import BaseConnector
 
 UNCONFIRMED_SYNCS_BEFORE_CLOSE = 3
 ACCOUNT_CHECK_KEY = "unconfirmed-accounts"
@@ -41,11 +46,12 @@ def lookups_per_sync() -> int:
 
 
 async def withdraw_unconfirmed_accounts(
-    connector: Any,
+    connector: "BaseConnector",
     sync_point: SyncPoint,
     lookup: Callable[[str], Awaitable[str]],
     listed: set[str],
     disabled: set[str],
+    *,
     complete: bool,
 ) -> bool:
     """Withdraw the stored accounts that are gone or disabled, by this sync's listing (``listed``, with ``disabled``
@@ -99,6 +105,10 @@ async def withdraw_unconfirmed_accounts(
             status = await lookup(sid)
         except Exception as e:
             trusted = False
+            if not isinstance(e, ODataError):
+                # Not an answer from Microsoft (no client, a transport failure): kept, and not counted.
+                log.error(f"Could not read user {sid}; keeping the access: {e}")
+                continue
             streaks[sid] = streaks.get(sid, 0) + 1
             if state is not None and streaks[sid] >= UNCONFIRMED_SYNCS_BEFORE_CLOSE:
                 closed.append(u)

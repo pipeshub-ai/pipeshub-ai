@@ -697,7 +697,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         the listing can be trusted."""
         return await withdraw_unconfirmed_accounts(
             self, self.user_sync_point, lambda sid: read_user_status(self.external_users_client.client, sid),
-            set(listing.listed_ids), set(listing.disabled_ids), listing.complete,
+            set(listing.listed_ids), set(listing.disabled_ids), complete=listing.complete,
         )
 
     async def _get_all_users_external(self) -> OutlookUserListing:

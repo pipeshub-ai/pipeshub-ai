@@ -2784,7 +2784,7 @@ class OneDriveConnector(BaseConnector):
             self, self.user_sync_point, self.msgraph_client.get_user_status,
             {u.source_user_id for u in users if u.source_user_id},
             {u.source_user_id for u in users if u.source_user_id and u.is_active is False},
-            getattr(users, "complete", True),
+            complete=getattr(users, "complete", True),
         )
 
     async def _sync_users(self) -> List[AppUser]:
