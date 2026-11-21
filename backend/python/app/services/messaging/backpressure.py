@@ -10,7 +10,9 @@ just queue up behind the same saturated service, growing
 them on the broker where they belong. ``BackpressureCoordinator`` closes
 that gap: any client signals it on a 429, and the consumer's read loop
 checks it before every poll, pausing new reads for the signalled duration
-instead of admitting more work it can't yet process.
+instead of admitting more work it can't yet process. A service only one index
+tier calls (``policy.SERVICE_POOL``: Docling) holds only the records that call
+it on a consumer that can pass over them (``consumer_concurrency.held_pools``).
 
 One coordinator per process, shared by every service client and consumer:
 clients signal it from the worker loop and consumers read it on the main
@@ -31,7 +33,7 @@ from app.services.resource_governor.feedback import get_default_downstream_feedb
 from app.services.spend_guard.retry_policy import clamp_retry_after
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +78,10 @@ class BackpressureEpisode:
 class BackpressureCoordinator:
     """Tracks the furthest-future pause deadline signalled by any service.
 
-    A later signal from a *different* service while already paused extends
-    (never shortens) the shared pause deadline — the consumer must wait for
-    whichever downstream service recovers last, since resuming early would
-    just immediately re-admit work for the still-saturated one.
+    Each service keeps its own deadline, extended (never shortened) by its
+    later signals. ``pause_remaining`` is the latest of them, less the services
+    a reader passes as ``ignoring``: a consumer that holds a tier-scoped
+    service's records itself waits only for the others.
     """
 
     def __init__(self, *, clock: "Callable[[], float]" = time.monotonic) -> None:
@@ -107,22 +109,25 @@ class BackpressureCoordinator:
                 self._pause_until[service_name] = until
         if extended:
             logger.info(
-                "Backpressure signalled by %s: pausing consumption for %.1fs",
+                "Backpressure signalled by %s for %.1fs",
                 service_name, retry_after,
             )
 
     def is_paused(self) -> bool:
         return self.pause_remaining() > 0.0
 
-    def pause_remaining(self) -> float:
-        """Seconds until every signalled service's pause has cleared (0 if
-        none are currently paused). Expired entries are pruned as a side
-        effect so ``paused_services`` never reports a stale name."""
+    def pause_remaining(self, *, ignoring: "Collection[str]" = ()) -> float:
+        """Seconds until every signalled service's pause, other than those
+        *ignoring* names, has cleared (0 if none are currently paused). Expired
+        entries are pruned as a side effect so ``paused_services`` never
+        reports a stale name."""
         now = self._clock()
         with self._lock:
             for name in [name for name, until in self._pause_until.items() if until <= now]:
                 del self._pause_until[name]
-            latest = max(self._pause_until.values(), default=now)
+            latest = max(
+                (until for name, until in self._pause_until.items() if name not in ignoring), default=now
+            )
         return max(0.0, latest - now)
 
     @property

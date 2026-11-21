@@ -29,7 +29,7 @@ EDITED = {
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
         # Read-only admission explain: a rule tag on the returned state, no change to any limit.
         "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
-        "_feedback_for", "assign:_SERVICE_POOL",  # a Docling-only report brakes INDEX_HEAVY only; no memory gate reads feedback
+        "_feedback_for", "assign:SERVICE_POOL",  # a Docling-only report brakes INDEX_HEAVY only; no memory gate reads feedback
         "resolve_ceilings",  # two keyword arguments (cells, profile); profile="legacy" (the default) runs the old body, so the capacity-profile test pins the equality
     },
     "memory_budget.py": {
@@ -86,6 +86,8 @@ EDITED = {
         # still swallowed; it runs after settlement and reserves nothing (tests/unit/services/messaging/test_indexing_end.py::
         # test_redis_retry_tracker_failure_after_the_ack_is_a_second_line).
         "clear_retry_tracking",
+        # A Docling 429 holds only the records that call Docling (F57f): read and dispatch decisions, no gate or memory charge.
+        "downstream_read_pause", "read_pausing_services", "held_pools", "held_downstream",
     },
     "controller.py": {
         "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",
