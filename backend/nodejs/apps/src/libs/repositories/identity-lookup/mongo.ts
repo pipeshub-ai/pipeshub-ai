@@ -28,6 +28,8 @@ export class MongoIdentityLookup implements IdentityLookup {
       scopes: t.scopes,
       expiresAt: t.expiresAt,
       lastUsedAt: t.lastUsedAt,
+      // Passed on as stored, even when malformed, so the caller can refuse it.
+      ...(t.knowledgeLimit != null ? { knowledgeLimit: t.knowledgeLimit } : {}),
     };
   }
 
