@@ -140,14 +140,15 @@ export function LabeledTextField(props: React.ComponentProps<typeof TextField.Ro
   return <TextField.Root color={control['aria-invalid'] ? 'red' : undefined} {...control} {...props} />;
 }
 
-export function LabeledSecretTextField(props: SecretTextFieldProps) {
-  const control = useFormFieldControl();
-  return <SecretTextField color={control['aria-invalid'] ? 'red' : undefined} {...control} {...props} />;
-}
-
 export function LabeledTextArea(props: React.ComponentProps<typeof TextArea>) {
   const control = useFormFieldControl();
   return <TextArea color={control['aria-invalid'] ? 'red' : undefined} {...control} {...props} />;
+}
+
+/** A secret (an API key, a client secret) that browsers and password managers leave alone: see `SecretTextField`. */
+export function LabeledSecretTextField(props: SecretTextFieldProps) {
+  const control = useFormFieldControl();
+  return <SecretTextField color={control['aria-invalid'] ? 'red' : undefined} {...control} {...props} />;
 }
 
 export type { FormFieldProps };
