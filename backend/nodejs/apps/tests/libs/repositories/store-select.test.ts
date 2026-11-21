@@ -123,13 +123,13 @@ describe('DOC_STORE switch', () => {
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all) // saved searches still need their tables
       process.env.DOC_STORE_MONGO_REPOS = 'document,project'
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'content'))
-      process.env.DOC_STORE_MONGO_REPOS = 'oauth-app,oauth-token,identity-lookup,delegation'
+      process.env.DOC_STORE_MONGO_REPOS = 'oauth-app,oauth-token,identity-lookup,delegation,agent-call-event'
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'oauth'))
       process.env.DOC_STORE_MONGO_REPOS = 'slack-thread'
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'integrations'))
       process.env.DOC_STORE_MONGO_REPOS = 'identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
       expect(Object.keys(schemaRequirements())).to.include('identity') // an OAuth app takes its slug number from the identity tables
-      process.env.DOC_STORE_MONGO_REPOS = 'conversation,semantic-search,document,project,notification,mail-log,outbox,connectors-config,oauth-app,oauth-token,identity-lookup,delegation,slack-thread,identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
+      process.env.DOC_STORE_MONGO_REPOS = 'conversation,semantic-search,document,project,notification,mail-log,outbox,connectors-config,oauth-app,oauth-token,identity-lookup,delegation,agent-call-event,slack-thread,identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
       expect(Object.keys(schemaRequirements())).to.deep.equal(['platform'])
     })
 
