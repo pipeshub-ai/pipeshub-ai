@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for all services
 
 # Stage 1: Build
-FROM node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS builder
+FROM docker.io/node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS builder
 
 # Set working directory for the build
 WORKDIR /build
@@ -24,7 +24,7 @@ RUN npm run build --prefix ./
 RUN mkdir -p /build/templates && cd src && find . -name '*.hbs' -exec cp --parents {} /build/templates/ \;
 
 # Stage 2: Runtime
-FROM node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496
+FROM docker.io/node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496
 
 # Install essential networking tools and SSH server
 RUN apt-get update && apt-get install -y \

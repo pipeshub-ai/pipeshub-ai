@@ -306,7 +306,7 @@ services:
     # it (SETUID, SETGID); redis-server holds none of them. The command goes through
     # that entrypoint: started straight from sh, redis-server ran as root.
     cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
-    image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+    image: docker.io/redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
     ulimits:
       nofile:
         soft: 65536
@@ -336,7 +336,7 @@ services:
 
   arango:
     <<: *hardened
-    image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
+    image: docker.io/arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
     ulimits:
       nofile:
         soft: 65536
@@ -395,7 +395,7 @@ services:
   zookeeper:
     <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
+    image: docker.io/confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
     ulimits:
       nofile:
         soft: 65536
@@ -423,7 +423,7 @@ services:
   kafka-1:
     <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
+    image: docker.io/confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
     ulimits:
       nofile:
         soft: 100000
@@ -465,7 +465,7 @@ services:
 
   qdrant:
     <<: *hardened
-    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
+    image: docker.io/qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
     stop_grace_period: 120s
     ports:
       - "6333:6333"

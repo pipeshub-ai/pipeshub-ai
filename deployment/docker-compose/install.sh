@@ -123,7 +123,7 @@ fi
 COMPOSE_FILES=("${BASE_COMPOSE_FILES[@]}")
 # The same files, as the hints print them for an operator to paste.
 COMPOSE_FILES_SHOWN="${BASE_COMPOSE_FILES[*]}"
-APP_IMAGE_REPO="${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}"
+APP_IMAGE_REPO="${PIPESHUB_IMAGE:-docker.io/pipeshubai/pipeshub-ai}"
 DEFAULT_PROJECT="pipeshub-ai"
 PROJECT_NAME="$DEFAULT_PROJECT"
 INSTALL_SEPARATE=false

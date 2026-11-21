@@ -24,7 +24,7 @@ x-read-only-root: &read-only-root
 services:
   kafka-messaging-it:
     <<: *hardened
-    image: confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
+    image: docker.io/confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
     ulimits:
       nofile:
         soft: 100000
@@ -63,7 +63,7 @@ services:
 
   zookeeper-messaging-it:
     <<: *hardened
-    image: confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
+    image: docker.io/confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
     ulimits:
       nofile:
         soft: 65536
@@ -83,7 +83,7 @@ services:
     # The image entrypoint drops to the redis user (SETUID, SETGID); with no volume
     # an earlier redis wrote, there is nothing to hand over.
     cap_add: [SETUID, SETGID]
-    image: redis:7.2-alpine@sha256:82403a0812a51faf6779f8d0dbe25ea85279ec7d49d24a3c78a65e9d8a87fa5f
+    image: docker.io/redis:7.2-alpine@sha256:82403a0812a51faf6779f8d0dbe25ea85279ec7d49d24a3c78a65e9d8a87fa5f
     ulimits:
       nofile:
         soft: 65536

@@ -300,7 +300,7 @@ services:
     # it (SETUID, SETGID); redis-server holds none of them. The command goes through
     # that entrypoint: started straight from sh, redis-server ran as root.
     cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
-    image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+    image: docker.io/redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
     ulimits:
       nofile:
         soft: 65536
@@ -333,7 +333,7 @@ services:
     # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
     # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
-    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    image: docker.io/neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
     ulimits:
       nofile:
         soft: 60000
@@ -373,7 +373,7 @@ services:
   zookeeper:
     <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
+    image: docker.io/confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
     ulimits:
       nofile:
         soft: 65536
@@ -401,7 +401,7 @@ services:
   kafka-1:
     <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
+    image: docker.io/confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
     ulimits:
       nofile:
         soft: 100000
@@ -443,7 +443,7 @@ services:
 
   qdrant:
     <<: *hardened
-    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
+    image: docker.io/qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
     stop_grace_period: 120s
     ports:
       - "6333:6333"

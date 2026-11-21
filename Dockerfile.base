@@ -16,7 +16,7 @@
 #   (NLTK, HuggingFace, fastembed) are also no-ops when already present.
 #
 #   docker buildx build -f Dockerfile.base --target python-deps \
-#     --build-arg PYTHON_DEPS_BASE=pipeshubai/pipeshub-ai-base:python-deps \
+#     --build-arg PYTHON_DEPS_BASE=docker.io/pipeshubai/pipeshub-ai-base:python-deps \
 #     -t pipeshubai/pipeshub-ai-base:python-deps --platform linux/amd64,linux/arm64 --push .
 #
 #   For a full rebuild from scratch (e.g. major dependency overhaul or first-time setup),
@@ -66,16 +66,16 @@ ARG BUNDLE_BGE_EMBEDDING=1
 # Base for the python-deps stage.  Default builds from scratch using the local
 # build-base stage.  Override with the previously-published image for incremental
 # rebuilds — pip skips packages already at their locked version and ML model downloads are no-ops:
-#   --build-arg PYTHON_DEPS_BASE=pipeshubai/pipeshub-ai-base:python-deps
+#   --build-arg PYTHON_DEPS_BASE=docker.io/pipeshubai/pipeshub-ai-base:python-deps
 ARG PYTHON_DEPS_BASE=build-base
 
 # -----------------------------------------------------------------------------
 # Stage: Build Base - Contains all build tools (NOT in final app image)
 # -----------------------------------------------------------------------------
-FROM node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node-runtime
+FROM docker.io/node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node-runtime
 
 # Pinned by digest (SEC-SC-11); Dependabot moves the digest and the tag together.
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build-base
+FROM docker.io/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 # Debian slim ships docker-clean, which wipes /var/cache/apt after installs; remove it so
@@ -178,7 +178,7 @@ RUN set -eux; \
 # -----------------------------------------------------------------------------
 # Target: runtime-base — publish as pipeshubai/pipeshub-ai-base:runtime
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS runtime-base
+FROM docker.io/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS runtime-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 RUN rm -f /etc/apt/apt.conf.d/docker-clean

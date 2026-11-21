@@ -3,7 +3,7 @@
 # Build from the repository root:  docker build -f backend/db/Dockerfile -t pipeshubai/pipeshub-migrate .
 # Pinned by digest (SEC-SC-11; an OCI index: linux/amd64 and linux/arm64), the same base as Dockerfile.base. To bump,
 # resolve the digest of the new tag and run the migration tests on a fresh database.
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM docker.io/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 WORKDIR /app
 COPY backend/db/requirements.lock /tmp/requirements.lock

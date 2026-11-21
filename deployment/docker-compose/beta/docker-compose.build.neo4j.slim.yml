@@ -442,7 +442,7 @@ services:
     # bundled modules, RediSearch among them; with no index and no --search-workers
     # it runs no HNSW background workers.  Memory stays bounded by design:
     # KV has finite keys, BullMQ uses removeOnComplete, Streams use MAXLEN.
-    image: redis:8@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
+    image: docker.io/redis:8@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
     ulimits:
       nofile:
         soft: 65536
@@ -493,7 +493,7 @@ services:
     # The image entrypoint loads the bundled modules, RediSearch among them, when the
     # command is redis-server; loading search again aborts the server, so the command
     # names no --loadmodule. Storage is ON HASH, so ReJSON goes unused.
-    image: redis:8@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
+    image: docker.io/redis:8@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
     ulimits:
       nofile:
         soft: 65536
@@ -529,7 +529,7 @@ services:
     # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
     # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
-    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    image: docker.io/neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
     ulimits:
       nofile:
         soft: 60000

@@ -111,7 +111,7 @@ services:
   # ---------------------------------------------------------------------------
   pipeshub-ai:
     <<: *hardened
-    image: ${PIPESHUB_APP_PINNED:-${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}}
+    image: ${PIPESHUB_APP_PINNED:-${PIPESHUB_IMAGE:-docker.io/pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}}
     restart: always
     # Only the image entrypoint holds these, as root, for its first moments: it
     # hands earlier root-owned volumes to uid 1000 (CHOWN, DAC_OVERRIDE, FOWNER),
@@ -801,7 +801,7 @@ services:
     # with gosu (SETUID, SETGID); mongod itself runs with none of them.
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
     # Pin via MONGO_IMAGE_TAG to recover from host-specific MongoDB 8.x crashes.
-    image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
+    image: docker.io/mongo:${MONGO_IMAGE_TAG:-8.0.17}
     # mongod keeps the open-file limit it is started with and asks for 64000;
     # at Docker's 1024 it stops accepting connections and then crashes.
     ulimits:
@@ -924,7 +924,7 @@ services:
     # it (SETUID, SETGID); redis-server holds none of them. The command goes through
     # that entrypoint: started straight from sh, redis-server ran as root.
     cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
-    image: redis:7.4.12-bookworm
+    image: docker.io/redis:7.4.12-bookworm
     ulimits:
       nofile:
         soft: 65536
@@ -968,7 +968,7 @@ services:
   postgres:
     <<: *hardened
     profiles: ["postgres"]
-    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    image: ${PG_IMAGE:-docker.io/pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
     # The stock entrypoint starts as root: it owns the data directory and the verifier volume for the postgres user
     # (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it with gosu (SETUID, SETGID).
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
@@ -1031,7 +1031,7 @@ services:
   pgbouncer:
     <<: *hardened
     profiles: ["postgres"]
-    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    image: ${PG_IMAGE:-docker.io/pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
     user: postgres
     # One descriptor per client (max_client_conn 1000 in postgres/pgbouncer.ini) and per server connection: the runtime's
     # default soft limit of 1024 refuses clients before max_client_conn does.
@@ -1075,7 +1075,7 @@ services:
   pipeshub-migrate:
     <<: *hardened
     profiles: ["postgres-migrate"]
-    image: ${PIPESHUB_MIGRATE_IMAGE:-pipeshubai/pipeshub-migrate}:${IMAGE_TAG:-latest}
+    image: ${PIPESHUB_MIGRATE_IMAGE:-docker.io/pipeshubai/pipeshub-migrate}:${IMAGE_TAG:-latest}
     pull_policy: build
     build:
       context: ../..
@@ -1159,7 +1159,7 @@ services:
 
   qdrant:
     <<: *hardened
-    image: qdrant/qdrant:v1.15.5
+    image: docker.io/qdrant/qdrant:v1.15.5
     stop_grace_period: 120s
     # The image's entrypoint.sh, as PID 1, exits as soon as it has passed SIGTERM on, and its exit kills qdrant
     # mid-shutdown (exit 143). Under the init, qdrant finishes its own shutdown and exits 0 (R44-STOP).
@@ -1215,7 +1215,7 @@ services:
   sandbox-image:
     <<: [*hardened, *read-only-root]
     profiles: ["sandbox"]
-    image: ${PIPESHUB_SANDBOX_PINNED:-${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}}
+    image: ${PIPESHUB_SANDBOX_PINNED:-${SANDBOX_DOCKER_IMAGE:-docker.io/pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}}
     build:
       context: ../../deployment/sandbox
       dockerfile: Dockerfile
@@ -1479,7 +1479,7 @@ services:
       - /var/cache/nginx:size=16m,uid=101,gid=101
       - /var/run:size=1m,uid=101,gid=101
     profiles: ["search-searxng", "fetch-crawl4ai"]
-    image: nginx:1.27.5-alpine
+    image: docker.io/nginx:1.27.5-alpine
     restart: always
     volumes:
       - ./web-readers-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
@@ -1496,7 +1496,7 @@ services:
   searxng:
     <<: *hardened
     profiles: ["search-searxng"]
-    image: searxng/searxng:2026.9.30-a9d990033
+    image: docker.io/searxng/searxng:2026.9.30-a9d990033
     restart: always
     environment:
       # Required: SearXNG refuses to start with its default key. A required-variable check here
@@ -1517,7 +1517,7 @@ services:
     <<: *hardened
     profiles: ["fetch-crawl4ai"]
     # 0.9.4 or later: earlier servers let anyone who can reach them run code or reach internal addresses.
-    image: unclecode/crawl4ai:0.9.4
+    image: docker.io/unclecode/crawl4ai:0.9.4
     restart: always
     environment:
       - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-}
@@ -1539,7 +1539,7 @@ services:
   arango:
     <<: *hardened
     profiles: ["graph-arango"]
-    image: arangodb:3.12.4
+    image: docker.io/arangodb:3.12.4
     ulimits:
       nofile:
         soft: 65536
@@ -1574,7 +1574,7 @@ services:
     # the neo4j user's process; without it neo4j was killed, not shut down.
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
     profiles: ["graph-neo4j"]
-    image: neo4j:5.26.0
+    image: docker.io/neo4j:5.26.0
     # A clean shutdown checkpoints the store; it took 11 s on an idle database, past Compose's 10 s default.
     stop_grace_period: 120s
     ulimits:
@@ -1698,7 +1698,7 @@ services:
   zookeeper:
     <<: *hardened
     profiles: ["broker-kafka"]
-    image: confluentinc/cp-zookeeper:7.9.0
+    image: docker.io/confluentinc/cp-zookeeper:7.9.0
     ulimits:
       nofile:
         soft: 65536
@@ -1760,7 +1760,7 @@ services:
   kafka-1:
     <<: *hardened
     profiles: ["broker-kafka"]
-    image: confluentinc/cp-kafka:7.9.0
+    image: docker.io/confluentinc/cp-kafka:7.9.0
     ulimits:
       nofile:
         soft: 100000

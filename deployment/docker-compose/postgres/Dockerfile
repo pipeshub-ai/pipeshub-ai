@@ -5,15 +5,16 @@
 # Both bases are multi-arch (linux/amd64, linux/arm64) and pinned by digest. To bump one, resolve the
 # new digest for the tag, update it here, and run tests/postgres_roles_test.sh and tests/postgres_persistence_test.sh on both majors.
 ARG PG_MAJOR=18
-FROM pgvector/pgvector:0.8.7-pg18-bookworm@sha256:38681dc6eaf55308e2a4c6de392d131652dcfac70e1263e35cd9b5ea3fe39782 AS base-18
-FROM pgvector/pgvector:0.8.7-pg17-bookworm@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd AS base-17
+FROM docker.io/pgvector/pgvector:0.8.7-pg19-trixie@sha256:ace863afa68a13560603dc7366fad0adb4f5ddd0a21c8f06418195f32e03fa08 AS base-19
+FROM docker.io/pgvector/pgvector:0.8.7-pg18-trixie@sha256:ab49524d18df7200b74ac9a475e1db6297fc1eb57da4c214c63d10ecc4b754fa AS base-18
+FROM docker.io/pgvector/pgvector:0.8.7-pg17-trixie@sha256:89947206f52eac3a9df9b663df7e76987cbdc623be6576b3a524953d568700d7 AS base-17
 
 # Versions this image is tested with. Source tarballs are verified by checksum.
 # hadolint ignore=DL3006
 FROM base-${PG_MAJOR} AS build
 ARG PG_MAJOR
-ARG PG_TEXTSEARCH_VERSION=1.5.1
-ARG PG_TEXTSEARCH_SHA256=2e7fb76ed96176afc6d16cc5d095ced2cb233ff27fbeaa8c7bfffc82e02f7498
+ARG PG_TEXTSEARCH_VERSION=1.6.0
+ARG PG_TEXTSEARCH_SHA256=83e455d462304bea03afc25fd92925c8e67551936e378903d9245d932d9a05b0
 ARG PGBOUNCER_VERSION=1.26.1
 ARG PGBOUNCER_SHA256=00886a2994b4844cd37110970df777772cfc42a74c400522c82fba509a3f42d9
 # pgBackRest from the signed PGDG repository (live or archive, as above), installed in the final stage
