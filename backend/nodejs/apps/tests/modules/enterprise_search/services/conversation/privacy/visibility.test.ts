@@ -696,15 +696,19 @@ describe('the reader check: who may see an answer', () => {
       })
 
       it("the asker's own answer from before labels goes to her model as text where others read the chat, whole where only she does", async () => {
-        const a = withSteps()
-        const w = world([a])
-        const [shared] = await includableRows(reader(DANA), session, [a], { deps: w.deps })
+        // The room before Priya joined, so every member could read it then, and a turn that names no source.
+        const earlier: ReaderSession = { ...session, sharedWith: (session.sharedWith as unknown[]).slice(0, 3) as never }
+        const q = question('What happened before?')
+        const a = { ...withSteps(), referenceData: [] }
+        const w = world([q, a])
+        const [, shared] = await includableRows(reader(DANA), earlier, [q, a], { deps: w.deps })
         expect(shared).to.include({ content: 'Before labels.', _ver: 'legacy' })
         expect((shared as Record<string, unknown>).parts).to.deep.equal([])
-        expect((shared as Record<string, unknown>).referenceData).to.deep.equal([])
         const solo: ReaderSession = { _id: ROOM, orgId: ORG, userId: DANA, sharedWith: [] }
-        const [alone] = await includableRows(reader(DANA), solo, [a], { deps: w.deps })
+        const [, alone] = await includableRows(reader(DANA), solo, [q, a], { deps: w.deps })
         expect((alone as Record<string, unknown>).parts).to.have.length(2)
+        const [, whole] = await includableRows(reader(DANA), solo, [q, withSteps()], { deps: world([q, withSteps()]).deps })
+        expect((whole as Record<string, unknown>).referenceData, 'one that names a source, where only she reads').to.have.length(1)
       })
 
       const oldFile = (over: Record<string, unknown> = {}) => ({
@@ -808,13 +812,17 @@ describe('the reader check: who may see an answer', () => {
         expect(await verdictIn(session, BOB, a, w)).to.include({ verdict: 'visible' })
       })
 
-      it("goes empty to Bob's model, and whole to its asker's", async () => {
+      it("goes empty to Bob's model, and to its asker's where others read the chat: no member but her could read it; whole where only she does", async () => {
+        const q = question('And then?')
         const a = written(T2)
-        const w = world([a])
-        const bob = await includableRows(reader(BOB), stamped, [a], { deps: w.deps })
-        expect(bob[0]).to.include({ content: '' })
-        const dana = await includableRows(reader(DANA), stamped, [a], { deps: w.deps })
-        expect(dana[0]).to.include({ content: 'Before labels.' })
+        const w = world([q, a])
+        const bob = await includableRows(reader(BOB), stamped, [q, a], { deps: w.deps })
+        expect(bob[1]).to.include({ content: '' })
+        const dana = await includableRows(reader(DANA), stamped, [q, a], { deps: w.deps })
+        expect(dana[1]).to.include({ content: '' })
+        expect(dana[1]).to.not.have.property('_ref')
+        const alone = await includableRows(reader(DANA), { ...stamped, sharedWith: [] }, [q, a], { deps: w.deps })
+        expect(alone[1]).to.include({ content: 'Before labels.' })
       })
 
       it('a row read with no id is shown to its asker alone', async () => {
@@ -2093,5 +2101,118 @@ describe('the reader that stands for every member (`everyMemberOf`): shown only 
     expect(puts, 'every member').to.deep.equal([])
     await verdictsFor(CAROL, [a], w)
     expect(puts.length, 'Carol (control)').to.be.greaterThan(0)
+  })
+})
+
+describe('where others read the chat, the asker’s own answers from before the rules reach her model only while every member could read them then', () => {
+  afterEach(() => resetVisibility())
+
+  /** The room before Priya joined: each way into it is older than the rules. */
+  const earlier: ReaderSession = { ...session, sharedWith: (session.sharedWith as unknown[]).slice(0, 3) as never }
+  const solo: ReaderSession = { _id: ROOM, orgId: ORG, userId: DANA, sharedWith: [] }
+  /** Dana's turn from before the rules: her question and its answer, with no label, its steps stored. */
+  const oldTurn = (content = 'Old: the launch moved.', answerOver: Record<string, unknown> = {}, questionOver: Record<string, unknown> = {}) => {
+    const q = { ...question('When is the launch?'), createdAt: T0, ...questionOver }
+    const a = answer(content, { createdAt: T0, parts: [{ type: 'tool_call', resultSummary: 'step' }, { type: 'text', content }], ...answerOver }, null)
+    delete a.labelVer
+    return [q, a] as const
+  }
+  const toDana = async (on: ReaderSession, rows: ReaderRow[], opts: Record<string, unknown> = {}) =>
+    includableRows(reader(DANA), on, rows, { deps: world(rows).deps, ...opts })
+  const field = (row: object | undefined, key: string): unknown => (row as Record<string, unknown> | undefined)?.[key]
+
+  it('one every member could read then is given as text, sealed, so the new answer names it as a parent', async () => {
+    const [q, a] = oldTurn()
+    const [, old] = await toDana(earlier, [q, a])
+    expect(old).to.include({ content: 'Old: the launch moved.', _ref: a._id, _ver: 'legacy' })
+    expect(field(old, 'parts')).to.deep.equal([])
+  })
+
+  it('one that a member who joined after the rules could not read then is skipped: nothing of it goes, so it is no parent', async () => {
+    const [q, a] = oldTurn()
+    const [asked, old] = await toDana(session, [q, a])
+    expect(old).to.include({ content: '' })
+    expect(old).to.not.have.property('_ref')
+    expect(old).to.not.have.property('_ver')
+    expect(field(old, 'parts')).to.deep.equal([])
+    expect(asked, 'her question still goes: every member reads it').to.include({ content: 'When is the launch?', _ref: q._id })
+  })
+
+  it('a member added later changes what the next run is given', async () => {
+    const [q, a] = oldTurn()
+    expect(field((await toDana(earlier, [q, a]))[1], 'content')).to.equal('Old: the launch moved.')
+    expect(field((await toDana(session, [q, a]))[1], 'content')).to.equal('')
+  })
+
+  it('the asker alone again is given everything, its steps too', async () => {
+    const [q, a] = oldTurn()
+    const [, old] = await toDana(solo, [q, a])
+    expect(old).to.include({ content: 'Old: the launch moved.', _ref: a._id })
+    expect(field(old, 'parts')).to.have.length(2)
+  })
+
+  it('one whose turn names a source is skipped though everyone came before: no member is asked about it', async () => {
+    const turns: Array<[string, readonly ReaderRow[]]> = [
+      ['a record it showed', oldTurn('Old: R says.', { referenceData: [{ id: R, recordId: R, name: R }] })],
+      ['a citation', oldTurn('Old: cited.', { citations: [{ citationData: { metadata: { recordId: R } } }] })],
+      ['a collection its question picked', oldTurn('Old: from the board.', {}, { appliedFilters: { kb: [{ id: 'kb-1', name: 'Board' }] } })],
+      ['a file its question attached', oldTurn('Old: from the file.', {}, { attachments: [{ recordId: 'up-1', recordName: 'f.txt' }] })],
+    ]
+    for (const [what, turn] of turns) {
+      expect(field((await toDana(earlier, [...turn]))[1], 'content'), what).to.equal('')
+      expect(field((await toDana(solo, [...turn]))[1], 'content'), `${what}, where only she reads`).to.not.equal('')
+    }
+  })
+
+  it('the one her question replies to is given all the same, as she picked it', async () => {
+    const [q, a] = oldTurn()
+    const [, old] = await toDana(session, [q, a], { replyTargetId: String(a._id) })
+    expect(old).to.include({ content: 'Old: the launch moved.', _ref: a._id, _ver: 'legacy' })
+  })
+
+  it('one whose question is not in the window is skipped: its turn cannot be judged', async () => {
+    const [, a] = oldTurn()
+    expect(field((await toDana(earlier, [a]))[0], 'content')).to.equal('')
+  })
+
+  it('a chat visible to its project: given while it was so before the rules, skipped once it became so after them', async () => {
+    const project: ReaderSession = { ...session, sharedWith: [], projectId: '7a0000000000000000000007', projectVisibility: 'project' }
+    const [q, a] = oldTurn()
+    expect(field((await toDana(project, [q, a]))[1], 'content')).to.equal('Old: the launch moved.')
+    expect(field((await toDana({ ...project, projectVisibleAt: T2 }, [q, a]))[1], 'content')).to.equal('')
+  })
+
+  it('rows read with no id are judged the same: given while every member came before, skipped once one joined after', async () => {
+    const [q, a] = oldTurn()
+    delete q._id
+    delete a._id
+    expect(field((await toDana(earlier, [q, a]))[1], 'content')).to.equal('Old: the launch moved.')
+    expect(field((await toDana(session, [q, a]))[1], 'content')).to.equal('')
+  })
+
+  it('a card from before the rules goes with its turn’s answer, and is skipped with it', async () => {
+    const [q, a] = oldTurn()
+    const card = { _id: nextId(), sessionId: ROOM, orgId: ORG, messageType: 'tool_call', requestedBy: DANA, content: 'Which launch: web or mobile?', createdAt: T0 }
+    const rows = [q, card, a]
+    const before = await toDana(earlier, rows)
+    expect(field(before[1], 'content'), 'given with its answer').to.equal('Which launch: web or mobile?')
+    expect(field(before[2], 'content')).to.equal('Old: the launch moved.')
+    const after = await toDana(session, rows)
+    expect(field(after[1], 'content'), 'skipped with its answer').to.equal('')
+    expect(field(after[2], 'content')).to.equal('')
+    expect(field((await toDana(solo, rows))[1], 'content'), 'hers alone').to.equal('Which launch: web or mobile?')
+  })
+
+  it('another person’s answer from before the rules takes the same rule: given while every member could read it then, skipped once one joined after, given when the question replies to it', async () => {
+    // Dana's old turn, in Carol's run: Carol could read the room then.
+    const [q, a] = oldTurn()
+    const toCarol = async (on: ReaderSession, opts: Record<string, unknown> = {}) =>
+      (await includableRows(reader(CAROL), on, [q, a], { deps: world([q, a]).deps, ...opts }))[1]
+    expect(await toCarol(earlier)).to.include({ content: 'Old: the launch moved.', _ref: a._id, _ver: 'legacy' })
+    const skipped = await toCarol(session)
+    expect(skipped).to.include({ content: '' })
+    expect(skipped).to.not.have.property('_ref')
+    expect(skipped).to.not.have.property('_ver')
+    expect(await toCarol(session, { replyTargetId: String(a._id) })).to.include({ content: 'Old: the launch moved.', _ref: a._id })
   })
 })

@@ -128,6 +128,7 @@ import {
   idOf as idOfValue,
   includableRows,
   readerView,
+  repliedRowOf,
   unlabelledAnswers,
   type Reader,
   type ReaderSession,
@@ -3026,6 +3027,10 @@ async function regenerateAnswersInternal(
             existingConversation.agentKey !== '' && {
               usableAgents: [existingConversation.agentKey],
             }),
+          // As the follow-up it answers again: the row its question replies to is the sender's pick.
+          ...(repliedRowOf(askedQuestion) !== undefined && {
+            replyTargetId: repliedRowOf(askedQuestion),
+          }),
         },
       ),
       storedHistory: regenHistory,

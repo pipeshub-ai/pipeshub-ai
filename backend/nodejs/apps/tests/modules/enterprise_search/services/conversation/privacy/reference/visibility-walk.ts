@@ -1,5 +1,6 @@
 // The reader check as it was before answers stored their closures, with the rules added to it since (the switch read
-// per chat, project visibility recorded, files saved before the rules, an asker's own answers given as text), kept
+// per chat, project visibility recorded, files saved before the rules, an asker's own answers given as text, and
+// where others read the chat only the answers from before them that every member could read then), kept
 // whole: it walks every earlier version level by level. The closure property test judges each case with both and asks
 // for the same verdict.
 /**
@@ -2915,6 +2916,17 @@ export async function includableRows<R extends object>(
       validUntil: Date.now() + UNCHECKED_TTL_MS,
     };
   };
+  const everyMemberSaw = oldAnswersEveryMemberSaw(
+    reader,
+    session,
+    asRows,
+    (row) => {
+      const rowId = idOf(row._id);
+      return rowId === undefined ? idlessVerdict(row) : verdicts.get(rowId);
+    },
+    ownerId,
+    judged.switchAt,
+  );
   return rows.map((m) => {
     const row = m as unknown as ReaderRow & Plain;
     const id = idOf(row._id);
@@ -2933,7 +2945,11 @@ export async function includableRows<R extends object>(
         : blank(m);
     }
     if (type === 'tool_call') {
-      return own && verdict?.verdict === 'visible' ? m : blank(m);
+      if (!own || verdict?.verdict !== 'visible') return blank(m);
+      // A card from before labels, where others read the chat, goes with its turn's answer.
+      return (opts.othersRead ?? othersRead(session)) && versionOf(row) === LEGACY_LABEL_VER && !everyMemberSaw.has(row)
+        ? blank(m)
+        : m;
     }
     if (
       !verdict ||
@@ -2943,25 +2959,93 @@ export async function includableRows<R extends object>(
       return blank(m);
     if (own) {
       if (verdict.verdict !== 'visible') return blank(m);
-      // One's own answer from before labels goes as text where others read the chat: their check of the new answer
-      // passes such a parent only as text, since the view from before labels never showed them its steps.
-      return (opts.othersRead ?? othersRead(session)) &&
-        versionOf(row) === LEGACY_LABEL_VER
+      if (!(opts.othersRead ?? othersRead(session)) || versionOf(row) !== LEGACY_LABEL_VER) return sealed(m);
+      // One's own answer from before labels goes as text where others read the chat, and only while every member
+      // could read it then (each way into the chat older than the switch, and a turn that names no source), or when
+      // the question replies to it.
+      return everyMemberSaw.has(row) || (id !== undefined && id === opts.replyTargetId)
         ? sealed(textOnly(m))
-        : sealed(m);
+        : blank(m);
     }
     // Shared with them, whether or not they could also read it whole: the text the share shows, and no more. An
     // answer built on it names it as a text parent, which every reader the share covers may see.
     if (verdict.verdict === 'consented' || sharedWithSender(row)) {
       return sealed(sharedTextOf(m, deps));
     }
-    // One they could read before the rules started: its text.
-    if (verdict.basis === 'before_labels') return sealed(textOnly(m));
-    // Another person's answer that restricts nobody, or the one the sender replied to.
     const replied = id !== undefined && id === opts.replyTargetId;
+    // One they could read before the rules started: its text; where others read the chat, only while every member
+    // could read it then, or when the question replies to it.
+    if (verdict.basis === 'before_labels') {
+      return (opts.othersRead ?? othersRead(session)) && versionOf(row) === LEGACY_LABEL_VER && !everyMemberSaw.has(row) && !replied
+        ? blank(m)
+        : sealed(textOnly(m));
+    }
+    // Another person's answer that restricts nobody, or the one the sender replied to.
     return replied || pubOf(row) ? sealed(textOnly(m)) : blank(m);
   });
 }
+
+/** Whether a row names a record, a file or an address a per-record view would check. */
+const namesASource = (row: Plain): boolean =>
+  ['citations', 'attachments', 'referenceData'].some(
+    (field) => Array.isArray(row[field]) && (row[field] as unknown[]).length > 0,
+  ) ||
+  [row.appliedFilters, row.filters].some(
+    (filters) => isPlain(filters) && Object.values(filters).some((list) => Array.isArray(list) && list.length > 0),
+  );
+
+/**
+ * The rows from before labels, visible to the sender, that every member could read before the switch: with each way
+ * into the chat older than it, each answer, whoever asked it, not written under the rules whose turn (the question
+ * before it, and it) names no source, and the sender's own cards of a turn whose answer is one.
+ */
+const oldAnswersEveryMemberSaw = (
+  sender: Reader,
+  session: ReaderSession | undefined,
+  rows: ReadonlyArray<ReaderRow & Plain>,
+  verdictOf: (row: ReaderRow) => RowVerdict | undefined,
+  ownerId: string | undefined,
+  switchAt: number | undefined,
+): Set<object> => {
+  const seen = new Set<object>();
+  if (!session) return seen;
+  const at = switchOf(session, switchAt);
+  const everyWayInBefore =
+    at === undefined ||
+    (shareRowsOf(session).every((r) => sharedBefore(r, at)) &&
+      (session.projectVisibility !== 'project' || projectVisibleBefore(session)));
+  if (!everyWayInBefore) return seen;
+  let question: Plain | undefined;
+  let cards: Plain[] = [];
+  let answered = false;
+  const close = (): void => {
+    if (answered) for (const card of cards) if (!namesASource(card)) seen.add(card);
+    cards = [];
+    answered = false;
+  };
+  for (const row of rows) {
+    if (row.messageType === 'user_query') {
+      close();
+      question = row;
+      continue;
+    }
+    if (versionOf(row) !== LEGACY_LABEL_VER || verdictOf(row)?.verdict !== 'visible') continue;
+    if (row.messageType === 'tool_call') {
+      if (rowAuthorOf(row, ownerId) === sender.userId) cards.push(row);
+    } else if (
+      isLabelledType(row) &&
+      question !== undefined &&
+      !unlabelledUnderRules(row, session) &&
+      !namesASource(question) &&
+      !namesASource(row)
+    ) {
+      seen.add(row);
+      answered = true;
+    }
+  }
+  close();
+  return seen;
+};
 
 /** Whether anyone but its owner reads the chat: a share row, its project, or the readers of an agent room. */
 const othersRead = (session: ReaderSession | undefined): boolean =>

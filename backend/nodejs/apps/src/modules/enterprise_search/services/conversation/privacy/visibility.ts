@@ -4399,6 +4399,17 @@ export interface IncludableOptions extends VisibleRowsOptions {
 }
 
 /**
+ * The row `question` replies to, for `replyTargetId`: the answer or shared copy it quotes, unless that was removed. A
+ * reply to a person's message names none: their questions and notes go to the model anyway.
+ */
+export const repliedRowOf = (question: object): string | undefined => {
+  const reply = (question as Plain).replyTo;
+  if (!isPlain(reply) || reply.removed === true || reply.kind === 'message')
+    return undefined;
+  return idOf(reply.messageId);
+};
+
+/**
  * The mark on a history row the model is given nothing of. Such a row goes to the AI backend with no `_ref`, `_ver`
  * or `_pub`, so the new answer's label never names it as a parent: a later step that writes words of its own in its
  * place must not make it read as given.
@@ -4454,7 +4465,9 @@ export const sealedRef = <R extends object>(row: R, pub = false): R => {
  * The rows the sender's model may be given, each marked with its row and version
  * (`_ref`, `_ver`) and whether that version restricts nobody (`_pub`, which an outbound send's check reads).
  * Questions and notes go as they are, another person's without a quoted excerpt. The sender's
- * own answers go while they can still see them, whether or not they reply to them. Another person's answer goes
+ * own answers go while they can still see them, whether or not they reply to them. Where others read the chat, an
+ * answer from before the rules, whoever asked it, goes as text, and only while every member could read it then or the
+ * question replies to it. Another person's answer goes
  * as text only when the sender can see it and either replied to it, or it was shared with them, or it restricts
  * nobody. Every other answer, card or error goes empty, so the model never reads it as an unanswered question.
  */
@@ -4516,6 +4529,19 @@ export async function includableRows<R extends object>(
       validUntil: Date.now() + UNCHECKED_TTL_MS,
     };
   };
+  const othersReadIt = opts.othersRead ?? othersRead(session);
+  const everyMemberSaw = othersReadIt
+    ? oldRowsEveryMemberSaw(
+        reader,
+        session,
+        asRows,
+        (row) => {
+          const id = idOf(row._id);
+          return id === undefined ? idlessVerdict(row) : verdicts.get(id);
+        },
+        judged.switchAt,
+      )
+    : new Set<object>();
   return rows.map((m) => {
     const row = m as unknown as ReaderRow & Plain;
     const id = idOf(row._id);
@@ -4534,7 +4560,13 @@ export async function includableRows<R extends object>(
         : blank(m);
     }
     if (type === 'tool_call') {
-      return own && verdict?.verdict === 'visible' ? m : blank(m);
+      if (!own || verdict?.verdict !== 'visible') return blank(m);
+      // A card from before labels, where others read the chat, goes with its turn's answer.
+      return othersReadIt &&
+        versionOf(row) === LEGACY_LABEL_VER &&
+        !everyMemberSaw.has(row)
+        ? blank(m)
+        : m;
     }
     if (
       !verdict ||
@@ -4544,24 +4576,106 @@ export async function includableRows<R extends object>(
       return blank(m);
     if (own) {
       if (verdict.verdict !== 'visible') return blank(m);
-      // One's own answer from before labels goes as text where others read the chat: their check of the new answer
-      // passes such a parent only as text, since the view from before labels never showed them its steps.
-      return (opts.othersRead ?? othersRead(session)) &&
-        versionOf(row) === LEGACY_LABEL_VER
+      if (!othersReadIt || versionOf(row) !== LEGACY_LABEL_VER)
+        return sealed(m);
+      // One's own answer from before labels, where others read the chat, goes as text: their check of the new answer
+      // passes such a parent only as text, since the view from before labels never showed them its steps. It goes
+      // only while every member could read it then, or when the question replies to it; otherwise nothing of it goes,
+      // so it is no parent of the new answer.
+      return everyMemberSaw.has(row) ||
+        (id !== undefined && id === opts.replyTargetId)
         ? sealed(textOnly(m))
-        : sealed(m);
+        : blank(m);
     }
     // Shared with them, whether or not they could also read it whole: the text the share shows, and no more. An
     // answer built on it names it as a text parent, which every reader the share covers may see.
     if (verdict.verdict === 'consented' || sharedWithSender(row)) {
       return sealed(sharedTextOf(m, deps));
     }
-    // One they could read before the rules started: its text.
-    if (verdict.basis === 'before_labels') return sealed(textOnly(m));
-    // Another person's answer that restricts nobody, or the one the sender replied to.
     const replied = id !== undefined && id === opts.replyTargetId;
+    // One they could read before the rules started: its text. Where others read the chat, as one's own: only while
+    // every member could read it then, or when the question replies to it.
+    if (verdict.basis === 'before_labels') {
+      return othersReadIt &&
+        versionOf(row) === LEGACY_LABEL_VER &&
+        !everyMemberSaw.has(row) &&
+        !replied
+        ? blank(m)
+        : sealed(textOnly(m));
+    }
+    // Another person's answer that restricts nobody, or the one the sender replied to.
     return replied || pubOf(row) ? sealed(textOnly(m)) : blank(m);
   });
+}
+
+/** Whether a row names a record, a file or an address that a per-record view would check: one a reader who can open nothing cannot read. */
+const namesASource = (row: Plain): boolean =>
+  ['citations', 'attachments', 'referenceData'].some(
+    (field) =>
+      Array.isArray(row[field]) && (row[field] as unknown[]).length > 0,
+  ) ||
+  [row.appliedFilters, row.filters].some(
+    (filters) =>
+      isPlain(filters) &&
+      Object.values(filters).some(
+        (list) => Array.isArray(list) && list.length > 0,
+      ),
+  );
+
+/**
+ * Of the rows from before the rules that the sender may see (`verdictOf`), those every member of `session` could read
+ * then: each answer, whoever asked it, shown before the rules to the reader that stands for every member
+ * (`everyMemberOf`: each way into the chat older than the switch, the answer not written under the rules) whose turn
+ * (the question before it in `rows`, and it) names no source, as the per-record view from before the rules would show
+ * it to one who can open nothing; and the sender's own cards of a turn whose answer is one (nobody else's card reaches
+ * their model). It reads no record and asks no one.
+ */
+function oldRowsEveryMemberSaw(
+  sender: Reader,
+  session: ReaderSession | undefined,
+  rows: ReadonlyArray<ReaderRow & Plain>,
+  verdictOf: (row: ReaderRow) => RowVerdict | undefined,
+  switchAt: number | undefined,
+): Set<object> {
+  const ownerId = idOf(session?.userId);
+  const everyone = everyMemberOf(sender.orgId);
+  const seen = new Set<object>();
+  let question: Plain | undefined;
+  let cards: Plain[] = [];
+  let answered = false;
+  const close = (): void => {
+    if (answered) {
+      for (const card of cards) if (!namesASource(card)) seen.add(card);
+    }
+    cards = [];
+    answered = false;
+  };
+  for (const row of rows) {
+    if (row.messageType === 'user_query') {
+      close();
+      question = row;
+      continue;
+    }
+    if (
+      versionOf(row) !== LEGACY_LABEL_VER ||
+      verdictOf(row)?.verdict !== 'visible'
+    )
+      continue;
+    if (row.messageType === 'tool_call') {
+      if (rowAuthorOf(row, ownerId) === sender.userId) cards.push(row);
+    } else if (
+      isLabelledType(row) &&
+      question !== undefined &&
+      !namesASource(question) &&
+      !namesASource(row) &&
+      unlabelledShownTo(everyone, session, row, ownerId, switchAt)
+    ) {
+      seen.add(row);
+      answered = true;
+    }
+  }
+  close();
+  return seen;
 }
 
 /** Whether anyone but its owner reads the chat: a share row, its project, or the readers of an agent room. */
