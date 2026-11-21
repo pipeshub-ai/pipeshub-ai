@@ -15,12 +15,13 @@ has since removed. One confirming read starts the count again. A read that never
 import json
 import os
 from collections.abc import Awaitable, Callable
+from logging import Logger
 from typing import TYPE_CHECKING
 
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from app.connectors.core.base.sync_point.sync_point import SyncPoint
-from app.services.notification.types import NotificationSeverity, NotificationType
+from app.services.notification.types import NotificationOutcome, NotificationSeverity, NotificationType
 
 if TYPE_CHECKING:
     from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -29,7 +30,8 @@ UNCONFIRMED_SYNCS_BEFORE_CLOSE = 3
 ACCOUNT_CHECK_KEY = "unconfirmed-accounts"
 # Each read is one request on the app's directory budget (3,500 to 8,000 resource units per 10 seconds for one app in
 # one directory, https://learn.microsoft.com/en-us/graph/throttling-limits); a listing cut on page one of a large directory would
-# otherwise read every account in one sync. The rest wait for the next sync, the longest unconfirmed first.
+# otherwise read every account in one sync. Half the reads go to accounts already counting, half to the others, each half
+# in turn from where the last sync stopped, so neither kind can starve the other; the rest wait for the next sync.
 LOOKUPS_ENV = "MICROSOFT_USER_LOOKUPS_PER_SYNC"
 DEFAULT_LOOKUPS_PER_SYNC = 500
 
@@ -40,8 +42,9 @@ def lookups_per_sync() -> int:
         n = int(raw)
     except ValueError:
         n = 0
-    if n < 1:
-        raise ValueError(f"{LOOKUPS_ENV} must be a whole number of at least 1, got {raw!r}")
+    if n < 2:
+        # One read each for the accounts already counting and for the others.
+        raise ValueError(f"{LOOKUPS_ENV} must be a whole number of at least 2, got {raw!r}")
     return n
 
 
@@ -90,13 +93,13 @@ async def withdraw_unconfirmed_accounts(
         elif sid not in listed:
             unlisted.append(u)
 
-    cursor = (state or {}).get("cursor") or ""
-    # Accounts already counting go first, so a lasting failure closes them; the rest in turn from where the last sync stopped.
-    counting = sorted((u for u in unlisted if u.source_user_id in streaks), key=lambda u: (-streaks[u.source_user_id], u.source_user_id))
-    rest = sorted((u for u in unlisted if u.source_user_id not in streaks), key=lambda u: u.source_user_id)
-    rest = [u for u in rest if u.source_user_id > cursor] + [u for u in rest if u.source_user_id <= cursor]
+    saved_state = state or {}
+    cursor, counting_cursor = saved_state.get("cursor") or "", saved_state.get("counting_cursor") or ""
+    counting = _in_turn([u for u in unlisted if u.source_user_id in streaks], counting_cursor)
+    rest = _in_turn([u for u in unlisted if u.source_user_id not in streaks], cursor)
     cap = lookups_per_sync()
-    asked = (counting + rest)[:cap]
+    n_counting = min(len(counting), cap - min(len(rest), cap // 2))
+    asked = counting[:n_counting] + rest[:cap - n_counting]
     waiting = len(unlisted) - len(asked)
     closed, confirmed = [], set()
     for u in asked:
@@ -126,6 +129,19 @@ async def withdraw_unconfirmed_accounts(
         log.info(f"{waiting} stored account(s) the listing did not show wait for a later sync's check "
                  f"(at most {cap} reads per sync, {LOOKUPS_ENV})")
 
+    rest_ids = {u.source_user_id for u in rest}
+    pending = _ids(saved_state.get("pending_notice")) | {u.source_user_id for u in closed}
+    new_state = {
+        # Closed accounts keep counting until their withdrawal commits; the next sync no longer finds them linked.
+        "streaks": json.dumps({k: v for k, v in streaks.items() if k in {u.source_user_id for u in unlisted} - confirmed},
+                              sort_keys=True),
+        "cursor": next((u.source_user_id for u in reversed(asked) if u.source_user_id in rest_ids), cursor),
+        "counting_cursor": next((u.source_user_id for u in reversed(asked) if u.source_user_id not in rest_ids), counting_cursor),
+        "pending_notice": json.dumps(sorted(pending)),
+    }
+    if state is not None:
+        # Saved before the withdrawal: the owner's notice of a close stays owed until it is sent.
+        await _save(sync_point, log, saved_state, new_state)
     lost = gone + closed
     if lost:
         # The link is the connector's only gate for these connectors, so the user's own grants stay: an account restored
@@ -134,25 +150,44 @@ async def withdraw_unconfirmed_accounts(
     if closed:
         log.error(f"The user listing is unverified past the grace: {len(closed) + len(gone)} of {len(asked)} linked "
                   f"people asked about this run were gone or not confirmed active and lose the app link ({len(stored)} linked)")
-        await connector.notify(
+    if state is not None and pending:
+        # Not suppressed as a repeat: each close is sent once, through ``pending_notice``.
+        outcome = await connector.notify_and_wait(
             type=NotificationType.CONNECTOR_USER_SYNC_ERROR,
             severity=NotificationSeverity.WARNING,
             title=f"{connector.connector_name.value}: accounts Microsoft could not confirm lost access",
-            message=(f"{len(closed)} linked account(s) could not be confirmed active by Microsoft for "
+            message=(f"{len(pending)} linked account(s) could not be confirmed active by Microsoft for "
                      f"{UNCONFIRMED_SYNCS_BEFORE_CLOSE} syncs in a row, so they no longer have access through this "
                      "connector. They get it back on the first sync that lists them."),
             recipient_user_ids=[connector.created_by],
+            suppress_repeats=False,
         )
-    if state is not None:
-        # Only accounts still linked and still unconfirmed keep counting: a confirmed, closed or listed one starts again.
-        still = {u.source_user_id for u in unlisted} - confirmed - {u.source_user_id for u in closed}
-        keep = {k: v for k, v in streaks.items() if k in still}
-        rest_ids = {u.source_user_id for u in rest}
-        last = next((u.source_user_id for u in reversed(asked) if u.source_user_id in rest_ids), cursor)
-        new_state = {"streaks": json.dumps(keep, sort_keys=True), "cursor": last}
-        if new_state != {"streaks": state.get("streaks") or "{}", "cursor": cursor}:
-            try:
-                await sync_point.update_sync_point(ACCOUNT_CHECK_KEY, new_state)
-            except Exception as e:
-                log.warning(f"Could not save the unconfirmed-account count: {e}")
+        if outcome is NotificationOutcome.SENT:
+            await _save(sync_point, log, new_state, new_state | {"pending_notice": "[]"})
+        else:
+            log.info(f"The notice of {len(pending)} closed account(s) was not delivered ({outcome.value}); the next sync sends it")
     return trusted
+
+
+def _in_turn(users: list, cursor: str) -> list:
+    """``users`` by id, starting after ``cursor`` and wrapping round."""
+    users = sorted(users, key=lambda u: u.source_user_id)
+    return [u for u in users if u.source_user_id > cursor] + [u for u in users if u.source_user_id <= cursor]
+
+
+def _ids(raw: object) -> set[str]:
+    try:
+        ids = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return set()
+    return {str(i) for i in ids} if isinstance(ids, list) else set()
+
+
+async def _save(sync_point: SyncPoint, log: Logger, before: dict, after: dict) -> None:
+    empty = {"streaks": "{}", "pending_notice": "[]"}
+    if all((before.get(k) or empty.get(k, "")) == (v or empty.get(k, "")) for k, v in after.items()):
+        return
+    try:
+        await sync_point.update_sync_point(ACCOUNT_CHECK_KEY, after)
+    except Exception as e:
+        log.warning(f"Could not save the unconfirmed-account count: {e}")
