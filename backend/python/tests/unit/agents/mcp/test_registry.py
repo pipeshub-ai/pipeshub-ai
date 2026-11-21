@@ -107,6 +107,31 @@ class TestMCPRegistry:
         assert "fathom" in type_ids
         assert "miro" in type_ids
         assert "instantly" in type_ids
+        assert "amplitude" in type_ids
+
+    def test_amplitude_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        amplitude = registry.get_template("amplitude")
+
+        assert amplitude is not None
+        assert amplitude.display_name == "Amplitude"
+        assert amplitude.transport == MCPTransport.STREAMABLE_HTTP
+        assert amplitude.default_url == "https://mcp.amplitude.com/mcp"
+        assert amplitude.default_auth_mode == MCPAuthMode.OAUTH
+        assert amplitude.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert amplitude.supports_dcr is True
+        assert amplitude.require_oauth_client is False
+        assert amplitude.url_editable is False
+        assert amplitude.authorization_url == "https://mcp.amplitude.com/authorize"
+        assert amplitude.token_url == "https://mcp.amplitude.com/token"
+        assert amplitude.default_scopes == []
+        assert amplitude.icon == "/icons/connectors/amplitude.svg"
+        assert (
+            amplitude.documentation_url
+            == "https://amplitude.com/docs/amplitude-ai/amplitude-mcp"
+        )
+        assert ".eu." not in (amplitude.default_url or "")
 
     def test_miro_catalog_entry(self) -> None:
         registry = MCPRegistry()

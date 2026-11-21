@@ -106,6 +106,13 @@ describe('McpServerIcon', () => {
     expect(logoPath(<McpServerIcon typeId={null} name="Intercom MCP" />)).toBe('/icons/connectors/intercom.svg');
   });
 
+  it("shows Amplitude's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="amplitude" name="Amplitude" />)).toBe('amplitude icon');
+    expect(logo(<McpServerIcon typeId={null} name="Amplitude MCP" />)).toBe('amplitude icon');
+    expect(logoPath(<McpServerIcon typeId="amplitude" name="Amplitude" />)).toBe('/icons/connectors/amplitude.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Amplitude MCP" />)).toBe('/icons/connectors/amplitude.svg');
+  });
+
   it("shows Granola's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="granola" name="Granola" />)).toBe('granola icon');
     expect(logo(<McpServerIcon typeId={null} name="Granola MCP" />)).toBe('granola icon');
