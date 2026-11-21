@@ -31,6 +31,7 @@ from app.services.graph_db.postgres.base import (
     _node,
     _pgbool,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -402,7 +403,7 @@ class RecordsMixin(PgBase):
                   AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)""", run),
                                                  org, ids, status, get_epoch_timestamp_in_ms()), None, write=True)
         except Exception as e:
-            self.logger.error("Failed to update records to %s: %s", status, e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
 
     async def has_records_indexed_since(self, connector_id: str, since_ms: int, *, transaction: str | None = None) -> bool:
         org = current_org_id()

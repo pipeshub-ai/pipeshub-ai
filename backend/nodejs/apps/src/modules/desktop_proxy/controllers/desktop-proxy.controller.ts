@@ -136,8 +136,8 @@ export const pullLocalFsFileEvents =
     } catch (error) {
       if (error instanceof DesktopOfflineError) {
         logger.debug('Local FS pull: owner device not connected', {
-          connectorId: req.body?.connectorId,
-          deviceId: req.body?.deviceId,
+          connector_id: req.body?.connectorId,
+          device_id: req.body?.deviceId,
         });
       }
       if (respondToDesktopError(res, error)) return;

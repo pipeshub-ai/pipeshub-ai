@@ -283,8 +283,8 @@ class TestCreateToolsetEdges:
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("db err"))
         toolsets = {"jira": {"displayName": "Jira", "type": "app", "tools": [], "instanceId": None, "instanceName": None}}
         user_info = {"userId": "u1"}
-        created, failed = await _create_toolset_edges("ak1", toolsets, user_info, "uk1", gp, log)
-        assert len(failed) == 1
+        with pytest.raises(Exception, match="db err"):
+            await _create_toolset_edges("ak1", toolsets, user_info, "uk1", gp, log)
 
 
 class TestCreateKnowledgeEdges:
@@ -995,7 +995,9 @@ class TestDeleteAgentServiceAccountCleanup:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
             with pytest.raises(HTTPException) as exc_info:
                 await delete_agent(request, "a1")
-            assert exc_info.value.status_code == 400
+            # Our failure, not the caller's: a 500 raised from it, which the request's line classes.
+            assert exc_info.value.status_code == 500
+            assert isinstance(exc_info.value.__cause__, RuntimeError)
 
         services["graph_provider"].rollback_transaction.assert_called_once()
 
@@ -1169,7 +1171,7 @@ class TestGetAgentTemplatesEdgeCases:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
             with pytest.raises(HTTPException) as exc_info:
                 await get_agent_templates(request)
-            assert exc_info.value.status_code == 400
+            assert exc_info.value.status_code == 500
 
 
 # ============================================================================

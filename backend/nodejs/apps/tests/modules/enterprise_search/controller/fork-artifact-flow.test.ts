@@ -8,6 +8,8 @@ import { getConversationRepository } from '../../../../src/libs/repositories/con
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /**
  * What the fork route does with the artifacts of a chat, from the caller's side:
@@ -38,6 +40,9 @@ interface Outcome {
 }
 
 describe('fork route: the artifacts of a forked chat', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   let store: InMemoryChatStore
   let fetchStub: sinon.SinonStub
   let discard: sinon.SinonStub

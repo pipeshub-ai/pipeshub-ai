@@ -6,8 +6,11 @@ import http from 'node:http'
 import { AddressInfo } from 'node:net'
 import { BaseCommand, ICommand } from '../../../src/libs/commands/command.interface'
 import { ConnectorServiceCommand } from '../../../src/libs/commands/connector_service/connector.service.command'
+import { AIServiceCommand } from '../../../src/libs/commands/ai_service/ai.service.command'
 import { runWithRequestContext } from '../../../src/libs/context/request-context'
 import { HttpMethod } from '../../../src/libs/enums/http-methods.enum'
+import { InternalServerError } from '../../../src/libs/errors/http.errors'
+import { registerUpstreams } from '../../../src/libs/http/upstream-call'
 
 // Concrete implementation for testing the abstract BaseCommand
 class TestCommand extends BaseCommand<string> {
@@ -55,8 +58,13 @@ class TestCommand extends BaseCommand<string> {
 describe('command.interface', () => {
   let clock: sinon.SinonFakeTimers
 
+  beforeEach(() => {
+    registerUpstreams({ test: ['http://example.com', 'http://api.local'] })
+  })
+
   afterEach(() => {
     sinon.restore()
+    registerUpstreams({})
   })
 
   describe('BaseCommand constructor', () => {
@@ -125,6 +133,46 @@ describe('command.interface', () => {
       const cmd = new TestCommand('http://api.local/items', {})
       // Empty params still produces ? with empty string
       expect(cmd.testBuildUrl()).to.equal('http://api.local/items?')
+    })
+
+    for (const [name, uri, reason] of [
+      ['an unregistered origin', 'http://169.254.169.254/latest/meta-data/', 'not a registered PipesHub service'],
+      ['embedded credentials', 'http://user:pass@api.local/items', 'must not contain embedded credentials'],
+      ['a non-http protocol', 'ftp://api.local/items', 'Blocked request: URL scheme must be http or https'],
+      ['an unparsable URI', 'not a url', 'URL is not valid'],
+    ] as const) {
+      it(`refuses ${name} with an InternalServerError that does not echo the URI`, () => {
+        const build = (): string => new TestCommand(uri, { q: 'v' }).testBuildUrl()
+
+        expect(build).to.throw(InternalServerError, reason)
+        try {
+          build()
+        } catch (error) {
+          expect((error as Error).message).to.not.include('169.254').and.not.include('api.local').and.not.include('not a url').and.not.include('ftp')
+        }
+      })
+    }
+  })
+
+  describe('a command to an unregistered service', () => {
+    it('is refused before its retry loop: no attempt and one rejection', async () => {
+      const fetchStub = sinon.stub(globalThis, 'fetch').resolves(new Response('{}', { status: 200 }))
+      const retry = sinon.spy(BaseCommand.prototype as any, 'fetchWithRetry')
+
+      const outcome = await new ConnectorServiceCommand({
+        uri: 'http://169.254.169.254/latest/meta-data/',
+        method: HttpMethod.GET,
+        headers: {},
+      })
+        .execute()
+        .then(
+          () => 'sent',
+          (error: unknown) => error,
+        )
+
+      expect(outcome).to.be.instanceOf(InternalServerError)
+      expect(fetchStub.called, 'fetch reached').to.equal(false)
+      expect(retry.called, 'retry loop entered').to.equal(false)
     })
   })
 
@@ -380,6 +428,68 @@ describe('command.interface', () => {
   })
 
   // Callers pass the inbound req.headers to a command: the service must get the sanitised root, not the client's id.
+  describe('a command whose redirect is refused', () => {
+    let server: http.Server
+    let origin: string
+    let received: string[]
+    let flaky: number
+
+    before(async () => {
+      server = http.createServer((req, res) => {
+        req.resume()
+        received.push(`${req.method ?? ''} ${req.url ?? ''}`)
+        // .invalid never resolves, so nothing leaves the machine on any tree.
+        if (req.url === '/submit') return void res.writeHead(303, { location: 'http://unregistered.invalid/x' }).end()
+        if (req.url === '/malformed') return void res.writeHead(302, { location: 'http://[' }).end()
+        if (req.url === '/flaky' && (flaky += 1) === 1) return void req.socket.destroy()
+        res.writeHead(200, { 'content-type': 'application/json' }).end('{}')
+      })
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    })
+
+    beforeEach(() => {
+      received = []
+      flaky = 0
+      registerUpstreams({ query: [origin] })
+    })
+
+    after(async () => {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    const post = (path: string): Promise<unknown> =>
+      new AIServiceCommand({ uri: `${origin}${path}`, method: HttpMethod.POST, headers: {}, body: { q: 1 } })
+        .execute()
+        .then(
+          () => 'answered',
+          (error: unknown) => error,
+        )
+
+    it('sends the POST once and answers the refusal of a 303 to an unregistered URL', async () => {
+      const error = await post('/submit')
+
+      expect(error).to.be.instanceOf(InternalServerError)
+      expect((error as Error).message).to.equal('Blocked request: not a registered PipesHub service')
+      expect(received).to.deep.equal(['POST /submit'])
+    })
+
+    it('refuses a malformed Location like an invalid URL, once, with no cause and without its text', async () => {
+      const error = await post('/malformed')
+
+      expect(error).to.be.instanceOf(InternalServerError)
+      expect((error as Error).message).to.equal('Blocked request: URL is not valid')
+      expect((error as { cause?: unknown }).cause).to.equal(undefined)
+      expect(received).to.deep.equal(['POST /malformed'])
+    })
+
+    it('still retries a transport failure', async () => {
+      expect(await post('/flaky')).to.equal('answered')
+      expect(received).to.deep.equal(['POST /flaky', 'POST /flaky'])
+    })
+  })
+
   describe('the request id a command sends', () => {
     let server: http.Server
     let origin: string
@@ -393,6 +503,10 @@ describe('command.interface', () => {
       })
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
       origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    })
+
+    beforeEach(() => {
+      registerUpstreams({ connector: [origin] })
     })
 
     after(async () => {

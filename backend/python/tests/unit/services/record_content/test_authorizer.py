@@ -16,10 +16,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.core.org_context import MissingOrgContext
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Record, RecordType
 from app.services.record_content.authorizer import TieredRecordAuthorizer
 from app.services.record_content.models import (
     RecordAccessDeniedError,
+    RecordContentUnavailableError,
     RecordNotFoundError,
 )
 
@@ -216,3 +219,34 @@ async def test_a_live_record_the_model_denies_is_denied_not_missing(graph) -> No
         await authorizer.authorize(_make_actor(), _stored_record(is_deleted=False))
 
     graph.check_record_access_with_details.assert_awaited_once_with("user1", "org1", "rec1")
+
+
+_UNANSWERED = "Could not check access to record rec1: the knowledge graph did not answer. Try again later."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [ConnectionError("graph down at 10.0.0.7:8529"), PermissionVerificationUnavailableError()],
+    ids=["read_failed", "check_unavailable"],
+)
+async def test_a_check_the_graph_could_not_answer_is_unavailable_without_its_text(graph, failure) -> None:
+    """Not a denial, and not the driver's text either: the message goes to the model."""
+    graph.check_record_access_with_details.side_effect = failure
+
+    with pytest.raises(RecordContentUnavailableError) as exc:
+        await TieredRecordAuthorizer(graph).authorize(_make_actor(), _make_record())
+
+    assert str(exc.value) == _UNANSWERED
+    assert exc.value.__cause__ is failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bug", [MissingOrgContext("no org"), TypeError("bad call")], ids=["no_org", "type_error"])
+async def test_our_own_bug_is_not_reported_as_an_outage(graph, bug) -> None:
+    graph.check_record_access_with_details.side_effect = bug
+
+    with pytest.raises(type(bug)) as exc:
+        await TieredRecordAuthorizer(graph).authorize(_make_actor(), _make_record())
+
+    assert exc.value is bug

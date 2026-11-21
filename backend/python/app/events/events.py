@@ -126,7 +126,7 @@ from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
-from app.services.resource_governor import classify
+from app.services.resource_governor import reader_tier
 from app.services.vector_db.filters import OrgRequired, org_for_filter
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
@@ -612,10 +612,11 @@ class EventProcessor:
                 # second parse would index the record twice.
                 if yielded:
                     raise
-                # Swallowed (the PdfPlumber path runs next), so logged here once, without text.
+                # Swallowed (the PdfPlumber path runs next), so logged here once, without text. A record that waits for
+                # Docling logs at its hand-back's INFO: the client already reported the outage itself at WARNING.
                 log_failure(
-                    self.logger, "index.parse_fallback", exc, parser="docling", reason=exc.reason,
-                    status=exc.status_code, include_error_text=False,
+                    self.logger, "index.parse_fallback", exc, level=getattr(exc, "log_level", None), parser="docling",
+                    reason=exc.reason, status=exc.status_code, include_error_text=False,
                 )
                 if isinstance(exc, DoclingUnavailableError):
                     docling_unavailable = exc
@@ -693,24 +694,12 @@ class EventProcessor:
         *gate_route* is the reader the record handler's gate accepted the file for; it is used only
         where the labels name none, so a file the gate accepted is never refused here.
         """
-        # A CODE_FILE's mime is not trustworthy: connectors that walk a git
-        # tree default it to text/plain for anything they do not recognise,
-        # and they do not always populate `extension`. Derive a separate
-        # extension for code dispatch and language detection — the original
-        # value must stay intact for reconciliation, tier, and generic dispatch.
-        code_ext = extension
-        if not code_ext or code_ext == "unknown":
-            fp_base = (file_path or "").rsplit("/", 1)[-1]
-            rn_base = record_name.rsplit("/", 1)[-1]
-            if "." in fp_base and fp_base.rsplit(".", 1)[-1]:
-                code_ext = fp_base.rsplit(".", 1)[-1].lower()
-            elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
-                code_ext = rn_base.rsplit(".", 1)[-1].lower()
+        code_ext = file_types.code_extension(extension, file_path, record_name)
         reads_as_code_file = EventProcessor._reads_as_code_file(
             record_type, mime_type, code_ext, record_name
         )
         dispatch = file_types.legacy_route(
-            mime_type, extension, code_extension=code_ext, reads_as_code_file=reads_as_code_file,
+            mime_type, extension, code_ext=code_ext, reads_as_code_file=reads_as_code_file,
             is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
         )
         if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:
@@ -1909,6 +1898,7 @@ class EventProcessor:
             record_version = event_data.get("version", 0)
             connector = event_data.get("connectorName", "")
             extension = event_data.get("extension", "unknown")
+            # Resolved by the record handler: the stored mime when the event names none.
             mime_type = event_data.get("mimeType", "unknown")
             origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
@@ -2328,13 +2318,21 @@ class EventProcessor:
                 else content_len
             )
             inspected = InspectedFacts()
+            # The reader that runs decides a heavy tier: a PDF labelled txt is parsed by the PDF reader. On the service
+            # pipeline that is the parser the service resolves from these labels, not the in-process one.
+            reader = (
+                file_types.format_tier(file_types.parse_format(mime_type, extension))
+                if self._use_service_pipeline()
+                else file_types.read_tier(dispatch)
+            )
+            parse_tier = reader_tier(extension, mime_type, reader)
             if wants_inspection(extension, mime_type, file_content):
                 # Before the parse slot: the page count and text layer correct the class the record was admitted
                 # under (a size is rarely known), so a 1000-page file never waits among the small ones.
                 yield PipelineEvent(
                     event=IndexingEvent.START_INSPECT,
                     data=PipelineEventData(
-                        record_id=record_id, tier=classify(extension, mime_type), size_bytes=size_bytes
+                        record_id=record_id, tier=parse_tier, size_bytes=size_bytes
                     ),
                 )
                 inspected = await inspect_facts(
@@ -2344,7 +2342,7 @@ class EventProcessor:
                 event=IndexingEvent.START_PARSING,
                 data=PipelineEventData(
                     record_id=record_id,
-                    tier=classify(extension, mime_type),
+                    tier=parse_tier,
                     size_bytes=size_bytes,
                     **(
                         {"pages": inspected.pages, "scanned": inspected.scanned}
