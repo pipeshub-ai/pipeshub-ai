@@ -4588,9 +4588,16 @@ export async function includableRows<R extends object>(
         : blank(m);
     }
     // Shared with them, whether or not they could also read it whole: the text the share shows, and no more. An
-    // answer built on it names it as a text parent, which every reader the share covers may see.
+    // answer built on it names it as a text parent, which every reader the share covers may see. The text is the
+    // stored row's, at the version the share covers: a filter before this one may have emptied the row passed (the
+    // per-record view empties an answer whose sources the sender cannot open).
     if (verdict.verdict === 'consented' || sharedWithSender(row)) {
-      return sealed(sharedTextOf(m, deps));
+      const stored = id === undefined ? undefined : tree.rows.get(id);
+      return stored
+        ? sealed(
+            sharedTextOf({ ...m, labelVer: stored.labelVer }, deps, stored),
+          )
+        : blank(m);
     }
     const replied = id !== undefined && id === opts.replyTargetId;
     // One they could read before the rules started: its text. Where others read the chat, as one's own: only while
@@ -4773,16 +4780,22 @@ export async function pubVersion(
 const sharedTextOf = <R extends object>(
   row: R,
   deps: Pick<VisibilityDeps, 'sharedText'>,
+  /** Where the text comes from, when not the row itself. */
+  source: ReaderRow = row as ReaderRow,
 ): R => {
-  const r = row as Plain;
   let text: string;
   try {
-    text = deps.sharedText(typeof r.content === 'string' ? r.content : '');
+    text = deps.sharedText(
+      typeof source.content === 'string' ? source.content : '',
+    );
   } catch {
     // A share's text that cannot be made gives the model none of the answer, as `consentedView` shows a reader none.
     text = '';
   }
   const out: Plain = { ...(textOnly(row) as Plain), content: text };
+  // What a filter before the check hid of the row is not what the share shows: the share's text is the row now.
+  delete out.answerHidden;
+  delete out[WITHHELD];
   return out as R;
 };
 

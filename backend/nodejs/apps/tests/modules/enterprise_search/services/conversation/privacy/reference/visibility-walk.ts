@@ -2971,7 +2971,8 @@ export async function includableRows<R extends object>(
     // Shared with them, whether or not they could also read it whole: the text the share shows, and no more. An
     // answer built on it names it as a text parent, which every reader the share covers may see.
     if (verdict.verdict === 'consented' || sharedWithSender(row)) {
-      return sealed(sharedTextOf(m, deps));
+      const stored = id === undefined ? undefined : tree.rows.get(id);
+      return stored ? sealed(sharedTextOf({ ...m, labelVer: stored.labelVer }, deps, stored)) : blank(m);
     }
     const replied = id !== undefined && id === opts.replyTargetId;
     // One they could read before the rules started: its text; where others read the chat, only while every member
@@ -3133,16 +3134,18 @@ export async function pubVersion(
 const sharedTextOf = <R extends object>(
   row: R,
   deps: Pick<VisibilityDeps, 'sharedText'>,
+  source: ReaderRow = row as ReaderRow,
 ): R => {
-  const r = row as Plain;
   let text: string;
   try {
-    text = deps.sharedText(typeof r.content === 'string' ? r.content : '');
+    text = deps.sharedText(typeof source.content === 'string' ? source.content : '');
   } catch {
     // A share's text that cannot be made gives the model none of the answer, as `consentedView` shows a reader none.
     text = '';
   }
   const out: Plain = { ...(textOnly(row) as Plain), content: text };
+  delete out.answerHidden;
+  delete out[WITHHELD];
   return out as R;
 };
 

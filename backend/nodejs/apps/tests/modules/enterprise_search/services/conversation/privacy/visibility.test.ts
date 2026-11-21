@@ -1676,6 +1676,24 @@ describe('the reader check: who may see an answer', () => {
         expect(carols).to.not.have.property('_ref')
       })
 
+      it("Bob's turn gets the share's text though the history filter before the check emptied his copy of the answer", async () => {
+        // The per-record view empties an answer whose sources the sender can't open; the share is why he may have it.
+        const a = shared('people', [BOB])
+        const emptied: Row = { ...a, content: '', answerHidden: { redacted: true, reason: 'no_longer_accessible' } }
+        const [row] = await given(BOB, [emptied], world([a]))
+        expect(row).to.include({ content: SHARED_TEXT, _ref: String(a._id), _ver: a.labelVer })
+        expect(row?.tools).to.deep.equal([])
+      })
+
+      it('a share covers the version it was made for: once the answer is written again, his turn gets nothing of it', async () => {
+        const a = shared('people', [BOB])
+        const newer: Row = { ...a, labelVer: nextId(), content: 'R says revenue grew 15%.' }
+        newer.provenance = label({ direct: { records: [R] } }, newer.labelVer as string, labelContentHash(newer.content as string, newer.parts as never))
+        const [row] = await given(BOB, [{ ...newer, content: '' }], world([newer]))
+        expect(row).to.include({ content: '' })
+        expect(row).to.not.have.property('_ref')
+      })
+
       it('the stored row decides: passed without its share it still enters as the text; passed with one the store lacks, empty', async () => {
         const a = shared('everyone')
         const shown: Row = { ...a }
