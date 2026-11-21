@@ -384,6 +384,9 @@ const getFilterFieldOptionsSchema = z.object({
 const connectorToggleSchema = z.object({
   body: z.object({
     type: z.enum(['sync', 'agent']),
+    // The state wanted. Without it the connector service flips the current
+    // state, which a retried request undoes.
+    enabled: z.boolean().optional(),
     fullSync: z.boolean().optional(),
     deviceId: z.string().min(1).max(255).optional(),
     deviceName: z.string().max(255).optional(),
