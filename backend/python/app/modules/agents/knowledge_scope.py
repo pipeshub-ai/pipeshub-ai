@@ -43,7 +43,7 @@ from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.user_lookup import get_caller_user
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Sequence
+    from collections.abc import Iterable, Sequence
     from logging import Logger
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -326,7 +326,7 @@ async def service_account_knowledge(
     logger: Logger,
     *,
     bound: bool,
-    licensed: Callable[[], Awaitable[bool]],
+    licensed: bool,
 ) -> list[dict[str, Any]]:
     """The part of a service-account agent's knowledge it may search.
 
@@ -343,7 +343,7 @@ async def service_account_knowledge(
     team: set[str] = set()
     if any(not _is_collection(k) for k in knowledge):
         instances = await fetch_user_connector_instances(graph_provider, user_id, org_id, logger)
-        open_only = not bound and not await licensed()
+        open_only = not bound and not licensed
         # Typed from the lookup, not the entry: an entry the graph could not resolve is typed UNKNOWN.
         team = {
             str(i.get("_key") or i.get("id"))

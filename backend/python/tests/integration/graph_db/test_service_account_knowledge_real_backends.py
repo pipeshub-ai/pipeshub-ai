@@ -120,8 +120,8 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
         knowledge = [{"connectorId": app_key, "type": app_type} for app_key, app_type, *_ in apps.values()]
         with for_org(org, job="test"):
             own = await fetch_user_connector_instances(graph, creator, org, logger)
-            unbound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=False, licensed=_licensed)
-            bound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=True, licensed=_licensed)
+            unbound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=False, licensed=True)
+            bound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=True, licensed=True)
             # Saving: a personal source is refused, a collection too unless bound, the org's connectors pass.
             with pytest.raises(InvalidRequestError, match=f"Personal sources \\(Name {key['drive_mine']}\\)"):
                 await _assert_service_account_knowledge([key["drive_team"], key["drive_mine"]], graph, org, creator, bound=True, licensed=_licensed)

@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.api.routes.agent import InvalidRequestError, _assert_service_account_knowledge
+from app.api.routes.agent import (
+    AgentError,
+    InvalidRequestError,
+    _assert_service_account_knowledge,
+)
 
 APPS = [
     {"_key": "drive", "name": "Drive", "scope": "team", "type": "DRIVE WORKSPACE", "createdBy": "admin"},
@@ -41,6 +45,14 @@ async def test_a_bound_or_licensed_agent_keeps_gated_connectors(bound: bool, lic
 
 async def test_unlicensed_bound_agent_keeps_collections() -> None:
     await _check(["kb", "drive"], bound=True, licensed=False)
+
+
+async def test_a_licence_that_cannot_be_read_refuses_the_save_as_unavailable() -> None:
+    with pytest.raises(AgentError) as refused:
+        await _assert_service_account_knowledge(
+            ["drive"], _graph(["drive"]), "org", "admin", bound=False, licensed=AsyncMock(side_effect=RuntimeError("down")),
+        )
+    assert refused.value.status_code == 503
 
 
 async def test_the_licence_is_read_only_when_a_gated_source_is_attached() -> None:

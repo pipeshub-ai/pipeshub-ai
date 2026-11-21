@@ -1733,6 +1733,17 @@ def _assert_no_personal_toolsets(
         )
 
 
+async def _licensed_for_a_run(config_service: ConfigurationService, logger: Logger) -> bool:
+    """`permission_sync_licensed` for a run. A licence that cannot be read counts as none: the turn
+    goes on with the sources everyone can see, instead of failing or of reading as its creator."""
+    try:
+        return await permission_sync_licensed(config_service)
+    except Exception:
+        logger.warning("The licence could not be read; an unbound service-account agent searches open sources only",
+                       exc_info=True)
+        return False
+
+
 async def _assert_service_account_knowledge(
     connector_ids: Iterable[str], graph_provider: IGraphDBProvider, org_id: str, user_id: str, *, bound: bool,
     licensed: Callable[[], Awaitable[bool]],
@@ -1780,7 +1791,16 @@ async def _assert_service_account_knowledge(
     gated = [] if bound else [
         label(a) for a in apps if a.get("type") != kb and gated_connector(a)
     ]
-    if gated and not await licensed():
+    if not gated:
+        return
+    try:
+        is_licensed = await licensed()
+    except Exception as e:
+        raise AgentError(
+            "The licence couldn't be checked, so this agent can't be saved right now. Please try again in a moment.",
+            status_code=503,
+        ) from e
+    if not is_licensed:
         raise InvalidRequestError(
             f"Without a licence key, an agent that isn't bound to a service account searches as its creator, so it "
             f"can use only sources everyone in the organization can see. Remove {', '.join(gated)}, or bind the "
@@ -4816,11 +4836,16 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # An unbound service agent would read a collection as its creator, so it reads none,
                 # the caller's project collection included (project_files_knowledge reads it from filters).
                 collections_allowed = not is_service_account or bool(agent.get("serviceAccountUserId"))
+                # Without a licence an unbound service agent, which searches as its creator, is held to
+                # the sources everyone can see.
+                open_sources_only = not collections_allowed and not await _licensed_for_a_run(
+                    services["config_service"], logger,
+                )
                 if is_service_account:
                     agent_knowledge = await service_account_knowledge(
                         graph_provider, agent_knowledge, enriched_user_info.get("userId", ""), org_key, logger,
                         bound=collections_allowed,
-                        licensed=lambda: permission_sync_licensed(services["config_service"]),
+                        licensed=not open_sources_only,
                     )
                 caps = _parse_agent_capabilities(chat_query.agentCapabilities)
                 try:
@@ -4862,7 +4887,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # apps/kb selection stays empty at retrieval time instead of
                 # `get_accessible_virtual_record_ids` falling back to
                 # "search everything the user can access".
-                if chat_query.strictScope:
+                # The same for an agent held to open sources: with none left, the tools that
+                # read stored records must find nothing, not everything its creator can read.
+                if chat_query.strictScope or open_sources_only:
                     filters["strictScope"] = True
 
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)

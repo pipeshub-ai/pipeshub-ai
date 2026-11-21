@@ -11,14 +11,20 @@ AG-UI formatter, serialised exactly as `stream_bridge.py` writes them.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.actions.storage_search.storage_search import StoragePatternMatch
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
+from app.connectors.core.base.data_processor.permission_sync_gate import (
+    PERMISSION_SYNC_LICENCE_KEY,
+)
 from app.utils.logger import log_record_fields
 from tests.support.agent_routes import (
     AGENTS,
@@ -468,6 +474,100 @@ class TestChatStreamKnowledge:
         (call,) = loop.calls
         assert call["user_info"]["userId"] == "u-svc"
         assert self._knowledge(call) == {"pg-team", "drive-team", "kb-1"}
+
+    @staticmethod
+    def _storage_tool(call: dict) -> StoragePatternMatch:
+        """The storage tools as the turn would run them: its filters, its knowledge, its identity."""
+        provider = MagicMock()
+        provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
+        return StoragePatternMatch({
+            "org_id": "org-1", "user_id": call["user_info"]["userId"], "graph_provider": provider,
+            "filters": call["query_info"]["filters"], "agent_knowledge": call["query_info"]["knowledge"],
+            "config_service": AsyncMock(), "logger": MagicMock(),
+        })
+
+    def _gated_only(self, graph: InMemoryGraph, agent: str) -> None:
+        """A company-wide drive is the agent's only source."""
+        self._sources(graph, agent)
+        for key in ("pg-alice", "pg-team", "pg-other-org", "drive-alice", "kb-1"):
+            del graph.nodes["agentKnowledge"][f"k-{key}"]
+            graph.edges["agentHasKnowledge"] = [
+                e for e in graph.edges["agentHasKnowledge"] if e["_to"] != f"agentKnowledge/k-{key}"
+            ]
+
+    def test_without_a_licence_an_unbound_agent_keeps_only_the_open_sources(self, graph, loop) -> None:
+        self._sources(graph, "sa")
+        c, _ = make_client(graph, FakeConfigService({PERMISSION_SYNC_LICENCE_KEY: {"allowed": False}}))
+        assert _stream(c, "sa", "bob").status_code == 200
+        (call,) = loop.calls
+        assert self._knowledge(call) == {"pg-team"}
+        assert call["query_info"]["filters"]["apps"] == ["pg-team"]
+        tool = self._storage_tool(call)
+        assert tool._out_of_scope_error("pg-team") is None
+        assert tool._out_of_scope_error("drive-team") is not None
+
+    def test_without_a_licence_an_unbound_agent_with_only_gated_sources_reads_nothing_through_the_storage_tools(
+        self, graph, loop,
+    ) -> None:
+        self._gated_only(graph, "sa")
+        c, _ = make_client(graph, FakeConfigService({PERMISSION_SYNC_LICENCE_KEY: {"allowed": False}}))
+        assert _stream(c, "sa", "bob").status_code == 200
+        (call,) = loop.calls
+        assert call["user_info"]["userId"] == "u-alice"
+        assert self._knowledge(call) == set()
+        tool = self._storage_tool(call)
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess", new_callable=AsyncMock,
+        ) as run:
+            ok_run, _ = asyncio.run(tool.run_command("drive-team", 'grep -r "x" .'))
+            ok_find, _ = asyncio.run(tool.find_records("drive-team", 'grep -rl "x" .'))
+            asyncio.run(tool._check_accessible_vrids(["v1"]))
+        assert (ok_run, ok_find) == (False, False)
+        run.assert_not_called()
+        scope = tool.state["graph_provider"].filter_accessible_virtual_record_ids.await_args.kwargs["scope_connector_ids"]
+        assert scope is not None and "drive-team" not in scope
+
+    def test_without_a_licence_an_unbound_agent_with_no_source_reads_nothing_through_the_storage_tools(
+        self, graph, loop,
+    ) -> None:
+        c, _ = make_client(graph, FakeConfigService({PERMISSION_SYNC_LICENCE_KEY: {"allowed": False}}))
+        assert _stream(c, "sa", "bob").status_code == 200
+        (call,) = loop.calls
+        assert self._storage_tool(call)._out_of_scope_error("drive-team") is not None
+
+    def test_with_a_licence_an_unbound_agent_keeps_its_gated_source_in_the_storage_tools(self, graph, loop) -> None:
+        self._gated_only(graph, "sa")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert self._knowledge(call) == {"drive-team"}
+        assert "strictScope" not in call["query_info"]["filters"]
+        assert self._storage_tool(call)._out_of_scope_error("drive-team") is None
+
+    def test_without_a_licence_an_agent_bound_to_a_service_account_keeps_its_gated_sources(self, graph, loop) -> None:
+        graph.add_node("users", {"_key": "k-svc", "userId": "u-svc", "orgId": "org-1", "email": "svc@acme.test",
+                                 "kind": "service", "isActive": True})
+        graph.add_agent("sa-bound", "alice", share_with_org=True, isServiceAccount=True, serviceAccountUserId="u-svc")
+        self._sources(graph, "sa-bound")
+        c, _ = make_client(graph, FakeConfigService({PERMISSION_SYNC_LICENCE_KEY: {"allowed": False}}))
+        _stream(c, "sa-bound", "bob")
+        (call,) = loop.calls
+        assert self._knowledge(call) == {"pg-team", "drive-team", "kb-1"}
+        assert "strictScope" not in call["query_info"]["filters"]
+
+    def test_a_licence_that_cannot_be_read_keeps_only_the_open_sources_and_the_turn_goes_on(self, graph, loop) -> None:
+        class Down(FakeConfigService):
+            async def get_config(self, key: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+                if key == PERMISSION_SYNC_LICENCE_KEY:
+                    raise RuntimeError("store down")
+                return await super().get_config(key, *args, **kwargs)
+
+        self._sources(graph, "sa")
+        c, _ = make_client(graph, Down())
+        assert _stream(c, "sa", "bob").status_code == 200
+        (call,) = loop.calls
+        assert self._knowledge(call) == {"pg-team"}
+        assert self._storage_tool(call)._out_of_scope_error("drive-team") is not None
 
     def test_a_service_account_agent_cannot_be_pointed_at_a_personal_source(self, graph, loop) -> None:
         self._sources(graph, "sa")

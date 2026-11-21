@@ -474,7 +474,7 @@ class TestServiceAccountKnowledge:
     ) -> list[str]:
         kept = await service_account_knowledge(
             graph, self.KNOWLEDGE if knowledge is None else knowledge, "sa-1", ORG, logging.getLogger("t"),
-            bound=bound, licensed=AsyncMock(return_value=licensed),
+            bound=bound, licensed=licensed,
         )
         return [k["connectorId"] for k in kept]
 
