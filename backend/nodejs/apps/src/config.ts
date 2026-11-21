@@ -90,3 +90,12 @@ export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.ro
 
 // --- Edition boot hooks ---
 export { noopEditionBoot as editionBoot } from './libs/edition/edition-boot';
+
+// --- Agent harness extension point: binders, admin and internal routes, index migrations (this build: none) ---
+export { noopHarnessEdition as harnessEdition } from './modules/agent-harness/edition';
+
+// --- Organization lifecycle extension points: how an organization is deleted and how sign-in treats one that is not live (this build: deleted at once) ---
+export {
+  noOrgLifecycleHook as orgLifecycleHook,
+  defaultScopedTokenGuard as scopedTokenGuard,
+} from './libs/org-lifecycle';

@@ -124,6 +124,18 @@ import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/f
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
+import {
+  decideSlackLinkRequest,
+  inspectSlackLinkRequest,
+  listSlackIdentityLinks,
+  resolveSlackCaller,
+  revokeSlackIdentityLink,
+  slackCallerSchema,
+  slackLinkDecisionSchema,
+  slackLinkRevokeSchema,
+  slackLinkTokenSchema,
+} from '../slack-identity/slack-identity.controller';
+import { slackIdentityLinks } from '../slack-identity/slack-linked-account';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
@@ -139,6 +151,21 @@ import {
   SyncEventProducer,
 } from '../services/kafka_events.service';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import {
+  ControlPlaneTransaction,
+  createDeploymentRevision,
+} from '../../control-plane';
+import { auditedAiModelsSave } from '../utils/ai-models-save';
+import { Logger } from '../../../libs/services/logger.service';
+import { harnessEdition } from '../../../config';
+import {
+  createHarnessRollout,
+  harnessOrgStops,
+} from '../../agent-harness/composition';
+import {
+  CONTROL_PLANE_TRANSACTION,
+  createControlPlaneTransaction,
+} from '../../agent-harness/composition';
 import {
   getMcpAccessPolicy,
   listMcpAccessTools,
@@ -166,6 +193,19 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
   const configService = container.get<ConfigService>('ConfigService');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  const controlPlane = container.isBound(CONTROL_PLANE_TRANSACTION)
+    ? container.get<ControlPlaneTransaction>(CONTROL_PLANE_TRANSACTION)
+    : createControlPlaneTransaction(
+        container.isBound('Logger')
+          ? container.get<Logger>('Logger')
+          : undefined,
+      );
+  // Every AI-model save is one audited control-plane write that moves the head pins are cached under.
+  const saveAiModels = auditedAiModelsSave(
+    keyValueStoreService,
+    controlPlane,
+    createDeploymentRevision(),
+  );
   // storage config routes
 
   /**
@@ -486,7 +526,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(platformSettingsSchema),
-    setPlatformSettings(keyValueStoreService),
+    setPlatformSettings(keyValueStoreService, controlPlane),
   );
 
   router.get(
@@ -510,7 +550,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/platform/feature-flags/effective',
     authMiddleware.authenticate,
-    getEffectivePlatformFeatureFlags(keyValueStoreService),
+    getEffectivePlatformFeatureFlags(
+      keyValueStoreService,
+      createHarnessRollout(
+        keyValueStoreService,
+        undefined,
+        harnessOrgStops(harnessEdition, keyValueStoreService),
+      ),
+    ),
   );
 
   router.get(
@@ -556,6 +603,46 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     ValidationMiddleware.validate(deleteSlackBotConfigSchema),
     deleteSlackBotConfig(keyValueStoreService),
+  );
+
+  // Slack identity links (ADR-SLACKID-01): a Slack person acts as the PipesHub account they linked once.
+  const links = slackIdentityLinks(keyValueStoreService);
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor, and the route tests match the injected function itself
+  const { authenticate } = authMiddleware;
+  router.post(
+    '/internal/slack-bot/identity',
+    authMiddleware.scopedTokenValidator(TokenScopes.SLACK_BOT_VERIFY),
+    ValidationMiddleware.validate(slackCallerSchema),
+    resolveSlackCaller(
+      keyValueStoreService,
+      links,
+      () => appConfig.frontendUrl,
+    ),
+  );
+  router.post(
+    '/slack-bot/identity-links/requests/inspect',
+    authenticate,
+    ValidationMiddleware.validate(slackLinkTokenSchema),
+    inspectSlackLinkRequest(links),
+  );
+  router.post(
+    '/slack-bot/identity-links/requests/decide',
+    authenticate,
+    ValidationMiddleware.validate(slackLinkDecisionSchema),
+    decideSlackLinkRequest(links),
+  );
+  router.get(
+    '/slack-bot/identity-links',
+    authenticate,
+    userAdminCheck,
+    listSlackIdentityLinks(links),
+  );
+  router.delete(
+    '/slack-bot/identity-links/:teamId/:slackUserId',
+    authenticate,
+    userAdminCheck,
+    ValidationMiddleware.validate(slackLinkRevokeSchema),
+    revokeSlackIdentityLink(links),
   );
 
   // Custom System Prompt routes
@@ -762,7 +849,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(aiModelsConfigSchema),
-    createAIModelsConfig(keyValueStoreService, aiConfigEventService, appConfig),
+    createAIModelsConfig(
+      keyValueStoreService,
+      aiConfigEventService,
+      appConfig,
+      saveAiModels,
+    ),
   );
 
   /**
@@ -855,7 +947,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    updateModelRoles(keyValueStoreService),
+    updateModelRoles(keyValueStoreService, saveAiModels),
   );
 
   /**
@@ -892,7 +984,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(batchAddModelsRequestSchema),
-    batchAddAIModels(keyValueStoreService, aiConfigEventService, appConfig),
+    batchAddAIModels(
+      keyValueStoreService,
+      aiConfigEventService,
+      appConfig,
+      saveAiModels,
+    ),
   );
 
   router.put(
@@ -901,7 +998,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(rotateConnectionCredentialsSchema),
-    rotateConnectionCredentials(keyValueStoreService, appConfig),
+    rotateConnectionCredentials(keyValueStoreService, appConfig, saveAiModels),
   );
 
   // AuthMiddleware binds `authenticate` in its constructor, so passing the
@@ -1012,7 +1109,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(addProviderRequestSchema),
-    addAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
+    addAIModelProvider(
+      keyValueStoreService,
+      aiConfigEventService,
+      appConfig,
+      saveAiModels,
+    ),
   );
 
   /**
@@ -1043,7 +1145,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(updateProviderRequestSchema),
-    updateAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
+    updateAIModelProvider(
+      keyValueStoreService,
+      aiConfigEventService,
+      appConfig,
+      saveAiModels,
+    ),
   );
 
   /**
@@ -1059,7 +1166,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(deleteProviderSchema),
-    deleteAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
+    deleteAIModelProvider(
+      keyValueStoreService,
+      aiConfigEventService,
+      appConfig,
+      saveAiModels,
+    ),
   );
 
   /**
@@ -1075,7 +1187,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(updateDefaultModelSchema),
-    updateDefaultAIModel(keyValueStoreService, aiConfigEventService, appConfig),
+    updateDefaultAIModel(
+      keyValueStoreService,
+      aiConfigEventService,
+      appConfig,
+      saveAiModels,
+    ),
   );
 
   // Web Search provider routes

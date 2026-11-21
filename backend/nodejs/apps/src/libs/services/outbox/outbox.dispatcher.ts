@@ -77,6 +77,8 @@ export class OutboxDispatcher {
     private readonly producer: IMessageProducer,
     private readonly logger: Logger,
     private readonly pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS,
+    /** Told of each publish the broker failed, for a health view; never given the error. */
+    private readonly onPublishFailed: () => void = () => undefined,
   ) {}
 
   start(): void {
@@ -193,6 +195,7 @@ export class OutboxDispatcher {
   ): Promise<void> {
     const attempts = event.attempts + 1;
     const message = error instanceof Error ? error.message : String(error);
+    this.onPublishFailed();
 
     await getOutboxRepository().markFailed(event._id, {
       attempts,
@@ -220,6 +223,29 @@ export class OutboxDispatcher {
     }
   }
 }
+
+/**
+ * Lets a writer whose transaction just committed ask this process's
+ * dispatcher for a pass now. The poll stays the backstop: a request made
+ * before a dispatcher is attached, or in a process without one, is dropped.
+ */
+export class OutboxWake {
+  private wake: (() => void) | null = null;
+
+  attach(wake: () => void): void {
+    this.wake = wake;
+  }
+
+  detach(): void {
+    this.wake = null;
+  }
+
+  request(): void {
+    this.wake?.();
+  }
+}
+
+export const outboxWake = new OutboxWake();
 
 /** Counts by status, for a health endpoint or a metric. */
 export function outboxBacklog(): Promise<Record<OutboxCountKey, number>> {

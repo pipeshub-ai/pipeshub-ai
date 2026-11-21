@@ -4,6 +4,8 @@ import { Request } from 'express';
 import { injectable } from 'inversify';
 import path from 'path';
 import { threadId } from 'worker_threads';
+import { parseEnvFlag } from '../utils/env-flags';
+import { FileSink, SinkReport } from './log-file-sink';
 import {
   currentDisplayId,
   getRequestContext,
@@ -96,6 +98,21 @@ export function getLogLevel(): LogLevel {
     return level as LogLevel;
   }
   return LogLevel.Info;
+}
+
+/**
+ * Where Node's file logs go, or null for console only. Unset, a developer's
+ * run keeps `error.log` and `combined.log` in the working directory; the
+ * image sets NODE_LOG_FILES=false, since a container logs to stdout and its
+ * platform collects it.
+ */
+export function fileLogDirectory(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!parseEnvFlag('NODE_LOG_FILES', env.NODE_LOG_FILES, true, env))
+    return null;
+  const dir = (env.NODE_LOG_DIR ?? '').trim();
+  return dir === '' ? process.cwd() : path.resolve(dir);
 }
 
 export interface LoggerConfig {
@@ -488,23 +505,13 @@ export class Logger {
 
   private initializeLogger(config?: LoggerConfig): winston.Logger {
     const provider = getProvider();
-    const transports: winston.transport[] = [];
-    if (provider.fileLoggingEnabled()) {
-      transports.push(
-        new winston.transports.File({
-          filename: 'error.log',
-          level: LogLevel.Error,
-          format: winston.format.combine(textFormat, winston.format.json()),
-        }),
-        new winston.transports.File({
-          filename: 'combined.log',
-          format: winston.format.combine(textFormat, winston.format.json()),
-        }),
-      );
-    }
-    transports.push(
+    const transports: winston.transport[] = [
       new winston.transports.Console({ format: consoleFormat() }),
-    );
+    ];
+    // The provider may turn the local files off; the harness's sinks (NODE_LOG_FILES / NODE_LOG_DIR) decide where they go.
+    if (provider.fileLoggingEnabled()) {
+      transports.push(...this.fileSinks(textFormat));
+    }
 
     return winston.createLogger({
       levels: customLevels.levels,
@@ -513,6 +520,43 @@ export class Logger {
       // Not `service`: winston's defaultMeta overrides the record, and each named logger sets its own.
       defaultMeta: { service_tier: 'nodejs_service' },
       transports,
+    });
+  }
+
+  private fileSinks(logFormat: winston.Logform.Format): FileSink[] {
+    const dir = fileLogDirectory();
+    if (dir === null) return [];
+    const format = winston.format.combine(logFormat, winston.format.json());
+    const report = (r: SinkReport): void => {
+      this.reportSink(r);
+    };
+    return [
+      new FileSink({
+        sink: 'error',
+        filePath: path.join(dir, 'error.log'),
+        level: LogLevel.Error,
+        format,
+        report,
+      }),
+      new FileSink({
+        sink: 'combined',
+        filePath: path.join(dir, 'combined.log'),
+        format,
+        report,
+      }),
+    ];
+  }
+
+  // Deferred: a sink can report from inside the logger's own write, or before
+  // initializeLogger has returned the logger it reports through.
+  private reportSink(report: SinkReport): void {
+    const { event, ...detail } = report;
+    setImmediate(() => {
+      this.logger.log({
+        level: LogLevel.Warning,
+        message: event,
+        metadata: detail,
+      });
     });
   }
 

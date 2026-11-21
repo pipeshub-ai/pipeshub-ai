@@ -38,3 +38,39 @@ export function structuredLoggingProvider(): unknown {
  * that hold settings rather than secrets, so reads return them as stored.
  */
 export const EXTRA_AI_PUBLIC_CONFIG_KEYS: readonly string[] = [];
+
+/**
+ * Collections this edition stores besides this build's, for a move of the document store to PostgreSQL
+ * (docstore-migrate, ADR-DOCMIG-01): every collection is copied, listed as not copied, or held, and preflight refuses
+ * a move while a held one holds documents. `held` names the PostgreSQL tables its data lives in (none when the edition
+ * keeps it in MongoDB only); `heldFields` are fields an edition adds to a collection the copy maps, held the same way.
+ * `carriers` map what would otherwise stay held: each is a docstore-migrate `Carrier` (scripts/docstore-migrate/carry/types.ts)
+ * that copies, follows, verifies, rolls back and resets its collections and fields, so a held collection or field it carries
+ * (this build's or the edition's) is no longer held. Typed `unknown` so this file stays import-free; the migrator checks each
+ * one's shape, and what it may carry, when it loads.
+ */
+export interface EditionDocstoreCoverage {
+  held: ReadonlyArray<{
+    collection: string;
+    reason: string;
+    tables: readonly string[];
+  }>;
+  ignored: ReadonlyArray<{
+    collection: string;
+    reason: string;
+    tables?: readonly string[];
+  }>;
+  heldFields: ReadonlyArray<{
+    collection: string;
+    path: string;
+    reason: string;
+  }>;
+  carriers: readonly unknown[];
+}
+
+export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
+  held: [],
+  ignored: [],
+  heldFields: [],
+  carriers: [],
+};

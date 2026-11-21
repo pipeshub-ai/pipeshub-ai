@@ -13,6 +13,8 @@ import {
   IMessageProducer,
   IMessageConsumer,
   IMessageAdmin,
+  IdleGroupSweep,
+  IdleGroupSweepResult,
   StreamMessage,
   RedisBrokerConfig,
   TopicDefinition,
@@ -56,6 +58,29 @@ function serializeValueWithTrace(value: unknown, topic: string): string {
     );
   }
   return JSON.stringify(value);
+}
+
+/** The message an entry carries; null for an entry without a value (a stream's init entry). */
+function decodeEntry<T>(fields: string[]): StreamMessage<T> | null {
+  const fieldMap: Record<string, string> = {};
+  for (let i = 0; i < fields.length; i += 2) {
+    const key = fields[i];
+    const value = fields[i + 1];
+    if (key !== undefined && value !== undefined) {
+      fieldMap[key] = value;
+    }
+  }
+  const rawValue = fieldMap[REDIS_STREAM_FIELDS.value];
+  if (rawValue === undefined) return null;
+  const message: StreamMessage<T> = {
+    key: fieldMap[REDIS_STREAM_FIELDS.key] ?? '',
+    value: JSON.parse(rawValue) as T,
+  };
+  const rawHeaders = fieldMap[REDIS_STREAM_FIELDS.headers];
+  if (rawHeaders !== undefined) {
+    message.headers = JSON.parse(rawHeaders) as Record<string, string>;
+  }
+  return message;
 }
 
 function isRedisXReadGroupResult(
@@ -337,12 +362,20 @@ export abstract class BaseRedisStreamsConsumerConnection
   protected ackRedis: RedisClient;
   protected initialized = false;
   protected running = false;
+
+  /** Read through a call: `stop()` clears `running` while a loop awaits, which narrowing cannot see. */
+  protected stopped(): boolean {
+    return !this.running;
+  }
   protected subscribedTopics: string[] = [];
   protected groupId: string;
   protected consumerId: string;
   protected blockMs: number;
   protected count: number;
-  private readonly planner: StreamReadPlanner;
+  private readonly claimMinIdleMs: number;
+  private readonly maxDeliveries: number;
+  private reclaimedAt = 0;
+  protected readonly planner: StreamReadPlanner;
   private consumeLoopPromise: Promise<void> | null = null;
 
   constructor(
@@ -352,8 +385,12 @@ export abstract class BaseRedisStreamsConsumerConnection
     this.groupId =
       config.groupId ?? `${config.clientId ?? 'redis-consumer'}-group`;
     this.consumerId = config.clientId ?? 'consumer-' + crypto.randomUUID();
-    this.blockMs = REDIS_STREAMS_DEFAULTS.blockMs;
+    this.blockMs = config.blockMs ?? REDIS_STREAMS_DEFAULTS.blockMs;
     this.count = config.readCount ?? REDIS_STREAMS_DEFAULTS.count;
+    this.claimMinIdleMs =
+      config.claimMinIdleMs ?? REDIS_STREAMS_DEFAULTS.claimMinIdleMs;
+    this.maxDeliveries =
+      config.maxDeliveries ?? REDIS_STREAMS_DEFAULTS.maxDeliveries;
     this.redis = createStreamsClient(config);
     this.ackRedis = createStreamsClient(config);
     this.planner = new StreamReadPlanner(streamsProvider(config));
@@ -463,7 +500,7 @@ export abstract class BaseRedisStreamsConsumerConnection
   }
 
   /** Run the handler under the message's trace and verified org context. A rejected envelope is dropped (and acked by the caller). */
-  private async handleMessage<T>(
+  protected async handleMessage<T>(
     stream: string,
     entryId: string,
     message: StreamMessage<T>,
@@ -486,14 +523,46 @@ export abstract class BaseRedisStreamsConsumerConnection
   }
 
   /**
-   * Drain messages left in the Pending Entries List (PEL) from a previous
-   * crash.  Uses XAUTOCLAIM to steal idle messages from any consumer in the
-   * group (including crashed ones), then processes and acks them.
+   * A claim counts as a delivery. An entry claimed more often than
+   * `maxDeliveries` has failed or outlived its handler that many times: it is
+   * acknowledged and logged, so one message cannot be retried forever.
+   */
+  private async setAsideIfOverDelivered(
+    topic: string,
+    entryId: string,
+  ): Promise<boolean> {
+    const pending = (await this.ackRedis.xpending(
+      topic,
+      this.groupId,
+      entryId,
+      entryId,
+      1,
+    )) as Array<
+      [id: string, consumer: string, idleMs: number, deliveries: number]
+    >;
+    const deliveries = pending[0]?.[3] ?? 0;
+    if (deliveries <= this.maxDeliveries) return false;
+    await this.ackRedis.xack(topic, this.groupId, entryId);
+    this.logger.error('Set aside a message after its last delivery failed', {
+      stream: topic,
+      group: this.groupId,
+      id: entryId,
+      deliveries: deliveries - 1,
+    });
+    return true;
+  }
+
+  /**
+   * Hands this consumer the entries another consumer of the group took and
+   * never acknowledged (it crashed, or its handler failed), once they have
+   * been idle for `claimMinIdleMs`. Runs at start and then every
+   * `claimMinIdleMs`, so a live consumer picks them up without a restart.
    */
   private async drainPending<T>(
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
-    this.logger.info('Draining pending messages from PEL');
+    this.reclaimedAt = Date.now();
+    this.logger.debug('Draining pending messages from PEL');
 
     for (const topic of this.subscribedTopics) {
       let startId = '0-0';
@@ -503,7 +572,7 @@ export abstract class BaseRedisStreamsConsumerConnection
             topic,
             this.groupId,
             this.consumerId,
-            this.config.claimMinIdleMs ?? 30000,
+            this.claimMinIdleMs,
             startId,
             'COUNT',
             String(this.count),
@@ -523,34 +592,12 @@ export abstract class BaseRedisStreamsConsumerConnection
 
           for (const entry of claimed) {
             const entryId = entry[0];
-            const fields = entry[1];
             try {
-              const fieldMap: Record<string, string> = {};
-              for (let i = 0; i < fields.length; i += 2) {
-                const key = fields[i];
-                const value = fields[i + 1];
-                if (key !== undefined && value !== undefined) {
-                  fieldMap[key] = value;
-                }
-              }
-
-              const rawValue = fieldMap[REDIS_STREAM_FIELDS.value];
-              if (rawValue === undefined) {
+              if (await this.setAsideIfOverDelivered(topic, entryId)) continue;
+              const parsedMessage = decodeEntry<T>(entry[1]);
+              if (parsedMessage === null) {
                 await this.ackRedis.xack(topic, this.groupId, entryId);
                 continue;
-              }
-
-              const parsedMessage: StreamMessage<T> = {
-                key: fieldMap[REDIS_STREAM_FIELDS.key] ?? '',
-                value: JSON.parse(rawValue) as T,
-              };
-
-              const rawHeaders = fieldMap[REDIS_STREAM_FIELDS.headers];
-              if (rawHeaders !== undefined) {
-                parsedMessage.headers = JSON.parse(rawHeaders) as Record<
-                  string,
-                  string
-                >;
               }
 
               await this.handleMessage(topic, entryId, parsedMessage, handler);
@@ -579,7 +626,7 @@ export abstract class BaseRedisStreamsConsumerConnection
       }
     }
 
-    this.logger.info('PEL drained, switching to new messages');
+    this.logger.debug('PEL drained, switching to new messages');
   }
 
   /**
@@ -658,12 +705,14 @@ export abstract class BaseRedisStreamsConsumerConnection
     );
   }
 
-  private async consumeLoop<T>(
+  protected async consumeLoop<T>(
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
-    await this.drainPending(handler);
     while (this.running) {
       try {
+        if (Date.now() - this.reclaimedAt >= this.claimMinIdleMs) {
+          await this.drainPending(handler);
+        }
         if (this.subscribedTopics.length === 0) {
           await this.sleep(REDIS_STREAMS_DEFAULTS.idleSleepMs);
           continue;
@@ -692,19 +741,9 @@ export abstract class BaseRedisStreamsConsumerConnection
           const entries = result[1];
           for (const entry of entries) {
             const entryId = entry[0];
-            const fields = entry[1];
             try {
-              const fieldMap: Record<string, string> = {};
-              for (let i = 0; i < fields.length; i += 2) {
-                const key = fields[i];
-                const value = fields[i + 1];
-                if (key !== undefined && value !== undefined) {
-                  fieldMap[key] = value;
-                }
-              }
-
-              const rawValue = fieldMap[REDIS_STREAM_FIELDS.value];
-              if (rawValue === undefined) {
+              const parsedMessage = decodeEntry<T>(entry[1]);
+              if (parsedMessage === null) {
                 this.logger.debug(
                   'Skipping message without value field (likely init message)',
                   {
@@ -714,19 +753,6 @@ export abstract class BaseRedisStreamsConsumerConnection
                 );
                 await this.ackRedis.xack(streamName, this.groupId, entryId);
                 continue;
-              }
-
-              const parsedMessage: StreamMessage<T> = {
-                key: fieldMap[REDIS_STREAM_FIELDS.key] ?? '',
-                value: JSON.parse(rawValue) as T,
-              };
-
-              const rawHeaders = fieldMap[REDIS_STREAM_FIELDS.headers];
-              if (rawHeaders !== undefined) {
-                parsedMessage.headers = JSON.parse(rawHeaders) as Record<
-                  string,
-                  string
-                >;
               }
 
               await this.handleMessage(
@@ -776,9 +802,120 @@ export abstract class BaseRedisStreamsConsumerConnection
     }
   }
 
-  private sleep(ms: number): Promise<void> {
+  protected sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+}
+
+/**
+ * A fan-out subscriber: every process that subscribes sees every message.
+ *
+ * A consumer group shares work among its members and remembers what each has
+ * not acknowledged; a subscriber that must see everything wants neither. It
+ * reads with XREAD from a position it keeps in memory, so the server holds
+ * nothing for it and a process that dies leaves nothing behind (Redis never
+ * expires a group). It starts after the last entry of the stream; what was
+ * published while the process was not running is not replayed.
+ */
+export class RedisStreamsBroadcastConsumer extends BaseRedisStreamsConsumerConnection {
+  private readonly positions = new Map<string, string>();
+
+  override async subscribe(
+    topics: string[],
+    fromBeginning = false,
+  ): Promise<void> {
+    await this.ensureConnection();
+    for (const topic of topics) {
+      if (this.positions.has(topic)) continue;
+      this.positions.set(
+        topic,
+        fromBeginning ? '0-0' : await this.lastEntryId(topic),
+      );
+    }
+    this.subscribedTopics = [...this.positions.keys()];
+  }
+
+  /** Read once: `$` in every XREAD would skip what arrives between two reads. */
+  private async lastEntryId(topic: string): Promise<string> {
+    try {
+      const last = await this.ackRedis.xrevrange(topic, '+', '-', 'COUNT', 1);
+      return last[0]?.[0] ?? '0-0';
+    } catch (error) {
+      throw new MessageBrokerError('Failed to subscribe to Redis stream', {
+        topic,
+        details: (error as Error).message,
+      });
+    }
+  }
+
+  protected override async consumeLoop<T>(
+    handler: (message: StreamMessage<T>) => Promise<void>,
+  ): Promise<void> {
+    while (this.running) {
+      try {
+        const groups = this.planner.group(this.subscribedTopics);
+        if (groups.length === 0) {
+          await this.sleep(REDIS_STREAMS_DEFAULTS.idleSleepMs);
+          continue;
+        }
+        const blockMs = Math.max(1, Math.floor(this.blockMs / groups.length));
+        for (const group of groups) {
+          await this.deliver(await this.read(group, blockMs), handler);
+        }
+      } catch (error) {
+        if (this.stopped()) break;
+        this.logger.error('Error in Redis Streams broadcast loop', {
+          error: (error as Error).message,
+        });
+        await this.sleep(REDIS_STREAMS_DEFAULTS.errorBackoffMs);
+      }
+    }
+  }
+
+  private read(topics: string[], blockMs: number): Promise<unknown> {
+    return this.redis.xread(
+      'COUNT',
+      this.count,
+      'BLOCK',
+      blockMs,
+      'STREAMS',
+      ...topics,
+      ...topics.map((topic) => this.positions.get(topic) ?? '0-0'),
+    );
+  }
+
+  /** A handler that fails is logged and passed: no other process would get this subscriber's copy. */
+  private async deliver<T>(
+    read: unknown,
+    handler: (message: StreamMessage<T>) => Promise<void>,
+  ): Promise<void> {
+    if (!isRedisXReadGroupResult(read)) return;
+    for (const [topic, entries] of read) {
+      for (const [entryId, fields] of entries) {
+        try {
+          const message = decodeEntry<T>(fields);
+          if (message !== null) {
+            await this.handleMessage(topic, entryId, message, handler);
+          }
+        } catch (error) {
+          this.logger.error('Error processing Redis stream message', {
+            entryId,
+            error: (error as Error).message,
+          });
+        }
+        this.positions.set(topic, entryId);
+      }
+    }
+  }
+}
+
+function infoFields(flat: unknown): Map<string, unknown> {
+  const fields = new Map<string, unknown>();
+  if (!Array.isArray(flat)) return fields;
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    fields.set(String(flat[i]), flat[i + 1]);
+  }
+  return fields;
 }
 
 export class RedisStreamsAdminService implements IMessageAdmin {
@@ -790,6 +927,45 @@ export class RedisStreamsAdminService implements IMessageAdmin {
     this.logger = logger;
     this.provider = streamsProvider(config);
     this.redis = this.provider.getClient();
+  }
+
+  /**
+   * Redis never expires a consumer group. A group is dead when every consumer
+   * in it last asked for messages more than `idleMs` ago: a live consumer
+   * asks again at least every block period, with or without traffic, and
+   * Redis reports the time since as the consumer's `idle`.
+   */
+  async removeIdleGroups(sweep: IdleGroupSweep): Promise<IdleGroupSweepResult> {
+    const { topic, formats, idleMs } = sweep;
+    const result: IdleGroupSweepResult = { removed: [], left: [] };
+    if ((await this.redis.exists(topic)) === 0) return result;
+    const groups = (await this.redis.xinfo('GROUPS', topic)) as unknown[];
+    for (const name of groups.map((group) =>
+      String(infoFields(group).get('name')),
+    )) {
+      const consumers = (
+        (await this.redis.xinfo('CONSUMERS', topic, name)) as unknown[]
+      ).map(infoFields);
+      // A group nobody ever read carries no consumer name, so nothing proves whose it is.
+      const ours =
+        consumers.length > 0 &&
+        formats.some(
+          (format) =>
+            format.name.test(name) &&
+            consumers.every(
+              (c) => String(c.get('name')) === format.consumer(name),
+            ),
+        );
+      if (!ours) {
+        result.left.push(name);
+        continue;
+      }
+      if (consumers.every((c) => Number(c.get('idle')) >= idleMs)) {
+        await this.redis.xgroup('DESTROY', topic, name);
+        result.removed.push(name);
+      }
+    }
+    return result;
   }
 
   async ensureTopicsExist(

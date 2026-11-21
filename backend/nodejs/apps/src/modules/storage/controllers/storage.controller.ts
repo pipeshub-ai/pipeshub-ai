@@ -1,3 +1,4 @@
+import { isActiveContentType } from '../../../libs/utils/untrusted-content.utils';
 import { Mutex } from 'async-mutex';
 import { inject, injectable } from 'inversify';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
@@ -75,6 +76,8 @@ import { withWriteWindow } from './storage.write-window';
 import { readDocumentWithFingerprint } from './storage.fingerprint';
 import { scopedStorageServiceJwtGenerator } from '../../../libs/utils/createJwt';
 import { storedServiceEndpoint } from '../utils/service-endpoint';
+import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
+import { KB_UPLOAD_LIMITS } from '../../knowledge_base/constants/kb.constants';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import {
   ENVELOPE_PREFIXES,
@@ -214,11 +217,11 @@ let storageConfig:
 @injectable()
 export class StorageController {
   constructor(
-    @inject('StorageConfig') private config: DefaultStorageConfig,
-    private logger: Logger,
+    @inject('StorageConfig') protected config: DefaultStorageConfig,
+    protected logger: Logger,
     @inject('KeyValueStoreService')
-    private keyValueStoreService: KeyValueStoreService,
-    private readonly scopedJwtSecret: string,
+    protected keyValueStoreService: KeyValueStoreService,
+    protected readonly scopedJwtSecret: string,
   ) {}
 
   /**
@@ -352,18 +355,19 @@ export class StorageController {
   async initializeStorageAdapter(
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
   ): Promise<StorageServiceAdapter> {
-    storageConfig = await this.getStorageConfig(
+    const config = await this.getStorageConfig(
       req,
       this.keyValueStoreService,
       this.config,
     );
-    if (!storageConfig) {
+    if (!config) {
       throw new InternalServerError('Storage configuration not found');
     }
     const storageService = new StorageService(
       this.keyValueStoreService,
-      storageConfig,
+      config,
       this.config,
+      await this.readConfiguredStorageType(req),
     );
     await storageService.initialize();
     const adapter = storageService.getAdapter();
@@ -398,17 +402,40 @@ export class StorageController {
   }
 
   /**
+   * The storage type configured for the request, or undefined when none is.
    * getStorageConfig's cached return shape (AzureBlobStorageConfig |
-   * LocalStorageConfig | S3StorageConfig) doesn't carry `storageType` --
-   * mirror uploadDocument's pattern of reading it straight from etcd instead.
+   * LocalStorageConfig | S3StorageConfig) doesn't carry `storageType`, so it is
+   * read from the key-value store. Every storage-type read in this controller
+   * goes through here, so a subclass that resolves it differently is honoured
+   * everywhere.
    */
-  private async getConfiguredStorageType(
+  protected async readConfiguredStorageType(
     _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-  ): Promise<string> {
+  ): Promise<string | undefined> {
     const storageConfig =
       (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
     const { storageType } = JSON.parse(storageConfig);
-    return storageType ?? 'local';
+    return storageType ?? undefined;
+  }
+
+  protected async getConfiguredStorageType(
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+  ): Promise<string> {
+    return (await this.readConfiguredStorageType(req)) ?? 'local';
+  }
+
+  /** The per-file cap the internal upload route enforces, before its own ceiling. */
+  async uploadSizeLimitBytes(
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+  ): Promise<number> {
+    try {
+      const settings = await getPlatformSettingsFromStore(
+        this.keyValueStoreService,
+      );
+      return settings.fileUploadMaxSizeBytes;
+    } catch {
+      return KB_UPLOAD_LIMITS.defaultMaxFileSizeBytes;
+    }
   }
 
   async uploadDocument(
@@ -418,9 +445,7 @@ export class StorageController {
   ): Promise<void> {
     try {
       const adapter = await this.initializeStorageAdapterForWrite(req);
-      const storageConfig =
-        (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const storageType = await this.readConfiguredStorageType(req);
       if (!isValidStorageVendor(storageType ?? '')) {
         throw new BadRequestError(`Invalid storage type: ${storageType}`);
       }
@@ -472,9 +497,7 @@ export class StorageController {
       }
 
       const fullDocumentPath = getFullDocumentPath(orgId, documentPath);
-      const storageConfig =
-        (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const storageType = await this.readConfiguredStorageType(req);
       const storageVendor = getStorageVendor(storageType ?? '');
       const documentInfo: Partial<Document> = {
         documentName,
@@ -2147,9 +2170,7 @@ export class StorageController {
         throw new BadRequestError('This is a non-versioned document');
       }
 
-      const storageConfig =
-        (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const storageType = await this.readConfiguredStorageType(req);
       const storageVendorInETCD = storageType;
 
       // TODO: fix this usage
@@ -2159,10 +2180,15 @@ export class StorageController {
         );
       }
 
+      // A stored document may lack an extension, whatever the schema type says.
+      const stored: { extension?: string } = document;
       const signedUrlResult = await adapter.getSignedUrl(
         document,
         resolvedVersion,
-        undefined, // fileName is not required for download TODO: fix this usage
+        // An active type (HTML, SVG) through a signed URL is a download, never a page (SEC-FS-04).
+        isActiveContentType(getMimeType(stored.extension ?? ''))
+          ? document.documentName
+          : undefined,
         Math.min(
           expirationTimeInSeconds ? Number(expirationTimeInSeconds) : 3600,
           MAX_SIGNED_URL_TTL_SECONDS,
@@ -2420,10 +2446,9 @@ export class StorageController {
           throw new InternalServerError(STORAGE_WRITE_FAILED_MESSAGE);
         }
 
-        const storageConfig =
-          (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
-          '{}';
-        const { storageType: configStorageType } = JSON.parse(storageConfig);
+        const configStorageType = (await this.readConfiguredStorageType(
+          req,
+        )) as string;
 
         addVersion({
           version: 0,

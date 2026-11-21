@@ -3,6 +3,11 @@ import { Request, Response, RequestHandler } from 'express';
 import rateLimit, { Options, ipKeyGenerator } from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import { TokenScopes } from '../enums/token-scopes.enum';
+import {
+  algorithmsFor,
+  toVerificationKey,
+} from '../services/authtoken.service';
+import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
 import { isMcpRelay } from './mcp-relay';
@@ -59,6 +64,39 @@ function isVerifiedCallerRoleLookup(
   }
 }
 
+/** A path one of whose segments is exactly `internal`: where the service-to-service routes are mounted. */
+const hasInternalSegment = (path: string): boolean =>
+  path.split('/').includes('internal');
+
+/**
+ * SEC-C-16: a service-to-service call to an internal route, proven by a scoped token that verifies here. The
+ * route's own `scopedTokenValidator` runs after this limiter, so the token is verified now rather than trusted
+ * from the path: a public route whose id segment an attacker names `internal` is still counted.
+ */
+function isVerifiedServiceCall(
+  req: Request,
+  key: KeyObject | null,
+  algorithms: jwt.Algorithm[],
+): boolean {
+  if (!key || !hasInternalSegment(req.path)) return false;
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  try {
+    const claims = jwt.verify(
+      stripTokenDisplayPrefix(header.slice('Bearer '.length).trim()),
+      key,
+      { algorithms },
+    );
+    const scopes: unknown =
+      typeof claims === 'object'
+        ? (claims as { scopes?: unknown }).scopes
+        : undefined;
+    return Array.isArray(scopes) && scopes.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 // Single global rate limiter
 export function createGlobalRateLimiter(
   logger: Logger,
@@ -70,6 +108,11 @@ export function createGlobalRateLimiter(
     scopedJwtSecret !== undefined && scopedJwtSecret !== ''
       ? createSecretKey(Buffer.from(scopedJwtSecret))
       : null;
+  const scopedKey =
+    scopedJwtSecret !== undefined && scopedJwtSecret !== ''
+      ? toVerificationKey(scopedJwtSecret)
+      : null;
+  const scopedAlgorithms = scopedKey ? algorithmsFor(scopedKey) : [];
   const config: Partial<Options> = {
     windowMs: 60 * 1000,
     max: maxRequestsPerMinute,
@@ -103,13 +146,10 @@ export function createGlobalRateLimiter(
       if (isMcpRelay(req, serviceKey)) {
         return true;
       }
-      // Internal routes (/…/internal/…) are service-to-service calls protected
-      // by scopedTokenValidator. That middleware runs AFTER the global rate
-      // limiter (route middleware executes later than app.use middleware), so
-      // req.tokenPayload is never set here for those requests. Checking the
-      // path directly is safe: internal routes require a scoped JWT signed with
-      // the server secret, so external callers cannot reach them.
-      if (req.path.includes('/internal/') || req.path.endsWith('/internal')) {
+      // Internal routes (/…/internal/…) are service-to-service calls whose
+      // scopedTokenValidator runs after this limiter, so the token is checked
+      // here; the path alone is the caller's to choose (SEC-C-16).
+      if (isVerifiedServiceCall(req, scopedKey, scopedAlgorithms)) {
         return true;
       }
       const authenticatedServiceReq = req as AuthenticatedServiceRequest;

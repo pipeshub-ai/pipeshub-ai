@@ -51,15 +51,24 @@ const REQUIRED_COLLECTIONS = [
   'notifications',
 ];
 
+/**
+ * Mongoose's process-wide options as the app runs them; a process that connects Mongoose itself (a test server
+ * standing in for the app) calls this first, so it runs the queries the app runs.
+ */
+export function configureMongoose(): void {
+  mongoose.set('strictQuery', true);
+  mongoose.set('debug', process.env.NODE_ENV === 'development');
+  // PERF-D's per-query stack capture (6% of the harness hot path's CPU) is gone in Mongoose 9, and its
+  // skipOriginalStackTraces option with it; PERFD-11 keeps the major version from slipping back below 9.
+}
+
 @injectable()
 export class MongoService {
   private connection: Connection | null = null;
   private isInitialized: boolean = false;
 
   constructor(private config: MongooseConfig) {
-    // Set mongoose configuration options
-    mongoose.set('strictQuery', true);
-    mongoose.set('debug', process.env.NODE_ENV === 'development');
+    configureMongoose();
   }
 
   public async initialize(): Promise<void> {
@@ -115,9 +124,6 @@ export class MongoService {
     this.connection.on('error', (error) => {
       logger.error('Mongoose connection error:', error);
     });
-
-    // No signal handlers here: `Application.stop()` owns shutdown order and
-    // disconnects via `destroy()` only after in-flight requests have drained.
   }
 
   /**
@@ -163,6 +169,11 @@ export class MongoService {
     }
   }
 
+  /**
+   * Called by the owner at the end of its shutdown. The connection is not
+   * closed on a signal here: that cut it under requests still being answered
+   * and under the leases a stopping process has yet to release.
+   */
   public async destroy(): Promise<void> {
     if (!this.isInitialized) {
       logger.warn('MongoDB connection not initialized');

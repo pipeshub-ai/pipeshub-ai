@@ -1,3 +1,4 @@
+import { setUntrustedContentHeaders } from '../../../libs/utils/untrusted-content.utils';
 import { getDocumentRepository } from '../../../libs/repositories/document';
 import { isValidId } from '../../../libs/repositories/ids';
 import { NextFunction, Response } from 'express';
@@ -563,10 +564,9 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
     const fullName = `${document.documentName}${document.extension}`;
     const filenameStar = encodeRFC5987(fullName);
 
-    // Set headers
-    res.setHeader('Content-Type', mimeType || 'application/octet-stream');
-    res.setHeader(
-      'Content-Disposition',
+    setUntrustedContentHeaders(
+      (name, value) => res.setHeader(name, value),
+      mimeType || 'application/octet-stream',
       `attachment; filename*=UTF-8''${filenameStar}`,
     );
 

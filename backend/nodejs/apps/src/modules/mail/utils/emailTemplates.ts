@@ -5,19 +5,48 @@ import { getBrandConfig } from '../../../libs/branding';
 const cwd = process.cwd();
 const loadTemplate = (path: string): string => fs.readFileSync(`${cwd}/${path}`, 'utf8');
 
-const loginTemplate = loadTemplate('src/modules/mail/views/layouts/user/login.hbs');
-const suspiciousLoginTemplate = loadTemplate('src/modules/mail/views/layouts/user/suspiciousLogin.hbs');
-const resetPasswordTemplate = loadTemplate('src/modules/mail/views/layouts/user/resetPassword.hbs');
-const resetEmailTemplate = loadTemplate('src/modules/mail/views/layouts/user/resetEmail.hbs');
-const emailChangeNoticeTemplate = loadTemplate('src/modules/mail/views/layouts/user/emailChangeNotice.hbs');
-const accountCreationTemplate = loadTemplate('src/modules/mail/views/layouts/org/accountCreation.hbs');
-const domainLimitReachedTemplate = loadTemplate('src/modules/mail/views/layouts/org/domainLimitReached.hbs');
-const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/invite.hbs');
-const joinRequestNotifyTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestNotify.hbs');
-const joinRequestDecisionTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestDecision.hbs');
-const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layouts/org/orgEmailVerification.hbs');
-const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
-const footerTemplate = loadTemplate('src/modules/mail/views/partials/footer.hbs');
+const loginTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/user/login.hbs',
+);
+const suspiciousLoginTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/user/suspiciousLogin.hbs',
+);
+const resetPasswordTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/user/resetPassword.hbs',
+);
+const resetEmailTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/user/resetEmail.hbs',
+);
+const emailChangeNoticeTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/user/emailChangeNotice.hbs',
+);
+const accountCreationTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/org/accountCreation.hbs',
+);
+const domainLimitReachedTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/org/domainLimitReached.hbs',
+);
+const appUsersInviteTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/appusers/invite.hbs',
+);
+const joinRequestNotifyTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/appusers/joinRequestNotify.hbs',
+);
+const joinRequestDecisionTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/appusers/joinRequestDecision.hbs',
+);
+const orgEmailVerificationTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/org/orgEmailVerification.hbs',
+);
+const scheduledRunEndedTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/user/scheduledRunEnded.hbs',
+);
+const headerTemplate = loadTemplate(
+  'src/modules/mail/views/partials/header.hbs',
+);
+const footerTemplate = loadTemplate(
+  'src/modules/mail/views/partials/footer.hbs',
+);
 const headTemplate = loadTemplate('src/modules/mail/views/partials/head.hbs');
 const taskTableTemplate = loadTemplate('src/modules/mail/views/partials/taskTable.hbs');
 
@@ -93,12 +122,23 @@ export const isEmailChangeNoticeData = (
     typeof record.newEmail === 'string'
   );
 };
-export const emailChangeNotice = (templateData: EmailChangeNoticeData): string => compileTemplate(emailChangeNoticeTemplate, templateData);
-export const accountCreation = (templateData: Record<string,any>): string => compileTemplate(accountCreationTemplate, templateData);
-export const appUserInvite = (templateData: Record<string,any>): string => compileTemplate(appUsersInviteTemplate, templateData);
-export const orgEmailVerification = (templateData: Record<string,any>): string => compileTemplate(orgEmailVerificationTemplate, templateData);
-export const domainLimitReached = (templateData: Record<string,any>): string => compileTemplate(domainLimitReachedTemplate, templateData);
-export const joinRequestNotify = (templateData: Record<string,any>): string => compileTemplate(joinRequestNotifyTemplate, templateData);
-export const joinRequestDecision = (templateData: Record<string,any>): string => compileTemplate(joinRequestDecisionTemplate, templateData);
-
-
+export const emailChangeNotice = (
+  templateData: EmailChangeNoticeData,
+): string => compileTemplate(emailChangeNoticeTemplate, templateData);
+export const accountCreation = (templateData: Record<string, any>): string =>
+  compileTemplate(accountCreationTemplate, templateData);
+export const appUserInvite = (templateData: Record<string, any>): string =>
+  compileTemplate(appUsersInviteTemplate, templateData);
+export const orgEmailVerification = (
+  templateData: Record<string, any>,
+): string => compileTemplate(orgEmailVerificationTemplate, templateData);
+export const domainLimitReached = (templateData: Record<string, any>): string =>
+  compileTemplate(domainLimitReachedTemplate, templateData);
+export const joinRequestNotify = (templateData: Record<string, any>): string =>
+  compileTemplate(joinRequestNotifyTemplate, templateData);
+export const joinRequestDecision = (
+  templateData: Record<string, any>,
+): string => compileTemplate(joinRequestDecisionTemplate, templateData);
+export const scheduledRunEnded = (
+  templateData: Record<string, unknown>,
+): string => compileTemplate(scheduledRunEndedTemplate, templateData);

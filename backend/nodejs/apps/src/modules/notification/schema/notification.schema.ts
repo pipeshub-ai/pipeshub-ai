@@ -1,5 +1,6 @@
 import mongoose, { Document, Schema, Model } from "mongoose";
 import { NOTIFICATION_RETENTION_DAYS } from "../utils/notification-api.utils";
+import type { NotificationSeverity } from "../../../libs/repositories/notification/types";
 
 const NOTIFICATION_TTL_SECONDS = NOTIFICATION_RETENTION_DAYS * 24 * 60 * 60;
 
@@ -11,7 +12,7 @@ export interface INotification extends Document {
   type: string;
   orgId: mongoose.Types.ObjectId;
   originService: "Connector Service" | "Indexing Service" | "AI Service" | "External Service";
-  severity: "info" | "warning" | "error" | "critical" | "success";
+  severity: NotificationSeverity;
   status: "read" | "unread" | "archived";
   assignedTo: mongoose.Types.ObjectId;
   redirectLink?: string;

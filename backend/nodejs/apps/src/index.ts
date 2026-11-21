@@ -2,6 +2,13 @@ import 'reflect-metadata';
 import { config } from 'dotenv';
 import { applyStoreUmbrella } from './libs/config/storeUmbrella';
 import { Logger } from './libs/services/logger.service';
+import {
+  processShutdown,
+  SHUTDOWN_DEADLINE_MS,
+} from './libs/services/process-shutdown';
+import { validateEnvFlags } from './libs/utils/env-flags';
+import { validateAgentHarnessEnvironment } from './modules/agent-harness/config';
+import { enforceStoreAuth, StoreAuthRefused } from './libs/config/store-auth';
 import axios from 'axios';
 import { installUpstreamLogging } from './libs/http/upstream-call';
 
@@ -12,25 +19,23 @@ applyStoreUmbrella();
 Logger.applyEnv();
 // Every default-instance axios call, axios-retry's retries included, writes its upstream.call.end line.
 installUpstreamLogging(axios);
+// A malformed harness flag stops the process here instead of reading as its default.
+validateEnvFlags();
+validateAgentHarnessEnvironment();
 import { Application } from './app';
-import { createGracefulShutdown } from './shutdown';
 
 const app = new Application();
 const logger = Logger.getInstance();
 
-const gracefulShutdown = createGracefulShutdown(app, logger);
+const shutdown = processShutdown({
+  stop: () => app.stop(),
+  logger,
+  exit: (code) => process.exit(code),
+  deadlineMs: SHUTDOWN_DEADLINE_MS,
+});
 
-// Global error handlers to prevent app crashes
 process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', {
-    error: {
-      name: error.name,
-      message: error.message,
-    }
-  });
-  // Process state is undefined after an uncaught exception, so drain and
-  // exit; the process monitor restarts Node.
-  gracefulShutdown('uncaughtException');
+  shutdown.fault('uncaughtException', error);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -41,21 +46,22 @@ process.on('unhandledRejection', (reason, promise) => {
     } : String(reason),
     promise: promise.toString()
   });
-  // let the app try to recover for now until we have a better solution: to restart the app in a new process
-  // gracefulShutdown('unhandledRejection'); TODO: add this once we have a better solution
 });
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown.signal('SIGTERM'));
+process.on('SIGINT', () => shutdown.signal('SIGINT'));
 
 (async () => {
   try {
+    await enforceStoreAuth(process.env, logger);
     await app.preInitMigration();
     await app.initialize();
     await app.start();
     await app.runMigration();
   } catch (error) {
-    logger.error('Failed to start application:', error);
+    // The refusal is the operator's instructions: log it as text, not as an error object's fields.
+    if (error instanceof StoreAuthRefused) logger.error(error.message);
+    else logger.error('Failed to start application:', error);
     process.exit(1);
   }
 })();

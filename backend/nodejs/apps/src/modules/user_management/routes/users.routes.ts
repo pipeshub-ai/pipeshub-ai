@@ -37,6 +37,12 @@ import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
 import { NotificationProducer } from '../../notification/service/notification.producer';
 import { MailProducer } from '../../mail/services/mail.producer';
+import {
+  ORG_CONTROLLER_FACTORY,
+  OrgControllerFactory,
+  USER_CONTROLLER_FACTORY,
+  UserControllerFactory,
+} from '../container/controller-factories';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
@@ -297,6 +303,8 @@ const withGroupsValidationSchema = z.object({
 export function createUserRouter(container: Container) {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor, and the route tests match the injected function itself
+  const { authenticate } = authMiddleware;
   const logger = container.get<Logger>('Logger');
   const config = container.get<AppConfig>('AppConfig');
   // Todo: Apply Rate Limiter Middleware
@@ -391,6 +399,40 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.unblockUser(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // SEC-AZ-08: an admin switches a member off or back on; the org is the caller's, never the request's.
+  router.put(
+    '/:id/deactivate',
+    authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
+    ValidationMiddleware.validate(UserIdValidationSchema),
+    userAdminCheck,
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.deactivateUser(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // SEC-AZ-08: an admin switches a member off or back on; the org is the caller's, never the request's.
+  router.put(
+    '/:id/reactivate',
+    authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
+    ValidationMiddleware.validate(UserIdValidationSchema),
+    userAdminCheck,
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.reactivateUser(req, res, next);
       } catch (error) {
         next(error);
       }
@@ -932,28 +974,38 @@ export function createUserRouter(container: Container) {
           return new AuthService(updatedConfig, logger);
         });
 
-        // Rebind controllers
-        container.rebind<OrgController>('OrgController').toDynamicValue(() => {
-          return new OrgController(
-            updatedConfig,
-            container.get<MailService>('MailService'),
-            logger,
-            container.get<EntitiesEventProducer>('EntitiesEventProducer'),
-          );
-        });
-
+        // Rebind controllers, through the container's own factories when it has them so the
+        // deletion services they were composed with survive the update (ORGDEL).
+        const orgControllerFor: OrgControllerFactory = container.isBound(
+          ORG_CONTROLLER_FACTORY,
+        )
+          ? container.get<OrgControllerFactory>(ORG_CONTROLLER_FACTORY)
+          : (config) =>
+              new OrgController(
+                config,
+                container.get<MailService>('MailService'),
+                logger,
+                container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+              );
+        const userControllerFor: UserControllerFactory = container.isBound(
+          USER_CONTROLLER_FACTORY,
+        )
+          ? container.get<UserControllerFactory>(USER_CONTROLLER_FACTORY)
+          : (config) =>
+              new UserController(
+                config,
+                container.get<MailService>('MailService'),
+                container.get<AuthService>('AuthService'),
+                logger,
+                container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+                container.get<NotificationProducer>('NotificationProducer'),
+              );
+        container
+          .rebind<OrgController>('OrgController')
+          .toDynamicValue(() => orgControllerFor(updatedConfig));
         container
           .rebind<UserController>('UserController')
-          .toDynamicValue(() => {
-            return new UserController(
-              updatedConfig,
-              container.get<MailService>('MailService'),
-              container.get<AuthService>('AuthService'),
-              logger,
-              container.get<EntitiesEventProducer>('EntitiesEventProducer'),
-              container.get<NotificationProducer>('NotificationProducer'),
-            );
-          });
+          .toDynamicValue(() => userControllerFor(updatedConfig));
         res.status(200).json({
           message: 'User configuration updated successfully',
         });

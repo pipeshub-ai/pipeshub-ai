@@ -33,9 +33,37 @@ import {
  * @param value - The string to sanitize
  * @returns Sanitized string with HTML tags removed
  */
-function sanitizeString(value: string): string {
+/**
+ * SEC-C-17: what one request may hand the sanitizer in strings that hold `<` or `>`. The sanitizer is linear but
+ * costs about 200 ns a character, and this middleware runs before authentication on every route, so a 10 MB body
+ * of `<` would hold the event loop for seconds. No legitimate request sends megabytes of such text here: a tag is
+ * refused by the check before it, and the routes that take free text are exempt above.
+ */
+export const XSS_MARKUP_BUDGET_CHARS = 2 * 1024 * 1024;
+
+export class MarkupBudgetExceeded extends BadRequestError {
+  constructor() {
+    super(
+      'This request holds more than 2 MiB of text with < or > in it. Send it in smaller parts.',
+    );
+  }
+}
+
+interface MarkupBudget {
+  left: number;
+}
+
+function sanitizeString(value: string, budget?: MarkupBudget): string {
   if (typeof value !== 'string' || value.length === 0) {
     return value;
+  }
+  // The sanitizer changes nothing in a string with no angle bracket but its ends' whitespace.
+  if (!value.includes('<') && !value.includes('>')) {
+    return value.trim();
+  }
+  if (budget !== undefined) {
+    budget.left -= value.length;
+    if (budget.left < 0) throw new MarkupBudgetExceeded();
   }
 
   try {
@@ -155,14 +183,17 @@ const SEARCH_QUESTION_ROUTES = new Map<string, readonly string[]>([
   ['/api/v1/graph/resolve', ['qualifiedName', 'filePath']],
 ]);
 
+/** Where a schedule is made; its `input.query` is the prompt each firing's run asks. */
+const SCHEDULES_PATH = '/api/v1/agent-harness/schedules';
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Object.prototype.toString.call(value) === '[object Object]';
 }
 
 /**
- * Finds the question on a chat or search tool call made through MCP, and on
- * the search route MCP calls, so that one string can be passed through
- * unchecked and unchanged.
+ * Finds the question on a chat or search tool call made through MCP, on
+ * the search route MCP calls, and a schedule's prompt, so that one string can
+ * be passed through unchecked and unchanged.
  *
  * Why: a question is free text, and people (and AI agents) write things like
  * "cite [Summary of <id>]" or "what does List<String> return?". The web chat
@@ -194,6 +225,15 @@ function findQuestionField(req: Request): QuestionField | undefined {
   const routeFields = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
   if (routeFields !== undefined) {
     return { holder: body, keys: routeFields };
+  }
+
+  // R36-COVER: a schedule's prompt is the question its run asks, stored and shown as the chat's is. Sanitized, a
+  // prompt such as "flag rows where a < b" reached the model as "a &lt; b" and code in it stopped compiling.
+  if (req.path.replace(/\/$/, '') === SCHEDULES_PATH) {
+    const input = body.input;
+    return isPlainObject(input) && typeof input.query === 'string'
+      ? { holder: input, keys: ['query'] }
+      : undefined;
   }
 
   // A JSON-RPC tool call to the MCP endpoint.
@@ -332,7 +372,11 @@ function validateNoXSS(
  * @param question - The request's question field, which is kept unchanged
  * @returns Sanitized value with same structure
  */
-function sanitizeValue(value: any, question?: QuestionField): any {
+function sanitizeValue(
+  value: any,
+  question?: QuestionField,
+  budget: MarkupBudget = { left: XSS_MARKUP_BUDGET_CHARS },
+): any {
   // Handle null and undefined
   if (value === null || value === undefined) {
     return value;
@@ -340,7 +384,7 @@ function sanitizeValue(value: any, question?: QuestionField): any {
 
   // Handle strings - sanitize
   if (typeof value === 'string') {
-    return sanitizeString(value);
+    return sanitizeString(value, budget);
   }
 
   // Handle primitive types (numbers, booleans, symbols, bigint) - return as-is
@@ -356,7 +400,7 @@ function sanitizeValue(value: any, question?: QuestionField): any {
 
   // Handle arrays - sanitize each element
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeValue(item, question));
+    return value.map((item) => sanitizeValue(item, question, budget));
   }
 
   // Handle plain objects - sanitize each property
@@ -389,8 +433,9 @@ function sanitizeValue(value: any, question?: QuestionField): any {
             continue;
           }
 
-          sanitized[key] = sanitizeValue(propValue, question);
+          sanitized[key] = sanitizeValue(propValue, question, budget);
         } catch (error) {
+          if (error instanceof MarkupBudgetExceeded) throw error;
           // If sanitizing a property fails, keep the original value
           Logger.getInstance().warn('XSS sanitization failed for property', {
             key,
@@ -461,6 +506,18 @@ export const xssSanitizationMiddleware = (
       return;
     }
 
+    // Worker-only agent-harness routes (worker credential or attempt token, never a
+    // browser session) carry model and tool output verbatim into the journal; it is
+    // rendered only through the sanitized projection. Mounted at
+    // AGENT_HARNESS_INTERNAL_PREFIX (agent-harness/transport/internal-routes).
+    if (
+      req.path.startsWith('/api/v1/agent-harness/internal/') &&
+      (req.method === 'POST' || req.method === 'PUT')
+    ) {
+      next();
+      return;
+    }
+
     // API Toolsets carry an OpenAPI spec, which must reach the parser byte for byte
     // (sanitizing turns YAML's `>` into `&gt;`), and credentials, which must not be
     // altered. Python validates every field; the web app renders them as React text.
@@ -481,6 +538,7 @@ export const xssSanitizationMiddleware = (
       return;
     }
 
+    const budget: MarkupBudget = { left: XSS_MARKUP_BUDGET_CHARS };
     // Validate request body
     if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
       // Skip if body is a Buffer (file upload)
@@ -490,7 +548,7 @@ export const xssSanitizationMiddleware = (
         const question = findQuestionField(req);
         validateNoXSS(req.body, 'body', question);
         // After validation passes, sanitize to ensure clean data
-        req.body = sanitizeValue(req.body, question);
+        req.body = sanitizeValue(req.body, question, budget);
       }
     }
 
@@ -498,14 +556,22 @@ export const xssSanitizationMiddleware = (
     if (req.query && typeof req.query === 'object' && !Array.isArray(req.query)) {
       validateNoXSS(req.query, 'query');
       // After validation passes, sanitize to ensure clean data
-      req.query = sanitizeValue(req.query) as typeof req.query;
+      req.query = sanitizeValue(
+        req.query,
+        undefined,
+        budget,
+      ) as typeof req.query;
     }
 
     // Validate route parameters
     if (req.params && typeof req.params === 'object' && !Array.isArray(req.params)) {
       validateNoXSS(req.params, 'params');
       // After validation passes, sanitize to ensure clean data
-      req.params = sanitizeValue(req.params) as typeof req.params;
+      req.params = sanitizeValue(
+        req.params,
+        undefined,
+        budget,
+      ) as typeof req.params;
     }
 
     // Continue to next middleware/route handler

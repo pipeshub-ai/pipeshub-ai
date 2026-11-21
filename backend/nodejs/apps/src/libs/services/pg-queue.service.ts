@@ -6,6 +6,8 @@ import {
   IMessageAdmin,
   StreamMessage,
   TopicDefinition,
+  IdleGroupSweep,
+  IdleGroupSweepResult,
 } from '../types/messaging.types';
 import {
   contextFromEnvelope,
@@ -576,5 +578,13 @@ export class PgQueueAdminService implements IMessageAdmin {
       tx.query<{ topic: string }>(SQL.topics),
     );
     return r.rows.map((x) => x.topic);
+  }
+
+  /**
+   * The queue removes a process's own group itself: an ephemeral group whose consumer has not polled for ten minutes
+   * goes with its deliveries in the consumers' sweep (`sweepGroups`), so there is nothing left here to remove.
+   */
+  removeIdleGroups(_sweep?: IdleGroupSweep): Promise<IdleGroupSweepResult> {
+    return Promise.resolve({ removed: [], left: [] });
   }
 }

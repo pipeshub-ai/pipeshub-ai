@@ -1155,6 +1155,46 @@ export const getInstanceStatus =
   };
 
 /**
+ * GIT-FLOW (WP-26) repository picker: the repositories, or one repository's branches, the caller's own sign-in to
+ * a GitHub toolset instance can see. The connectors service holds the token and asks GitHub; the query is passed
+ * on as the route's validator left it.
+ */
+export const getGithubRepositoryListing =
+  (appConfig: AppConfig, listing: 'repositories' | 'branches') =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+      const query = new URLSearchParams();
+      for (const key of ['search', 'page', 'repository']) {
+        const value = req.query[key];
+        if (typeof value === 'string' && value !== '') query.append(key, value);
+      }
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/github/${listing}?${query.toString()}`,
+        HttpMethod.GET,
+        { ...(req.headers as Record<string, string>) },
+      );
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        `Listing GitHub ${listing}`,
+        `GitHub ${listing} not found`,
+      );
+    } catch (error: unknown) {
+      logger.error(`Error listing GitHub ${listing}`, {
+        error: (error as { message?: unknown } | null | undefined)?.message,
+        instanceId: req.params.instanceId,
+      });
+      next(handleBackendError(error, `list GitHub ${listing}`));
+    }
+  };
+
+/**
  * List OAuth configs for a toolset type (admin).
  */
 export const listToolsetOAuthConfigs =

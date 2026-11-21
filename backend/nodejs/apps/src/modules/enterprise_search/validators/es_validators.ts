@@ -1,4 +1,13 @@
 import { z } from 'zod';
+import { sessionRepositorySchema } from '../../agent-harness/domain/repository';
+import { runGatesSchema } from '../../agent-harness/domain/run-gates';
+import { contract } from '../../agent-harness/contracts/zod-contract';
+import {
+  NAMED_ENTITY_KINDS,
+  REQUEST_FILTER_KEYS,
+  requestFiltersSchema,
+} from '../../../libs/validators/request-filters';
+import { keywordSearchBudgetSchema } from '../../../libs/validators/keyword-search-budget';
 import {
   validateNoFormatSpecifiers,
   validateNoXSS,
@@ -16,8 +25,16 @@ import {
   guidCheck,
   integerCheck,
 } from '../../../libs/utils/zod-formats';
+import {
+  createExtensionRegistry,
+  listedReleaseNames,
+} from '../../control-plane';
+import {
+  MAX_ROLE_MODELS,
+  ROLE_KEY,
+} from '../../agent-harness/domain/agent-definition';
 
-export { REASONING_EFFORT_VALUES };
+export { NAMED_ENTITY_KINDS, REASONING_EFFORT_VALUES, REQUEST_FILTER_KEYS };
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -94,198 +111,7 @@ const appliedFiltersSchema = z
   })
   .optional();
 
-// Built-in named-entity kinds; mirrors EntityKind in
-// backend/python/app/modules/named_entities/domain/kinds.py.
-export const NAMED_ENTITY_KINDS = [
-  'person',
-  'person_type',
-  'organization',
-  'event',
-  'product',
-  'skill',
-  'location',
-  'city',
-  'state',
-  'country_region',
-  'address',
-  'date',
-  'date_range',
-  'date_time',
-  'duration',
-  'currency',
-  'percentage',
-  'age',
-  'dimension',
-  'email',
-  'url',
-  'phone',
-  'ip',
-] as const;
-
-const finiteNumber = z.number();
-
-const rangeChecked = <T extends z.ZodRawShape>(
-  shape: T,
-  low: string,
-  high: string,
-): z.ZodObject<T, z.core.$strict> =>
-  z
-    .object(shape)
-    .strict()
-    .superRefine((value: Record<string, unknown>, ctx) => {
-      const start = value[low];
-      const end = value[high];
-      if (typeof start === 'number' && typeof end === 'number' && start > end) {
-        ctx.addIssue({
-          code: 'custom',
-          message: `${low} must be less than or equal to ${high}`,
-        });
-      }
-    });
-
-// Epoch milliseconds, or an ISO-8601 date / date-time (a date alone is UTC midnight).
-const instant = z.union([
-  z.number().check(integerCheck()),
-  z
-    .string()
-    .trim()
-    .min(1)
-    .transform((value, ctx) => {
-      const parsed = Date.parse(value);
-      if (Number.isNaN(parsed)) {
-        ctx.addIssue({
-          code: 'custom',
-          // Non-fatal, as in zod 3: the union reports this message instead of
-          // a generic "isn't valid".
-          continue: true,
-          message: 'must be epoch milliseconds or an ISO-8601 date',
-        });
-        return z.NEVER;
-      }
-      return parsed;
-    }),
-]);
-
-/**
- * Experimental. Every constraint must hold for the same record: an amount and
- * a date match a record that mentions both, not one entity that is both.
- */
-const entityFiltersSchema = z
-  .object({
-    kinds: z
-      .array(z.string().trim().toLowerCase().pipe(z.enum(NAMED_ENTITY_KINDS)))
-      .min(1)
-      .max(NAMED_ENTITY_KINDS.length)
-      .optional(),
-    name: z
-      .string()
-      .trim()
-      .min(1, { message: 'name must not be blank' })
-      .max(256)
-      .optional(),
-    entityIds: z
-      .array(z.string().check(guidCheck()))
-      .min(1)
-      .max(100)
-      .optional(),
-    mentionedDate: rangeChecked(
-      { from: instant.optional(), to: instant.optional() },
-      'from',
-      'to',
-    ).optional(),
-    amount: rangeChecked(
-      {
-        min: finiteNumber.optional(),
-        max: finiteNumber.optional(),
-        currency: z
-          .string()
-          .trim()
-          .toUpperCase()
-          .regex(/^[A-Z]{3}$/, {
-            message: 'currency must be a three-letter ISO 4217 code',
-          })
-          .optional(),
-      },
-      'min',
-      'max',
-    ).optional(),
-    quantity: rangeChecked(
-      {
-        min: finiteNumber.optional(),
-        max: finiteNumber.optional(),
-        dimension: z
-          .string()
-          .trim()
-          .toLowerCase()
-          .regex(/^[a-z_]{1,32}$/)
-          .optional(),
-      },
-      'min',
-      'max',
-    ).optional(),
-    // Fractions: 0.125 is 12.5%.
-    percent: rangeChecked(
-      { min: finiteNumber.optional(), max: finiteNumber.optional() },
-      'min',
-      'max',
-    ).optional(),
-  })
-  .strict();
-
-/** Most ids one request may select, across every filter key. */
-const MAX_FILTER_IDS = 200;
-
-const filtersShape = {
-  apps: z.array(appOrKbIdSchema).optional(),
-  kb: z.array(appOrKbIdSchema).optional(),
-  entityFilters: entityFiltersSchema.optional(),
-  // Reserved for the typed filter tree that will replace entityFilters.
-  where: z
-    .unknown()
-    .refine((value) => value === undefined, {
-      message: 'filters.where is not supported yet',
-    })
-    .optional(),
-  recordGroups: z.array(appOrKbIdSchema).optional(),
-  records: z.array(appOrKbIdSchema).optional(),
-  recordsExact: z.array(appOrKbIdSchema).optional(),
-};
-
-/** Keys a client may send in `filters` (`where` is reserved and always refused). */
-export const REQUEST_FILTER_KEYS = Object.keys(filtersShape).filter(
-  (key) => key !== 'where',
-);
-
-/**
- * Filter object reused across search/message/regenerate flows: whole apps
- * (`apps`, with `kb` as its older name for collections) and selections below
- * app level — record groups (with the groups nested in them), folders or
- * records (with everything under them) and single records — plus `entityFilters`. Classification
- * names (departments, topics...) are internal-only for now. A key outside this list is refused with the allowed list.
- */
-const filtersSchema = z
-  .object(filtersShape)
-  .loose()
-  .superRefine((filters, ctx) => {
-    const unknown = Object.keys(filters).filter(
-      (key) => !Object.prototype.hasOwnProperty.call(filtersShape, key),
-    );
-    if (unknown.length > 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `Unknown filter key(s): ${unknown.join(', ')}. Allowed keys: ${REQUEST_FILTER_KEYS.join(', ')}`,
-      });
-    }
-  })
-  .refine(
-    (filters) =>
-      Object.values(filters).reduce<number>(
-        (count, ids) => count + (Array.isArray(ids) ? ids.length : 0),
-        0,
-      ) <= MAX_FILTER_IDS,
-    { message: `At most ${MAX_FILTER_IDS} ids may be selected in one request` },
-  )
-  .optional();
+const filtersSchema = requestFiltersSchema;
 
 /** Model selection fields shared across search, message, regenerate, etc. */
 const modelFieldsSchema = {
@@ -372,7 +198,7 @@ const retrievalContextFieldsSchema = {
  * chat body that runs a search, or Zod strips it.
  */
 const keywordSearchFieldsSchema = {
-  keywordSearchBudget: z.enum(['short', 'full']).optional(),
+  keywordSearchBudget: keywordSearchBudgetSchema.optional(),
 };
 
 /** Body of `POST .../cancel` — one schema for both the assistant and agent
@@ -411,6 +237,8 @@ const messageIdParam = { messageId: objectId('message ID') };
 const agentKeyParam = {
   agentKey: z.string().min(1, { message: 'Agent key is required' }),
 };
+/** The agent authority's cap on a version's note (`app/agents/versions.py` NOTE_MAX_CHARS). */
+const AGENT_VERSION_NOTE_MAX = 500;
 const webSearchProviderParam = {
   provider: z
     .string()
@@ -467,22 +295,114 @@ export const enterpriseSearchCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema,
 });
 
-/** Public `/conversations/stream` modes. The route always requires an explicit mode. */
+/** The assistant's chat modes on its public routes. */
 export const UNIVERSAL_STREAM_CHAT_MODES = [
   'agent',
   'internal_search',
   'web_search',
 ] as const;
 
-const universalStreamChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
+/**
+ * The one definition of `chatMode` for the assistant's public chat routes
+ * (QA6-F5): a new chat, a follow-up and a regenerate refuse the same values.
+ * The stream routes require a mode; a regenerate may leave it out.
+ */
+export const assistantChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
   error: 'Invalid chat mode',
 });
 
+/**
+ * Which harness a chat turn asks for. `durable`: the assistant's Agent mode
+ * asks for the harness (ASSIST1). `legacy`: the chat switch asks for the
+ * classic path (CTL-7). The server decides either way.
+ */
+export const assistantHarnessSchema = z.enum(['durable', 'legacy']).optional();
+
+/** What a stored assistant conversation reads as when its mode is one no chat route accepts any more. */
+export const DEFAULT_ASSISTANT_CHAT_MODE: (typeof UNIVERSAL_STREAM_CHAT_MODES)[number] =
+  'internal_search';
+
+const ACCEPTED_SOMEWHERE: ReadonlySet<string> = new Set<string>([
+  ...UNIVERSAL_STREAM_CHAT_MODES,
+  ...Object.values(PIPESHUB_CHAT_MODE),
+]);
+
+/**
+ * A stored assistant conversation's mode as the server gives it to a client
+ * (QA6-F5), decided here only. A mode some chat route still accepts is served
+ * as stored, an `agent:<strategy>` of an older client as `agent`, and
+ * anything else (a retired mode such as `image`) as the default, so the
+ * client's next request is one the routes take.
+ */
+export const servedAssistantChatMode = (stored: string): string => {
+  if (ACCEPTED_SOMEWHERE.has(stored)) return stored;
+  return stored.startsWith('agent:') ? 'agent' : DEFAULT_ASSISTANT_CHAT_MODE;
+};
+
+/** `conversation` with its stored mode as served; one that stores no mode is unchanged. */
+export const withServedAssistantMode = <
+  T extends { modelInfo?: unknown } | null | undefined,
+>(
+  conversation: T,
+): T => {
+  const modelInfo = conversation?.modelInfo as
+    { chatMode?: unknown } | null | undefined;
+  const stored = modelInfo?.chatMode;
+  if (typeof stored !== 'string' || stored === '') return conversation;
+  return {
+    ...conversation,
+    modelInfo: { ...modelInfo, chatMode: servedAssistantChatMode(stored) },
+  };
+};
+
+/**
+ * The coding engine for the conversation a turn creates (CMDUI2): an engine kind or `none`, in
+ * `PUT …/coding-engine`'s format. The agent harness checks it as that route does; only create routes take it.
+ */
+export const newChatCodingEngineSchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9_.-]{0,63}$/, "Engine isn't in the right format")
+  .optional();
+
+/**
+ * GIT-FLOW (WP-26): the GitHub repository for the conversation a turn creates (the composer chip), in
+ * `PUT …/repository`'s format. The agent harness checks it as that route does; only create routes take it.
+ */
+export const newChatRepositorySchema = sessionRepositorySchema.optional();
+
+/**
+ * G-03..G-05: the run gates a turn asks for (a dry run, plan approval, a verify gate). Only the agent harness
+ * enforces them; a gated turn it does not serve is refused, never run on today's loop.
+ */
+export const turnGatesSchema = contract(runGatesSchema).optional();
+
 export const enterpriseSearchStreamCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema.extend({
-    chatMode: universalStreamChatModeSchema,
+    chatMode: assistantChatModeSchema,
     compareTurn: compareTurnSchema,
+    harness: assistantHarnessSchema,
+    gates: turnGatesSchema,
+    codingEngine: newChatCodingEngineSchema,
+    repository: newChatRepositorySchema,
   }),
+});
+
+/**
+ * The Slack bot's own fields on the assistant's internal chat routes, which the agent routes take unvalidated: who is
+ * behind its service credential (the caller context), the thread the turn came from (ADR-OWD-09 D-SLACK-ASK), and the
+ * Agent mode's request for the agent harness. Without them the validation dropped each one before the route read it.
+ */
+const slackTurnFieldsSchema = {
+  callerDisplayName: z.string().optional(),
+  callerEmail: z.string().optional(),
+  slackThread: z
+    .object({ channel: z.string(), threadTs: z.string() })
+    .optional(),
+  harness: assistantHarnessSchema,
+};
+
+export const slackStreamCreateSchema = z.object({
+  body: enterpriseSearchCreateBodySchema.extend(slackTurnFieldsSchema),
 });
 
 // ---------------------------------------------------------------------------
@@ -497,8 +417,47 @@ export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
   body: titleBodySchema,
 });
 
+/**
+ * POST /conversations/:id/share. `accessLevel` is part of the contract (OWD-19: `write` makes a collaborator who
+ * sends their own turns); the body is strict so a field the route does not take is refused, never silently dropped
+ * (R38AUTHZ-FU-1: a non-strict object stripped `accessLevel`, so every write share was stored as read).
+ */
 export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
-  body: z.object({ userIds: userIdsSchema }),
+  body: z
+    .object({
+      userIds: userIdsSchema,
+      accessLevel: z.enum(['read', 'write']).optional(),
+    })
+    .strict(),
+});
+
+/** POST /conversations/:id/unshare: only who to remove; any other field changes nothing, so it is dropped. */
+export const conversationUnshareParamsSchema =
+  conversationIdParamsSchema.extend({
+    body: z.object({ userIds: userIdsSchema }),
+  });
+
+/** "Continue privately" (SS3): one fork per key; a repeat answers the same copy. */
+const forkBodySchema = z
+  .object({
+    idempotencyKey: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/,
+        'idempotencyKey must be 1-128 letters, digits, _ . : -',
+      ),
+  })
+  .strict();
+
+/** Schema for POST /:conversationId/fork. */
+export const conversationForkSchema = conversationIdParamsSchema.extend({
+  body: forkBodySchema,
+});
+
+/** Schema for POST /:agentKey/conversations/:conversationId/fork. */
+export const agentConversationForkSchema = z.object({
+  params: z.object({ ...agentKeyParam, ...conversationIdParam }),
+  body: forkBodySchema,
 });
 
 /** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */
@@ -674,27 +633,51 @@ export const addMessageParamsSchema = z.object({
   body: addMessageBodySchema,
 });
 
+export const slackAddMessageStreamSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: addMessageBodySchema.extend(slackTurnFieldsSchema),
+});
+
 export const addMessageStreamParamsSchema = z.object({
   params: z.object(conversationIdParam),
   body: addMessageBodySchema.extend({
-    chatMode: universalStreamChatModeSchema,
+    chatMode: assistantChatModeSchema,
     compareTurn: compareTurnSchema,
+    harness: assistantHarnessSchema,
+    gates: turnGatesSchema,
   }),
 });
 
-/** Public `/agents/{agentKey}/conversations/...` streams support quick mode only. */
-export const AGENT_CHAT_MODES = ['quick'] as const;
+/**
+ * An agent's chat modes on its conversation routes (LAT1: every mode on the
+ * existing routes). The server routes each: the loop modes run durably,
+ * planExecute (and its old name `verification`) on today's loop.
+ */
+export const AGENT_CHAT_MODES = [
+  'quick',
+  'auto',
+  'react',
+  'deep',
+  'planExecute',
+  'verification',
+] as const;
 
-const agentChatModeSchema = z.literal('quick', {
+const agentChatModeSchema = z.enum(AGENT_CHAT_MODES, {
   error: 'Invalid chat mode',
 });
 
 const agentAddMessageBodySchema = addMessageBodySchema.extend({
   chatMode: agentChatModeSchema,
+  harness: assistantHarnessSchema,
+  gates: turnGatesSchema,
 });
 
 const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
   chatMode: agentChatModeSchema,
+  harness: assistantHarnessSchema,
+  gates: turnGatesSchema,
+  codingEngine: newChatCodingEngineSchema,
+  repository: newChatRepositorySchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -749,36 +732,18 @@ const agentToolRefSchema = z.object({
 });
 
 /**
- * Toolset names exposed by the Python registry (non-internal) and used by agent builder payloads.
- * Keep this list aligned with OpenAPI `AgentCreateToolsetName`.
+ * The listed toolsets of the release catalog (generated from the Python registry,
+ * C-29 keeps it current); OpenAPI `AgentCreateToolsetName` lists the same names.
  */
-export const AGENT_CREATE_TOOLSET_NAMES = [
-  'calendar',
-  'clickup',
-  'confluence',
-  'confluencedatacenter',
-  'docs',
-  'drive',
-  'github',
-  'gmail',
-  'jira',
-  'jiradatacenter',
-  'lumos',
-  'mariadb',
-  'onedrive',
-  'outlook',
-  'redshift',
-  'salesforce',
-  'sharepoint',
-  'sheets',
-  'slack',
-  'teams',
-  'zoom',
-] as const;
+export const AGENT_CREATE_TOOLSET_NAMES: readonly string[] = listedReleaseNames(
+  createExtensionRegistry(),
+  'toolset',
+);
 
-const agentToolsetNameSchema = z.enum(AGENT_CREATE_TOOLSET_NAMES, {
-  error: 'Invalid toolset name',
-});
+const agentToolsetNameSchema = z.enum(
+  AGENT_CREATE_TOOLSET_NAMES as [string, ...string[]],
+  { error: 'Invalid toolset name' },
+);
 
 const agentToolsetSchema = z.object({
   name: z.string().trim().pipe(agentToolsetNameSchema),
@@ -984,6 +949,53 @@ const agentModelsOptionalSchema = z
     }
   });
 
+/**
+ * An engine agent's settings (AG1), passed to the agents module, which parses
+ * the narrowing and checks it against the org's engine ceiling. Here only the
+ * shape: an object or null, and an account id or null.
+ */
+const agentEngineFields = {
+  engineProfile: z
+    .union([z.null(), z.record(z.string(), z.unknown())])
+    .optional(),
+  modelAccountId: z.union([z.null(), z.string().min(1).max(300)]).optional(),
+};
+
+/**
+ * The model each sub-agent role calls (MA1), passed to the agents module,
+ * which checks every entry is a configured LLM. Here only the shape.
+ */
+const agentRoleModelFields = {
+  roleModels: z
+    .record(
+      z.string().regex(ROLE_KEY, { message: 'Invalid role key' }),
+      z
+        .object({
+          modelKey: z.string().min(1),
+          modelName: z.string().min(1),
+          provider: z.string().min(1),
+        })
+        .strict(),
+    )
+    .refine((roles) => Object.keys(roles).length <= MAX_ROLE_MODELS, {
+      message: `At most ${String(MAX_ROLE_MODELS)} roles`,
+    })
+    .optional(),
+};
+
+/**
+ * An agent's own run gates (G-03..G-05) and environment (C20.18), passed to the agents module, which parses each and
+ * refuses what it does not accept (a secret-looking variable, an unknown gate). Here only the shape: an object, or `{}`
+ * or null to clear a stored one. Without them listed here the body's parse dropped both, so a builder save that
+ * named them stored neither.
+ */
+const agentHarnessFields = {
+  gates: z.union([z.null(), z.record(z.string(), z.unknown())]).optional(),
+  environment: z
+    .union([z.null(), z.record(z.string(), z.unknown())])
+    .optional(),
+};
+
 const createAgentBodySchema = z.object({
   name: z
     .string(messageWhenMissing('Name is required'))
@@ -1019,6 +1031,9 @@ const createAgentBodySchema = z.object({
     .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
     .optional(),
   sendUserContext: z.boolean().optional(),
+  ...agentEngineFields,
+  ...agentRoleModelFields,
+  ...agentHarnessFields,
 });
 
 export const createAgentSchema = z.object({
@@ -1082,6 +1097,13 @@ const updateAgentBodySchema = z.object({
     .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
     .optional(),
   sendUserContext: z.boolean().optional(),
+  ...agentEngineFields,
+  ...agentRoleModelFields,
+  ...agentHarnessFields,
+  /** A save publishes the agent's next version unless this is false: then it stays a draft (OWD-14). */
+  publish: z.boolean().optional(),
+  /** What changed, kept on the version this save publishes. */
+  versionNote: z.string().max(AGENT_VERSION_NOTE_MAX).optional(),
 });
 
 export const updateAgentSchema = z.object({
@@ -1089,6 +1111,36 @@ export const updateAgentSchema = z.object({
   body: updateAgentBodySchema.extend({
     apiToolsetTools: agentApiToolsetToolsSchema,
   }),
+});
+
+// ---------------------------------------------------------------------------
+// Agent versions (OWD-14): list, read, publish the draft, roll back
+// ---------------------------------------------------------------------------
+
+const agentVersionParam = {
+  ...agentKeyParam,
+  version: z.coerce.number().int().min(1).max(2_147_483_647),
+};
+const agentVersionNoteBody = z
+  .object({ note: z.string().max(AGENT_VERSION_NOTE_MAX).optional() })
+  .strict();
+
+export const listAgentVersionsSchema = z.object({
+  params: z.object(agentKeyParam),
+});
+
+export const getAgentVersionSchema = z.object({
+  params: z.object(agentVersionParam),
+});
+
+export const publishAgentVersionSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: agentVersionNoteBody.optional(),
+});
+
+export const rollbackAgentVersionSchema = z.object({
+  params: z.object(agentVersionParam),
+  body: agentVersionNoteBody.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -1191,7 +1243,8 @@ const regenerateBodySchema = z.object({
       message: 'Answers must be the card answers ("User selections: ...")',
     })
     .optional(),
-  chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+  chatMode: assistantChatModeSchema.optional(),
+  harness: assistantHarnessSchema,
   ...modelFieldsSchema,
   ...contextFieldsSchema,
 });
