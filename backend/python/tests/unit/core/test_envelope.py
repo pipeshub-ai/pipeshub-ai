@@ -100,7 +100,7 @@ async def test_producer_signs_only_when_the_flag_and_a_key_are_on(monkeypatch) -
     from app.core.org_context import bind
 
     flat = {"eventType": "T", "payload": {"orgId": "org_b", "n": 1}, "requestId": "r"}
-    envelope.configure(None, None, KEY)
+    envelope.configure(None, KEY)
     try:
         with bind(CTX_B):
             plain = envelope.sign_message(TOPIC, flat)
@@ -157,21 +157,98 @@ async def test_malformed_ctx_is_rejected() -> None:
 
 
 class _Inbox:
-    def __init__(self) -> None:
-        self.ids = set()
+    """In memory, keyed like platform.consumer_inbox: (org, consumer, event id)."""
 
-    async def claim(self, topic, event_id, org_id) -> bool:
-        if (topic, event_id) in self.ids:
-            return False
-        self.ids.add((topic, event_id))
-        return True
+    def __init__(self, fail: str = "") -> None:
+        self.ids: set[tuple[str, str, str]] = set()
+        self.fail = fail
+
+    async def seen(self, consumer, ctx) -> bool:
+        if self.fail == "seen":
+            raise ConnectionError("down")
+        return (ctx.org_id, consumer, ctx.event_id) in self.ids
+
+    async def record(self, consumer, ctx) -> None:
+        if self.fail == "record":
+            raise ConnectionError("down")
+        self.ids.add((ctx.org_id, consumer, ctx.event_id))
 
 
-async def test_replay_is_skipped_via_the_durable_inbox_not_redis() -> None:
+@pytest.fixture
+def configured_key():
+    async def keys():
+        return (KEY,)
+
+    envelope.configure(keys)
+    yield
+    envelope.configure(None)
+
+
+async def _consume(inbox, m, consumer="g") -> envelope.Opened:
+    """One delivery through the consumer path: open (inbox check), then record once the handler succeeded."""
+    opened = await envelope.open_configured(TOPIC, m, inbox=inbox, consumer=consumer)
+    await envelope.record_processed(inbox, consumer, opened.ctx)
+    return opened
+
+
+async def test_the_same_envelope_delivered_twice_is_processed_once(configured_key) -> None:
     inbox, m = _Inbox(), _msg()
-    await _open(m, inbox=inbox)
+    await _consume(inbox, m)
     with pytest.raises(DuplicateEnvelope):
-        await _open(m, inbox=inbox)
+        await envelope.open_configured(TOPIC, json.loads(json.dumps(m)), inbox=inbox, consumer="g")
+
+
+async def test_a_replayed_envelope_is_rejected_by_any_later_delivery(configured_key) -> None:
+    inbox, m = _Inbox(), _msg()
+    await _consume(inbox, m)
+    for _ in range(3):
+        with pytest.raises(DuplicateEnvelope):
+            await envelope.open_configured(TOPIC, m, inbox=inbox, consumer="g")
+
+
+async def test_a_message_whose_handler_failed_is_not_recorded_and_runs_again(configured_key) -> None:
+    inbox, m = _Inbox(), _msg()
+    await envelope.open_configured(TOPIC, m, inbox=inbox, consumer="g")   # the handler failed: nothing recorded
+    assert inbox.ids == set()
+    await _consume(inbox, m)                                               # the retry runs
+    assert len(inbox.ids) == 1
+
+
+async def test_each_consumer_group_and_org_keeps_its_own_record(configured_key) -> None:
+    inbox, m = _Inbox(), _msg()
+    await _consume(inbox, m, consumer="g1")
+    await _consume(inbox, m, consumer="g2")   # another group on the topic still gets the event
+    other_org = _msg(payload={"orgId": "org_c"}, ctx=OrgContext("org_c", None, "service", "jwt", "r"))
+    await _consume(inbox, other_org, consumer="g1")
+    assert {(o, c) for o, c, _ in inbox.ids} == {("org_b", "g1"), ("org_b", "g2"), ("org_c", "g1")}
+
+
+async def test_an_unsigned_message_is_matched_by_its_event_id_and_one_without_an_id_never(configured_key) -> None:
+    inbox = _Inbox()
+    unsigned = {"eventType": "x", "payload": {"orgId": "org_b"}, "eventId": "e-1"}
+    await _consume(inbox, unsigned)
+    with pytest.raises(DuplicateEnvelope):
+        await envelope.open_configured(TOPIC, unsigned, inbox=inbox, consumer="g")
+    old_producer = {"eventType": "x", "payload": {"orgId": "org_b"}}
+    await _consume(inbox, old_producer)
+    await _consume(inbox, old_producer)   # nothing to match on: runs each time, as before
+    assert len(inbox.ids) == 1
+
+
+async def test_an_inbox_that_cannot_answer_lets_the_message_run_and_is_counted(configured_key) -> None:
+    for op in ("seen", "record"):
+        before = envelope.INBOX_ERRORS._metric.labels(op)._value.get()
+        opened = await _consume(_Inbox(fail=op), _msg())
+        assert opened.ctx.org_id == "org_b"
+        assert envelope.INBOX_ERRORS._metric.labels(op)._value.get() == before + 1
+
+
+def test_the_inbox_keeps_an_id_as_long_as_any_copy_could_still_be_accepted(monkeypatch) -> None:
+    monkeypatch.setenv("ENVELOPE_MAX_AGE_SECONDS", "900")
+    monkeypatch.setenv("ENVELOPE_ADMITTED_MAX_AGE_SECONDS", "60")
+    assert envelope.replay_window_seconds() == 900 + envelope.MAX_FUTURE_SKEW_SECONDS
+    monkeypatch.setenv("ENVELOPE_ADMITTED_MAX_AGE_SECONDS", "86400")
+    assert envelope.replay_window_seconds() == 86400 + envelope.MAX_FUTURE_SKEW_SECONDS
 
 
 async def test_n_minus_1_message_without_ctx_is_accepted_and_counted_before_the_flag() -> None:
@@ -244,7 +321,7 @@ async def test_event_type_is_signed() -> None:
 async def test_producer_signs_the_event_type(monkeypatch) -> None:
     from app.core.org_context import bind
 
-    envelope.configure(None, None, KEY)
+    envelope.configure(None, KEY)
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
     try:
         with bind(CTX_B):

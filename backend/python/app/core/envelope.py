@@ -12,9 +12,13 @@ logged and counted. While it is on, a message with no ``ctx`` is a stripped mess
 logged and (``ORG_CONTEXT_MODE=enforce``) rejected.
 
 Replay: a signature older than ``ENVELOPE_MAX_AGE_SECONDS`` (default 900) is stale (counted and
-logged in shadow mode, rejected in enforce mode). That bounds replay to the window; exact
-replay rejection needs a durable consumer inbox (``claim``) that records event ids, which
-is not wired yet. Nothing keeps seen-ids in Redis.
+logged in shadow mode, rejected in enforce mode). Inside that window a consumer given an
+:class:`Inbox` skips an event id it already finished (:func:`open_configured` raises
+``DuplicateEnvelope``); the id is recorded only after the handler succeeded
+(:func:`record_processed`), so a failed handler leaves the message to be retried. The
+inbox is ``platform.consumer_inbox`` (``app/services/messaging/inbox.py``). Nothing keeps
+seen-ids in Redis: an evicted id would let a replay through, and under ``noeviction`` the
+ids fill the server.
 """
 
 import asyncio
@@ -129,8 +133,20 @@ class DuplicateEnvelope(Exception):
 
 
 class Inbox(Protocol):
-    async def claim(self, topic: str, event_id: str, org_id: str) -> bool:
-        """True the first time an eventId is seen. Durable, same transaction as the effect."""
+    """Which events a consumer (its group) has finished, per org. ``ctx`` carries the org and the event id."""
+
+    async def seen(self, consumer: str, ctx: OrgContext) -> bool:
+        """True when ``consumer`` already finished this event."""
+
+    async def record(self, consumer: str, ctx: OrgContext) -> None:
+        """Remember that ``consumer`` finished this event; called only after its handler succeeded."""
+
+
+INBOX_ERRORS = METRICS_BACKEND.counter(
+    "pipeshub_consumer_inbox_errors_total",
+    "Consumer inbox reads or writes that failed; the message was processed as if new (at-least-once)",
+    ["op"],
+)
 
 
 def ctx_required() -> bool:
@@ -284,11 +300,10 @@ async def open_envelope(
     *,
     keys: Sequence[bytes] = (),
     required: bool | None = None,
-    inbox: Inbox | None = None,
     now: Callable[[], float] | None = None,
     admitted: bool = False,
 ) -> Opened:
-    """Verify a consumed message and derive its OrgContext. Raises EnvelopeRejected / DuplicateEnvelope.
+    """Verify a consumed message and derive its OrgContext. Raises EnvelopeRejected.
 
     ``admitted``: a consumer already opened this delivery with every check passed, and can prove it (see
     :func:`admission_valid`), so the age comparison is skipped. The signature, shape, org and future-skew checks always run.
@@ -296,7 +311,7 @@ async def open_envelope(
     Every rejection is counted in ``pipeshub_envelope_rejected_total{topic,reason,event_type}`` here, once, whichever
     consumer called."""
     try:
-        return await _open_envelope(topic, message, keys=keys, required=required, inbox=inbox, now=now, admitted=admitted)
+        return await _open_envelope(topic, message, keys=keys, required=required, now=now, admitted=admitted)
     except EnvelopeRejected as e:
         REJECTED.inc(topic, e.reason, e.event_type)
         raise
@@ -308,7 +323,6 @@ async def _open_envelope(
     *,
     keys: Sequence[bytes],
     required: bool | None,
-    inbox: Inbox | None,
     now: Callable[[], float] | None,
     admitted: bool,
 ) -> Opened:
@@ -366,8 +380,6 @@ async def _open_envelope(
         raise EnvelopeRejected("malformed")
     if body.get("orgId") not in (None, c["orgId"]):
         raise EnvelopeRejected("org_mismatch")
-    if inbox is not None and not await inbox.claim(topic, c["eventId"], c["orgId"]):
-        raise DuplicateEnvelope(c["eventId"])
     ctx = OrgContext(c["orgId"], c.get("userId"), "user" if c.get("userId") else "service", "envelope",
                      sanitize_root_id(c.get("requestId")) or "-", event_id=c["eventId"])
     return Opened(ctx, {**{k: v for k, v in message.items() if k not in _WIRE_ONLY}, "payload": body})
@@ -375,14 +387,13 @@ async def _open_envelope(
 
 AsyncKeys = Callable[[], Awaitable[Sequence[bytes]]]
 _keys: AsyncKeys | None = None
-_inbox: Inbox | None = None
 _sign_key: bytes | None = None
 
 
-def configure(keys: AsyncKeys | None, inbox: Inbox | None = None, sign_key: bytes | None = None) -> None:
-    """Startup wiring: key provider (current key first, previous key during rotation), the consumer inbox, the producer key."""
-    global _keys, _inbox, _sign_key
-    _keys, _inbox, _sign_key = keys, inbox, sign_key
+def configure(keys: AsyncKeys | None, sign_key: bytes | None = None) -> None:
+    """Startup wiring: key provider (current key first, previous key during rotation) and the producer key."""
+    global _keys, _sign_key
+    _keys, _sign_key = keys, sign_key
 
 
 _retry_task: list[asyncio.Task] = []  # at most one background key retry
@@ -392,7 +403,7 @@ def _install(key: bytes) -> None:
     async def keys() -> Sequence[bytes]:
         return (key,)
 
-    configure(keys, _inbox, key)
+    configure(keys, key)
 
 
 async def configure_from_config(config_service: Any) -> None:  # noqa: ANN401
@@ -430,7 +441,7 @@ async def configure_from_config(config_service: Any) -> None:  # noqa: ANN401
     if key:
         _install(key)
         return
-    configure(None, _inbox)
+    configure(None)
     _logger.error("envelope: no key; retrying in the background (signing and verification are degraded until it loads)")
 
     async def retry() -> None:
@@ -448,10 +459,45 @@ async def configure_from_config(config_service: Any) -> None:  # noqa: ANN401
     _retry_task.append(spawn_detached(retry(), name="envelope-key-retry"))
 
 
-async def open_configured(topic: str, message: dict[str, Any], *, claim: bool = True, admitted: bool = False) -> Opened:
-    """``claim=False`` for parse paths that may run more than once per delivery (no inbox claim). ``admitted``: see :func:`open_envelope`."""
+async def open_configured(
+    topic: str, message: dict[str, Any], *, inbox: Inbox | None = None, consumer: str = "", admitted: bool = False
+) -> Opened:
+    """Open with the configured keys. With an ``inbox``, raises ``DuplicateEnvelope`` for an event ``consumer`` already finished.
+
+    Only a message naming its event id and org can be matched; an inbox that cannot answer is counted and logged, and the
+    message runs as if new (the broker's at-least-once). ``admitted``: see :func:`open_envelope`."""
     keys = await _keys() if _keys else ()
-    return await open_envelope(topic, message, keys=keys, inbox=_inbox if claim else None, admitted=admitted)
+    opened = await open_envelope(topic, message, keys=keys, admitted=admitted)
+    ctx = opened.ctx
+    if inbox is None or ctx is None or not ctx.event_id:
+        return opened
+    try:
+        seen = await inbox.seen(consumer, ctx)
+    except Exception as e:
+        INBOX_ERRORS.inc("seen")
+        _log_loud(f"inbox-seen:{topic}", "consumer inbox read failed topic=%s: processing as new (%s)", topic, type(e).__name__)
+        return opened
+    if seen:
+        raise DuplicateEnvelope(ctx.event_id)
+    return opened
+
+
+async def record_processed(inbox: Inbox | None, consumer: str, ctx: OrgContext | None) -> None:
+    """After a handler succeeded: remember the event so a redelivery or replay of it is skipped. Never raises (the message is
+    acknowledged either way; a lost record only means a redelivery runs again)."""
+    if inbox is None or ctx is None or not ctx.event_id:
+        return
+    try:
+        await inbox.record(consumer, ctx)
+    except Exception as e:
+        INBOX_ERRORS.inc("record")
+        _log_loud(f"inbox-record:{consumer}", "consumer inbox write failed consumer=%s: a redelivery would run again (%s)", consumer, type(e).__name__)
+
+
+def replay_window_seconds() -> float:
+    """How long a copy of an envelope can still be accepted after it was first processed (the age, or a stored admission, plus the
+    future skew): the inbox keeps an event id this long, so no accepted copy outlives its record."""
+    return max(max_age_seconds(), admitted_max_age_seconds()) + MAX_FUTURE_SKEW_SECONDS
 
 
 def with_event_id(message: dict[str, Any]) -> dict[str, Any]:
@@ -603,10 +649,10 @@ def ctx_of(message: Any) -> OrgContext | None:  # noqa: ANN401
 async def open_stream_message(topic: str, raw: Any, model: type, *, admitted: bool = False) -> Any:  # noqa: ANN401
     """Parse helper for consumers that build the message model themselves (indexing consumers).
 
-    Verifies like :func:`open_configured` (no inbox claim: parsing may run more than once per
-    delivery), builds ``model(**message, org_ctx=ctx)``. Raises EnvelopeRejected.
+    Verifies like :func:`open_configured` (no inbox: parsing may run more than once per
+    delivery, and a record's own state says what was indexed), builds ``model(**message, org_ctx=ctx)``. Raises EnvelopeRejected.
     """
     if not isinstance(raw, dict):
         return model(**raw)
-    opened = await open_configured(topic, raw, claim=False, admitted=admitted)
+    opened = await open_configured(topic, raw, admitted=admitted)
     return model(**opened.message, org_ctx=opened.ctx)
