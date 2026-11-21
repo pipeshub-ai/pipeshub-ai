@@ -5455,6 +5455,26 @@ class TestFetchCommentChildrenRecursiveAdditional:
         assert len(result) >= 1
 
     @pytest.mark.asyncio
+    async def test_a_404_after_the_first_page_of_replies_is_unread(self) -> None:
+        """It existed when its first replies came back: the rest is unread, not gone."""
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_children = AsyncMock(side_effect=[
+            _mk_resp(200, {"results": [{"id": "201", "body": {}}], "_links": {"next": "/wiki/api/v2/footer-comments/100/children?cursor=C2"}}),
+            _mk_resp(404, {}),
+        ])
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._fetch_comment_children_recursive = AsyncMock(return_value=[])
+
+        from app.connectors.sources.atlassian.confluence_cloud.connector import (
+            ConfluenceConnector,
+        )
+        with pytest.raises(CommentsUnreadable):
+            await ConfluenceConnector._fetch_comment_children_recursive(
+                c, "100", "footer", RecordType.CONFLUENCE_PAGE
+            )
+
+    @pytest.mark.asyncio
     async def test_a_child_without_id_makes_the_replies_unread(self):
         """A reply it can't name could read as gone: the replies are unread."""
         c = _mk_connector()

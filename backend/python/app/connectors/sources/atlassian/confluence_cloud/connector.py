@@ -6726,6 +6726,9 @@ class ConfluenceConnector(BaseConnector):
                     )
 
                 if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                    if followed:
+                        # It existed when its first replies came back: a 404 now says nothing about the rest.
+                        raise CommentsUnreadable(f"replies to comment {comment_id} were not found part way")
                     # Deleted between the list and this read: its replies went with it.
                     self.logger.warning(f"Replies to comment {comment_id} are gone; indexing the page without them")
                     break
