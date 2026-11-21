@@ -342,6 +342,14 @@ class TestUsersAndGroups:
         assert [u.source_user_id for u in db.app_users] == ["ana"]
         assert atlassian_api.calls("GET", f"{API}/user/list") == []
 
+    async def test_an_active_user_without_a_display_name_is_still_linked(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", ACTIVE_USERS, {"results": [{"type": "known", "userKey": "ana", "email": "ana@example.com"}]})
+
+        await connector._sync_users()
+
+        assert [(u.source_user_id, u.full_name) for u in db.app_users] == [("ana", "ana@example.com")]
+
     @pytest.mark.parametrize("version", ["8.5.4", "9.0.0", "9.2.1", "9.2.15"])
     async def test_before_9_3_only_the_sign_in_account_is_linked(self, atlassian_api, db, store, version) -> None:
         # These docs give no way to tell an enabled user with "Can use" from a disabled or unlicensed one, so no
