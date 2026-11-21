@@ -631,7 +631,7 @@ class OAuthProvider:
                 except (TypeError, ValueError, KeyError):
                     # Not an OAuthStateError: this code was used and the saved credentials no longer load, so
                     # the connector is marked signed out.
-                    raise ValueError("Invalid or expired state")
+                    raise ValueError("Invalid or expired state") from None
 
             # State mismatch and not a duplicate callback
             raise OAuthStateError("Invalid or expired state")

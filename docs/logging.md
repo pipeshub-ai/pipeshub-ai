@@ -175,8 +175,9 @@ except Exception as e:
 - `classify_error(exc_or_status)` is one of `auth_expired`, `forbidden`, `not_found`, `rate_limited`, `timeout`, `upstream_5xx`,
   `bad_request`, `conflict`, `unavailable`, `cancelled`, `misconfigured`, `internal`. `misconfigured` is **our** configuration: the
   LLM provider rejected our key, no LLM is configured, an OAuth client registration was rejected, or a service token was refused.
-  A credential refresh also classes a token URL that cannot be sent to (no `https://`), a token endpoint that answers 2xx
-  without a token, or a token field that is not a timestamp or a number of seconds, as `misconfigured` (see Credential refresh).
+  A credential refresh, and the code exchange of the connector and toolset OAuth callbacks, also class a token URL that cannot
+  be sent to (no `https://`), a token endpoint that answers 2xx without a token, or a token field that is not a timestamp or a
+  number of seconds, as `misconfigured` (see Credential refresh).
   `auth_expired` is a user's or a connector's grant that expired or was revoked. The first decisive exception in the chain wins,
   outermost first (`__cause__`, else `__context__` unless `from None`). OAuth error codes are read before the HTTP status, our
   own `HTTPException` 5xx counts as `internal`, and our programming errors (`KeyError`, `TypeError`, …) stop the walk. It never raises.
@@ -595,7 +596,12 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   A callback that is not for the sign-in in progress (a stale or replayed state, a used code, or a code another callback
   claimed: `OAuthStateError`) is `bad_request` at WARNING on both the connector and the toolset callback, as on the MCP
   one; so are the connector callback's missing `code` or `state` (`reason=missing_parameters`) and a state it cannot
-  decode (`reason=invalid_state`, no text).
+  decode or that is not a string `state` and `connector_id` (`reason=invalid_state`, no text).
+  Both callbacks class their token exchange's failure as a refresh classes the same answer
+  (`credential_refresh_log.token_endpoint_error_class`): an unusable token URL, a 2xx answer that is not a token or whose
+  `error` is neither a dead grant nor busy, and a token field that cannot be parsed are ERROR `misconfigured`. A 2xx answer
+  that refuses the code itself (Slack `invalid_code`, `code_already_used`; GitHub `bad_verification_code`), which only a code
+  exchange can get, is the user's stale or wrong code: WARNING `bad_request`.
   A successful sign-in is that line with `outcome=success` and `has_refresh_token`. No field of the provider's token answer
   (scopes, `uid`, `account_id`, `team_id`, `token_type`) is logged: the route serves every connector and can't tell an opaque
   id from a login.
