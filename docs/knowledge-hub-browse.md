@@ -85,8 +85,10 @@ It is not needed for the cost: the check is a fixed statement already.
 - **One request asks about a row once** (a memo shared by the listing and the arrows).
 - **The check reads siblings' ancestors once.** On Neo4j, when it is asked about more than one node, the batch check first decides its walk
   from the App and its walk below a seed once for each parent of the asked nodes, and admits each node whose own hop up to that parent passes
-  (`_kh_v3_accessible_rows`, under 11 KB, 9 `EXISTS`; 23 in the probe form). Both walks are matched up from the parent and their ends tested
-  after them, so the planner cannot start one at the App or at every seed of the App. A route out of a node through a parent is that hop plus at most 49
+  (`_kh_v3_accessible_rows`; as sent 9.3 KB / 9 `EXISTS`, 12.0 KB / 23 with grants read from the nodes, 14.9 KB / 23 with cross-connector
+  grants past the list bound). Both walks are read a level at a time from the parent, as the check's own are (`_kh_v3_reached`: the parent
+  itself, then 1 to 49 levels above it, each node once), so no plan can start one at the App or at every seed of the App, and none reads
+  every route where nodes have two parents at many levels. A route out of a node through a parent is that hop plus at most 49
   more, so this admits exactly what those two arms admit; every node it does not admit is asked of the full check, by every arm. A
   5,000-file folder then reads the folder's ancestry once, not 5,000 times, for every caller that asks by node id (arrows, selections, and a browse's viewer reached only through a grant on the folder).
 - **A numbered page** is reached by reading the rows before it, 1,000 at a time (`kh_browse_skip_rows`), then the page. Those reads decide
