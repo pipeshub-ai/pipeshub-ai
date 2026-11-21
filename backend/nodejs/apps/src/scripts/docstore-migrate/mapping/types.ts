@@ -1,4 +1,20 @@
 import type { Db } from 'mongodb';
+import type { Tx as KernelTx } from '../../../libs/db';
+import type { KeyEntry } from '../carry/keymap';
+
+/**
+ * A table that does not keep the document id (R45-CARRY): the key map records which row each document became, so the follower can
+ * remove the row of a deleted document and a rollback can tell a row removed in PostgreSQL from one that was never copied.
+ */
+export interface KeyedRows {
+  /** The row's key columns after `org_id`, in the order of the key map's row key. */
+  columns: string[];
+  /** The rows the (copied, not skipped) documents became, read in the unit that wrote them. */
+  entries(
+    k: KernelTx,
+    docs: Array<Record<string, unknown>>,
+  ): Promise<KeyEntry[]>;
+}
 
 /**
  * The verifier's own description of how a MongoDB collection is laid out in PostgreSQL. It is written and reviewed
@@ -34,6 +50,11 @@ export interface FieldMap {
   type: ColType;
   /** Default `omit`. */
   presence?: Presence;
+  /**
+   * With `path: ''` on a root field: the column holds an object whose keys sit at the top of the document (the message's harness
+   * fields). The keys listed are the document paths it may hold; the decoder spreads the object into the document.
+   */
+  spread?: string[];
   /** Value the document holds when the column does not (a constant the schema defaults); the decoder leaves it out when the column equals it. */
   absentWhen?: unknown;
   /** The schema default for a field a document never stored: the source side is read as holding it (listed transform, counted), because the column is NOT NULL. */
@@ -78,6 +99,12 @@ export interface CollectionMapping {
   derived: string[];
   /** Document paths deliberately not copied, with the reason; the verifier removes them from the source side and lists them. */
   dropped?: Array<{ path: string; reason: string }>;
+  /**
+   * Document paths the generic copy does not write: a carrier copies them (`../carry`, `fieldCarrier`), or, while none does, they
+   * are held and preflight is red while any document holds one (the move is refused, never lossy). Either way the generic verifier
+   * removes them from the source side and counts them.
+   */
+  held?: Array<{ path: string; reason: string }>;
   /** The generic document-by-document comparison does not apply; `verify-identity.ts` compares this collection (credentials per address, slug counters). */
   custom?: boolean;
   /** The id a source document is known by in the table (default: its `_id`); the decoder's `_id` is this too. */
@@ -92,6 +119,8 @@ export interface CollectionMapping {
   invariants?: Array<{ name: string; sql: string }>;
   /** MongoDB documents a rollback never removes (they have no row of this table: pre-organisation attempts live in another one). */
   keepOnReverse?: Record<string, unknown>;
+  /** The table keeps no document id: rows are keyed through the key map. */
+  keyed?: KeyedRows;
   /** Read the whole collection in one batch (a mapping whose importer must see every document at once). */
   oneBatch?: boolean;
   /** Source paths a listed transform consumes (so the path census does not report them as unknown). */
@@ -105,7 +134,8 @@ export interface CollectionMapping {
   }>;
   /**
    * Called with a batch of raw source documents before `transforms` run on them, for a transform that needs other documents
-   * (read from the source here, so one created after the batch it is looking for was read is still found).
+   * (read from the source here, so one created after the batch it is looking for was read is still found). `db` is the application's
+   * main database, where the chats are, even for a collection read from another (the Slack bot's `MONGO_SLACK_DB_NAME`).
    */
   beforeTransforms?: (db: Db, raws: unknown[]) => Promise<void>;
   /** Documents the copy leaves out, with the reason (null: copy it). */
@@ -116,4 +146,17 @@ export interface CollectionMapping {
 export interface IgnoredCollection {
   collection: string;
   reason: string;
+  /** PostgreSQL tables of the same data that the copy therefore leaves empty. */
+  tables?: string[];
+}
+
+/**
+ * A collection whose data must survive a move and which the generic path does not copy: a carrier copies it (`CARRIED`), or,
+ * while none does, it is held (`HELD`): preflight is red while it holds documents, so a move is refused instead of dropping it.
+ */
+export interface HeldCollection {
+  collection: string;
+  reason: string;
+  /** The PostgreSQL tables its data lives in under `DOC_STORE=postgres`; none for an edition's collection kept in MongoDB only. */
+  tables: string[];
 }

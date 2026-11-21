@@ -2,6 +2,11 @@
  * Verifier mappings for documents, projects, notifications, the outbox, the mail log, connector settings, OAuth apps and tokens,
  * delegations and Slack links. Written from the Mongoose schemas and the tables; nothing here imports a repository.
  */
+import {
+  ORG_FILLED,
+  SLACK_THREAD_KEYS,
+  fillSlackThreadOrgs,
+} from '../slack-threads';
 import type { CollectionMapping, FieldMap, IgnoredCollection } from './types';
 
 const ORG: FieldMap = { col: 'org_id', path: 'orgId', type: 'oid' };
@@ -603,21 +608,25 @@ const slackConversations: CollectionMapping = {
   collection: 'slack_conversations',
   repository: 'slack-thread',
   table: 'integrations.slack_threads',
-  // The table's key is (org, thread, bot, email) and the Mongo `_id` is not stored: documents are matched on the thread id.
+  // The table's key is (org, thread, bot, email) and the Mongo `_id` is not stored: documents are matched on the thread id, and the
+  // key map says which row each document became (deletes and rollback, slack-threads.ts).
   idCol: 'thread_id',
   sourceKey: (doc) => String(doc._id),
+  keyed: SLACK_THREAD_KEYS,
   orgPath: null,
   orgCol: null,
   versionCol: 'version',
   fields: [
+    // the organisation is that of the conversation the link continues; the importer refuses a link whose orgId names another
+    { col: 'org_id', path: 'orgId', type: 'oid' },
     { col: 'bot_id', path: 'botId', type: 'text' },
     { col: 'email', path: 'email', type: 'text' },
     { col: 'conversation_id', path: 'conversationId', type: 'text' },
     { col: 'thread_id', path: 'threadId', type: 'text' },
     ...CREATED,
   ],
-  // the organisation is that of the conversation the link continues
-  derived: ['org_id'],
+  derived: [],
+  beforeTransforms: fillSlackThreadOrgs,
   transforms: [
     {
       name: '_id read as the thread id (the table does not keep the document id)',
@@ -626,7 +635,44 @@ const slackConversations: CollectionMapping = {
         return true;
       },
     },
+    {
+      name: "absent orgId read as its conversation's organisation",
+      apply: (doc) => {
+        if (doc[ORG_FILLED] === undefined) return false;
+        delete doc[ORG_FILLED];
+        return true;
+      },
+    },
   ],
+  censusKnown: [ORG_FILLED],
+};
+
+/**
+ * Slack account links (ADR-SLACKID-01 D6-D8): an organisation's own rows, keyed by (organisation, workspace, Slack account). The table
+ * keeps no document id and one Slack account can be linked in several organisations, so no column names a document: `slack-links.ts`
+ * verifies, follows and reverses the collection by that key (custom). `slack_user_id` is the nearest single column.
+ */
+const slackUserLinks: CollectionMapping = {
+  collection: 'slack_user_links',
+  repository: 'slack-user-link',
+  table: 'integrations.slack_user_links',
+  idCol: 'slack_user_id',
+  orgPath: 'orgId',
+  orgCol: 'org_id',
+  versionCol: 'version',
+  fields: [
+    ORG,
+    { col: 'workspace_id', path: 'workspaceId', type: 'text' },
+    { col: 'slack_user_id', path: 'slackUserId', type: 'text' },
+    { col: 'team_id', path: 'teamId', type: 'text' },
+    { col: 'user_id', path: 'userId', type: 'oid' },
+    { col: 'email', path: 'email', type: 'text' },
+    { col: 'slack_name', path: 'slackName', type: 'text', readAbsentAs: '' },
+    { col: 'linked_at', path: 'linkedAt', type: 'date' },
+    ...CREATED,
+  ],
+  derived: [],
+  custom: true,
 };
 
 const DELEGATION_COMMON: FieldMap[] = [
@@ -738,7 +784,7 @@ const oauthAgentRegistrations: CollectionMapping = {
   derived: ['org_id'],
 };
 
-/** Parents before children: apps before their tokens and codes; Slack links after the chat sessions they continue (copied earlier). */
+/** Parents before children: apps before their tokens and codes; Slack links after the chat sessions they continue and the users they name (copied earlier). */
 const LISTED: CollectionMapping[] = [
   documents,
   projects,
@@ -753,6 +799,7 @@ const LISTED: CollectionMapping[] = [
   oauthDeviceCodes,
   oauthAgentRegistrations,
   slackConversations,
+  slackUserLinks,
   serviceAccountDelegations,
   delegationEvents,
 ];

@@ -10,6 +10,8 @@
  *    are taken, and never past a row that is not taken yet.
  *  - Collections that are not one document per row (credentials per address, slug counters, reset links, Slack links) and the
  *    organisations (written by a vetted function, not triggered) are written back by sweeps, at most once per `sweepMs`.
+ *  - The carriers' store groups (the harness's tables, which have no change log) are swept the same way: each sweep writes back only
+ *    the documents MongoDB does not already hold as PostgreSQL gives them, so the rollback's freeze writes only what changed since.
  *  - The outbox is not followed (the dispatcher settles rows all day); `rollbackOnline` copies it once, at the end.
  */
 import { Log } from './bulk';
@@ -37,6 +39,10 @@ import {
   whileExclusive,
 } from './reverse';
 import { VerifyReport, verifyAll } from './verify';
+import { carriersFor, restoreCarried } from './carry/run';
+import { carryMongo, carryPg } from './carry/steps';
+import { FINALISED, lastMilestone } from './finalize';
+import { refusedIds } from './refusals';
 
 const ROOT = new Map<string, CollectionMapping>();
 for (const m of MAPPINGS)
@@ -50,6 +56,7 @@ const SWEPT: Record<string, string> = {
   'identity.slug_counters': 'counters',
   'identity.used_reset_links': 'usedPasswordResetLinks',
   'integrations.slack_threads': 'slack_conversations',
+  'integrations.slack_user_links': 'slack_user_links',
 };
 
 /**
@@ -67,6 +74,8 @@ export interface ReverseOptions {
   sweepMs?: number;
   /** Lag above which the alarm is raised (default `MIGRATE_LAG_ALARM_MS`, 60 s, as for the forward follower). */
   alarmMs?: number;
+  /** false: the carried groups are not swept (the rollback writes them once itself, inside its freeze). */
+  carried?: boolean;
 }
 
 export interface ReverseResult {
@@ -76,6 +85,9 @@ export interface ReverseResult {
   lagMs: number;
   /** Batches written back later than the alarm limit. */
   alarms: number;
+  /** Carried documents the sweeps wrote back (changed since the last sweep) and removed. */
+  carriedWritten: number;
+  carriedRemoved: number;
 }
 
 const ORG_MAPPING = MAPPINGS.find((m) => m.collection === 'org');
@@ -98,6 +110,29 @@ async function sweepOrgs(rt: MigrationRuntime): Promise<void> {
   for await (const d of col.find({}, { projection: { _id: 1 } }))
     if (!keep.includes(String(d._id).toLowerCase()))
       await col.deleteOne({ _id: d._id });
+}
+
+/**
+ * The carriers' store groups written back from PostgreSQL: only documents MongoDB does not hold as PostgreSQL gives them are written,
+ * and documents PostgreSQL no longer has are removed. The reverse follower runs it at every sweep; the rollback once more in its freeze.
+ */
+export async function writeBackCarried(
+  rt: MigrationRuntime,
+  log?: Log,
+): Promise<{ written: number; unchanged: number; removed: number }> {
+  const out = await restoreCarried(
+    carryPg(rt),
+    carryMongo(rt),
+    carriersFor(),
+    log,
+  );
+  const sum = { written: 0, unchanged: 0, removed: 0 };
+  for (const r of Object.values(out)) {
+    sum.written += r.written;
+    sum.unchanged += r.unchanged ?? 0;
+    sum.removed += r.removed;
+  }
+  return sum;
 }
 
 type LogRow = {
@@ -125,6 +160,14 @@ export async function reverseFollow(
     cursor: Number(prog.cursor),
     lagMs: 0,
     alarms: 0,
+    carriedWritten: 0,
+    carriedRemoved: 0,
+  };
+  const sweepCarried = async (): Promise<void> => {
+    const r = await writeBackCarried(rt);
+    res.carriedWritten += r.written;
+    res.carriedRemoved += r.removed;
+    res.sweeps += 1;
   };
   const alarmMs = o.alarmMs ?? rt.cfg.lagAlarmMs;
   let lastAlarm = 0;
@@ -170,7 +213,11 @@ export async function reverseFollow(
   // whichever way it ends (idle, aborted, or an error): the next run could not know it was owed.
   const flushDue = async (): Promise<void> => {
     for (const name of [...due]) {
-      await reverseSpecial(rt, name);
+      await reverseSpecial(
+        rt,
+        name,
+        await refusedIds(rt, name, js.progress.collections[name]?.skippedIds),
+      );
       res.sweeps += 1;
       due.delete(name);
     }
@@ -285,6 +332,7 @@ export async function reverseFollow(
         due.add('userCredentials');
         await flushDue();
         await sweepOrgs(rt);
+        if (o.carried !== false) await sweepCarried();
       }
       if (taken.length === 0) {
         if (o.untilIdleMs > 0 && Date.now() - idleSince >= o.untilIdleMs) break;
@@ -343,6 +391,8 @@ async function rollbackOnlineLocked(
       : 'PostgreSQL is writable again and remains the store.');
   const notStore = await notPostgresStore(rt);
   if (notStore) return { ok: false, stage: 'fence', message: notStore };
+  if ((await lastMilestone(rt)) === 'finalised')
+    return { ok: false, stage: 'finalised', message: FINALISED };
   const fenceBefore = await readMongoFence(rt);
   if (fenceBefore.mode !== 'retired')
     return {
@@ -377,10 +427,15 @@ async function rollbackOnlineLocked(
       log: o.log,
       untilIdleMs: 1500,
       sweepMs: 0,
+      carried: false,
     });
     // what is swept rather than followed row by row is written once more inside the freeze, then the outbox
     for (const name of new Set(Object.values(SWEPT)))
-      await reverseSpecial(rt, name);
+      await reverseSpecial(
+        rt,
+        name,
+        await refusedIds(rt, name, js.progress.collections[name]?.skippedIds),
+      );
     await reverseSpecial(rt, 'outbox_events');
     // short-lived documents whose MongoDB form differs from the row until written back (codes come back as their hashes)
     for (const name of WRITE_WHOLE) {
@@ -391,11 +446,18 @@ async function rollbackOnlineLocked(
           rt,
           m,
           model,
-          Object.keys(js.progress.collections[name]?.skippedIds ?? {}).map(
-            (id) => idFilter(id),
-          ),
+          Object.keys(
+            await refusedIds(
+              rt,
+              name,
+              js.progress.collections[name]?.skippedIds,
+            ),
+          ).map((id) => idFilter(id)),
         );
     }
+    // the carriers' store groups have no change log: what changed since the reverse follower's last sweep is written inside the freeze,
+    // after the documents they hang on
+    await writeBackCarried(rt, o.log);
     const budget = async (): Promise<OnlineRollbackReport> => {
       const note = await unfreezePg();
       return {

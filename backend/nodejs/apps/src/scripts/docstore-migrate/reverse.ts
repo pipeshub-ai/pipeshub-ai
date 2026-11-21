@@ -31,6 +31,9 @@ import {
 import { storeEpochOnFreshConnection } from './online';
 import { JobState } from './state';
 import { VerifyReport, verifyAll } from './verify';
+import { carriersFor, restoreCarried } from './carry/run';
+import { carryMongo, carryPg } from './carry/steps';
+import { refusedIds } from './refusals';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-expressions
 MONGO_COLLECTIONS; // loading it registers every model
@@ -188,9 +191,12 @@ export async function reverseCopy(
   // documents the copy left out and listed are still in MongoDB and must stay there
   const job = await JobState.latest(rt);
   for (const m of MAPPINGS) {
-    const kept = Object.keys(
-      job?.progress.collections[m.collection]?.skippedIds ?? {},
-    ).map((id) => idFilter(id));
+    const refused = await refusedIds(
+      rt,
+      m.collection,
+      job?.progress.collections[m.collection]?.skippedIds,
+    );
+    const kept = Object.keys(refused).map((id) => idFilter(id));
     // pending device sign-ins live minutes and MongoDB still holds the originals: nothing to bring back (a client starts again)
     if (m.collection === 'oauthDeviceCodes') continue;
     // Written back in full: MongoDB still holds the pre-move status, so skipping would turn a sign-in revoked after the move live again.
@@ -207,7 +213,7 @@ export async function reverseCopy(
       continue;
     }
     if (SPECIAL.has(m.collection)) {
-      reversed[m.collection] = await reverseSpecial(rt, m.collection);
+      reversed[m.collection] = await reverseSpecial(rt, m.collection, refused);
       log('reversed', { collection: m.collection, ...reversed[m.collection] });
       continue;
     }
@@ -223,6 +229,11 @@ export async function reverseCopy(
     reversed[m.collection] = await reverseCollection(rt, m, model, kept);
     log('reversed', { collection: m.collection, ...reversed[m.collection] });
   }
+  // after the documents: the generic path rewrites a user, an org or a chat whole, so the fields a carrier keeps come back last
+  Object.assign(
+    reversed,
+    await restoreCarried(carryPg(rt), carryMongo(rt), carriersFor(), log),
+  );
   return { reversed, notReversed };
 }
 const hookOn = (failAt: string | undefined, name: string): boolean =>

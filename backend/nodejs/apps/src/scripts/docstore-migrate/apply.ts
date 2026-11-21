@@ -8,6 +8,9 @@ import type { CollectionMapping } from './mapping/types';
 import { repositoryFor } from './bulk';
 import type { MigrationRuntime } from './runtime';
 import { SourceReport, toNeutral } from './source';
+import { dropKeys, keysOf } from './carry/keymap';
+import { deleteKeyedRow, recordKeys } from './keyed-rows';
+import { putRefusals } from './refusals';
 
 const IDENT = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
 const ident = (s: string): string => {
@@ -75,6 +78,14 @@ export async function deleteDocs(
   ids: string[],
 ): Promise<void> {
   if (ids.length === 0) return;
+  if (m.keyed) {
+    // the event names the document id, which the table does not keep: the key map names its row
+    const lower = ids.map((i) => i.toLowerCase());
+    for (const e of await keysOf(k, m.collection, lower))
+      await deleteKeyedRow(k, m, e);
+    await dropKeys(k, m.collection, lower);
+    return;
+  }
   await refuseAmbiguous(k, m, ids);
   await deleteChildren(k, m, ids);
   await k.query(
@@ -106,11 +117,19 @@ export async function replaceDocs(
     await rt.jobs(async (tx: Tx, k) => {
       if (inPlace) await deleteChildren(k, m, ids);
       else await deleteDocs(k, m, ids);
-      followUps = (
-        await withUpsert(inPlace ? [m.table] : [], () =>
-          repo.importBatch(m.collection, docs, tx),
-        )
-      ).followUps;
+      const stats = await withUpsert(inPlace ? [m.table] : [], () =>
+        repo.importBatch(m.collection, docs, tx),
+      );
+      followUps = stats.followUps;
+      const refused = new Set(stats.skipped.map((x) => x.id));
+      await recordKeys(k, m, docs, refused);
+      // a document refused now joins the refusals, and one the importer takes now leaves them
+      await putRefusals(
+        k,
+        m.collection,
+        stats.skipped,
+        ids.filter((id) => !refused.has(id)),
+      );
     });
   };
   try {

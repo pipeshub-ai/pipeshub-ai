@@ -139,6 +139,23 @@ export class PgGroupRepository implements GroupRepository, Importable {
     return this.one('group_get_live', orgId, id, true);
   }
 
+  async listLiveByIds(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<GroupSummaryDto[]> {
+    const list = oidsOf([...new Set(ids)]);
+    if (list.length === 0) return [];
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<GroupRow>(
+        `/* pipeshub:identity.group_list_live_by_ids */ SELECT g.id, g.org_id, g.slug, g.name, g.type, g.is_deleted, g.deleted_by, g.version, g.created_at, g.updated_at, '{}'::text[] AS users
+           FROM identity.user_groups g WHERE g.org_id = $1 AND NOT g.is_deleted AND g.id = ANY($2::text[]) ORDER BY g.id`,
+        [k.orgId, list],
+      );
+      return rows.map(summary);
+    });
+  }
+
   async nameTaken(
     orgId: string,
     name: string,
@@ -332,6 +349,30 @@ export class PgGroupRepository implements GroupRepository, Importable {
         '/* pipeshub:identity.group_leave_all */ DELETE FROM identity.user_group_members m WHERE m.org_id = $1 AND m.user_id = $2::text',
         [k.orgId, uid],
       );
+    });
+  }
+
+  async holdLiveMembership(
+    orgId: string,
+    groupIds: readonly string[],
+    userId: string,
+    tx?: Tx,
+  ): Promise<boolean> {
+    const groups = oidsOf([...groupIds]);
+    const uid = oidOf(userId);
+    if (groups.length === 0 || uid === undefined) return false;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      // FOR SHARE on the membership and its group: a removal deletes the one and a group's deletion updates the other,
+      // so either waits for the caller's commit, or the caller, coming second, finds no live membership.
+      const { rows } = await k.query(
+        `/* pipeshub:identity.group_hold_live_membership */ SELECT 1 FROM identity.user_group_members m
+           JOIN identity.user_groups g ON g.org_id = m.org_id AND g.id = m.group_id
+          WHERE m.org_id = $1 AND m.group_id = ANY($2::text[]) AND m.user_id = $3::text AND NOT g.is_deleted
+          LIMIT 1 FOR SHARE OF m, g`,
+        [k.orgId, groups, uid],
+      );
+      return rows.length > 0;
     });
   }
 

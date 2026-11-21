@@ -95,6 +95,7 @@ const COMMANDS = new Set([
   'cutover',
   'unfreeze',
   'reset',
+  'finalize',
   'status',
   'reverse',
   'rollback',
@@ -133,6 +134,7 @@ export const FLAGS: Record<string, string[]> = {
   ],
   unfreeze: [],
   reset: ['yes', 'force'],
+  finalize: ['yes'],
   status: [],
   reverse: ['until-idle'],
   rollback: [
@@ -250,7 +252,9 @@ const log: Log = (event, data) =>
     `${JSON.stringify({ at: new Date().toISOString(), event, ...data })}\n`,
   );
 
-export const HELP = `commands: preflight, schema, bulk, follow, post_load, verify, drain, migrate --offline, migrate --online, cutover, unfreeze, reverse, rollback [--reverse|--online], reset, status
+export const HELP = `commands: preflight, schema, bulk, follow, post_load, verify, drain, migrate --offline, migrate --online, cutover, unfreeze, reverse, rollback [--reverse|--online], reset, finalize, status
+--yes (finalize): end the bridge window of a finished move to PostgreSQL: the key map is removed and an online rollback is no longer
+  offered (stop the reverse follower first).
 --confirm-fence-armed (drain): every application process runs with DOC_STORE_FENCE=on. Without it drain refuses while a connected
   application client does not name its connections pipeshub-fenced, because a process that does not wrap its writes keeps writing
   whatever the fence says.
@@ -270,6 +274,12 @@ export async function runCli(
   // what can be refused without a server is refused first: no configuration is read and no connection is opened
   if (!COMMANDS.has(a.cmd)) {
     process.stderr.write(`${redact(HELP)}\n`);
+    return 2;
+  }
+  if (a.cmd === 'finalize' && !a.flags.has('yes')) {
+    process.stderr.write(
+      'finalize removes the key map and ends the online rollback; pass --yes\n',
+    );
     return 2;
   }
   if (a.cmd === 'reset' && !a.flags.has('yes')) {
@@ -510,6 +520,12 @@ export async function runCli(
       }
       case 'reset': {
         const r = await reset(rt, { force: a.flags.has('force') });
+        out(r);
+        return r.ok ? 0 : 1;
+      }
+      case 'finalize': {
+        const { finalize } = await import('./finalize');
+        const r = await finalize(rt, { log });
         out(r);
         return r.ok ? 0 : 1;
       }

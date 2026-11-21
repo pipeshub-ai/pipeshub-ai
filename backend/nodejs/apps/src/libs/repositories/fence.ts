@@ -1,4 +1,10 @@
-import { MongoClient } from 'mongodb';
+import {
+  MongoClient,
+  type AnyClientBulkWriteModel,
+  type ClientBulkWriteOptions,
+  type ClientBulkWriteResult,
+  type Document,
+} from 'mongodb';
 import { Logger } from '../services/logger.service';
 import { ServiceUnavailableError } from '../errors/http.errors';
 import { DocStoreFencedError, DocStoreReadOnlyError } from './errors';
@@ -10,7 +16,8 @@ import { docstoreMetrics } from './metrics';
  * application database; no document means `active`.
  *
  * Every collection write method of the driver is wrapped here, whichever Mongoose model or raw collection issued it
- * (bulk-operation builders, `db.command`, `$merge`/`$out`, `client.bulkWrite` are not: a lint bans them in `src`):
+ * (bulk-operation builders, `db.command`, `$merge`/`$out` are not: a lint bans them in `src`; `client.bulkWrite` goes through
+ * `fencedClientBulkWrite`):
  *  1. it first reads the fence from the primary, with a 2 s deadline for the read, and refuses unless `active`;
  *  2. while the store is being moved (`draining`) it carries `timeoutMS: 5000`, so a write blocked on the server fails (and is not
  *     retried) instead of landing after the fence moved. An `active` store puts no deadline on a write: a long multi-document
@@ -100,7 +107,10 @@ export const APP_MONGO_DEFAULT_OPTIONS = {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
   family: 4,
-  maxPoolSize: 10,
+  // One Node serves 16 sessions in step (the capacity model's N): their admissions, commits and stream reads reach
+  // the driver in the same instant, and with 10 connections they queued in its wait queue (WP88-FU-5, ADR-PERF-01
+  // D4). Connections still open only on demand.
+  maxPoolSize: 64,
 };
 
 /** The client's resolved options (`mongoose.connection.getClient().options`), as far as the send bound needs them. */
@@ -271,28 +281,53 @@ export function installMongoFence(collectionClass: {
         );
       // shortcut: filter/doc may be omitted by callers of deleteOne()/deleteMany(); pad so options land at optsAt
       while (args.length < optsAt) args.push(undefined);
-      const opts = (args[optsAt] ?? {}) as {
-        timeoutMS?: number;
-        comment?: unknown;
-        session?: { inTransaction(): boolean };
-      };
-      // inside a transaction the deadline belongs to the transaction, not to a statement; and only a store that is being moved has one
-      const bounded =
-        mode === 'draining' &&
-        opts.timeoutMS === undefined &&
-        !opts.session?.inTransaction();
-      const comment = isFencedWriteComment(opts.comment)
-        ? opts.comment
-        : {
-            tag: FENCED_WRITE_COMMENT,
-            ...(opts.comment === undefined ? {} : { caller: opts.comment }),
-          };
-      args[optsAt] = {
-        ...opts,
-        comment,
-        ...(bounded ? { timeoutMS: WRITE_TIMEOUT_MS } : {}),
-      };
+      args[optsAt] = fencedWriteOptions(mode, args[optsAt] as WriteOptions);
       return original.apply(this, args);
     };
   }
+}
+
+interface WriteOptions {
+  timeoutMS?: number;
+  comment?: unknown;
+  session?: { inTransaction(): boolean };
+}
+
+/** The options a write the fence let through is sent with: tagged, and bounded while the store is being moved. */
+function fencedWriteOptions<O extends WriteOptions>(
+  mode: 'active' | 'draining',
+  options: O | undefined,
+): O {
+  const opts = (options ?? {}) as O;
+  // inside a transaction the deadline belongs to the transaction, not to a statement; and only a store that is being moved has one
+  const bounded =
+    mode === 'draining' &&
+    opts.timeoutMS === undefined &&
+    !opts.session?.inTransaction();
+  const comment = isFencedWriteComment(opts.comment)
+    ? opts.comment
+    : {
+        tag: FENCED_WRITE_COMMENT,
+        ...(opts.comment === undefined ? {} : { caller: opts.comment }),
+      };
+  return {
+    ...opts,
+    comment,
+    ...(bounded ? { timeoutMS: WRITE_TIMEOUT_MS } : {}),
+  };
+}
+
+/**
+ * MongoDB 8's client-level `bulkWrite` (one command over several collections), which the per-collection wrapper above cannot see:
+ * it reads the fence and is tagged and bounded as every collection write is. Unfenced when this process did not install the fence.
+ */
+export async function fencedClientBulkWrite(
+  client: MongoClient,
+  db: FenceDb,
+  models: readonly AnyClientBulkWriteModel<Document>[],
+  options: ClientBulkWriteOptions,
+): Promise<ClientBulkWriteResult> {
+  if (!installed) return client.bulkWrite(models, options);
+  const mode = await assertMongoWritable(db);
+  return client.bulkWrite(models, fencedWriteOptions(mode, options));
 }

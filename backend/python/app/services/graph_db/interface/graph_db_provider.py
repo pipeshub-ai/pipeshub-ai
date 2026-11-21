@@ -457,6 +457,10 @@ def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
     return types
 
 
+# Bounds get_records_by_external_ids: an item indexed by more connector instances than this is rare.
+MAX_INDEXED_COPIES_PER_ITEM = 8
+
+
 @dataclass(frozen=True)
 class CodeFileInfo:
     """Code file metadata returned by get_code_file_info_for_records.
@@ -2336,6 +2340,26 @@ class IGraphDBProvider(ABC):
                 Callers act on None by creating the record or concluding it
                 was deleted, so a failure reported as None would become a
                 duplicate record or a deletion that never happened.
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_external_ids(
+        self,
+        org_id: str,
+        external_record_ids: list[str],
+        connector_names: list[str],
+    ) -> list[dict[str, str]]:
+        """The org's records, not deleted, that index one of these external
+        items through one of these connector kinds: one query for the batch.
+
+        Returns:
+            One ``{"id", "externalRecordId", "connectorName"}`` per record; an
+            item indexed by several connector instances has several.
+
+        Raises:
+            GraphQueryError: The lookup could not be read. An empty answer
+                means "no indexed copy", which callers act on.
         """
         pass
 
@@ -5473,6 +5497,20 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def list_sync_points(
+        self,
+        org_id: str,
+        collection: str,
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """One org's sync points in ``syncPointKey`` order, those after ``after_key`` (a keyset page: a point written
+        or removed meanwhile never shifts another out of the walk). For a sweep over every sync point, such as the
+        ``SECRET_KEY`` rotation's (WP87-FU-4b); a page shorter than ``limit`` is the last."""
+        pass
+
+    @abstractmethod
     async def upsert_sync_point(
         self,
         sync_point_key: str,
@@ -7252,6 +7290,15 @@ class IGraphDBProvider(ABC):
             Optional[Dict]: Team data with members and permissions, None if not found
         """
         pass
+
+    @abstractmethod
+    async def get_user_team_roles(self, user_key: str, org_id: str) -> list[dict]:
+        """
+        Every team of ``org_id`` the user is in, with their role there (``OWNER`` administers it).
+
+        Returns ``[{"teamId": <team key>, "role": <role>}]``; raises when the graph cannot be read, so a
+        caller never takes an unreadable membership for none (the control plane's MembershipPort).
+        """
 
     @abstractmethod
     async def get_user_teams(

@@ -98,6 +98,7 @@ from app.schema.arango.documents import (
     agent_schema,
     agent_skill_candidates_schema,
     agent_skill_versions_schema,
+    agent_versions_schema,
     agent_skills_schema,
     agent_template_schema,
     app_role_schema,
@@ -197,6 +198,11 @@ from app.services.graph_db.common.team_grant_role import (
     aql_team_grant_role,
 )
 from app.services.graph_db.common.utils import (
+    AGENT_ENGINE_FIELDS,
+    AGENT_ENVIRONMENT_FIELD,
+    AGENT_GATES_FIELD,
+    AGENT_OWNER_TEAM_FIELD,
+    AGENT_ROLE_MODELS_FIELD,
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
@@ -213,8 +219,10 @@ from app.services.graph_db.common.utils import (
     EntityCandidateRows,
     PermittedEntityRows,
     build_connector_stats_response,
+    decode_agent_json_fields,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
+    encode_agent_json_fields,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
     is_full_address,
@@ -250,6 +258,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
+    MAX_INDEXED_COPIES_PER_ITEM,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
     UNSUPPORTED_PAGE_FIELDS,
@@ -351,6 +360,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.BLOCKS.value, block_schema),
     (CollectionNames.RECORD_GROUPS.value, record_group_schema),
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
+    (CollectionNames.AGENT_VERSIONS.value, agent_versions_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.AGENT_KNOWLEDGE.value, knowledge_schema),
     (CollectionNames.AGENT_TOOLSETS.value, toolset_schema),
@@ -373,6 +383,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.SQL_COLUMNS.value, sql_column_record_schema),
     (CollectionNames.SQL_VIEWS.value, sql_view_record_schema),
     (CollectionNames.CODE_FILES.value, code_file_record_schema),
+    (CollectionNames.KNOWLEDGE_PUBLICATIONS.value, None),
     (CollectionNames.STAGE_STATES.value, stage_state_schema),
 ]
 
@@ -442,6 +453,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.MCP_SERVER_HAS_TOOL.value, mcp_server_has_tool_schema),
     (CollectionNames.AGENT_SKILL_RELATION.value, agent_skill_relation_schema),
     (CollectionNames.AGENT_HAS_SKILL.value, agent_has_skill_schema),
+    (CollectionNames.PUBLISHED_VIA.value, basic_edge_schema),
     (CollectionNames.PROSPECT.value, prospect_schema),
     (CollectionNames.CUSTOMER.value, customer_schema),
     (CollectionNames.LEAD.value, lead_schema),
@@ -1822,6 +1834,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ["connectorId"],
         )
 
+        # COMPOSITE: orgId + agentKey — AgentVersionStore lists an agent's versions.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_VERSIONS.value,
+            ["orgId", "agentKey"],
+        )
+
         # COMPOSITE: skillKey + version — GraphSkillStore.get_version lookup.
         await self.http_client.ensure_persistent_index(
             CollectionNames.AGENT_SKILL_VERSIONS.value,
@@ -1832,6 +1850,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.AGENT_SKILL_CANDIDATES.value,
             ["orgId"],
+        )
+
+        # COMPOSITE: orgId + containerId — every retrieval lists the org's publications (P2.13).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.KNOWLEDGE_PUBLICATIONS.value,
+            ["orgId", "containerId"],
         )
 
         # ==================== PEOPLE INDEXES ====================
@@ -5947,6 +5971,40 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise GraphQueryError(
                 f"Could not look up record {external_id}: {e}"
             ) from e
+
+    async def get_records_by_external_ids(
+        self,
+        org_id: str,
+        external_record_ids: list[str],
+        connector_names: list[str],
+    ) -> list[dict[str, str]]:
+        external_ids = list(dict.fromkeys(external_record_ids))
+        if not external_ids or not connector_names:
+            return []
+        # externalRecordId leads the persistent (externalRecordId, connectorId) index.
+        query = f"""
+        FOR doc IN {CollectionNames.RECORDS.value}
+            FILTER doc.externalRecordId IN @external_ids
+            FILTER doc.orgId == @org_id
+            FILTER doc.connectorName IN @connector_names
+            FILTER doc.isDeleted != true
+            LIMIT @limit
+            RETURN {{ id: doc._key, externalRecordId: doc.externalRecordId, connectorName: doc.connectorName }}
+        """
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "external_ids": external_ids,
+                    "org_id": org_id,
+                    "connector_names": list(dict.fromkeys(connector_names)),
+                    "limit": len(external_ids) * MAX_INDEXED_COPIES_PER_ITEM,
+                },
+            )
+        except Exception as e:
+            self.logger.error("get_records_by_external_ids failed: %s", str(e))
+            raise GraphQueryError(f"Could not look up records by external id: {e}") from e
+        return [dict(row) for row in results or []]
 
     async def find_slack_burst_record_by_ts(
         self,
@@ -10895,6 +10953,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if raise_on_error:
                 raise
             return None
+
+    async def list_sync_points(
+        self,
+        org_id: str,
+        collection: str,
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """One org's sync points in syncPointKey order; see the interface."""
+        query = """
+        FOR doc IN @@collection
+            FILTER doc.orgId == @org AND doc.syncPointKey != null AND (@after == null OR doc.syncPointKey > @after)
+            SORT doc.syncPointKey
+            LIMIT @limit
+            RETURN doc
+        """
+        bind_vars = {"@collection": collection, "org": org_id, "after": after_key, "limit": limit}
+        return list(await self.http_client.execute_aql(query, bind_vars) or [])
 
     async def upsert_sync_point(
         self,
@@ -26020,6 +26097,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if marked < batch_size:
                 return total
 
+    def _user_anchor_filter(self, var: str, bind_vars: dict[str, Any], org_id: str) -> str:
+        """The filter a virtual-record-id query finds the asking user by (``@userId``). Extension point: a
+        subclass that keeps one user node per org narrows it to ``org_id``, binding what it adds."""
+        return f"FILTER {var}.userId == @userId"
+
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
@@ -26149,7 +26231,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
-                FILTER user.userId == @userId
+                {self._user_anchor_filter("user", bind_vars, org_id)}
                 RETURN user
             )
             LET u = userDoc
@@ -26375,7 +26457,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
-                FILTER user.userId == @userId
+                {self._user_anchor_filter("user", bind_vars, org_id)}
                 RETURN user
             )
 
@@ -27364,6 +27446,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"Error in get_team_with_users: {str(e)}", exc_info=True)
             return None
 
+    async def get_user_team_roles(self, user_key: str, org_id: str) -> list[dict]:
+        query = """
+        FOR permission IN @@permission_collection
+        FILTER permission._from == @userId AND STARTS_WITH(permission._to, @teams_collection_prefix)
+        LET team = DOCUMENT(permission._to)
+        FILTER team != null AND team.orgId == @orgId
+        SORT team._key
+        RETURN {"teamId": team._key, "role": permission.role}
+        """
+        return list(await self.execute_query(query, bind_vars={
+            "userId": f"{CollectionNames.USERS.value}/{user_key}",
+            "@permission_collection": CollectionNames.PERMISSION.value,
+            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+            "orgId": org_id,
+        }) or [])
+
     async def get_user_teams(
         self,
         user_key: str,
@@ -28309,7 +28407,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     else:
                         knowledge["filtersParsed"] = filters_str
 
-            return agent
+            return decode_agent_json_fields(agent)
 
         except Exception as e:
             self.logger.error(f"Failed to get agent: {str(e)}")
@@ -28778,6 +28876,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for agent in payload.get("agents", []):
                 if not isinstance(agent, dict):
                     continue
+                decode_agent_json_fields(agent)
                 for knowledge in agent.get("knowledge", []) or []:
                     filters_str = knowledge.get("filters")
                     if filters_str is None:
@@ -28826,10 +28925,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools", *AGENT_ENGINE_FIELDS, AGENT_OWNER_TEAM_FIELD, AGENT_ROLE_MODELS_FIELD, AGENT_GATES_FIELD, AGENT_ENVIRONMENT_FIELD]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
+            encode_agent_json_fields(update_data)
 
             # Handle models specially - convert model objects to model keys and deduplicate
             if "models" in agent_updates:

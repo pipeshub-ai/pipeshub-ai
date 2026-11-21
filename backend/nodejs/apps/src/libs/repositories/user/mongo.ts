@@ -691,6 +691,24 @@ export class MongoUserRepository implements UserRepository {
     );
   }
 
+  async holdLiveAdmin(orgId: string, id: string, tx?: Tx): Promise<boolean> {
+    if (!mongoose.isValidObjectId(orgId) || !mongoose.isValidObjectId(id))
+      return false;
+    // A write in the transaction: a concurrent demotion of the same document conflicts with it.
+    const fenced = await Users.updateOne(
+      {
+        _id: id,
+        orgId,
+        role: 'admin',
+        kind: { $ne: 'service' },
+        isDeleted: { $ne: true },
+      },
+      { $inc: { approvalDecisionFence: 1 } },
+      { session: sessionOf(tx), strict: false },
+    ).exec();
+    return fenced.matchedCount > 0;
+  }
+
   async deleteById(id: string): Promise<void> {
     await Users.deleteOne({ _id: id });
   }
@@ -730,6 +748,39 @@ export class MongoUserRepository implements UserRepository {
     const result = await Users.updateMany(filter, {
       $set: { isDisabled: disabled },
     });
+    return result.modifiedCount;
+  }
+
+  async disableEnabledAccounts(orgId: string): Promise<string[]> {
+    if (!mongoose.Types.ObjectId.isValid(orgId)) return [];
+    const filter = { orgId, isDeleted: false, isDisabled: { $ne: true } };
+    const ids = (await Users.find(filter).select('_id').lean().exec()).map(
+      (u) => String(u._id),
+    );
+    if (ids.length === 0) return [];
+    await Users.updateMany(
+      { ...filter, _id: { $in: ids } },
+      { $set: { isDisabled: true } },
+    );
+    return ids.sort();
+  }
+
+  async setAccountsDisabled(
+    orgId: string,
+    ids: string[],
+    disabled: boolean,
+  ): Promise<number> {
+    const valid = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (valid.length === 0 || !mongoose.Types.ObjectId.isValid(orgId)) return 0;
+    const result = await Users.updateMany(
+      {
+        _id: { $in: valid },
+        orgId,
+        isDeleted: false,
+        isDisabled: disabled ? { $ne: true } : true,
+      },
+      { $set: { isDisabled: disabled } },
+    );
     return result.modifiedCount;
   }
 

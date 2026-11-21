@@ -31,6 +31,15 @@ class config_node_constants(Enum):
     MIGRATIONS = "/services/migrations"
     DEPLOYMENT = "/services/deployment"
     INHERITANCE = "/services/inheritance"
+    # Generated and rotated by Node; only the durable agent harness worker reads it.
+    AGENT_HARNESS_WORKER_CREDENTIAL = "/services/agentHarness/workerCredential"
+    # Published by Node with the gateway-token keyring's public keys only (E2).
+    AGENT_HARNESS_GATEWAY_PUBLIC_KEYS = "/services/agentHarness/gatewayPublicKeys"
+    # Approval rules per org and agent (P2.6c), and the org entries of an edition's approval-policy sections.
+    AGENT_HARNESS_APPROVALS = "/services/agentHarness/approvals"
+    # Org engine profile ceilings (E4a); org admins write them through Node.
+    AGENT_HARNESS_ENGINE_PROFILES = "/services/agentHarness/engineProfiles"
+    AGENT_HARNESS_MODEL_ACCESS = "/services/agentHarness/modelAccess"
     NAMED_ENTITIES = "/services/namedEntities"
     # Org-wide rules for which identity fields may be sent to a model gateway.
     # Written by the Node admin API; read-only from Python.
@@ -60,13 +69,30 @@ class TokenScopes(Enum):
     # Node -> query: grant/revoke permission edges on a conversation's attachments
     # and artifacts, after Node has checked ownership/sharing in Mongo.
     CONVERSATION_PERMISSIONS = "conversation:permissions"
+    # Node -> query: erase a deleted conversation's artifacts (records and blobs), E7.
+    CONVERSATION_ERASE = "conversation:erase"
+    # Node -> query: copy a conversation's artifact versions into a private fork (SS3).
+    CONVERSATION_FORK = "conversation:fork"
+    # Node's agent-erasure sweeper -> query: whether an agent's delete committed (H5). Answers only that.
+    AGENT_ERASE = "agent:erase"
+    # Node's usage report and budget notices -> query: one org's agent names by key (WP-51). Answers only that.
+    AGENT_NAMES = "agent:names"
     # Python -> Node caller-role lookups, so Node's rate limiter can tell them from
     # client traffic. Never accepted by the Python services.
     CALLER_ROLE = "caller:role"
+    # Node -> query: one org's legacy capability facts for the control plane's migration and sync (CPD-7).
+    CAPABILITIES_READ = "capabilities:read"
+    # Node control plane -> query: a user's teams and roles (CPD-11 MembershipPort).
+    DIRECTORY_READ = "directory:read"
+    # Query -> Node: an agent or instance changed, sync it into the control plane (CPD-7's dual write).
+    # Never accepted by the Python services.
+    CAPABILITIES_SYNC = "capabilities:sync"
     DOCUMENT_PARSE = "document:parse"
     DOCUMENT_CLASSIFY = "document:classify"
     # Node -> connectors: write verified profile email onto the graph user.
     ENTITY_USER_WRITE = "entity:user:write"
+    # Node user and org deletion -> connectors: erase the principal's personal toolset and MCP instances (C-14).
+    PRINCIPAL_ERASE = "principal:erase"
 
 
 class OAuthScopes(str, Enum):
@@ -125,6 +151,8 @@ class DefaultEndpoints(Enum):
     NODEJS_ENDPOINT = "http://localhost:3000"
     FRONTEND_ENDPOINT = "http://localhost:3001"
     STORAGE_ENDPOINT = "http://localhost:3000"  # noqa: PIE796
+    SANDBOX_BROKER_ENDPOINT = "http://localhost:8095"
+    EGRESS_PROXY_CONTROL_ENDPOINT = "http://localhost:8098"
 
 class Routes(Enum):
     """Constants for routes"""

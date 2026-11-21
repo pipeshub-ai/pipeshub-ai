@@ -298,6 +298,8 @@ class CollectionNames(Enum):
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
+    # Immutable published versions of an agent (OWD-14); the agent document is the draft.
+    AGENT_VERSIONS = "agentVersions"
 
     # Agent Builder Graph collections
     AGENT_KNOWLEDGE = "agentKnowledge"
@@ -322,6 +324,10 @@ class CollectionNames(Enum):
 
     # Agent -> Skill assignment edge (Agent Builder), mirrors AGENT_HAS_TOOLSET
     AGENT_HAS_SKILL = "agentHasSkill"
+
+    # Knowledge publications (D21): container -publishedVia-> publication
+    KNOWLEDGE_PUBLICATIONS = "knowledgePublications"
+    PUBLISHED_VIA = "publishedVia"
 
 
 class QdrantCollectionNames(Enum):
