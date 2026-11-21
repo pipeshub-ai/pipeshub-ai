@@ -134,18 +134,21 @@ async def withdraw_unconfirmed_accounts(
                  f"(at most {cap} reads per sync, {LOOKUPS_ENV})")
 
     rest_ids = {u.source_user_id for u in rest}
+    still_unconfirmed = {u.source_user_id for u in unlisted} - confirmed
     pending = _ids(saved_state.get("pending_notice")) | {u.source_user_id for u in closed}
     new_state = {
         # Closed accounts keep counting until their withdrawal commits; the next sync no longer finds them linked.
-        "streaks": json.dumps({k: v for k, v in streaks.items() if k in {u.source_user_id for u in unlisted} - confirmed},
-                              sort_keys=True),
+        "streaks": json.dumps({k: v for k, v in streaks.items() if k in still_unconfirmed}, sort_keys=True),
         "cursor": next((u.source_user_id for u in reversed(asked) if u.source_user_id in rest_ids), cursor),
         "counting_cursor": next((u.source_user_id for u in reversed(asked) if u.source_user_id not in rest_ids), counting_cursor),
         "pending_notice": json.dumps(sorted(pending)),
     }
-    if state is not None:
-        # Saved before the withdrawal: the owner's notice of a close stays owed until it is sent.
-        await _save(sync_point, log, saved_state, new_state)
+    # Saved before the withdrawal: the owner's notice of a close stays owed until it is sent.
+    if state is not None and not await _save(sync_point, log, saved_state, new_state) and closed:
+        # Without the saved notice a close would go untold if the notice then failed; this sync closes nobody.
+        log.error(f"Could not save the owed notice; {len(closed)} account(s) past the grace keep access this sync")
+        closed = []
+        pending = _ids(saved_state.get("pending_notice"))
     lost = gone + closed
     if lost:
         # The link is the connector's only gate for these connectors, so the user's own grants stay: an account restored
@@ -187,11 +190,14 @@ def _ids(raw: object) -> set[str]:
     return {str(i) for i in ids} if isinstance(ids, list) else set()
 
 
-async def _save(sync_point: SyncPoint, log: Logger, before: dict, after: dict) -> None:
+async def _save(sync_point: SyncPoint, log: Logger, before: dict, after: dict) -> bool:
+    """Whether ``after`` is what the sync point holds now."""
     empty = {"streaks": "{}", "pending_notice": "[]"}
     if all((before.get(k) or empty.get(k, "")) == (v or empty.get(k, "")) for k, v in after.items()):
-        return
+        return True
     try:
         await sync_point.update_sync_point(ACCOUNT_CHECK_KEY, after)
     except Exception as e:
         log.warning(f"Could not save the unconfirmed-account count: {e}")
+        return False
+    return True

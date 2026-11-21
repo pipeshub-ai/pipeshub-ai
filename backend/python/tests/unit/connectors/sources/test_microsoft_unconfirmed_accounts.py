@@ -313,6 +313,24 @@ async def test_a_notice_that_was_not_delivered_is_sent_by_the_next_sync(world: C
 
 
 @pytest.mark.asyncio
+async def test_a_close_waits_while_its_notice_cannot_be_saved(world: Callable[[list[str]], World]) -> None:
+    w = world(["a", "x", "gone"])
+    w.status.update(x=_odata(500), gone="gone")
+    w.list(["a"], complete=True)
+    for _ in range(UNCONFIRMED_SYNCS_BEFORE_CLOSE - 1):
+        await w.sync()
+    saved = w.c.user_sync_point.update_sync_point
+    w.c.user_sync_point.update_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
+    w.c.notify_and_wait.return_value = NotificationOutcome.FAILED
+    await w.sync()
+    assert set(w.stored) == {"a", "x"} and not _closing_notices(w)   # the deleted account still goes; x waits
+    w.c.user_sync_point.update_sync_point = saved
+    await w.sync()
+    assert set(w.stored) == {"a"} and len(_closing_notices(w)) == 1
+    assert w.c.user_sync_point.data[ACCOUNT_CHECK_KEY]["pending_notice"] == '["x"]'
+
+
+@pytest.mark.asyncio
 async def test_without_the_saved_count_no_account_is_closed(world: Callable[[list[str]], World]) -> None:
     w = world(["a", "x"])
     w.status["x"] = _odata(500)
