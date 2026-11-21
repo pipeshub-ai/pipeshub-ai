@@ -1716,23 +1716,41 @@ class DataSourceEntitiesProcessor:
         stamps are marked changed and the search cache's access lists dropped
         once it has ended. Both run when the write raised too: a commit that
         failed may still have landed, and neither costs more than a recompute."""
+        async with self._access_limit_refreshed(connector_id):
+            await self.data_store_provider.execute_in_transaction(
+                lambda tx_store: tx_store.set_app_access_limit(connector_id, access_limit, permission_model.value),
+                explicit=True,
+            )
+
+    @contextlib.asynccontextmanager
+    async def _access_limit_refreshed(self, connector_id: str) -> AsyncIterator[None]:
+        """The refreshes after a write of the access limit, run even when it raised: the knowledge-hub scope stamps
+        are marked changed, then the search cache's access lists dropped. A failed mark raises."""
         async with self._drop_access_after({connector_id}):
             try:
-                await self.data_store_provider.execute_in_transaction(
-                    lambda tx_store: tx_store.set_app_access_limit(connector_id, access_limit, permission_model.value),
-                    explicit=True,
-                )
+                yield
             finally:
                 await self.data_store_provider.graph_provider.kh_scope_mark_changed(connector_id)
+
+    async def limit_unlicensed(self, connector_id: str, app: dict[str, Any]) -> None:
+        """Limit an unlicensed connector (its app document ``app``) to its creator, or keep the limit it has. Once
+        ``accessLimit`` and ``permissionModel: APP_LEVEL`` are both stored, the generation bump committed with them,
+        so only the refreshes after the write run again: a crash may have left those undone, and writing again would
+        bump the generation, and re-stamp the whole connector, on every call. Raises like ``set_access_limit``."""
+        limit = app.get("accessLimit")
+        if limit and app.get("permissionModel") == PermissionModel.APP_LEVEL.value:
+            async with self._access_limit_refreshed(connector_id):
+                return
+        await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
 
     # ==================== The licence gate (permission_sync_gate) ====================
 
     async def apply_licence_gate(self, connector_id: str, *, full_sync: bool) -> bool:
         """At the start of a sync of this connector, before it reads the source.
 
-        Unlicensed (``permission_sync_gate.gated``): limit it to its creator, or keep the limit it has. Written on
-        every start, whether or not it is stored, so a limit whose refresh failed after the write committed is made
-        good by the next attempt. Licensed while still limited: it owes a full sync, and only that one may lift the
+        Unlicensed (``permission_sync_gate.gated``): limit it to its creator, or keep the limit it has
+        (``limit_unlicensed``); a stored limit has its refreshes run again, so one that failed after the write
+        committed is made good by the next attempt. Licensed while still limited: it owes a full sync, and only that one may lift the
         limit (``lift_access_limit``); content that changed while it was limited has no fresh permissions until then.
 
         Returns whether this run is that full sync. Raises when the licence, the app or a write cannot be read or
@@ -1747,7 +1765,7 @@ class DataSourceEntitiesProcessor:
             return False
         limit = app.get("accessLimit")
         if not await permission_sync_licensed(self.config_service):
-            await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
+            await self.limit_unlicensed(connector_id, app)
             return False
         if limit is None:
             return False

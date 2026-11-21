@@ -7,7 +7,6 @@ from typing import Any, cast
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
-    AccessLimit,
     CollectionNames,
     Connectors,
     PermissionModel,
@@ -832,9 +831,8 @@ class ConnectorRegistry:
 
     async def _limit_unlicensed_connectors(self, org_id: str, documents: list[dict[str, Any]]) -> None:
         """The startup half of the licence gate (``permission_sync_gate``): an unlicensed company-wide connector that
-        never syncs again is limited here. As at sync start (``DataSourceEntitiesProcessor.apply_licence_gate``), every
-        such connector is written, limited already or not, so a limit whose refresh failed before a restart is made
-        good. A failure is logged and leaves the rest of startup alone: the connector's next sync start raises instead,
+        never syncs again is limited here, by the same rule as at sync start (``limit_unlicensed``): one already
+        limited has only its refreshes run again, so a limit whose refresh failed before a restart is made good. A failure is logged and leaves the rest of startup alone: the connector's next sync start raises instead,
         and does not run."""
         from app.connectors.core.base.data_processor.data_source_entities_processor import (
             DataSourceEntitiesProcessor,
@@ -859,9 +857,8 @@ class ConnectorRegistry:
             return
         for doc in limited:
             key = doc.get('_key') or doc.get('id')
-            limit = doc.get('accessLimit')
             try:
-                await processor.set_access_limit(key, AccessLimit(limit) if limit else AccessLimit.CREATOR)
+                await processor.limit_unlicensed(key, doc)
             except Exception as e:
                 self.logger.error(f"Could not limit unlicensed connector {key}: {e}")
         self.logger.info(f"Unlicensed: {len(limited)} company-wide connector(s) limited (accessLimit)")

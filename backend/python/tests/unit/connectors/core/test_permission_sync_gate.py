@@ -54,8 +54,23 @@ RECORDS = CollectionNames.RECORDS.value
 APPS = CollectionNames.APPS.value
 
 
-def _app(type_: str = "JIRA", scope: str = "team", limit: str | None = None) -> dict:
-    return {"_key": CONNECTOR, "type": type_, "scope": scope, "createdBy": "u-creator", "accessLimit": limit}
+def _app(type_: str = "JIRA", scope: str = "team", limit: str | None = None, model: str | None = None) -> dict:
+    return {"_key": CONNECTOR, "type": type_, "scope": scope, "createdBy": "u-creator", "accessLimit": limit,
+            "permissionModel": model or (PermissionModel.APP_LEVEL.value if limit else PermissionModel.RECORD_LEVEL.value)}
+
+
+_NOTIFY = "app.connectors.core.base.data_processor.data_source_entities_processor.notify_connector_permissions_changed"
+
+
+def _real_write(proc: DataSourceEntitiesProcessor, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Use the real set_access_limit: the transaction (where the store bumps the generation) and the two refreshes
+    are recorded. Returns the search-cache drop."""
+    del proc.set_access_limit
+    proc.data_store_provider.execute_in_transaction = AsyncMock()
+    proc.data_store_provider.graph_provider.kh_scope_mark_changed = AsyncMock()
+    drop = AsyncMock()
+    monkeypatch.setattr(_NOTIFY, drop)
+    return drop
 
 
 def _config(value: object) -> MagicMock:
@@ -187,17 +202,40 @@ async def test_open_and_personal_connectors_write_as_before(app: dict) -> None:
 # ---- sync start: the limit ----
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stored", [None, AccessLimit.CREATOR.value])
-async def test_an_unlicensed_start_writes_the_limit_whether_or_not_it_is_stored(stored: str | None) -> None:
-    """Written every time: a limit whose refresh failed after the write committed is made good by the next start."""
-    proc, _ = _gate_processor(UNLICENSED, _app(limit=stored))
+@pytest.mark.parametrize(("stored", "model"), [
+    (None, None),
+    (AccessLimit.CREATOR.value, PermissionModel.RECORD_LEVEL.value),  # the field without the model: written again
+])
+async def test_an_unlicensed_start_writes_the_limit_unless_it_is_stored_whole(
+    stored: str | None, model: str | None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc, _ = _gate_processor(UNLICENSED, _app(limit=stored, model=model))
+    drop = _real_write(proc, monkeypatch)
+
     assert await proc.apply_licence_gate(CONNECTOR, full_sync=False) is False
-    proc.set_access_limit.assert_awaited_once_with(CONNECTOR, AccessLimit.CREATOR)
+
+    proc.data_store_provider.execute_in_transaction.assert_awaited_once()
+    proc.data_store_provider.graph_provider.kh_scope_mark_changed.assert_awaited_once_with(CONNECTOR)
+    drop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_already_limited_connector_is_not_written_again_but_is_refreshed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The generation bump committed with the stored limit; writing again would bump it, and re-stamp the whole
+    connector, on every sync. Only the refreshes after the commit, which a crash can leave undone, run again."""
+    proc, _ = _gate_processor(UNLICENSED, _app(limit=AccessLimit.CREATOR.value))
+    drop = _real_write(proc, monkeypatch)
+
+    await proc.apply_licence_gate(CONNECTOR, full_sync=False)
+
+    proc.data_store_provider.execute_in_transaction.assert_not_awaited()
+    proc.data_store_provider.graph_provider.kh_scope_mark_changed.assert_awaited_once_with(CONNECTOR)
+    drop.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_a_stored_org_limit_is_kept_not_narrowed() -> None:
-    proc, _ = _gate_processor(UNLICENSED, _app(limit=AccessLimit.ORG.value))
+    proc, _ = _gate_processor(UNLICENSED, _app(limit=AccessLimit.ORG.value, model=PermissionModel.RECORD_LEVEL.value))
     await proc.apply_licence_gate(CONNECTOR, full_sync=False)
     proc.set_access_limit.assert_awaited_once_with(CONNECTOR, AccessLimit.ORG)
 
@@ -227,25 +265,43 @@ async def test_licensed_and_limited_a_full_start_is_the_one_that_may_lift() -> N
     proc.data_store_provider.graph_provider.update_node.assert_not_awaited()
 
 
-# ---- the real write behind set_access_limit: a failure after the commit is retried at the next start ----
+# ---- a refresh that failed after the commit: retried at the next start, and the sync does not start ----
 
 @pytest.mark.asyncio
-async def test_a_refresh_that_failed_after_the_commit_is_written_again_at_the_next_start() -> None:
+async def test_a_refresh_that_failed_after_the_commit_is_run_again_at_the_next_start(monkeypatch: pytest.MonkeyPatch) -> None:
     proc, _ = _gate_processor(UNLICENSED)
-    del proc.set_access_limit  # the real one
-    proc.data_store_provider.execute_in_transaction = AsyncMock()
+    drop = _real_write(proc, monkeypatch)
     graph = proc.data_store_provider.graph_provider
     graph.kh_scope_mark_changed = AsyncMock(side_effect=[ConnectionError("stamps down"), None])
 
     with pytest.raises(ConnectionError):
         await proc.apply_licence_gate(CONNECTOR, full_sync=False)
 
-    # The write landed: the stored app now carries the limit, and the next start writes it again all the same.
+    # The write landed: the stored app now carries the limit, so the next start runs the refreshes alone.
     graph.get_document = AsyncMock(return_value=_app(limit=AccessLimit.CREATOR.value))
     await proc.apply_licence_gate(CONNECTOR, full_sync=False)
 
-    assert proc.data_store_provider.execute_in_transaction.await_count == 2
+    assert proc.data_store_provider.execute_in_transaction.await_count == 1
     assert graph.kh_scope_mark_changed.await_count == 2
+    assert drop.await_count == 2, "the cache is dropped even when the mark failed"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_of_a_stored_limit_stops_the_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _app(limit=AccessLimit.CREATOR.value)
+    proc, _ = _gate_processor(UNLICENSED, app)
+    _real_write(proc, monkeypatch)
+    proc.data_store_provider.graph_provider.kh_scope_mark_changed = AsyncMock(side_effect=ConnectionError("stamps down"))
+    gp = _runner_graph(app)
+    _wire(proc, gp)
+    connector = _connector(proc)
+    connector.run_sync = AsyncMock()
+
+    with pytest.raises(ConnectionError):
+        await run_sync_task(connector, CONNECTOR, gp, _LOG, start_status=AppStatus.SYNCING.value)
+
+    connector.run_sync.assert_not_awaited()
+    proc.data_store_provider.execute_in_transaction.assert_not_awaited()
 
 
 # ---- while unlicensed: permission writes are skipped, content is not ----
@@ -524,7 +580,9 @@ def _registry(licence: object, documents: list[dict]) -> tuple[ConnectorRegistry
     container = MagicMock()
     container.logger.return_value = _LOG
     container.config_service.return_value = _config(licence)
-    container.data_store = AsyncMock(return_value=MagicMock())
+    data_store = MagicMock()
+    data_store.graph_provider.kh_scope_mark_changed = AsyncMock()
+    container.data_store = AsyncMock(return_value=data_store)
     registry = ConnectorRegistry(container)
     return registry, container
 
@@ -539,7 +597,9 @@ async def test_the_startup_sweep_limits_every_unlicensed_company_wide_connector(
         written.append((connector_id, limit))
 
     monkeypatch.setattr(DataSourceEntitiesProcessor, "set_access_limit", record)
+    monkeypatch.setattr(_NOTIFY, AsyncMock())
     docs = [
+        {"_key": "done", "type": "JIRA", "scope": "team", "accessLimit": "CREATOR", "permissionModel": "APP_LEVEL"},
         {"_key": "jira", "type": "JIRA", "scope": "team"},
         {"_key": "broken", "type": "JIRA", "scope": "team"},
         {"_key": "conf", "type": "CONFLUENCE", "scope": "team", "accessLimit": "CREATOR"},
@@ -547,11 +607,13 @@ async def test_the_startup_sweep_limits_every_unlicensed_company_wide_connector(
         {"_key": "kb", "type": "KB", "scope": "team"},
         {"_key": "mine", "type": "JIRA", "scope": "personal"},
     ]
-    registry, _ = _registry(UNLICENSED, docs)
+    registry, container = _registry(UNLICENSED, docs)
 
     await registry._limit_unlicensed_connectors("org-1", docs)
 
     assert written == [("jira", AccessLimit.CREATOR), ("conf", AccessLimit.CREATOR)]
+    graph = (await container.data_store()).graph_provider
+    graph.kh_scope_mark_changed.assert_awaited_once_with("done")  # limited already: refreshed, not written
 
 
 @pytest.mark.asyncio
