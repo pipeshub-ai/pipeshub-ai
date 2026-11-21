@@ -163,7 +163,8 @@ describe('notification/service/notification.consumer', () => {
 
       expect(resolveStub.calledOnce).to.be.true;
       expect(createStub.calledOnce).to.be.true;
-      expect(createStub.firstCall.args[1]).to.deep.equal({ ordered: false });
+      // the store stamps both times itself, so a scheduled row's updatedAt is its visibleAt
+      expect(createStub.firstCall.args[1]).to.deep.equal({ ordered: false, timestamps: false });
       expect(mockDispatcher.dispatch.called).to.be.false;
       expect((mockNotificationService.sendToUser as sinon.SinonStub).callCount).to.equal(2);
       expect(userHandler.calledOnce).to.be.true;
@@ -378,8 +379,8 @@ describe('notification/service/notification.consumer', () => {
           const { outcome } = await run(insertMany, { ...event, visibleAt: at, createdAt: at });
           await outcome;
           const [doc] = insertMany.firstCall.args[0];
-          expect(doc.visibleAt).to.equal(at);
-          expect(doc.createdAt).to.equal(at);
+          expect(doc.visibleAt).to.deep.equal(new Date(at));
+          expect(doc.createdAt).to.deep.equal(new Date(at));
           expect(doc).to.not.have.property('recipientUserIds');
         });
       });
@@ -425,17 +426,18 @@ describe('notification/service/notification.consumer', () => {
       orgName: 'Acme',
       accessLevel: 'write',
     };
-    const saved = (user: mongoose.Types.ObjectId, extra: Record<string, unknown> = {}) => ({
-      _id: new mongoose.Types.ObjectId(),
-      orgId: new mongoose.Types.ObjectId(orgId),
-      assignedTo: user,
-      dedupeKey: `chat.shared:s1:${String(user)}`,
-      redirectLink: '/chat?conversationId=s1',
-      toObject() {
-        return { _id: this._id, assignedTo: user };
-      },
-      ...extra,
-    });
+    // A stored document as Mongoose hands it back: ids as ObjectIds, read through `toObject()`.
+    const saved = (user: mongoose.Types.ObjectId, extra: Record<string, unknown> = {}) => {
+      const stored = {
+        _id: new mongoose.Types.ObjectId(),
+        orgId: new mongoose.Types.ObjectId(orgId),
+        assignedTo: user,
+        dedupeKey: `chat.shared:s1:${String(user)}`,
+        redirectLink: '/chat?conversationId=s1',
+        ...extra,
+      };
+      return { ...stored, toObject: () => stored };
+    };
     const event = (extra: Record<string, unknown> = {}) => ({
       orgId,
       type: 'chat.shared',
@@ -511,7 +513,7 @@ describe('notification/service/notification.consumer', () => {
       expect(sendToUser().firstCall.args[1]).to.equal('newNotification');
       expect(mockDispatcher.dispatch.callCount).to.equal(1);
       expect(mockDispatcher.dispatch.firstCall.args[0]).to.deep.include({
-        assignedTo: userB,
+        assignedTo: String(userB),
         dedupeKey: inserted.dedupeKey,
         redirectLink: '/chat?conversationId=s1',
         emailIntent,
@@ -599,8 +601,8 @@ describe('notification/service/notification.consumer', () => {
         .callsFake(async (docs: unknown) =>
           (docs as { assignedTo: string }[]).map((doc) => {
             // Mongoose casts the recipient id to an ObjectId on insert.
-            const assignedTo = new mongoose.Types.ObjectId(doc.assignedTo);
-            return { _id: new mongoose.Types.ObjectId(), assignedTo, toObject: () => ({ assignedTo }) };
+            const stored = { _id: new mongoose.Types.ObjectId(), assignedTo: new mongoose.Types.ObjectId(doc.assignedTo) };
+            return { ...stored, toObject: () => stored };
           }) as never,
         );
       outboxCreate = sinon.stub(OutboxEvent, 'create').resolves();
@@ -654,7 +656,8 @@ describe('notification/service/notification.consumer', () => {
       policy.plan.callsFake(async (_event, base) => ({ userIds: base, pushExtras: async () => ({ context }) }));
       await run(event());
       expect(insertManyStub.firstCall.args[0][0]).to.not.have.property('context');
-      expect(sendToUser().firstCall.args[2]).to.deep.equal({ assignedTo: userA, context });
+      const [{ _id }] = (await insertManyStub.firstCall.returnValue) as [{ _id: mongoose.Types.ObjectId }];
+      expect(sendToUser().firstCall.args[2]).to.deep.equal({ _id: String(_id), assignedTo: String(userA), context });
     });
 
     it('keeps broker-only fields off the stored rows', async () => {
@@ -677,10 +680,16 @@ describe('notification/service/notification.consumer', () => {
 
     it('after about 30 s puts the original back on the outbox under a key of its own, then acknowledges', async () => {
       insertManyStub.rejects(notPrimary());
+      let appendedIn: string | undefined;
+      outboxCreate.callsFake(async () => {
+        appendedIn = getCurrentOrgId();
+      });
       await runPastRetryWindow(JSON.stringify(event()));
       expect(insertManyStub.callCount).to.equal(6);
       expect(outboxCreate.calledOnce).to.be.true;
-      const row = outboxCreate.firstCall.args[0];
+      // a PostgreSQL outbox appends only inside an organisation
+      expect(appendedIn).to.equal(orgId);
+      const [row] = outboxCreate.firstCall.args[0];
       expect(row).to.include({ topic: 'notification', key: 'k1' });
       expect(row.orderingKey).to.match(/^redeliver:[0-9a-f-]{36}$/);
       expect(JSON.parse(row.value)).to.deep.equal({ ...event(), redelivery: 1 });
@@ -693,7 +702,7 @@ describe('notification/service/notification.consumer', () => {
     it('backs off longer on each redelivery, and keys an unkeyed message by its type', async () => {
       insertManyStub.rejects(notPrimary());
       await runPastRetryWindow(event({ redelivery: 3 }), '');
-      const row = outboxCreate.firstCall.args[0];
+      const [row] = outboxCreate.firstCall.args[0];
       expect(row.key).to.equal('CONNECTOR_SYNC_ERROR');
       expect(JSON.parse(row.value).redelivery).to.equal(4);
       expect(row.nextAttemptAt.getTime()).to.equal(Date.now() + 16_000);

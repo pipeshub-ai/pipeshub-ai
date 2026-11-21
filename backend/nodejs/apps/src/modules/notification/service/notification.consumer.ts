@@ -5,17 +5,24 @@ import {
   StreamMessage,
 } from '../../../libs/types/messaging.types';
 import { Logger } from '../../../libs/services/logger.service';
-import { OutboxEvent } from '../../../libs/repositories/outbox/schema/outbox.schema';
 import { injectable, inject, optional } from 'inversify';
 import mongoose from 'mongoose';
-import { INotification, Notifications } from '../schema/notification.schema';
+import { Notifications } from '../schema/notification.schema';
 import { forOrg } from '../../../libs/context/orgContext';
 import { isRetryableStoreError } from '../../../libs/repositories/errors';
-import { DuplicateEnvelope } from '../../../libs/context/envelope';
-import { NotificationService } from './notification.service';
+import {
+  DuplicateEnvelope,
+  withDeliveryRecorded,
+} from '../../../libs/context/envelope';
+import {
+  getNotificationRepository,
+  type NewNotification,
+  type NotificationRow,
+} from '../../../libs/repositories/notification';
+import { getOutboxRepository } from '../../../libs/repositories/outbox';
 import { isNotYetVisible } from '../../../libs/repositories/notification/dates';
 import { ValidationError } from '../../../libs/errors/validation.error';
-import { withDeliveryRecorded } from '../../../libs/context/envelope';
+import { NotificationService } from './notification.service';
 import {
   INotificationEmailDispatcher,
   NOTIFICATION_EMAIL_DISPATCHER,
@@ -43,40 +50,23 @@ import {
 // Defined beside the delivery that counts it; exported here as before.
 export { notificationEventRefused } from './notification.delivery';
 
-const DUPLICATE_KEY_CODE = 11000;
-
 /** In-process retries stop after this; it outlasts a primary election. */
 const RETRY_WINDOW_MS = 30_000;
 const FIRST_RETRY_DELAY_MS = 1_000;
 /** Times one event may go back on the outbox before it is dropped. */
 const MAX_REDELIVERIES = 8;
 
-interface InsertManyFailure {
-  code?: number;
-  writeErrors?: { code?: number; err?: { code?: number } }[];
-  insertedDocs?: INotification[];
-}
-
-// Mongoose copies `insertMany` write errors as plain objects, losing the
-// driver's `code` getter, so the code is only on the nested `err`.
-const isDuplicateKey = (error: unknown): boolean => {
-  if (typeof error !== 'object' || error === null) return false;
-  const e = error as { code?: unknown; err?: { code?: unknown } };
-  return (e.code ?? e.err?.code) === DUPLICATE_KEY_CODE;
-};
-
-const sessionIdOf = (payload: INotification['payload']): string | undefined =>
+const sessionIdOf = (
+  payload: NotificationRow['payload'],
+): string | undefined =>
   typeof payload?.sessionId === 'string' ? payload.sessionId : undefined;
-
-const toPlainObject = (doc: INotification): object =>
-  typeof doc.toObject === 'function' ? doc.toObject<object>() : doc;
 
 /** The stored row plus the policy's push-only fields. */
 const pushed = async (
-  saved: INotification,
+  saved: NotificationRow,
   plan: DeliveryPlan,
 ): Promise<object> => ({
-  ...toPlainObject(saved),
+  ...saved,
   ...(await plan.pushExtras?.(saved)),
 });
 
@@ -251,13 +241,17 @@ export class NotificationConsumer {
       });
       return;
     }
-    await OutboxEvent.create({
-      topic: BrokerTopic.NOTIFICATION,
-      key: key !== undefined && key !== '' ? key : event.type,
-      orderingKey: `redeliver:${randomUUID()}`,
-      value: JSON.stringify({ ...event, redelivery }),
-      nextAttemptAt: new Date(Date.now() + 1000 * 2 ** redelivery),
-    });
+    await forOrg(event.orgId, 'notification-consumer', () =>
+      getOutboxRepository().append({
+        topic: BrokerTopic.NOTIFICATION,
+        key: key !== undefined && key !== '' ? key : event.type,
+        orderingKey: `redeliver:${randomUUID()}`,
+        value: JSON.stringify({ ...event, redelivery }),
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: new Date(Date.now() + 1000 * 2 ** redelivery),
+      }),
+    );
     this.logger.warn('Notification re-queued after a transient failure', {
       ...meta,
       redelivery,
@@ -312,6 +306,7 @@ export class NotificationConsumer {
     });
     // On PostgreSQL the rows and the inbox record for this org commit together, so a redelivery cannot store them twice.
     const created = await this.stillWanted(
+      event.orgId,
       await withDeliveryRecorded(() => this.insertNew(docs), event.orgId),
       plan,
     );
@@ -320,7 +315,7 @@ export class NotificationConsumer {
 
     const dispatchedUserIds: string[] = [];
     for (const saved of due) {
-      const userId = String(saved.assignedTo);
+      const userId = saved.assignedTo;
       this.notificationService.sendToUser(
         userId,
         'newNotification',
@@ -339,7 +334,7 @@ export class NotificationConsumer {
             redirectLink: saved.redirectLink,
             emailIntent,
             notification: {
-              id: String(saved._id),
+              id: saved._id,
               type: saved.type,
               sessionId: sessionIdOf(saved.payload),
             },
@@ -352,7 +347,7 @@ export class NotificationConsumer {
       orgId: event.orgId,
       type: event.type,
       recipientCount: dispatchedUserIds.length,
-      notificationIds: created.map((saved) => String(saved._id)),
+      notificationIds: created.map((saved) => saved._id),
       userIds: dispatchedUserIds,
     });
   }
@@ -362,48 +357,52 @@ export class NotificationConsumer {
    * is pushed. When the check fails every row of this delivery is deleted, so a retry can store them again.
    */
   private async stillWanted(
-    created: INotification[],
+    orgId: string,
+    created: NotificationRow[],
     plan: DeliveryPlan,
-  ): Promise<INotification[]> {
+  ): Promise<NotificationRow[]> {
     if (!plan.stillFor || created.length === 0) {
       return created;
     }
     let still: ReadonlySet<string>;
     try {
-      still = await plan.stillFor(created.map((saved) => saved.assignedTo));
+      still = await plan.stillFor(
+        created.map((saved) => new mongoose.Types.ObjectId(saved.assignedTo)),
+      );
     } catch (error) {
-      await this.takeBack(created);
+      await this.takeBack(orgId, created);
       throw error;
     }
-    const gone = created.filter(
-      (saved) => !still.has(String(saved.assignedTo)),
-    );
+    const gone = created.filter((saved) => !still.has(saved.assignedTo));
     if (gone.length > 0) {
-      await this.takeBack(gone);
+      await this.takeBack(orgId, gone);
       this.logger.debug(
         'Notification taken back: access changed while it was stored',
         {
           type: gone[0]?.type,
-          notificationIds: gone.map((saved) => String(saved._id)),
+          notificationIds: gone.map((saved) => saved._id),
         },
       );
     }
-    return created.filter((saved) => still.has(String(saved.assignedTo)));
+    return created.filter((saved) => still.has(saved.assignedTo));
   }
 
   /** Deletes rows nobody has been told of yet; a few tries, since a row left behind points at what they lost. */
-  private async takeBack(rows: readonly INotification[]): Promise<void> {
+  private async takeBack(
+    orgId: string,
+    rows: readonly NotificationRow[],
+  ): Promise<void> {
     const ids = rows.map((saved) => saved._id);
     for (let attempt = 1; ; attempt += 1) {
       try {
-        await Notifications.deleteMany({ _id: { $in: ids } });
+        await getNotificationRepository().deleteByIds(orgId, ids);
         return;
       } catch (error) {
         if (attempt >= TAKE_BACK_TRIES) {
           this.logger.error(
             'Could not take back notifications nobody may see',
             {
-              notificationIds: ids.map(String),
+              notificationIds: ids,
               error: error instanceof Error ? error.message : String(error),
             },
           );
@@ -414,42 +413,26 @@ export class NotificationConsumer {
     }
   }
 
-  /** Returns the docs that were newly inserted; a duplicate-key doc was delivered before and is dropped. */
+  /** Returns the rows that were newly stored; a row whose `dedupeKey` its recipient has was delivered before and is dropped. */
   private async insertNew(
-    allDocs: Record<string, unknown>[],
-  ): Promise<INotification[]> {
+    allDocs: NewNotification[],
+  ): Promise<NotificationRow[]> {
     const docs = this.withoutInvalid(allDocs);
     if (docs.length === 0) {
       return [];
     }
-    try {
-      return await Notifications.insertMany(docs, { ordered: false });
-    } catch (error) {
-      const failure = error as InsertManyFailure;
-      // Mongoose attaches `insertedDocs` to every failure; with no per-document
-      // errors (an empty list after an election) the whole write failed and
-      // `insertedDocs` lists docs that were never stored, so it is retried.
-      const perDocument = failure.writeErrors ?? [];
-      if (
-        !Array.isArray(failure.insertedDocs) ||
-        (perDocument.length === 0 && !isDuplicateKey(failure))
-      ) {
-        throw error;
-      }
-      const writeErrors = perDocument.length > 0 ? perDocument : [failure];
-      if (!writeErrors.every(isDuplicateKey)) {
-        this.logger.error('Some notifications failed to insert', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return failure.insertedDocs;
+    const { inserted, refused } =
+      await getNotificationRepository().insertNew(docs);
+    if (refused.length > 0) {
+      this.logger.error('Some notifications failed to insert', {
+        errors: refused,
+      });
     }
+    return inserted;
   }
 
-  /** `insertMany` with `ordered: false` skips a schema-invalid doc without a word, so they are found and logged here. */
-  private withoutInvalid(
-    docs: Record<string, unknown>[],
-  ): Record<string, unknown>[] {
+  /** A store would skip a schema-invalid doc without a word, or refuse the whole batch for it, so they are found and logged here. */
+  private withoutInvalid(docs: NewNotification[]): NewNotification[] {
     return docs.filter((doc) => {
       // eslint-disable-next-line @typescript-eslint/no-deprecated -- a synchronous schema check, without middleware
       const invalid = new Notifications(doc).validateSync();

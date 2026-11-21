@@ -1194,6 +1194,7 @@ column platform.mail_log.updated_at type=timestamp with time zone notnull=true i
 column platform.mail_log.version type=integer notnull=true identity= generated= default=0
 column platform.notifications.assigned_to type=platform.oid24 notnull=true identity= generated= default=-
 column platform.notifications.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.notifications.dedupe_key type=text notnull=false identity= generated= default=-
 column platform.notifications.deleted_by type=platform.oid24 notnull=false identity= generated= default=-
 column platform.notifications.id type=platform.oid24 notnull=true identity= generated= default=-
 column platform.notifications.is_deleted type=boolean notnull=true identity= generated= default=false
@@ -2673,6 +2674,7 @@ index platform.kv_entries_expiry on platform.kv_entries unique=false exclusion=f
 index platform.kv_entries_pkey on platform.kv_entries unique=true exclusion=false valid=true def=3b0c327cf2af823aa5b132cf444b9604
 index platform.mail_log_pkey on platform.mail_log unique=true exclusion=false valid=true def=c719d3a90642058b616d76a1f88aa0b1
 index platform.notifications_by_id on platform.notifications unique=false exclusion=false valid=true def=3d6f5d34f84fecbd5952e0f9ee5f6f5d
+index platform.notifications_dedupe on platform.notifications unique=false exclusion=false valid=true def=164ec42fc38fb0b9689b974ba451b516
 index platform.notifications_inbox on platform.notifications unique=false exclusion=false valid=true def=06ac82fb8e2962cfd6c433c57c866e0d
 index platform.notifications_pkey on platform.notifications unique=true exclusion=false valid=true def=181a7fa68961a17044571da8e77cc701
 index platform.notifications_visible on platform.notifications unique=false exclusion=false valid=true def=4b6f5b4879b73d1ea21c2a35e4da2318

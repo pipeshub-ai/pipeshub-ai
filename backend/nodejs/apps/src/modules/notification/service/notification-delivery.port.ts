@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { INotification } from '../schema/notification.schema';
+import type { NotificationRow } from '../../../libs/repositories/notification';
 import type { NotificationBrokerMessage } from '../utils/notification-payload.resolver';
 
 export interface DeliveryPlan {
@@ -8,7 +8,7 @@ export interface DeliveryPlan {
   readFor?: ReadonlySet<string>;
   /** Extra fields for the live push only; never stored. Never throws. */
   pushExtras?: (
-    doc: INotification,
+    row: NotificationRow,
   ) => Promise<Record<string, unknown> | undefined>;
   /**
    * Asked once the rows are stored, before anything is pushed or emailed: which of these user ids may still have

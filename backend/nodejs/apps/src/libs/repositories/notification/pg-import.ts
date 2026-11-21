@@ -58,6 +58,7 @@ export async function importNotificationDocs(
       is_deleted: d.isDeleted ?? false,
       deleted_by: idText(d.deletedBy),
       visible_at: when(d.visibleAt),
+      dedupe_key: str(d.dedupeKey),
       version: typeof d.__v === 'number' ? d.__v : 0,
       updated_at: d.updatedAt ?? when(d.visibleAt) ?? d.createdAt,
     });
