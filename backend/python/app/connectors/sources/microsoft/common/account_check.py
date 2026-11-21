@@ -156,3 +156,85 @@ async def withdraw_unconfirmed_accounts(
             except Exception as e:
                 log.warning(f"Could not save the unconfirmed-account count: {e}")
     return trusted
+
+
+GROUP_CHECK_KEY = "unread-group-members"
+
+
+class GroupMemberGrace:
+    """The same bound for a group whose member read Microsoft refuses: its stored members keep the group's access for
+    ``UNCONFIRMED_SYNCS_BEFORE_CLOSE`` syncs in a row, then lose it. A refusal that lasts (a 403 on a group whose
+    membership is hidden, which needs ``Member.Read.Hidden``,
+    https://learn.microsoft.com/en-us/graph/api/group-list-transitivemembers) would otherwise let a person removed
+    from the group keep it for good. A read that succeeds starts the count again and writes the members back; a read
+    that never reached Microsoft keeps the members and is not counted; a sync that does not read the group leaves
+    its count as it is.
+
+    ``load`` once per sync, ``read`` or ``refused`` per group read, ``finish`` at the end. Before ``load`` it closes
+    nothing and counts nothing."""
+
+    def __init__(self, connector: "BaseConnector", sync_point: SyncPoint) -> None:
+        self.connector, self.sync_point = connector, sync_point
+        self.streaks: dict[str, int] | None = None
+        self.saved: dict[str, int] = {}
+        self.closed: list[str] = []
+        self.counted: set[str] = set()
+
+    async def load(self) -> None:
+        self.closed, self.counted = [], set()
+        try:
+            state = await self.sync_point.read_sync_point(GROUP_CHECK_KEY) or {}
+        except Exception as e:
+            # Without the count no group can pass the grace this sync; the reads still write what they get.
+            self.connector.logger.warning(f"Could not read the unread-group-member count; no group loses its members by it this sync: {e}")
+            self.streaks = None
+            return
+        try:
+            saved = json.loads(state.get("streaks") or "{}")
+        except (TypeError, ValueError):
+            saved = {}
+        self.saved = {k: v for k, v in saved.items() if isinstance(v, int)} if isinstance(saved, dict) else {}
+        self.streaks = dict(self.saved)
+
+    def read(self, group_id: str) -> None:
+        if self.streaks is not None:
+            self.streaks.pop(group_id, None)
+
+    def refused(self, group_id: str, error: BaseException) -> bool:
+        """Count a failed member read. True when the group's stored members must lose its access now."""
+        if self.streaks is None or not isinstance(error, ODataError):
+            return False
+        if group_id not in self.counted:  # a group read twice in one sync counts once
+            self.counted.add(group_id)
+            self.streaks[group_id] = self.streaks.get(group_id, 0) + 1
+        n = self.streaks[group_id]
+        if n == UNCONFIRMED_SYNCS_BEFORE_CLOSE:
+            self.closed.append(group_id)
+        return n >= UNCONFIRMED_SYNCS_BEFORE_CLOSE
+
+    async def finish(self) -> None:
+        if self.streaks is None:
+            return
+        log = self.connector.logger
+        counting = {k: v for k, v in self.streaks.items() if v < UNCONFIRMED_SYNCS_BEFORE_CLOSE}
+        if counting:
+            log.warning(f"{len(counting)} group(s) keep their stored members while Microsoft refuses the member read "
+                        f"(longest {max(counting.values())} of {UNCONFIRMED_SYNCS_BEFORE_CLOSE} syncs)")
+        if self.closed:
+            log.error(f"The group members are unverified past the grace: {len(self.closed)} group(s) whose member read "
+                      f"Microsoft refused for {UNCONFIRMED_SYNCS_BEFORE_CLOSE} syncs in a row lose their stored members' access")
+            await self.connector.notify(
+                type=NotificationType.CONNECTOR_GROUP_SYNC_ERROR,
+                severity=NotificationSeverity.WARNING,
+                title=f"{self.connector.connector_name.value}: groups Microsoft would not list lost their members",
+                message=(f"Microsoft refused to list the members of {len(self.closed)} group(s) for "
+                         f"{UNCONFIRMED_SYNCS_BEFORE_CLOSE} syncs in a row, so their members no longer have access "
+                         "through these groups. It comes back on the first sync that can read the members."),
+                recipient_user_ids=[self.connector.created_by],
+            )
+        if self.streaks != self.saved:
+            try:
+                await self.sync_point.update_sync_point(GROUP_CHECK_KEY, {"streaks": json.dumps(self.streaks, sort_keys=True)})
+                self.saved = dict(self.streaks)
+            except Exception as e:
+                log.warning(f"Could not save the unread-group-member count: {e}")

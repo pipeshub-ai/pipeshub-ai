@@ -9,6 +9,10 @@ from urllib.parse import quote
 import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+from kiota_abstractions.base_request_configuration import RequestConfiguration
+from msgraph.generated.groups.item.transitive_members.transitive_members_request_builder import (
+    TransitiveMembersRequestBuilder,
+)
 from msgraph.generated.models.attachment import Attachment  # type: ignore
 from msgraph.generated.models.conversation_thread import (
     ConversationThread,  # type: ignore
@@ -83,6 +87,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.registry.types import FieldType
 from app.connectors.sources.microsoft.common.account_check import (
+    GroupMemberGrace,
     withdraw_unconfirmed_accounts,
 )
 from app.connectors.sources.microsoft.common.apps import OutlookApp
@@ -840,6 +845,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             all_synced_user_groups: list[AppUserGroup] = []
             batch_size = OutlookSyncConfig.USER_GROUPS_SYNC_BATCH_SIZE
 
+            grace = GroupMemberGrace(self, self.user_sync_point)
+            await grace.load()
             # groups are Pydantic Group objects from _get_all_microsoft_365_groups
             for group in groups:
                 try:
@@ -888,15 +895,20 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     group_record_group = self._transform_group_to_record_group(group)
 
                     # Fetch members for this group. Unknown is not empty: a failed read keeps
-                    # the stored members, while the mailbox and its conversations sync as usual.
+                    # the stored members, within the grace, while the mailbox and its conversations sync as usual.
                     try:
                         members = await self._get_group_members(group_id)
+                        grace.read(group_id)
                     except Exception as e:
-                        self.logger.error(f"Keeping stored members of group {group_id}: {e}")
                         self._full_sync_incomplete = True
                         self._skipped["groups"] += 1
-                        await self.data_entities_processor.note_kept_user_group(self.connector_id, group_id)
-                        members = None
+                        if grace.refused(group_id, e):
+                            self.logger.error(f"Withdrawing the stored members of group {group_id}: {e}")
+                            members = []
+                        else:
+                            self.logger.error(f"Keeping stored members of group {group_id}: {e}")
+                            await self.data_entities_processor.note_kept_user_group(self.connector_id, group_id)
+                            members = None
 
                     # Convert to AppUser objects - members are Pydantic User objects from _get_group_members
                     app_users = []
@@ -955,6 +967,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             if user_groups_batch:
                 await self.data_entities_processor.on_new_user_groups(user_groups_batch)
                 self.logger.info(f"Processed final batch of {len(user_groups_batch)} groups")
+            await grace.finish()
 
             # Process remaining group mailbox RecordGroups
             if group_record_groups_batch:
@@ -1061,43 +1074,23 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             raise
 
     async def _get_group_members(self, group_id: str) -> list[User]:
-        """Get members of a specific group with pagination."""
-        try:
-            if not self.external_users_client:
-                raise Exception("External Users Groups client not initialized")
-
-            all_members = []
-            next_url = None
-            page_num = 1
-
-            while True:
-                response = await self.external_users_client.groups_list_transitive_members(
-                    group_id=group_id,
-                    next_url=next_url,
-                    select=OutlookAPIFields.GROUP_MEMBER_SELECT_FIELDS
-                )
-
-                if not response.success:
-                    # Raise: the member list replaces every membership edge, so a partial
-                    # one would revoke the missing members' access for this run.
-                    raise Exception(f"Failed to get members page {page_num} for group {group_id}: {response.error}")
-
-                # response.data is DirectoryObjectCollectionResponse with .value containing list[User]
-                members_page = response.data.value if response.data.value else []
-                all_members.extend(members_page)
-
-                # Check for next page
-                next_url = response.data.odata_next_link if response.data.odata_next_link else None
-                if not next_url:
-                    break
-
-                page_num += 1
-
-            return all_members
-
-        except Exception as e:
-            self.logger.error(f"Error getting group members for {group_id}: {e}")
-            raise
+        """Every transitive member of a group, all pages. Any failed page raises: the list replaces every
+        membership edge, so a partial one would revoke the missing members' access. Read with the Graph
+        client itself, so a refusal raises Microsoft's ``ODataError`` (``GroupMemberGrace`` counts only those)."""
+        if not self.external_users_client:
+            raise Exception("External Users Groups client not initialized")
+        builder = self.external_users_client.client.groups.by_group_id(group_id).transitive_members
+        query = TransitiveMembersRequestBuilder.TransitiveMembersRequestBuilderGetQueryParameters(
+            select=OutlookAPIFields.GROUP_MEMBER_SELECT_FIELDS
+        )
+        members: list[User] = []
+        page = await builder.get(RequestConfiguration(query_parameters=query))
+        while page:
+            members.extend(page.value or [])
+            if not page.odata_next_link:
+                break
+            page = await builder.with_url(page.odata_next_link).get()
+        return members
 
     async def _get_user_groups(self, user_id: str) -> list[Group]:
         """Get groups that a user is a member of (cached for performance).

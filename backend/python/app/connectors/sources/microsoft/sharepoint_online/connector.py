@@ -99,6 +99,7 @@ from app.connectors.core.registry.types import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.account_check import (
+    GroupMemberGrace,
     withdraw_unconfirmed_accounts,
 )
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
@@ -681,6 +682,7 @@ class SharePointConnector(BaseConnector):
 
         self._reset_permission_caches()
         self._health = SyncHealth()
+        self._group_grace = GroupMemberGrace(self, self.user_sync_point)
         # Emails of accounts the tenant has disabled or deleted, from this run's user list.
         self._inactive_emails: set[str] = set()
         # Emails the user listing showed as active; the only users granted directly while no disabled set is known.
@@ -3288,11 +3290,13 @@ class SharePointConnector(BaseConnector):
         A group whose members can't all be read keeps the members stored for it: writing what was read
         would take access away from everyone who was not. Such a group is reported to the run's health.
         """
+        await self._group_grace.load()
         try:
             await self._sync_azure_ad_groups()
         except Exception as groups_error:
             self.logger.error(f"❌ Error syncing Azure AD Groups with delta: {groups_error}")
             self._health.skipped("Entra groups", groups_error)
+        await self._group_grace.finish()
 
         self.logger.info("Starting SharePoint Site Groups fetch...")
         self._org_wide_site_groups = {}
@@ -3491,7 +3495,10 @@ class SharePointConnector(BaseConnector):
             if isinstance(result, Exception):
                 complete = False
                 self._health.skipped(f"members of Entra group {getattr(group, 'display_name', group.id)}", result)
+                if self._group_grace.refused(group.id, result):
+                    group_with_members.append((self._app_user_group(group), []))
             else:
+                self._group_grace.read(group.id)
                 group_with_members.append(result)
         if group_with_members:
             await self.data_entities_processor.on_new_user_groups(group_with_members)
@@ -3551,9 +3558,13 @@ class SharePointConnector(BaseConnector):
             for group in changed.values():
                 try:
                     refreshed.append(await self._group_with_members(group))
+                    self._group_grace.read(group.id)
                 except Exception as e:
+                    # Still not applied once the grace is over: the page is read again until the members are.
                     applied = False
                     self._health.skipped(f"members of Entra group {getattr(group, 'display_name', group.id)}", e)
+                    if self._group_grace.refused(group.id, e):
+                        refreshed.append((self._app_user_group(group), []))
             if refreshed:
                 await self.data_entities_processor.on_new_user_groups(refreshed)
             if not applied:
