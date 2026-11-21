@@ -344,3 +344,21 @@ async def test_two_closes_give_two_notices() -> None:
     for _ in range(N):
         await w.sync()
     assert len(_notices(w)) == 2, "the second close is not suppressed as a repeat of the first"
+
+
+@pytest.mark.asyncio
+async def test_a_close_waits_while_its_notice_cannot_be_saved(world: Outlook | SharePoint) -> None:
+    world.answer = _odata(403)
+    for _ in range(N - 1):
+        await world.sync()
+    sp = world.c.user_sync_point
+    saved = sp.update_sync_point
+    sp.update_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
+    world.c.notify_and_wait.return_value = NotificationOutcome.FAILED
+    await world.sync()
+    assert [] not in _written(world.proc, "g1"), "no group is closed while its notice cannot be owed"
+    assert not _notices(world)
+    sp.update_sync_point = saved
+    await world.sync()
+    assert _written(world.proc, "g1")[-1] == [] and len(_notices(world)) == 1
+    assert sp.data[GROUP_CHECK_KEY]["pending_notice"] == '["g1"]', "still owed: the notice was not delivered"

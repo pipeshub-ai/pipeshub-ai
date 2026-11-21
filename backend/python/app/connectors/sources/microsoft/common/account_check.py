@@ -228,9 +228,10 @@ class GroupMemberGrace:
         self.saved: dict[str, str] = {}
         self.closed: list[str] = []
         self.counted: set[str] = set()
+        self.blocked = False
 
     async def load(self) -> None:
-        self.closed, self.counted = [], set()
+        self.closed, self.counted, self.blocked = [], set(), False
         try:
             state = await self.sync_point.read_sync_point(GROUP_CHECK_KEY) or {}
         except Exception as e:
@@ -259,9 +260,19 @@ class GroupMemberGrace:
             self.streaks[group_id] = self.streaks.get(group_id, 0) + 1
         n = self.streaks[group_id]
         if n == UNCONFIRMED_SYNCS_BEFORE_CLOSE and group_id not in self.closed:
-            self.closed.append(group_id)
+            owed_before = group_id in self.pending
             self.pending.add(group_id)
-            await self._save()  # the notice is owed before the caller writes the group empty
+            # The notice is owed before the caller writes the group empty. Without it saved a close would go untold if
+            # the notice then failed, so this sync closes no group, and this one stays one sync short of the bound.
+            if self.blocked or not await self._save():
+                if not self.blocked:
+                    self.connector.logger.error("Could not save the owed group notice; groups past the grace keep their members this sync")
+                self.blocked = True
+                if not owed_before:
+                    self.pending.discard(group_id)
+                self.streaks[group_id] = n - 1
+                return False
+            self.closed.append(group_id)
         return n >= UNCONFIRMED_SYNCS_BEFORE_CLOSE
 
     async def finish(self) -> None:
@@ -296,12 +307,15 @@ class GroupMemberGrace:
     def _state(self) -> dict[str, str]:
         return {"streaks": json.dumps(self.streaks or {}, sort_keys=True), "pending_notice": json.dumps(sorted(self.pending))}
 
-    async def _save(self) -> None:
+    async def _save(self) -> bool:
+        """Whether the sync point holds this state now."""
         state = self._state()
         if state == self.saved:
-            return
+            return True
         try:
             await self.sync_point.update_sync_point(GROUP_CHECK_KEY, state)
-            self.saved = state
         except Exception as e:
             self.connector.logger.warning(f"Could not save the unread-group-member count: {e}")
+            return False
+        self.saved = state
+        return True
