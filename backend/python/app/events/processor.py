@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tuple, cast
 
@@ -1584,8 +1585,11 @@ class Processor:
             ) from e
 
     async def _mark_record(
-        self, record_id, indexing_status: ProgressStatus, reason: str | None = None
+        self, record_id, indexing_status: ProgressStatus, reason: str | None = None,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> None:
+        """Write a terminal ``indexing_status``. ``extra_fields`` are merged into the same single write (and win over the
+        derived fields), so a caller can land further fields together with the status."""
         record = await self.graph_provider.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )
@@ -1616,6 +1620,8 @@ class Processor:
         # reads as a crashed parse and stale recovery republishes it for ever.
         if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
             status_update["parsingStatus"] = indexing_status.value
+        if extra_fields:
+            status_update.update(extra_fields)
 
         swap = keep_old_copy.current_swap(record_id) if indexing_status == ProgressStatus.EMPTY else None
         if swap is not None and getattr(self.sink_orchestrator, "swap", None) is not None:

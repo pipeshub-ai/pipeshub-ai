@@ -30,6 +30,8 @@ const INTERNAL = {
   failedAt: 1_700_000_100_000,
   indexingAttempts: 2,
   pageCount: 12,
+  indexedMd5: '0123456789abcdef0123456789abcdef',
+  pendingTaxonomyRefs: [{ id: 'c1', type: 'category' }],
   republishCount: 3,
   pendingVirtualRecordId: 'vrid-replacement',
   p_color: 'red',

@@ -193,6 +193,21 @@ def file_too_large_to_read(extension: str | None) -> str:
     )
 
 
+MAX_INDEXED_PDF_PAGES = 500
+
+_EDITION_TEXT = "Supported in Enterprise Edition."
+
+
+def pdf_over_page_limit(pages: int) -> str:
+    return f"This PDF has {pages:,} pages; PDFs over {MAX_INDEXED_PDF_PAGES} pages are not indexed. {_EDITION_TEXT}"
+
+
+PDF_PAGE_LIMIT_NOTE = (
+    f"Indexed before the {MAX_INDEXED_PDF_PAGES}-page limit; it stays indexed until a change to its bytes is detected. "
+    f"PDFs over {MAX_INDEXED_PDF_PAGES} pages: {_EDITION_TEXT}"
+)
+
+
 # The record field for a note on how a record was indexed (shown on a COMPLETED record), kept apart
 # from `reason`, which says why a record or one of its stages was not done.
 INDEXING_NOTE_FIELD = "indexingNote"

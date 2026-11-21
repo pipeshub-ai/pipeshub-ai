@@ -1019,6 +1019,59 @@ Two runs that index the same record (a retry, a replica that raced the first run
 
 ---
 
+### 4.16 Long PDFs: the page limit
+
+A PDF over 500 pages is not indexed. `check_page_limit` (`app/modules/indexing/page_limit.py`) decides before dedup, resume and
+the `IN_PROGRESS` write, from the record as it was read and a page count taken in a parse pool worker
+(`app/modules/parsers/pdf/page_count.py`, pool-governed as `ParseKind.INSPECT`). The count is an `int`, `Unreadable`
+(pdfium cannot open the file) or `Unavailable` (a timeout, a dead worker, a closed pool, or no worker process: the count never runs on a thread, which its timeout cannot stop). With `PARSE_POOL_WORKERS=0` (or no resource governor) the early count is off: the process logs one INFO line, counts no outage, and every PDF is decided after the parse as for `Unavailable`.
+
+The rule never deletes an index on uncertainty:
+
+| Record | 500 pages or fewer | Over 500 | Count `Unavailable` | Count `Unreadable` |
+|---|---|---|---|---|
+| Searchable index and content not proven changed (keep-eligible) | indexed as usual | the index stays, with a note | the whole-file inspection decides before anything is written: over the limit the index stays as at the early site (the note, the count, a reset status restored to `COMPLETED`, nothing parsed and the virtual record id untouched); within it the file is indexed from that same inspection | same as `Unavailable` |
+| Anything else (new file, changed content, nothing searchable) | indexed as usual | refused: `FILE_TYPE_NOT_SUPPORTED` with a reason, and un-indexed | inspected as before | inspected as before; over the limit it is refused |
+
+`indexedMd5` is a nullable internal field, meant to hold the md5 of the bytes last fully indexed. This release only
+accepts it (the record schema and the record endpoint know it) and writes none, so a process of the previous release never
+meets a key it rejects; a later release writes it. The rule reads it when present and compares it with the md5 of the
+downloaded bytes, never with `md5Checksum`, which a connector sync overwrites with the source's value of the new file. A
+record without `indexedMd5`, which is every record until a release writes it, uses the stored `pageCount` first: a stored count of 500 or less with a fresh count over 500 means the bytes changed (a sync overwrites `md5Checksum` with the new file's), so the file is refused and un-indexed, not kept. `pageCount` is already read and written by this release, so this adds no field. A file whose stored count and gate count straddle 500 is refused, even when the two counters disagree on the same bytes. The stored count is dropped by the write that starts an attempt on a new revision, so a retry of a failed attempt no longer has it: a file that grew past 500 pages and whose first attempt failed keeps its old index (with the note) until a later release carries the last indexed count through that write. Without a stored count it uses the older rule: only an md5 mismatch
+(hex, base64 of 16 bytes or 16 raw bytes, both sides known) proves a change, and a `contentRev` mismatch alone proves
+nothing, because a re-embed from stored blocks writes a revision of the same shape. Such a record keeps its index until a byte change is detectable (a changed md5 that the source reports); a file whose
+source has changed since, with no md5 to compare, keeps its index too. The start-up audit below only writes the note: it never
+un-indexes. A record whose `contentRev` starts with
+`refused:` is a refusal that may not have finished un-indexing; it is never kept. A status that a reset wrote
+(`NOT_STARTED`, `QUEUED`) is restored to `COMPLETED` in one conditional write with the note, which applies only while the record
+still has the `contentRev` and virtual record id the decision read; other statuses keep theirs and only get the note. A
+record with neither `COMPLETED` nor the indexed-copy flag counts as having an index only when both its stored content and
+its vectors exist.
+
+A file with no count from the early count is decided from the whole-file inspection; when that has none either (a file only pdfium
+can open), on the in-process pipeline pdfium counts the bytes that are parsed, and with the parsing service the page count the
+service returns decides, in both cases before anything is persisted or indexed. Until that decision, a PDF whose page count is not known stays on the copy its record names: the new virtual record id is written, and the old copy's membership and storage rewritten, only once the page limit has let the file through (a closure the record handler runs after the late check, on the parsing-service path and in process alike). A keep at that point puts back what the event found (the status the run wrote, and a replacement copy pending under another id is dropped and released); a record found on a newer revision or another id is left to its writer. Every keep syncs the membership of the copy it keeps before it is acknowledged, with the call that never deletes: it is idempotent (it reads the holders and sets the membership of each collection), and it fails the keep, to be retried, while the vector store cannot do it. A record that older code had already moved off its copy before the count is not restored: if its file is over the limit on the retry, nothing searchable remains for it and it is refused, and a reindex brings its index back. A file no counter can count
+is still indexed. A lane
+admission timeout during the count is `Unavailable`. While the count is unknown and nothing is kept, deduplication reuses
+only a twin with a recorded `pageCount` of 1 to 500 and no page-limit note.
+
+`pageCount` has one meaning: the pages of the PDF bytes last parsed (or, for a kept file, last downloaded) for the record's current
+`contentRev`. The parse writes it, tied to the revision (it is dropped when the record moves to another revision); the page-limit
+check does not write it for a file that goes on to be parsed. A kept file gets it with the note, and a refusal clears it, because
+the record's revision becomes a tombstone.
+
+A refusal writes the status, a `contentRev` of `refused:<rev>` (so a stage job still queued for the file fails its
+revision check) and `hasIndexedCopy = false` in one write, then calls `unindex_record` (`app/modules/indexing/unindex.py`):
+the taxonomy links are read first and held for the run (a run that fails after the edges are gone and before the points are deleted leaves those points, because its retry reads no links; `pendingTaxonomyRefs` is accepted by the record schema but not written by this release), then the classification and organisation edges, named-entity mentions, classification
+fields, stage states, vectors, stored content and unreached taxonomy points are removed. Each step is idempotent, so a
+failure raises and the retry repeats it. The consumer's record lease already excludes stage writers, so the routine takes
+no lease of its own.
+
+At start-up `pdf_page_limit_audit` notes the indexed PDFs it can prove are over the limit (`PDF_PAGE_LIMIT_AUDIT=false`
+skips it). It reads `pageCount`, reads nothing for files under 1 MiB, and for the rest scans at most the first 8 MiB of
+the stored record without decoding it; compressed records are counted, not inflated.
+A stored record that cannot be read because storage fails in a way a later start can get past (a busy service, a timeout, a lost connection; a refused cached link is first replaced by one fresh link from the gateway) keeps the pass from being marked done: the next start runs it again, for at most three passes, after which the audit is marked done and logs the first records it could not read. Records with nothing to read (a stored object that is gone, a request the service rejects, compressed, local storage) do not hold it open.
+
 ## 5. Root cause: throughput collapses to a few records after the first few hundred
 
 **Status: fixed** by the per-tier dispatch budget and the tier fairness level described in 5.8. Sections 5.2–5.7 describe the code as it was, kept because the mechanism is the reason the dispatch layer is shaped the way it now is. Regression test: `backend/python/tests/unit/services/messaging/test_tier_dispatch_regression.py` (both brokers), with the unit-level guards in `test_fair_scheduling_limits.py::TestDispatchIsBoundedPerTier` and `test_consumer_concurrency.py::TestDispatchBudget`.

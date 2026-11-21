@@ -504,6 +504,7 @@ async def submit(
     interactive: bool = False,
     kind: object | None = None,
     permit: Permit | None = None,
+    process_only: bool = False,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -519,7 +520,12 @@ async def submit(
     *interactive* (a chat attachment a person is waiting on) runs on a pool of
     its own under ``PARSE_LANES=on`` so background indexing cannot hold it up;
     it is ignored otherwise.
+
+    *process_only* never falls back to a thread (which *timeout* cannot stop): with no worker process, or a pool that
+    closed under the job, it raises ``ParseWorkerError``.
     """
+    if process_only and parse_pool_workers() <= 0:
+        raise ParseWorkerError("No parse worker process is available", "no_worker")
     # PIPESHUB_CAPACITY_PROFILE=auto only: the lane adopts the caller's permit, or reserves one when it is given none.
     if permit is None and wiring.classes_enabled():
         permit = class_pools.lane_permit(kind)  # the admission's own permit, never reserved twice
@@ -531,8 +537,10 @@ async def submit(
     release_here = held is not None
     try:
         pool = _pool(interactive=interactive, kind=kind)
+        if pool is None and process_only:
+            raise ParseWorkerError("No parse worker process is available", "no_worker")
         if pool is not None:
-            job = _Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind))
+            job = _Job(fn, args, label, size, timeout, require_worker=process_only, kind=kind, covered=_covered(kind))
             if held is not None:
                 # The lane decides when the job is over: it finishes it, kills its worker after a cancel, or drops it
                 # while still queued. The tokens go back then, not when the awaiting caller goes away.
@@ -542,6 +550,8 @@ async def submit(
                 return await pool.submit(job)
             except _PoolClosed:
                 release_here = held is not None  # never enqueued: nothing else will release it
+                if process_only:
+                    raise ParseWorkerError("The parse worker pool closed", "pool_closed") from None
         # A thread cannot be stopped: if this coroutine is cancelled, the work goes on and keeps its tokens until it
         # ends, so the permit is released when the thread does, not when the caller goes away.
         future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn, *args)
