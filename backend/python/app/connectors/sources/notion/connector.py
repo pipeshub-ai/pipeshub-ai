@@ -1293,7 +1293,9 @@ class NotionConnector(BaseConnector):
             if complete is not None:
                 return complete
             refreshed = await self._refresh_user_token(connection) if attempt == 1 else False
-            if refreshed is None:
+            if refreshed is None or (not refreshed and connection.method == METHOD_CONNECTOR):
+                # The connector's own token is the connector's to fix: never revoked here; access
+                # ends only once the last complete listing goes stale.
                 self._sync_incomplete = True
                 return False
             if not refreshed:

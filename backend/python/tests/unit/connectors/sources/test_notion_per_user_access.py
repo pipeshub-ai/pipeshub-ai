@@ -1386,3 +1386,36 @@ class TestConnectorSignIn:
         public = _connection("admin", token="", method="connector").public()
         assert (public["method"], public["viaConnector"]) == ("oauth", True)
         assert "token" not in public and _connection("u1").public()["viaConnector"] is False
+
+    async def test_a_refused_retry_with_the_connectors_token_is_never_revoked(self) -> None:
+        connector = _connector()
+        connection = _connection("admin", token="", method="connector")
+        connector._run_user_pass_once = AsyncMock(return_value=None)  # Notion refuses both attempts
+        connector._refresh_user_token = AsyncMock(return_value=True)
+        connector._revoke_connection = AsyncMock()
+        assert await connector._run_user_pass(connection, SimpleNamespace(id="k-admin")) is False
+        connector._revoke_connection.assert_not_awaited()
+        assert connector._sync_incomplete is True
+
+
+class TestOrgScopedStore:
+    """A store that lists keys under its own scope (``{org}/services/...``) still finds removals."""
+
+    async def test_a_removal_listed_under_an_org_scope_is_found(self) -> None:
+        from app.connectors.core.base.user_access import was_removed
+
+        store = AsyncMock()
+        store.list_keys_in_directory.return_value = ["org-1/services/connectors/c1/removed/u1/1700"]
+        assert await was_removed(store, "c1", "u1") is True
+
+    async def test_a_connection_made_before_its_org_scoped_removal_is_not_listed(self) -> None:
+        stale = _connection("u1", connected_at=10).to_dict()
+
+        async def keys(prefix: str) -> list[str]:
+            tail = {"/users/": "u1", "/removed/": "u1/20", "/removed/u1/": "20"}
+            return [f"org-1{prefix}{v}" for k, v in tail.items() if prefix.endswith(k)][:1]
+
+        store = AsyncMock()
+        store.list_keys_in_directory.side_effect = keys
+        store.get_config.return_value = stale
+        assert await list_connections(store, "c1") == []

@@ -185,6 +185,13 @@ async def get_connection(
     return connection
 
 
+def _after(key: str, prefix: str) -> str:
+    """What follows ``prefix`` in a listed key. A store may list keys under a scope of its own
+    (``{org}/services/...``), so the prefix is found, not assumed to start the key."""
+    at = key.find(prefix)
+    return key[at + len(prefix):] if at >= 0 else key
+
+
 def _holds_connection(data: object) -> bool:
     return isinstance(data, dict) and bool(data.get("token") or data.get("method") == METHOD_CONNECTOR)
 
@@ -197,7 +204,7 @@ async def was_removed(config_service: ConfigurationService, connector_id: str, u
 async def _removed_at(config_service: ConfigurationService, connector_id: str, user_id: str) -> int:
     """The user's latest removal (epoch ms), 0 when there was none."""
     prefix = f"{removals_prefix(connector_id)}{user_id}/"
-    times = [key.removeprefix(prefix) for key in await config_service.list_keys_in_directory(prefix)]
+    times = [_after(key, prefix) for key in await config_service.list_keys_in_directory(prefix)]
     return max((int(t) for t in times if t.isdigit()), default=0)
 
 
@@ -252,7 +259,7 @@ async def list_connections(config_service: ConfigurationService, connector_id: s
     # Removals listed after the connections were read: a stale write needs its removal marked before it,
     # so every marker that can make a connection read above stale is in this list.
     removed_users = {
-        key.removeprefix(removals_prefix(connector_id)).split("/", 1)[0]
+        _after(key, removals_prefix(connector_id)).split("/", 1)[0]
         for key in await config_service.list_keys_in_directory(removals_prefix(connector_id))
     }
     return [
