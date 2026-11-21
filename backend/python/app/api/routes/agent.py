@@ -4771,8 +4771,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # A project-scoped chat sets this so an empty effective
                 # apps/kb selection stays empty at retrieval time instead of
                 # `get_accessible_virtual_record_ids` falling back to
-                # "search everything the user can access".
-                if chat_query.strictScope:
+                # "search everything the user can access". A service-account
+                # agent needs the same: anyone in the org runs it as one
+                # identity, so with no source left it must read nothing, not
+                # everything that identity can read.
+                if chat_query.strictScope or is_service_account:
                     filters["strictScope"] = True
 
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
@@ -4864,7 +4867,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     agent_id,
                 )
                 if not caps.internal_search:
-                    filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
+                    # The tools that read stored records still load, so a strict scope stays.
+                    filters = {
+                        "apps": [], "kb": [NO_KB_SELECTED_FILTER],
+                        **({"strictScope": True} if filters.get("strictScope") else {}),
+                    }
                     agent_knowledge = []
 
                 # Universal Agent Mode (agentIdPlaceholder) is still Chat Assistant —
