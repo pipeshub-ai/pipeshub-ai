@@ -37,6 +37,8 @@ on:
       - 'backend/python/app/services/graph_db/graph_db_provider_factory.py'
       - 'backend/python/app/models/permission.py'
       - 'backend/python/tests/integration/graph_db/postgres/**'
+      # postgres/test_jira_dc_restricted_comments_pg.py runs these worlds
+      - 'backend/python/tests/integration/graph_db/test_jira_dc_restricted_comments_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_code_graph_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_accessible_containers_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
@@ -68,10 +70,12 @@ on:
       - 'scripts/ensure_pg_cluster.sh'
       - 'scripts/assert_no_skips.py'
       - 'scripts/test_pg_runtime_shards.py'
-      # tests/integration/graph_db/postgres/test_jira_issue_security_pg.py runs these worlds through the Jira connector and the processor
+      # tests/integration/graph_db/postgres/test_jira_{,dc_}issue_security_pg.py run these worlds through the Jira connectors and the processor
       - 'backend/python/tests/integration/graph_db/test_jira_issue_security_real_backends.py'
+      - 'backend/python/tests/integration/graph_db/test_jira_dc_issue_security_real_backends.py'
       - 'backend/python/app/connectors/sources/atlassian/core/jira_issue_security.py'
       - 'backend/python/app/connectors/sources/atlassian/jira_cloud/connector.py'
+      - 'backend/python/app/connectors/sources/atlassian/jira_data_center/connector.py'
       - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
       - '.github/workflows/pg-runtime.yml'
   workflow_dispatch:
