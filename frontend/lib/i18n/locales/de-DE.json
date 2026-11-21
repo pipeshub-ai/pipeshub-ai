@@ -4113,7 +4113,11 @@
         "addOrg": "Für Ihre Organisation hinzufügen",
         "addPersonal": "Für sich hinzufügen",
         "orgNote": "Alle in Ihrer Organisation sehen ihn. Jede Person meldet sich an, um ihn zu nutzen.",
-        "personalNote": "Nur Sie sehen ihn."
+        "personalNote": "Nur Sie sehen ihn.",
+        "popularTitle": "Beliebt in Ihrer Organisation",
+        "popularHint": "Nach angemeldeten Personen",
+        "peopleUse_one": "{{count}} Person nutzt ihn",
+        "peopleUse_other": "{{count}} Personen nutzen ihn"
       }
     },
     "bots": {

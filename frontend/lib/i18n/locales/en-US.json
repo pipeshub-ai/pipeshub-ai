@@ -4274,7 +4274,11 @@
         "addOrg": "Add to your organization",
         "addPersonal": "Add for yourself",
         "orgNote": "Everyone in your organization will see it. Each person signs in to use it.",
-        "personalNote": "Only you will see it."
+        "personalNote": "Only you will see it.",
+        "popularTitle": "Popular in your organization",
+        "popularHint": "By people signed in",
+        "peopleUse_one": "{{count}} person uses it",
+        "peopleUse_other": "{{count}} people use it"
       }
     },
     "bots": {

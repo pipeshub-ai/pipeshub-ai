@@ -12,6 +12,7 @@ import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspac
 import type { McpMyServerEntry, McpServerTemplate } from '../types';
 import { McpCatalogDetails } from './mcp-catalog-details';
 import { McpDiscover } from './mcp-discover';
+import { McpPopularRow } from './mcp-popular-row';
 import { McpServerList } from './mcp-server-list';
 
 interface McpServersLayoutProps {
@@ -168,6 +169,7 @@ export function McpServersLayout({
               catalog={catalog}
               instances={instances}
               description={catalogDescription}
+              highlights={<McpPopularRow catalog={catalog} onOpen={setDetails} />}
               onOpen={setDetails}
               onAdd={onAdd}
             />

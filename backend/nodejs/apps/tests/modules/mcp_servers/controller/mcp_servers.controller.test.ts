@@ -5,6 +5,7 @@ import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/co
 import { Logger } from '../../../../src/libs/services/logger.service'
 import {
   listMcpCatalog,
+  listPopularMcpServers,
   getMcpCatalogTemplate,
   listMcpInstances,
   createMcpInstance,
@@ -88,6 +89,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
     hasBody?: boolean
   }> = [
     { name: 'listMcpCatalog', factory: listMcpCatalog, expectedPath: '/api/v1/mcp-servers/catalog', expectedMethod: 'GET' },
+    { name: 'listPopularMcpServers', factory: listPopularMcpServers, expectedPath: '/api/v1/mcp-servers/popular', expectedMethod: 'GET' },
     {
       name: 'getMcpCatalogTemplate',
       factory: getMcpCatalogTemplate,

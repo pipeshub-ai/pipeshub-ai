@@ -4157,7 +4157,11 @@
         "addOrg": "Añadir a tu organización",
         "addPersonal": "Añadir para ti",
         "orgNote": "Todos en tu organización lo verán. Cada persona inicia sesión para usarlo.",
-        "personalNote": "Solo tú lo verás."
+        "personalNote": "Solo tú lo verás.",
+        "popularTitle": "Populares en tu organización",
+        "popularHint": "Según las personas con sesión iniciada",
+        "peopleUse_one": "Lo usa {{count}} persona",
+        "peopleUse_other": "Lo usan {{count}} personas"
       }
     },
     "bots": {

@@ -4250,7 +4250,11 @@
         "addOrg": "조직에 추가",
         "addPersonal": "나만 쓰도록 추가",
         "orgNote": "조직의 모든 사람이 볼 수 있습니다. 각자 로그인해서 사용합니다.",
-        "personalNote": "나만 볼 수 있습니다."
+        "personalNote": "나만 볼 수 있습니다.",
+        "popularTitle": "조직에서 인기 있는 서버",
+        "popularHint": "로그인한 사람 수 기준",
+        "peopleUse_one": "{{count}}명이 사용 중",
+        "peopleUse_other": "{{count}}명이 사용 중"
       }
     },
     "bots": {

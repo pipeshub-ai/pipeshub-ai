@@ -4250,7 +4250,11 @@
         "addOrg": "添加到你的组织",
         "addPersonal": "仅为自己添加",
         "orgNote": "组织中的所有人都能看到它。每个人登录后使用。",
-        "personalNote": "只有你能看到它。"
+        "personalNote": "只有你能看到它。",
+        "popularTitle": "你的组织中常用的服务器",
+        "popularHint": "按登录人数",
+        "peopleUse_one": "{{count}} 人在用",
+        "peopleUse_other": "{{count}} 人在用"
       }
     },
     "bots": {

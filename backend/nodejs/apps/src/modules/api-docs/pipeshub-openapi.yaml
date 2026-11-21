@@ -65695,6 +65695,86 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/popular:
+    get:
+      tags:
+        - MCP Server Catalog
+      summary: List the organization's most used MCP servers
+      description: |
+        The organization's servers that people signed in to with their own credentials, most used
+        first, with how many people. Counts only, never who. A server people reach through one
+        shared credential, or with no sign-in, keeps no per-person record and is not listed;
+        agents' own credentials are not counted. Personal servers are never listed.
+      operationId: listPopularMcpServers
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:read
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 6
+      responses:
+        '200':
+          description: Servers, most used first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        instanceId:
+                          type: string
+                        typeId:
+                          type: string
+                          nullable: true
+                          description: The catalog entry it was made from; null for a custom server.
+                        name:
+                          type: string
+                        people:
+                          type: integer
+                          minimum: 1
+                          description: How many people signed in to it.
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:read` scope
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: '`limit` is not a whole number from 1 to 50'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Unexpected failure in the gateway or in the connectors service.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mcp-servers/my-mcp-servers:
     get:
       tags:

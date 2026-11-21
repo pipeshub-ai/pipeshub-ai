@@ -82,6 +82,14 @@ export interface McpServerTemplate {
   matchedCapability?: string;
 }
 
+/** An organization server and how many people signed in to it (`GET /popular`). */
+export interface McpPopularServer {
+  instanceId: string;
+  typeId?: string | null;
+  name: string;
+  people: number;
+}
+
 /** Request body for creating/updating an instance. */
 export interface McpServerInstancePayload {
   name: string;

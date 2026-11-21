@@ -562,6 +562,18 @@ async def list_catalog(
     }
 
 
+@router.get("/popular", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
+async def list_popular_servers(request: Request, limit: int = Query(default=6, ge=1, le=50)) -> dict[str, Any]:
+    """The organization's servers people signed in to, most used first: counts only, never who.
+
+    Servers people reach through one shared credential, or with no sign-in, keep no per-person
+    record, so they aren't ranked here.
+    """
+    _get_user_context(request)
+    rows = await mcp_service.popular_org_servers(_get_config_service(request), current_org_id())
+    return {"servers": rows[:limit]}
+
+
 @router.get("/catalog/{type_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def get_catalog_template(request: Request, type_id: str) -> dict[str, Any]:
     _get_user_context(request)

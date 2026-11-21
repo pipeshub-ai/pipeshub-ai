@@ -5,7 +5,7 @@ import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import type { McpMyServerEntry, McpServerTemplate } from '../types';
 
-const mcpApi = vi.hoisted(() => ({ getCatalog: vi.fn() }));
+const mcpApi = vi.hoisted(() => ({ getCatalog: vi.fn(), getPopular: vi.fn() }));
 vi.mock('../api', () => ({ McpServersApi: mcpApi }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => null }));
@@ -111,6 +111,7 @@ const search = () => screen.getByRole('textbox', { name: 'Search ready-made serv
 beforeEach(() => {
   installBrowserShims();
   mcpApi.getCatalog.mockReset();
+  mcpApi.getPopular.mockReset().mockResolvedValue([]);
 });
 afterEach(() => cleanup());
 
@@ -208,6 +209,47 @@ describe('Discover servers', () => {
     const { onSearchChange } = renderLayout({ instances: [server({})] });
     fireEvent.change(screen.getByRole('textbox', { name: 'Search your servers' }), { target: { value: 'git' } });
     expect(onSearchChange).toHaveBeenCalledWith('git');
+  });
+});
+
+describe('Popular in your organization', () => {
+  const POPULAR = [
+    { instanceId: 'i-zoom', typeId: 'zoom', name: 'Zoom', people: 31 },
+    { instanceId: 'i-gh', typeId: 'github', name: 'GitHub', people: 1 },
+    { instanceId: 'i-custom', typeId: null, name: 'Internal handbook', people: 9 },
+    { instanceId: 'i-hidden', typeId: 'not_offered', name: 'Hidden', people: 5 },
+  ];
+
+  it('ranks the catalog entries people here signed in to, and opens one', async () => {
+    mcpApi.getPopular.mockResolvedValue(POPULAR);
+    renderLayout();
+
+    const popular = within(await screen.findByTestId('mcp-popular'));
+    expect(popular.getAllByRole('button').map((b) => b.textContent)).toEqual(['Zoom31 people use it', 'GitHub1 person uses it']);
+
+    fireEvent.click(popular.getByRole('button', { name: /Zoom/ }));
+    expect(within(await screen.findByTestId('mcp-catalog-details')).getByText('Schedule a Zoom meeting')).toBeTruthy();
+  });
+
+  it('steps aside while searching or browsing a category', async () => {
+    mcpApi.getPopular.mockResolvedValue(POPULAR);
+    mcpApi.getCatalog.mockResolvedValue({ templates: [ZOOM], total: 1 });
+    renderLayout();
+    await screen.findByTestId('mcp-popular');
+
+    fireEvent.click(screen.getByRole('button', { name: /Developer tools/ }));
+    expect(screen.queryByTestId('mcp-popular')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^All/ }));
+    fireEvent.change(search(), { target: { value: 'zoom' } });
+    expect(screen.queryByTestId('mcp-popular')).toBeNull();
+  });
+
+  it('shows nothing when nobody has signed in yet, or it can’t load', async () => {
+    mcpApi.getPopular.mockRejectedValue(new Error('down'));
+    renderLayout();
+
+    await waitFor(() => expect(mcpApi.getPopular).toHaveBeenCalled());
+    expect(screen.queryByTestId('mcp-popular')).toBeNull();
   });
 });
 

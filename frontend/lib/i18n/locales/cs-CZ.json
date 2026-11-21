@@ -4400,7 +4400,13 @@
         "addOrg": "Přidat do organizace",
         "addPersonal": "Přidat pro sebe",
         "orgNote": "Uvidí ho všichni ve vaší organizaci. Každý se pro použití přihlásí.",
-        "personalNote": "Uvidíte ho jen vy."
+        "personalNote": "Uvidíte ho jen vy.",
+        "popularTitle": "Oblíbené ve vaší organizaci",
+        "popularHint": "Podle přihlášených lidí",
+        "peopleUse_one": "Používá ho {{count}} člověk",
+        "peopleUse_few": "Používají ho {{count}} lidé",
+        "peopleUse_many": "Používá ho {{count}} lidí",
+        "peopleUse_other": "Používá ho {{count}} lidí"
       }
     },
     "bots": {
