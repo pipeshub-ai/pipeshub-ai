@@ -799,7 +799,11 @@
       "collectionExists": "\"{{name}}\" 컬렉션이 이미 있습니다. 다른 이름을 선택하세요."
     },
     "sourcesNotReady": "일부 소스가 아직 준비 중이라 목록에 표시되지 않습니다({{count}}). 잠시 후 다시 시도하세요.",
-    "sourcePreparing": "이 소스를 준비하는 중입니다… 잠시 후 항목이 여기에 표시됩니다."
+    "sourcePreparing": "이 소스를 준비하는 중입니다… 잠시 후 항목이 여기에 표시됩니다.",
+    "selectionActionsNotice": "먼저 인덱싱",
+    "selectionActionsNoticeEnterprise": "선택한 항목 중 먼저 인덱싱할 항목을 고르는 기능은 Enterprise Edition에 포함됩니다.",
+    "uploadExtrasNotice": "이 파일을 먼저 인덱싱",
+    "uploadExtrasNoticeEnterprise": "업로드 중 먼저 인덱싱할 항목을 고르는 기능은 Enterprise Edition에 포함됩니다."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -3895,7 +3899,9 @@
           "cancelled": "로그인을 취소했습니다.",
           "signInFailed": "로그인이 완료되지 않았습니다. 다시 시도하세요."
         }
-      }
+      },
+      "indexPriorityNotice": "이 커넥터의 인덱싱 우선순위 지정",
+      "indexPriorityNoticeEnterprise": "인덱싱 우선순위는 Enterprise Edition 기능입니다."
     },
     "mcpServers": {
       "searchPlaceholder": "MCP 서버 검색...",

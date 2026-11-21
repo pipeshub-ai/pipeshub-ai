@@ -6,7 +6,9 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PermissionLockIcon } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
+import { KbSelectionActions } from '@/config';
 import type { PageViewMode } from '../types';
+import type { KbTableItem } from '../utils/kb-table-item-actions';
 
 interface SelectionActionBarProps {
   selectedCount: number;
@@ -16,6 +18,10 @@ interface SelectionActionBarProps {
   onDelete?: () => void;
   deletePermissionDenied?: boolean;
   pageViewMode?: PageViewMode;
+  /** The ticked rows, for edition-provided actions. */
+  selectedItems?: KbTableItem[];
+  /** Called after an edition-provided action changed the selected items. */
+  onChanged?: () => void;
 }
 
 export function SelectionActionBar({
@@ -26,6 +32,8 @@ export function SelectionActionBar({
   onDelete,
   deletePermissionDenied,
   pageViewMode = 'collections',
+  selectedItems = [],
+  onChanged,
 }: SelectionActionBarProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -139,6 +147,8 @@ export function SelectionActionBar({
           {deletePermissionDenied && <PermissionLockIcon />}
         </Button>
       )}
+
+      <KbSelectionActions selectedItems={selectedItems} pageViewMode={pageViewMode} onChanged={onChanged} />
     </Flex>
   );
 }

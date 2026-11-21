@@ -710,7 +710,11 @@
       "collectionExists": "आपके पास पहले से \"{{name}}\" नाम का संग्रह है। कोई दूसरा नाम चुनें।"
     },
     "sourcesNotReady": "कुछ स्रोत अभी तैयार किए जा रहे हैं और अभी सूची में नहीं हैं ({{count}})। थोड़ी देर में फिर से कोशिश करें।",
-    "sourcePreparing": "यह स्रोत तैयार किया जा रहा है… इसके आइटम थोड़ी देर में यहाँ दिखेंगे।"
+    "sourcePreparing": "यह स्रोत तैयार किया जा रहा है… इसके आइटम थोड़ी देर में यहाँ दिखेंगे।",
+    "selectionActionsNotice": "पहले इंडेक्स करें",
+    "selectionActionsNoticeEnterprise": "चुनी गई आइटम में से किन्हें पहले इंडेक्स करना है, यह चुनना Enterprise Edition का हिस्सा है।",
+    "uploadExtrasNotice": "इन फ़ाइलों को पहले इंडेक्स करें",
+    "uploadExtrasNoticeEnterprise": "कौन-से अपलोड पहले इंडेक्स हों, यह चुनना Enterprise Edition का हिस्सा है।"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -3753,7 +3757,9 @@
           "cancelled": "आपने साइन इन रद्द कर दिया।",
           "signInFailed": "साइन इन पूरा नहीं हुआ। फिर से कोशिश करें।"
         }
-      }
+      },
+      "indexPriorityNotice": "इस कनेक्टर के लिए इंडेक्सिंग को प्राथमिकता दें",
+      "indexPriorityNoticeEnterprise": "इंडेक्सिंग प्राथमिकता Enterprise Edition का हिस्सा है।"
     },
     "mcpServers": {
       "searchPlaceholder": "MCP सर्वर खोजें...",

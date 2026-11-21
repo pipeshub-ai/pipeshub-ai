@@ -7,7 +7,7 @@ import '@/lib/__tests__/test-i18n';
 
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => true, useIsBelowDesktop: () => true }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
-vi.mock('@/config', () => ({ PermissionLockIcon: () => null }));
+vi.mock('@/config', () => ({ PermissionLockIcon: () => null, KbSelectionActions: () => null }));
 
 import { ItemActionMenu } from '../item-action-menu';
 import { SelectionActionBar } from '../selection-action-bar';

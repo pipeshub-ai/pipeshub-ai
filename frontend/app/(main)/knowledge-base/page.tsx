@@ -26,7 +26,7 @@ import {
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionStatsPanel } from './components/collection-stats-panel';
 import type { UploadFileItem } from './components';
-import { SelectionActionBar } from '@/config';
+import { SelectionActionBar, useKbUploadExtras } from '@/config';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
 import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
@@ -1704,12 +1704,16 @@ function KnowledgeBasePageContent() {
     setIsUploadSidebarOpen(true);
   }, [canEditCollection]);
 
+  const uploadExtras = useKbUploadExtras(selectedKbId);
+  const { onUploadStart, onFileSucceeded, onUploadEnd } = uploadExtras;
+
   // Handle upload save - add items to upload store and start uploading
   const handleUploadSave = useCallback(
     async (items: UploadFileItem[]) => {
       if (!selectedKbId) return;
 
       setIsUploading(true);
+      onUploadStart?.();
 
       // Determine upload target:
       // - If current node is a folder, upload to that folder
@@ -1870,6 +1874,7 @@ function KnowledgeBasePageContent() {
                 const id = findStoreId(data);
                 if (id) completeUpload(id);
                 anySuccess = true;
+                if (typeof data?.recordId === 'string') onFileSucceeded?.(data.recordId);
               } else if (evt.event === 'file:failed') {
                 const id = findStoreId(data);
                 if (id) {
@@ -2037,6 +2042,7 @@ function KnowledgeBasePageContent() {
         );
       } finally {
         stopOnSessionEnd();
+        onUploadEnd?.();
       }
       if (upload.signal.aborted) return;
 
@@ -2054,7 +2060,7 @@ function KnowledgeBasePageContent() {
         await refreshData();
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t, onUploadStart, onFileSucceeded, onUploadEnd]
   );
 
   // Returns false so the upload panel keeps the picked files when there is
@@ -3355,6 +3361,8 @@ function KnowledgeBasePageContent() {
           onDelete={!isAllRecordsMode && !bulkDeleteNeedsCollection ? handleBulkDeleteClick : undefined}
           deletePermissionDenied={bulkDeleteDenied}
           pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+          selectedItems={tickedRows}
+          onChanged={refreshData}
         />
 
         {selectedCount === 0 && (
@@ -3475,6 +3483,7 @@ function KnowledgeBasePageContent() {
             isSaving={isUploading}
             remainingFolderLevels={remainingFolderLevels}
             maxFolderDepth={maxFolderDepth}
+            extras={uploadExtras.panel}
           />
 
           {/* Replace File Dialog */}
