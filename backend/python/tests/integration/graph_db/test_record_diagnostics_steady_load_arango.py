@@ -20,7 +20,10 @@ import pytest
 
 from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
 from app.schema.arango.documents import RECORD_SCHEMA_GENERATION, record_schema
-from app.services.graph_db.arango.record_schema_guard import generation_of_schema
+from app.services.graph_db.arango.record_schema_guard import (
+    FORCE_AFTER_SKIPS,
+    generation_of_schema,
+)
 from app.telemetry.backend import METRICS_BACKEND
 from tests.integration.graph_db.record_diagnostics_stall_bound import (
     STALL_BOUND_S,
@@ -236,8 +239,13 @@ async def test_rewiden_under_steady_load(env, monkeypatch: pytest.MonkeyPatch, s
     if hold_max < 5:
         # The trigger's refusal marks this process narrow, so new save transactions wait in begin_transaction until the schema is wide
         # and the open ones end; the helper holds begins from the list to the change, so none begins in between. A first change the
-        # server does not answer in time keeps its lease, and a later try may send it again; every one of them must go out with none open.
-        assert sent and all(not running for running in sent), f"a widening was sent while the server listed {sent} right before it: every records write waits for those"
+        # server does not answer in time keeps its lease, and a later try may send it again. Each must go out with none open, unless
+        # the guard forced it, which it does only after FORCE_AFTER_SKIPS tries in a row found a transaction open.
+        forced = sum(1 for running in sent if running)
+        assert sent and forced * FORCE_AFTER_SKIPS <= contended, (
+            f"a widening was sent while the server listed {sent} right before it, after only {contended:g} contended skips: "
+            "only a forced send may go out with a transaction open"
+        )
     else:
         # a transaction is nearly always open, so the first quiet-point wait finds no moment: that widening is skipped (the write is refused
         # transiently) and a later try finds a gap or is forced. What a write then waits for is the save transactions open at that
