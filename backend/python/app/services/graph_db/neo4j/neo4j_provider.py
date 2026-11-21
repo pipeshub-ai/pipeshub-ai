@@ -21766,6 +21766,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   WHERE {cls._kh_v3_hidden_above(og, tag, from_depth=0)}
               }}"""
 
+    @staticmethod
+    def _kh_v3_reached(start: str, hop: str, tag: str, *, child: str, parent: str, rel: str, hops: int = 50) -> str:
+        """The nodes a walk up the hierarchy from ``start`` reaches in 1 to ``hops`` steps, each step from ``child`` to ``parent`` over
+        ``rel`` passing ``hop``. Read a level at a time, each node once, so the cost follows the nodes above the start, never the routes
+        to them: matched as a path, two parents at many levels make the routes exponential (24 such levels: 2^24). A node a walk reaches
+        within ``hops`` steps is reached by a route of distinct nodes as short, whose steps are a subset of the walk's, so the nodes are
+        those the path match ``(start) ((child)<-[rel:NODE_RELATION]-(parent) WHERE hop){1,hops} (end)`` ends in."""
+        w, i, n, d, x, a = (f"kh_{v}{tag}" for v in ("w", "i", "n", "d", "x", "a"))
+        step = f"[({child})<-[{rel}:NODE_RELATION]-({parent}) WHERE {hop} | {parent}]"
+        new = (f"reduce({d} = [], {x} IN reduce({a} = [], {child} IN {w}.f | {a} + {step})"
+               f" | CASE WHEN {x} IN {d} OR {x} IN {w}.s THEN {d} ELSE {d} + {x} END)")
+        return (f"reduce({w} = {{f: [{start}], s: []}}, {i} IN range(1, {hops}) | CASE WHEN size({w}.f) = 0 THEN {w}"
+                f" ELSE [{n} IN [{new}] | {{f: {n}, s: {w}.s + {n}}}][0] END).s")
+
     async def _kh_v3_accessible_rows(
         self,
         user_key: str,
@@ -21789,10 +21803,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The arms are the listing's, cheapest first; every rule-bearing walk
         # stops at the first hop that fails. Fragments nest, and a name reused
         # inside EXISTS binds to the outer one, so each takes its own tag.
-        # Each walk is matched from its bound start and its ends are collected before they are tested: a test on the end (the App, a
-        # seed, a declared group) lets the planner start the walk there instead, from every node of the App for each target, and a plan
-        # chosen while an App is small stays cached for every App until the statistics change several-fold. A test on the collected
-        # list cannot be moved into the walk.
+        # Every walk starts at its bound start and what it reaches is tested after it: a test on the walk's end (the App, a seed, a
+        # declared group) lets the planner start the walk there instead, from every node of the App for each target, and a plan chosen
+        # while an App is small stays cached for every App until the statistics change several-fold. A walk whose hop reads an edge
+        # between its two nodes (inheritance) is read a level at a time (`_kh_v3_reached`): as a path match it enumerates every route.
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
 
         def from_app(v: str, tag: str) -> str:
@@ -21804,9 +21818,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f" AND coalesce({p}.connectorId, '') = app.id)"
                 f" AND {self._kh_v3_granted_hop(c, p, navigation=False, grant_once=bool(access.get('probe')))}"
             )
-            e, es = f"kh_ae{tag}", f"kh_aes{tag}"
-            return (f"EXISTS {{ MATCH ({v}) (({c})<-[{h}:NODE_RELATION]-({p}) WHERE {hop}){{1,50}} ({e})"
-                    f" WITH collect({e}) AS {es} WHERE app IN {es} RETURN 1 }}")
+            return f"app IN {self._kh_v3_reached(v, hop, tag, child=c, parent=p, rel=h)}"
 
         def in_declared_scope(v: str, tag: str) -> str:
             """A group under an admitted RECORD_GROUP_LEVEL declaration, or a
@@ -21841,9 +21853,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # admits is not a seed, so its hierarchy-only children stay out.
         open_hop = f"kh_hs.relationshipType {hierarchy} AND {self._kh_v3_seed_hop('kh_cs', 'kh_ps', state=False)}"
         below_seed = f"""EXISTS {{
-                MATCH (t) ((kh_cs)<-[kh_hs:NODE_RELATION]-(kh_ps) WHERE {open_hop}){{1,50}} (kh_se)
-                WITH collect(DISTINCT kh_se) AS kh_ses
-                UNWIND kh_ses AS kh_s
+                UNWIND {self._kh_v3_reached('t', open_hop, 's', child='kh_cs', parent='kh_ps', rel='kh_hs')} AS kh_s
                 WITH kh_s WHERE {seed('kh_s')}
                   AND NOT {from_app('kh_s', 'x')}
                   AND NOT {in_declared_scope('kh_s', 'x')}

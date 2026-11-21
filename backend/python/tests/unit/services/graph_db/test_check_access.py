@@ -293,7 +293,10 @@ class TestNeo4jWalksStartWhereTheyAreBound:
     """A walk whose end the statement tests (the App, a seed, a declared group) can be planned from that end: for each target, from
     every node of the App. A plan chosen while an App is small stays cached for every App until the statistics change several-fold
     (`dbms.cypher.min_replan_interval`, `dbms.cypher.statistics_divergence_threshold`), so the batch check must leave the planner no
-    such choice: every walk ends in an unlabelled node nothing tests before the walk's ends are collected."""
+    such choice. A walk whose hop reads an edge between its two nodes (inheritance) is read a level at a time, with no path match at
+    all: as a path match it enumerates every route, exponential where nodes have two parents at many levels. A path match is left only
+    where the hop reads one step's own properties (a pruning BFS), and it ends in an unlabelled node nothing tests before its ends are
+    collected."""
 
     @staticmethod
     async def _statements() -> list[str]:
@@ -312,16 +315,19 @@ class TestNeo4jWalksStartWhereTheyAreBound:
         return texts
 
     @pytest.mark.asyncio
-    async def test_every_walk_ends_in_a_node_only_its_collected_ends_test(self) -> None:
+    async def test_every_walk_starts_where_it_is_bound_and_none_enumerates_routes(self) -> None:
         import re
 
         for text in await self._statements():
-            walks = list(re.finditer(r"\)\{\d+,\d+\} \(([^)]*)\)", text))
-            assert len(walks) == 7, len(walks)
+            # The walks from the App (the target's, a declared group's, a seed's and that seed's declared group's) and below a seed.
+            assert text.count("reduce(kh_w") == 5, text.count("reduce(kh_w")
+            walks = list(re.finditer(r"MATCH \((\w+)\) (\(\(.*?\)\)\{\d+,\d+\}) \(([^)]*)\)", text, re.S))
+            assert len(walks) == 2, len(walks)      # the declared walks
             for walk in walks:
-                end = walk.group(1)
+                assert "EXISTS" not in walk.group(2), "a path match whose hop reads an edge enumerates every route"
+                end = walk.group(3)
                 assert re.fullmatch(r"\w+", end), f"the walk's end carries a label or property: ({end})"
                 rest = text[walk.end():]
-                collected = re.search(rf"WITH collect\((?:DISTINCT )?{end}\) AS \w+", rest)
+                collected = re.search(rf"WITH (?:\w+, )*collect\((?:DISTINCT )?{end}\) AS \w+", rest)
                 assert collected, f"the ends of the walk to ({end}) are not collected"
                 assert not re.search(rf"\b{end}\b", rest[:collected.start()]), f"({end}) is tested before its walk's ends are collected"

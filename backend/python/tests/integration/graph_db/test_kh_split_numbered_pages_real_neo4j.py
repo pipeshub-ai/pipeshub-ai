@@ -35,6 +35,7 @@ logger = logging.getLogger("kh-split-numbered-pages-it")
 USERS = ["u0", "u1", "u2", "u3"]
 FILES = 1_400
 LIMIT = 25      # page 50 is rows 1,226-1,250: two reads before it, the second resuming the first
+DIAMONDS = 23   # Dx is 2 + 2 * 23 + 1 = 49 hops below App D, within the walks' cap of 50
 
 
 def _world() -> Any:  # noqa: ANN401
@@ -67,9 +68,25 @@ def _world() -> Any:  # noqa: ANN401
     nodes.append({"id": "Fh", "kind": "group", "hide_children": True, **inherit})
     nodes += [{"id": f"Fhr{k}", "kind": "record", "connector": "A", "rule": "OPEN", "parents": ["Fh"], "inherits": ["Fh"], "belongs": ["Fh"]}
               for k in range(2)]
+    # Under App D, a chain of DIAMONDS diamonds below a group G: every other level a node with two parents, so 2^DIAMONDS routes lead
+    # from its bottom Dx up to its top D00. u0 is granted G (the walk from the App admits), u2 the top (a seed: G is not readable to u2).
+    nodes += [{"id": "D", "kind": "app", "app_type": "DRIVE"},
+              {"id": "DG", "kind": "group", "connector": "D", "rule": "OPEN", "parents": ["D"], "belongs": ["D"]},
+              {"id": "D00", "kind": "group", "connector": "D", "rule": "OPEN", "parents": ["DG"], "inherits": ["DG"], "belongs": ["DG"]}]
+    grants += [["u0", "DG"], ["u2", "D00"]]
+    for i in range(1, DIAMONDS + 1):
+        above = f"D{i - 1:02d}"
+        sides = [f"D{i:02d}l", f"D{i:02d}r"]
+        nodes += [{"id": x, "kind": "group", "connector": "D", "rule": "OPEN", "parents": [above], "inherits": [above], "belongs": [above]}
+                  for x in sides]
+        nodes.append({"id": f"D{i:02d}", "kind": "group", "connector": "D", "rule": "OPEN", "parents": sides, "inherits": sides,
+                      "belongs": sides})
+    nodes.append({"id": "Dx", "kind": "record", "connector": "D", "rule": "OPEN", "parents": [f"D{DIAMONDS:02d}"],
+                  "inherits": [f"D{DIAMONDS:02d}"], "belongs": [f"D{DIAMONDS:02d}"]})
     return world_from_data({
         "principals": [{"id": u} for u in USERS] + [{"id": "gAll", "kind": "group"}],
-        "nodes": nodes, "grants": grants, "memberships": [[u, "gAll"] for u in USERS[:2]], "gates": [[u, "A"] for u in USERS],
+        "nodes": nodes, "grants": grants, "memberships": [[u, "gAll"] for u in USERS[:2]],
+        "gates": [[u, app] for u in USERS for app in ("A", "D")],
     })
 
 
@@ -201,3 +218,17 @@ async def test_a_grant_removed_while_a_numbered_page_is_read_is_not_listed(hub: 
     assert revoked == [True]
     assert target not in after
     assert set(after) - set(before) <= {i for i in after if i > before[-1]}, "only the next row moves up into the page"
+
+
+@pytest.mark.parametrize("probe", [False, True], ids=["grant_list", "grants_from_nodes"])
+async def test_the_check_reads_a_hierarchy_of_many_two_parent_levels_once_per_node(hub: _Hub, probe: bool) -> None:
+    """Below 23 levels of two parents there are 2^23 routes to the top. The check reads each node above the target once, so it answers
+    at once, and the same as before: admitted by the walk from the App (u0), by the walk below a seed (u2), refused (u1)."""
+    graph = hub.graph
+    asked = [hub.ns.id("Dx"), hub.ns.id("D12")]
+    for user, admitted in (("u0", set(asked)), ("u2", set(asked)), ("u1", set())):
+        access = await graph.get_knowledge_hub_access_v3(user_key=hub.ns.id(user), org_id=hub.ns.org)
+        if probe:
+            access = {**access, "probe": {"connector_id": hub.ns.id("D"), "grantees": access["grantee_ids"]}}
+        got = await asyncio.wait_for(graph._kh_v3_admitted(asked, org_id=hub.ns.org, access=access, transaction=None), timeout=60)
+        assert got == admitted, (user, sorted(hub.ns.local(i) for i in got))
