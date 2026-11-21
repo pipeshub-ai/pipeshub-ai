@@ -10,6 +10,7 @@ import type { NotificationListItem, NotificationSeverity } from './api';
 import { localDaysBetween } from '@/lib/utils/local-day';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
 import type { NotificationRowDecoration, NotificationRowExtraAction } from './notification-extension';
+import { isExternalNotificationHref } from './notification-href';
 import { ConnectAccountAction } from '@/app/(main)/workspace/connectors/components/user-access/connect-account';
 
 export type NotificationRowAction =
@@ -21,14 +22,6 @@ export type NotificationRowAction =
   | 'extra';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
-/**
- * An absolute http(s) URL, or a protocol-relative one (`//host`, and `/\host`, which browsers
- * read the same way): it leaves the app, so it opens in a new tab and is never handled in-app.
- */
-export function isExternalNotificationHref(href: string): boolean {
-  return /^(?:https?:)?[/\\]{2}/i.test(href);
-}
-
 function notificationHref(redirectLink: string): string | null {
   const trimmed = redirectLink.trim();
   if (!trimmed) return null;

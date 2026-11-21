@@ -28,7 +28,8 @@ vi.mock('@/app/(main)/workspace/connectors/components/user-access/connect-accoun
   },
 }));
 
-import { NotificationRow, chatConversationIdFromHref, isExternalNotificationHref } from '../notification-row';
+import { NotificationRow, chatConversationIdFromHref } from '../notification-row';
+import { isExternalNotificationHref } from '../notification-href';
 import type { NotificationListItem } from '../api';
 
 function renderRow(redirectLink: string, onOpenLink = vi.fn(), onMarkRead = vi.fn()) {
