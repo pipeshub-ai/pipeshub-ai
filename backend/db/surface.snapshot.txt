@@ -1633,6 +1633,7 @@ index graph.nodes_record_external on graph.nodes unique=false exclusion=false va
 index graph.nodes_record_external_any on graph.nodes unique=false exclusion=false valid=true def=6bf577338a8f5cc6491718d073f1ec00
 index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
 index graph.nodes_record_pending_vrid on graph.nodes unique=false exclusion=false valid=true def=e9cf8f4cc709d7da6cb0f813649cc954
+index graph.nodes_record_refresh_intent on graph.nodes unique=false exclusion=false valid=true def=fb87455fa6227258d671b7d118a5e0a0
 index graph.nodes_record_ticket_site on graph.nodes unique=false exclusion=false valid=true def=823bc7f1ea13b7bc3fb2687bcca446b3
 index graph.nodes_record_ticket_url on graph.nodes unique=false exclusion=false valid=true def=b7a08a810f598ec981d576195fd467ed
 index graph.nodes_record_trash on graph.nodes unique=false exclusion=false valid=true def=dfea55500a23daf82e044379884face6
