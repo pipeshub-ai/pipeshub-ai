@@ -273,7 +273,9 @@ class EventProcessor:
         """The ``files`` document of a record: the graph keeps the file's extension there, not on the ``records`` node."""
         return await self.graph_provider.get_document(record_key, CollectionNames.FILES.value, raise_on_error=True)
 
-    async def _parser_gate(self, record: Mapping[str, Any], record_id: str) -> tuple[bool, str | None]:
+    async def _parser_gate(
+        self, record: Mapping[str, Any], record_id: str, *, event_labels: tuple[Any, ...] | None = None,
+    ) -> tuple[bool, str | None]:
         """``(skip allowed, identity to adopt)`` for a same-bytes update, from the parser that built the indexed copy.
 
         The record is judged as the graph holds it now (never by the event's payload, which can be older), through the same
@@ -286,6 +288,10 @@ class EventProcessor:
             # Off: no identity is written, so a stored one cannot be kept current (a run that rebuilds the copy leaves it stale and
             # nothing re-stamps it). Stored identities are ignored: the skip is the one the same bytes alone give.
             return True, None
+        if event_labels is not None and parser_identity.path_decides(*event_labels, service=self._use_service_pipeline()):
+            # The event's file path decides the parser and the graph holds no path: the copy cannot be judged from the record,
+            # so the update runs in full, and no identity is adopted.
+            return False, None
         stored = record.get(parser_identity.IDENTITY_FIELD)
         has_stored = isinstance(stored, str) and bool(stored)
         try:
@@ -1989,7 +1995,10 @@ class EventProcessor:
                 is_code=is_code or reads_as_code_file or record_type == RecordTypes.CODE_FILE.value,
                 is_sql=mime_type in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value)
                 or (dispatch is not None and dispatch.route in (Route.SQL_TABLE, Route.SQL_VIEW)),
-            ) and (parser_ok := await self._parser_gate(record, record_id))[0] and await self._skip_same_bytes(
+            ) and (parser_ok := await self._parser_gate(
+                record, record_id,
+                event_labels=(mime_type, extension, record_name, record_type, event_data.get("filePath")),
+            ))[0] and await self._skip_same_bytes(
                 record, record_id
             ):
                 if parser_ok[1]:

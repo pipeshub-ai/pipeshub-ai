@@ -55,3 +55,21 @@ async def test_a_run_whose_path_agrees_with_its_name_stores_the_identity() -> No
     await world.run(world.event(mime="application/octet-stream", ext="unknown", name="Report.docx", filePath="x/Report.docx"))
 
     assert world.state[pi.IDENTITY_FIELD] == "inproc:docx@1"
+
+
+@pytest.mark.asyncio
+async def test_a_second_same_bytes_update_of_a_path_decided_copy_runs_in_full_and_adopts_nothing() -> None:
+    world = World(node={"contentRev": "older"})
+    _every_handler_parses(world)
+    event = world.event(mime="application/octet-stream", ext="unknown", name="Report.docx", filePath="x/app.log")
+    world.files = {"_key": "rec-1", "extension": "unknown"}
+    world.state.update({"mimeType": "application/octet-stream", "recordName": "Report.docx"})
+
+    await world.run(event)
+    assert world.parses == 1 and pi.IDENTITY_FIELD not in world.state
+
+    await world.run(event)
+
+    assert world.parses == 2
+    assert pi.IDENTITY_FIELD not in world.state
+    assert world.conditional_writes == []

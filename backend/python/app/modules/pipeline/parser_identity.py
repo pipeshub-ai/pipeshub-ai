@@ -152,12 +152,21 @@ def parser_identity(
 ) -> str | None:
     """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or None when not tracked."""
     service = pipeline == PIPELINE_SERVICE
-    key = parser_key(mime_type, extension, record_name, record_type, service=service)
-    if file_path and key != parser_key(mime_type, extension, record_name, record_type, service=service, file_path=file_path):
-        # The path decided the parser, and the graph record holds no path: it could never reproduce this key, so a copy
-        # built this way is not tracked (as for source files).
+    if path_decides(mime_type, extension, record_name, record_type, file_path, service=service):
+        # The graph record holds no path and could never reproduce this key, so a copy built this way is not tracked.
         return None
+    key = parser_key(mime_type, extension, record_name, record_type, service=service)
     return None if key is None else f"{pipeline}:{key}"
+
+
+def path_decides(
+    mime_type: str | None, extension: str | None, record_name: str | None, record_type: str | None,
+    file_path: str | None, *, service: bool | None = None,
+) -> bool:
+    """Whether the file path changes the parser an event's labels name (the graph record holds no path to repeat it)."""
+    return bool(file_path) and parser_key(
+        mime_type, extension, record_name, record_type, service=service,
+    ) != parser_key(mime_type, extension, record_name, record_type, service=service, file_path=file_path)
 
 
 def key_of(identity: object) -> str | None:

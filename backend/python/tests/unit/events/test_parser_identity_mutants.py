@@ -139,7 +139,7 @@ async def play(name: str) -> None:
 
 
 def _skip_ignores_identity(mp: pytest.MonkeyPatch) -> None:
-    async def allow(self: Any, record: Any, record_id: str) -> tuple[bool, str | None]:  # noqa: ANN401
+    async def allow(self: Any, record: Any, record_id: str, **_k: Any) -> tuple[bool, str | None]:  # noqa: ANN401
         return True, None
 
     from app.events.events import EventProcessor
