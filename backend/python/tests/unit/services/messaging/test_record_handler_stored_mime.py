@@ -253,13 +253,36 @@ async def test_the_parsing_service_is_sent_the_stored_mime() -> None:
     assert consumer_budget == messaging_env.record_processing_timeout_for("unknown", "unknown")
 
 
-# Known limitation (follow-up F23g): the parse tier is decided by the extension first, the reader by the mime, so an
-# event extension `txt` on a stored PDF is read as a PDF under the light tier, as when the event carries both labels.
-async def test_the_parse_tier_still_follows_the_event_extension() -> None:
-    out = await _read(name="Report.txt", ext="txt", event_mime=ABSENT, stored=PDF)
-    carried = await _read(name="Report.txt", ext="txt", event_mime=PDF, stored=PDF)
-    assert out["reader"] == carried["reader"] == "_dispatch_pdf_binary"
-    assert out["tier"] == carried["tier"] == ParseTier.LIGHT
+# F23g (was test_the_parse_tier_still_follows_the_event_extension, which pinned LIGHT): the parse tier follows a
+# heavy reader, so an event extension `txt` on a stored PDF is parsed by the PDF reader under the heavy tier, as when the
+# event carries both labels.
+@pytest.mark.parametrize("event_mime", [ABSENT, PDF], ids=["no-mime", "carried"])
+async def test_the_parse_tier_follows_a_heavy_reader(event_mime: object) -> None:
+    out = await _read(name="Report.txt", ext="txt", event_mime=event_mime, stored=PDF)
+    assert out["reader"] == "_dispatch_pdf_binary"
+    assert out["tier"] == ParseTier.HEAVY
+
+
+@pytest.mark.parametrize("mime", [
+    "application/vnd.google-apps.document",
+    "application/vnd.google-apps.presentation",
+    "application/vnd.google-apps.spreadsheet",
+])
+async def test_a_google_export_labelled_txt_is_parsed_under_the_heavy_tier(mime: str) -> None:
+    out = await _read(name="Notes.txt", ext="txt", event_mime=mime, stored=mime)
+    assert out["reader"] is not None and out["tier"] == ParseTier.HEAVY, out
+
+
+@pytest.mark.parametrize(("service", "tier"), [(False, ParseTier.LIGHT), (True, ParseTier.HEAVY)], ids=["in-process", "service"])
+async def test_the_tier_follows_the_reader_of_the_pipeline_that_parses(service: bool, tier: ParseTier) -> None:
+    """`csv` + image/png: the in-process dispatch reads it as CSV (light); the parsing service resolves png (heavy)."""
+    out = await _read(name="Chart.csv", ext="csv", event_mime="image/png", stored="image/png", service=service)
+    assert out["tier"] == tier, out
+
+
+async def test_a_light_reader_keeps_the_light_tier() -> None:
+    out = await _read(name="Notes.md", ext="md", event_mime="text/markdown", stored="text/markdown")
+    assert out["tier"] == ParseTier.LIGHT, out
 
 
 # LOW-2: the broker's message is not changed; a redelivery resolves the mime again from the record.

@@ -852,6 +852,7 @@ _FORMAT_BY_MIME: Final = {
     **{normalize_mime(m): ft.format for m, ft in _spellings("parse") if ft.format},
     **{m: ft.format for m, ft in _routed_spellings("format").items()},
 }
+_TIER_BY_FORMAT: Final = {ft.format: ft.tier or ft.mime_tier for ft in FILE_TYPES if ft.format and (ft.tier or ft.mime_tier)}
 
 
 # The mimes the dispatch matched before the registry's second version, each as it matched it
@@ -1114,6 +1115,24 @@ def legacy_route(
         # file by its name, and a specific mime, readable or not, is never overruled by it.
         found = _widened_route(mime_type, code_ext)
     return found
+
+
+def read_tier(dispatch: Dispatch | None) -> Tier | None:
+    """The parse tier of the in-process reader *dispatch* names (the code parser is light), or None for no reader.
+
+    A type with no tier of its own (a Google Docs export) is read as its parsing format (docx), so it has that one's.
+    """
+    if dispatch is None:
+        return None
+    ft = dispatch.file_type
+    if ft is None:
+        return "light"
+    return ft.tier or ft.mime_tier or format_tier(ft.format)
+
+
+def format_tier(format_key: str | None) -> Tier | None:
+    """The parse tier of the parsing service's reader for *format_key* (see `parse_format`), or None."""
+    return _TIER_BY_FORMAT.get(format_key) if format_key else None
 
 
 def _names_nothing(mime_type: object) -> bool:
