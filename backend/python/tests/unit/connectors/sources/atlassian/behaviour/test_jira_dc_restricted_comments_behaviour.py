@@ -636,3 +636,41 @@ async def test_the_retry_list_keeps_what_a_search_did_not_answer_for(site, db, s
     await connector.run_sync()
 
     assert to_retry(store) == kept
+
+
+async def test_a_role_that_is_not_stored_yet_keeps_its_comment_on_the_retry_list(site, db, store, search) -> None:
+    """First sync: the Developers role names a group whose members cannot be read, so the role is not saved (it keeps
+    what is stored, and nothing is). The comment's grant to it would be dropped by the write: the issue stays on the
+    retry list until the role is stored."""
+    members = next(r for m, p, r in site._routes if (m, p) == ("GET", f"{API}/group/member"))
+
+    def devs_unreadable(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("groupname") == "devs":
+            return json_response({"errorMessages": ["boom"]}, status=500)
+        return members(request)
+
+    site.on("GET", f"{API}/group/member", devs_unreadable)
+    search.add("ENG", 0, [with_comments(ts(2), [comment("502", role="Developers")])])
+    connector, _ = await make_connector(db, store)
+
+    await connector.run_sync()
+
+    assert "ENG_10002" not in db.app_roles, "the role was not saved"
+    assert to_retry(store) == ["1001"], "a grant to a role that is not stored grants nobody"
+
+    site.on("GET", f"{API}/group/member", members)
+    await connector.run_sync()  # nothing changed at the source
+
+    assert "ENG_10002" in db.app_roles
+    assert grants(db, "comment_502") == {(EntityType.ROLE, "ENG_10002")}
+    assert to_retry(store) == []
+
+
+async def test_a_group_that_is_not_stored_keeps_its_comment_on_the_retry_list(site, db, store, search) -> None:
+    """A group the sync did not read (past the picker, or hidden) is not stored: its grant would be dropped."""
+    search.add("ENG", 0, [with_comments(ts(2), [comment("503", group="not-listed")])])
+    connector, _ = await make_connector(db, store)
+
+    await connector.run_sync()
+
+    assert to_retry(store) == ["1001"]

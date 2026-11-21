@@ -612,6 +612,9 @@ class JiraDataCenterConnector(BaseConnector):
         self._comment_retry: set[str] = set()
         self._comment_retry_written: set[str] = set()  # read in full this sync: leave the list once written
         self._issues_seen: set[str] | None = None  # ids a comment retry search returned
+        # (entity, external id) of a group or role -> whether it is stored: written this sync, or kept from an earlier
+        # one. A grant to one that is not is dropped by the write, so its comment is read again.
+        self._principals_stored: dict[tuple[str, str], bool] = {}
         self._settle_after_comments: dict[str, int] = {}
         self._stored_app_users: list[AppUser] = []  # read by _fetch_users
         self._newly_listed_user_keys: set[str] = set()
@@ -1096,6 +1099,7 @@ class JiraDataCenterConnector(BaseConnector):
             self._kept_unread_access = False
             self._kept_after_refusal = []
             self._role_ids = {}  # no role list read this sync: a comment restricted to a role grants nobody
+            self._principals_stored = {}
             jira_users = await self._fetch_users()
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
@@ -2747,6 +2751,7 @@ class JiraDataCenterConnector(BaseConnector):
             if user_groups_batch:
                 for entry in user_groups_batch:
                     await self.data_entities_processor.on_new_user_groups([entry])
+                    self._principals_stored[("user_group", entry[0].source_user_group_id)] = True
             else:
                 self.logger.info("ℹ️ No groups with valid members to sync")
 
@@ -3187,6 +3192,7 @@ class JiraDataCenterConnector(BaseConnector):
         # Step 4: Sync all roles in batch
         if roles_to_sync:
             await self.data_entities_processor.on_new_app_roles(roles_to_sync)
+            self._principals_stored.update({("role", role.source_role_id): True for role, _ in roles_to_sync})
             self.logger.info(
                 f"✅ Synced {total_roles} project roles with {total_members} direct user members"
             )
@@ -5857,6 +5863,18 @@ class JiraDataCenterConnector(BaseConnector):
             return [Permission(entity_type=EntityType.ROLE, external_id=f"{project_key}_{role_id}", type=PermissionType.READ)]
         return []
 
+    async def _grants_stored(self, grants: list[Permission]) -> bool:
+        """Whether every group or role these grants name is stored. The write drops a grant to one that is not (a role
+        whose group actor could not be read, a group past the picker limit, on a first sync), which would leave the
+        comment readable by no one. A principal not written this sync counts when it is kept from an earlier one."""
+        for grant in grants:
+            key = ("role" if grant.entity_type == EntityType.ROLE else "user_group", str(grant.external_id))
+            if key not in self._principals_stored:
+                self._principals_stored[key] = await self._has_stored_access(*key)
+            if not self._principals_stored[key]:
+                return False
+        return True
+
     async def _restricted_comment_records(
         self, issue: dict[str, Any], issue_record: TicketRecord, stored: Record | None,
     ) -> list[tuple[Record, list[Permission]]]:
@@ -5929,8 +5947,8 @@ class JiraDataCenterConnector(BaseConnector):
             )
             record.indexing_status = issue_record.indexing_status
             grants = self._comment_grants(comment, project_key)
-            if not grants and failure is None:
-                failure = ValueError(f"comment {comment['id']} names a group or role that could not be resolved")
+            if failure is None and (not grants or not await self._grants_stored(grants)):
+                failure = ValueError(f"comment {comment['id']} names a group or role that could not be resolved or is not stored")
             out.append((record, grants))
         if failure is not None:
             # Not the failed-issue budget: an issue given up on is skipped until it changes, and its comment would stay
