@@ -3,8 +3,9 @@
 `get_sql_extension()` returns the hooks the running edition installs (see
 `app.edition_services.sql_extension`). `SqlExtension` itself is the default: a
 query's full result rows are saved in the background as a CSV file of the
-conversation, and a fetched SQL table is given the tables its foreign keys link
-it to. An edition only overrides what it changes.
+conversation, a fetched SQL table is given the tables its foreign keys link it
+to, and no table is given concept context. An edition only overrides what it
+changes.
 
 Imports here stay lazy: `app.edition_services` imports this module early.
 """
@@ -73,6 +74,14 @@ class SqlExtension:
         return await _enrich_sql_table_with_fk_relations(
             record, graph_provider, user_id, org_id, connection_sources=connection_sources,
         )
+
+    async def concept_context(
+        self, record_id: str, graph_provider: IGraphDBProvider, *, org_id: str = "", user_id: str = "",
+    ) -> str:
+        """Text for the model naming the business concepts a SQL table shares with
+        tables `user_id` may read, for the SQL tables a search turned up.
+        Default: none."""
+        return ""
 
 
 _DEFAULT = SqlExtension()

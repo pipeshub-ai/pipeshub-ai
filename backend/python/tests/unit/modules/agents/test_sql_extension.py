@@ -72,6 +72,11 @@ class TestQueryResults:
 
 
 class TestSqlTables:
+    async def test_no_table_is_given_concept_context(self) -> None:
+        graph = MagicMock()
+        assert await EXT.concept_context("t1", graph, org_id="org-1", user_id="u1") == ""
+        assert graph.mock_calls == []
+
     async def test_a_table_is_given_its_foreign_key_tables_and_nothing_else(self) -> None:
         enriched = {"id": "t1", "fk_parent_relations": [{"record_id": "t2"}]}
         blob_store = AsyncMock()
