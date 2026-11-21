@@ -171,13 +171,9 @@ def listing(results: list[dict[str, Any]], next_start: Optional[int] = None) -> 
 
 
 def restricted_to(users: list[dict[str, Any]] = (), groups: list[dict[str, Any]] = ()) -> dict[str, Any]:
-    return {
-        "viewContentRestrictions": {
-            "results": [
-                {"operation": "read", "restrictions": {"user": {"results": list(users)}, "group": {"results": list(groups)}}}
-            ]
-        }
-    }
+    """GET /content/{id}/restriction/byOperation/read: the page's own read restriction (OperationRestriction)."""
+    page = lambda xs: {"results": list(xs), "start": 0, "limit": 200, "size": len(xs)}  # noqa: E731
+    return {"operation": "read", "restrictions": {"user": page(users), "group": page(groups)}}
 
 
 def user(key: str, email: Optional[str]) -> dict[str, Any]:
@@ -265,7 +261,7 @@ async def make_connector(
     for suffix, body in (
         ("/child/comment", {"results": [], "_links": {"base": BASE}}),
         ("/child/attachment", {"results": [], "_links": {"base": BASE}}),
-        ("/restriction/relevantViewRestrictions", {"viewContentRestrictions": {"results": []}}),
+        ("/restriction/byOperation/read", restricted_to()),
         ("/permissions", json_response([])),
     ):
         api.on_suffix("GET", suffix, body)
@@ -519,6 +515,42 @@ class TestUsersAndGroups:
         assert db.members_of("eng") == ["alice@example.com", "bob@example.com"]
 
 
+class TestFullSyncCoverage:
+    """A full sync that read only part of Confluence must not let the platform unlink what it did not see."""
+
+    async def test_a_clean_sync_read_everything(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+
+    @pytest.mark.parametrize("path", ["/user/list", "/group", "/group/eng/member", "/space", "/space/ENG/permissions"])
+    async def test_a_listing_that_failed_makes_the_sync_incomplete(self, atlassian_api, db, store, search, path) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": []})
+        atlassian_api.on("GET", f"{API}{path}", json_response({"message": "busy"}, status=503))
+
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_page_listing_that_failed_halfway_makes_the_sync_incomplete(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")], next_start=50))
+        search.add("page", 50, json_response({"message": "boom"}, status=500))
+
+        await connector.run_sync()
+
+        assert "p1" in db.records and connector.full_sync_coverage().complete is False
+
+    async def test_the_next_clean_sync_is_complete_again(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/user/list", json_response({"message": "busy"}, status=503))
+        await connector.run_sync()
+        atlassian_api.on("GET", f"{API}/user/list", {"results": []})
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+
+
 class TestSpacePermissions:
     async def test_space_grants_map_to_known_users_and_groups(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -546,7 +578,45 @@ class TestSpacePermissions:
             (EntityType.GROUP, "eng", PermissionType.READ),
             (EntityType.USER, "alice@example.com", PermissionType.OWNER),
             (EntityType.GROUP, "eng", PermissionType.WRITE),
-        }, "anonymous and unknown users grant nothing"
+        }, "unknown users grant nothing; anonymous View reaches only the log-in groups, none of them synced here"
+
+    async def test_anonymous_view_reaches_logged_in_users_and_administrators_see_every_space(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")],
+                       {"confluence-users": [], "confluence-administrators": [], "eng": []})
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10), space("PUB", 11)], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response(
+            [{"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "group", "name": "eng"}}]))
+        atlassian_api.on("GET", f"{API}/space/PUB/permissions", json_response(
+            [{"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "anonymous"}},
+             {"operation": {"operationKey": "create", "targetType": "comment"}, "subject": {"type": "anonymous"}}]))
+
+        await connector.run_sync()
+
+        read = lambda sid: {p.external_id for p in db.record_group_permissions[sid] if p.type == PermissionType.READ}  # noqa: E731
+        assert read("10") == {"eng", "confluence-administrators"}
+        assert read("11") == {"confluence-users", "confluence-administrators"}
+        assert all(p.entity_type == EntityType.GROUP for p in db.record_group_permissions["11"]), (
+            "never the whole org: that would reach people without a Confluence login"
+        )
+
+    async def test_a_space_permission_without_view_opens_nothing(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": [], "ops": []})
+        atlassian_api.on("GET", f"{API}/space/ENG/permissions", json_response([
+            {"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "group", "name": "eng"}},
+            {"operation": {"operationKey": "create", "targetType": "page"}, "subject": {"type": "group", "name": "eng"}},
+            {"operation": {"operationKey": "create", "targetType": "page"}, "subject": {"type": "group", "name": "ops"}},
+            {"operation": {"operationKey": "administer", "targetType": "space"}, "subject": {"type": "user", "userKey": "alice"}},
+        ]))
+
+        await connector.run_sync()
+
+        assert {p.email or p.external_id for p in db.record_group_permissions["10"]} == {"eng"}, (
+            "ops can add pages and alice administers, but without View neither sees the space"
+        )
 
     async def test_group_known_only_by_name_is_still_granted(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -648,7 +718,7 @@ class TestPlaceholderSweep:
         atlassian_api.on("GET", f"{API}/content/10", {**content("10", version=3), "ancestors": [{"id": "5", "type": "page"}]})
         atlassian_api.on("GET", f"{API}/content/5", content("5"))
         atlassian_api.on(
-            "GET", f"{API}/content/5/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}])
+            "GET", f"{API}/content/5/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}])
         )
 
         await connector._sweep_placeholder_records("org-1")
@@ -682,7 +752,7 @@ class TestPageRestrictions:
         search.add("page", 0, listing([content("p1"), content("open")]))
         atlassian_api.on(
             "GET",
-            f"{API}/content/p1/restriction/relevantViewRestrictions",
+            f"{API}/content/p1/restriction/byOperation/read",
             restricted_to(users=[{"type": "known", "userKey": "alice"}, {"type": "known", "userKey": "contractor"}]),
         )
 
@@ -698,11 +768,69 @@ class TestPageRestrictions:
         assert db.records["open"].access_rule == AccessRule.STRICT
         assert db.record_permissions["open"] == []
 
+    async def test_a_restricted_page_on_a_release_without_relevant_view_restrictions_keeps_its_restriction(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        # The 9.1.0 to 9.2.4 REST docs have no relevantViewRestrictions; byOperation/read is in every release.
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/server-information", {"version": "9.1.0"})
+        atlassian_api.on_suffix("GET", "/restriction/relevantViewRestrictions", json_response({"message": "null for uri"}, status=404))
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
+        search.add("page", 0, listing([content("p1"), content("open")]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
+
+        await connector.run_sync()
+
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
+        assert [p.email for p in db.record_permissions["p1"]] == ["alice@example.com"]
+        assert db.records["open"].access_rule == AccessRule.STRICT
+
+    async def test_a_restriction_longer_than_a_page_is_read_to_the_end(self, atlassian_api, db, store, search) -> None:
+        people = [user(f"u{i}", f"u{i}@example.com") for i in range(3)]
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, people, {})
+        search.add("page", 0, listing([content("p1")]))
+
+        def page(start: int) -> dict[str, Any]:  # a system limit of 2 per page, below the 200 asked for
+            users = [{"userKey": f"u{i}"} for i in range(3)][start:start + 2]
+            return {"operation": "read", "restrictions": {
+                "user": {"results": users, "start": start, "limit": 2, "size": len(users)},
+                "group": {"results": [], "start": start, "limit": 2, "size": 0}}}
+
+        restriction = f"{API}/content/p1/restriction/byOperation/read"
+        atlassian_api.on("GET", restriction, lambda r: json_response(page(int(AtlassianApiStub.query(r)["start"]))))
+
+        await connector.run_sync()
+
+        assert sorted(p.email for p in db.record_permissions["p1"]) == ["u0@example.com", "u1@example.com", "u2@example.com"]
+        assert [AtlassianApiStub.query(r)["start"] for r in atlassian_api.calls("GET", restriction)][:2] == ["0", "2"]
+
+    async def test_administrators_read_a_restricted_page(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {"confluence-administrators": []})
+        search.add("page", 0, listing([content("p1"), content("open")]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
+
+        await connector.run_sync()
+
+        grants = {p.email or p.external_id for p in db.record_permissions["p1"]}
+        assert grants == {"alice@example.com", "confluence-administrators"}
+        assert db.record_permissions["open"] == [], "an unrestricted page needs no grant of its own"
+
+    async def test_a_restriction_body_of_an_unknown_shape_does_not_open_up_the_page(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", {"results": []})
+
+        await connector.run_sync()
+
+        assert "p1" not in db.records, "a body that names no read restriction is not proof of none"
+
     async def test_a_failed_restriction_lookup_does_not_open_up_a_restricted_page(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
         search.add("page", 0, listing([content("p1")]))
-        restriction = f"{API}/content/p1/restriction/relevantViewRestrictions"
+        restriction = f"{API}/content/p1/restriction/byOperation/read"
         atlassian_api.on("GET", restriction, restricted_to(users=[{"userKey": "alice"}]))
         await connector.run_sync()
         assert db.records["p1"].access_rule == AccessRule.RESTRICTED
@@ -715,7 +843,7 @@ class TestPageRestrictions:
     async def test_a_new_page_with_unreadable_restrictions_waits_for_the_next_sync(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         search.add("page", 0, listing([content("p1", attachments=[attachment("att1")]), content("open")]))
-        atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", json_response({"message": "busy"}, status=503))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", json_response({"message": "busy"}, status=503))
 
         await connector.run_sync()
 
@@ -727,7 +855,7 @@ class TestPageRestrictions:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
         search.add("page", 0, listing([content("p1")]))
-        restriction = f"{API}/content/p1/restriction/relevantViewRestrictions"
+        restriction = f"{API}/content/p1/restriction/byOperation/read"
         atlassian_api.on("GET", restriction, restricted_to(users=[{"userKey": "alice"}]))
         await connector.run_sync()
         atlassian_api.on("GET", f"{API}/content/p1", content("p1", version=2))
@@ -742,7 +870,7 @@ class TestPageRestrictions:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
         search.add("page", 0, listing([content("p1", attachments=[attachment("att1")])]))
-        atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
         atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
 
         await connector.run_sync()
@@ -761,7 +889,7 @@ class TestPageRestrictions:
         search.add("page", 0, listing([content("p1")]))
         atlassian_api.on(
             "GET",
-            f"{API}/content/p1/restriction/relevantViewRestrictions",
+            f"{API}/content/p1/restriction/byOperation/read",
             restricted_to(groups=[{"type": "group", "name": "finance"}]),
         )
 
@@ -776,7 +904,7 @@ class TestPageRestrictions:
         search.add("page", 0, listing([content("p1")]))
         atlassian_api.on(
             "GET",
-            f"{API}/content/p1/restriction/relevantViewRestrictions",
+            f"{API}/content/p1/restriction/byOperation/read",
             restricted_to(groups=[{"type": "group", "name": "new-hires"}]),
         )
 
@@ -830,7 +958,7 @@ class TestContentSync:
 
         atlassian_api.on("GET", f"{API}/space", spaces)
         atlassian_api.on("GET", f"{API}/content/500", content("500"))
-        atlassian_api.on("GET", f"{API}/content/500/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
+        atlassian_api.on("GET", f"{API}/content/500/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
         search.add("page", 0, listing([content("p1")]))
         search.existing["page"] = [content("p1"), content("500")]
 
@@ -845,7 +973,7 @@ class TestContentSync:
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
         page_image = {**attachment("img1"), "title": "diagram.png"}
         search.add("page", 0, listing([content("p1", attachments=[page_image])]))
-        atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
         atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
         reply = comment("c2", body={"storage": {"value": '<ac:image><ri:attachment ri:filename="Diagram.PNG" /></ac:image>'}})
         atlassian_api.on("GET", f"{API}/content/c1/child/comment", {"results": [reply], "_links": {"base": BASE}})
@@ -892,7 +1020,7 @@ class TestAuditLogRestrictionChanges:
         }
         atlassian_api.on("GET", AUDIT, lambda r: json_response(pages[AtlassianApiStub.query(r).get("pageCursor")]))
         atlassian_api.on("GET", f"{API}/content/p1", {**content("p1"), "type": "page"})
-        atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
         db.records["gone"] = db.records["p2"].model_copy(update={"id": "gone-id", "external_record_id": "gone"})
         atlassian_api.on("GET", f"{API}/content/gone", json_response({"message": "no"}, status=404))
 
@@ -906,6 +1034,34 @@ class TestAuditLogRestrictionChanges:
         assert "filtered-out-page" not in db.records, "pages excluded by filters are not created by the audit pass"
         assert db.records["p2"].access_rule == AccessRule.STRICT, "space-level 'Permissions' events are not page restrictions"
         assert audit_key(store)["last_sync_time_ms"] > first_clock
+
+    @pytest.mark.parametrize("kind", ["Page", "Blog post"])
+    async def test_the_documented_cursor_object_pages_the_audit_log_and_every_content_type_counts(
+        self, atlassian_api, db, store, search, kind
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
+        search.add("page", 0, listing([content("p1"), content("p2")]))
+        await connector.run_sync()
+        search.add("page", 0, listing([]))
+
+        def event(obj_id: str) -> dict[str, Any]:
+            return {"type": {"category": "Pages and blogs", "action": f"{kind} view restriction added"},
+                    "affectedObjects": [{"name": "x", "type": kind, "id": obj_id}, {"name": "Eng", "type": "Space", "id": "10"}]}
+
+        pages = {  # "nextPageCursor": {"cursor": "string"}, as the auditing REST docs show it
+            None: {"entities": [event("p1")], "pagingInfo": {"lastPage": False, "nextPageCursor": {"cursor": "1700000000000,7"}}},
+            "1700000000000,7": {"entities": [event("p2")], "pagingInfo": {"lastPage": True, "nextPageCursor": None}},
+        }
+        atlassian_api.on("GET", AUDIT, lambda r: json_response(pages[AtlassianApiStub.query(r).get("pageCursor")]))
+        for pid in ("p1", "p2"):
+            atlassian_api.on("GET", f"{API}/content/{pid}", {**content(pid), "type": "page"})
+            atlassian_api.on("GET", f"{API}/content/{pid}/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
+
+        await connector.run_sync()
+
+        assert [AtlassianApiStub.query(r).get("pageCursor") for r in atlassian_api.calls("GET", AUDIT)] == [None, "1700000000000,7"]
+        assert db.records["p1"].access_rule == db.records["p2"].access_rule == AccessRule.RESTRICTED
 
     async def test_a_page_restricted_later_takes_its_stored_files_and_comments_with_it(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -921,7 +1077,7 @@ class TestAuditLogRestrictionChanges:
         event = {"type": {"category": "Pages and Blogs"}, "affectedObjects": [{"type": "Page", "id": "p1"}, {"type": "Space", "id": "10"}]}
         atlassian_api.on("GET", AUDIT, {"entities": [event], "pagingInfo": {"lastPage": True}})
         atlassian_api.on("GET", f"{API}/content/p1", {**content("p1"), "type": "page"})
-        atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
         await connector.run_sync()
 
         assert db.records["p1"].access_rule == AccessRule.RESTRICTED
@@ -977,7 +1133,7 @@ class TestReindex:
     ) -> None:
         connector = await self._synced(atlassian_api, db, store, search)
         atlassian_api.on("GET", f"{API}/content/p1", content("p1", version=2))
-        atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
         atlassian_api.on("GET", f"{API}/content/b1", content("b1", ctype="blogpost"))
         atlassian_api.on(
             "GET", f"{API}/content/c2",
@@ -1008,7 +1164,7 @@ class TestReindex:
         connector = await self._synced(atlassian_api, db, store, search)
         atlassian_api.on("GET", f"{API}/content/c2file", attachment("c2file", version=9))
         atlassian_api.on("GET", f"{API}/content/c2", {"id": "c2", "type": "comment", "container": {"type": "page", "id": "p1"}})
-        atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
 
         await connector.reindex_records([db.records["c2file"]])
 
@@ -1016,7 +1172,7 @@ class TestReindex:
         assert updated.parent_node_id == db.records["c2"].id
         ((_, perms),) = db.permission_updates
         assert perms == []
-        assert atlassian_api.calls("GET", f"{API}/content/p1/restriction/relevantViewRestrictions")
+        assert atlassian_api.calls("GET", f"{API}/content/p1/restriction/byOperation/read")
 
     async def test_reindex_without_init_is_refused(self, db, store) -> None:
         connector = ConfluenceDataCenterConnector(
@@ -1363,7 +1519,7 @@ class TestAuditPassEdgeCases:
 
         atlassian_api.on("GET", AUDIT, {"entities": [ev("b1", "Blog"), ev("p1", "Page"), ev("x", "Attachment")], "pagingInfo": {"lastPage": True}})
         atlassian_api.on("GET", f"{API}/content/b1", content("b1", ctype="blogpost"))
-        atlassian_api.on("GET", f"{API}/content/b1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
+        atlassian_api.on("GET", f"{API}/content/b1/restriction/byOperation/read", restricted_to(users=[{"userKey": "alice"}]))
         atlassian_api.on("GET", f"{API}/content/p1", {**content("p1"), "type": "attachment"})
         before = db.records["p1"]
 

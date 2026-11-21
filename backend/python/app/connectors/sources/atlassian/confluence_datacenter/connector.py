@@ -40,6 +40,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -156,6 +157,12 @@ CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
 
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
+
+# The super group: "access all spaces" and "access all pages, including pages with view restrictions"; its
+# "permissions can't be edited" (https://confluence.atlassian.com/doc/global-permissions-overview-138709.html).
+SUPER_GROUP = "confluence-administrators"
+# The groups that hold "Can use" by default (https://confluence.atlassian.com/doc/confluence-groups-139478.html).
+CAN_USE_GROUPS = ("confluence-users", SUPER_GROUP)
 
 
 @ConnectorBuilder("Confluence Data Center")\
@@ -372,6 +379,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self._space_listing_complete = False
+        # Set when a sync carried on past a part of Confluence it could not read (full_sync_coverage).
+        self._sync_read_incomplete = False
         # Spaces this sync wrote to the graph; one whose permissions couldn't be read is listed but not saved.
         self._saved_space_ids: set[str] = set()
         # Items the by-id syncs of the current space listing failed to save; counted in failedPages.
@@ -505,6 +514,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
 
+            self._sync_read_incomplete = False
             await self._register_authenticated_identity()
 
             # Load sync and indexing filters
@@ -538,6 +548,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         except Exception as e:
             self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
             raise
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that left part of Confluence unread unlinks nothing it did not see: a user, group,
+        space or page listing that failed would otherwise read as everything in it having left."""
+        return FullSyncCoverage(complete=not self._sync_read_incomplete)
 
     # Bound the per-level source fanout; Confluence is rate-limited.
     _PLACEHOLDER_SWEEP_CONCURRENCY = 5
@@ -665,6 +680,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
+                    self._sync_read_incomplete = True
                     break
 
                 response_data = response.json()
@@ -759,6 +775,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
+                    self._sync_read_incomplete = True
                     break
 
                 response_data = response.json()
@@ -788,6 +805,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             self.logger.warning(
                                 f"Keeping the stored members of group {group_name}: its member list could not be read"
                             )
+                            self._sync_read_incomplete = True
                             continue
 
                         # Create user group
@@ -804,6 +822,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                 f"Keeping the stored members of group {group_name}: "
                                 f"its members could not be looked up ({lookup_error})"
                             )
+                            self._sync_read_incomplete = True
                             continue
 
                         # Save group with members
@@ -814,6 +833,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                     except Exception as group_error:
                         self.logger.error(f"❌ Failed to process group {group_data.get('name')}: {group_error}")
+                        self._sync_read_incomplete = True
                         continue
 
                 next_start = v1_next_start(response_data, start, len(groups_data), batch_size, use_link_offset=False)
@@ -946,6 +966,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             self.logger.warning(
                                 f"Keeping the stored access of space {space_name}: its permissions could not be read"
                             )
+                            self._sync_read_incomplete = True
                             continue
 
                         total_permissions_synced += len(permissions)
@@ -983,6 +1004,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         break
 
             self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}, Permissions: {total_permissions_synced}")
+            if not self._space_listing_complete:
+                self._sync_read_incomplete = True
 
             return record_groups
 
@@ -1571,6 +1594,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 listing = await self._sync_content(space.short_name, record_type, defer_checkpoint=True)
                 self._id_sync_failed_items = []
                 settled = await self._reconcile_space_content(space, record_type, listing)
+                if not listing.complete or not settled:
+                    self._sync_read_incomplete = True
                 if not listing.complete:
                     continue
                 content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
@@ -1735,15 +1760,24 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if paging_info.get("lastPage", True):
                 break
             
+            # Documented as an object, "nextPageCursor": {"cursor": "string"}
+            # (https://confluence.atlassian.com/jiracore/audit-log-improvements-for-developers-1019401815.html).
             page_cursor = paging_info.get("nextPageCursor")
+            if isinstance(page_cursor, dict):
+                page_cursor = page_cursor.get("cursor")
             if not page_cursor:
-                break
+                # A page that is not the last but names no next one: the rest can't be read.
+                self.logger.warning("The audit log page names no next page; this window is read again next sync")
+                return None
 
         return list(content_ids_set)
 
     # Data Center page/blog restriction events use category "Pages and Blogs"
     # (End user activity — Advanced coverage), not "Permissions" (space/global only).
-    _AUDIT_CONTENT_OBJECT_TYPES = frozenset({"page", "blog", "blogpost"})
+    # The object types are not documented; the events are named "Page ..." and "Blog post ..."
+    # (https://confluence.atlassian.com/conf100/audit-log-events-in-confluence-1627458064.html), so every spelling
+    # is accepted: an event the filter missed would leave a changed restriction unread.
+    _AUDIT_CONTENT_OBJECT_TYPES = frozenset({"page", "blog", "blogpost", "blog post"})
     _AUDIT_SPACE_OBJECT_TYPES = frozenset({"space"})
 
     def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> Optional[str]:
@@ -2135,55 +2169,81 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
 
+    # Restrictions are read this many users and groups at a time, for at most this many pages.
+    _RESTRICTION_PAGE = 200
+    _RESTRICTION_MAX_PAGES = 50
+
     async def _fetch_page_permissions(self, page_id: str) -> Optional[list[Permission]]:
         """
-        Fetch read restrictions defined on this page.
+        Read restrictions set on this page itself, as Permissions; None when they can't be read in full.
 
-        ``relevantViewRestrictions`` also lists ancestor restrictions. Those stay
-        on the ancestor; this page inherits them. A result that names another
-        content id is skipped. Edit restrictions are ignored.
+        ``GET /rest/api/content/{id}/restriction/byOperation/read`` is in the REST docs of every release from
+        9.1.0 to 11.1.0 (https://developer.atlassian.com/server/confluence/rest/v910/api-group-content-restrictions/),
+        unlike ``relevantViewRestrictions``, which 9.1.0 to 9.2.4 do not have. It lists only the page's own
+        restrictions: "the inherited permissions are not listed"
+        (https://jira.atlassian.com/browse/CONFSERVER-99749). Those on an ancestor stay on the ancestor, which
+        this page inherits. Edit restrictions don't limit viewing and are not read.
         """
-        permissions = []
-
+        seen: set[tuple[str, str]] = set()
+        users: list[dict[str, Any]] = []
+        groups: list[dict[str, Any]] = []
+        start = 0
         try:
-            self.logger.debug(f"Fetching view permissions for page: {page_id}")
-
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.get_page_relevant_view_restrictions_v1(
-                page_id=page_id
-            )
-
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.error(
-                    f"❌ Could not read view permissions for page {page_id}: "
-                    f"{response.status if response else 'No response'}"
+            for _ in range(self._RESTRICTION_MAX_PAGES):
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_content_restriction_by_operation_v1(
+                    page_id, "read", start=start, limit=self._RESTRICTION_PAGE
                 )
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.error(
+                        f"Could not read view permissions for page {page_id}: "
+                        f"{response.status if response else 'No response'}"
+                    )
+                    return None
+                data = response.json()
+                restrictions = data.get("restrictions") if isinstance(data, dict) else None
+                if not isinstance(restrictions, dict) or data.get("operation") != "read":
+                    # A body that isn't the documented OperationRestriction is not "unrestricted".
+                    self.logger.error(f"View permissions of page {page_id} came back in an unknown shape")
+                    return None
+                full_page = False
+                step = self._RESTRICTION_PAGE
+                for kind, out in (("user", users), ("group", groups)):
+                    listing = restrictions.get(kind) or {}
+                    entries = listing.get("results") or []
+                    for entry in entries:
+                        key = (kind, str(entry.get("userKey") or entry.get("username") or entry.get("name")
+                                         or entry.get("id") or entry))
+                        if key not in seen:
+                            seen.add(key)
+                            out.append(entry)
+                    # The page size Confluence used, which a system limit may set below ours.
+                    size = listing.get("limit") if isinstance(listing.get("limit"), int) else self._RESTRICTION_PAGE
+                    if size > 0 and len(entries) >= size:
+                        full_page = True
+                        step = min(step, size)
+                if not full_page:
+                    break
+                start += step
+            else:
+                self.logger.error(f"View permissions of page {page_id} have more than {self._RESTRICTION_MAX_PAGES} pages")
                 return None
 
-            response_data = response.json()
-            view_restrictions = response_data.get("viewContentRestrictions", {})
-            restrictions = view_restrictions.get("results", [])
-
-            for restriction_data in restrictions:
-                if restriction_data.get("operation") != "read":
-                    continue
-                defined_on = (restriction_data.get("content") or {}).get("id")
-                if defined_on and str(defined_on) != str(page_id):
-                    continue
-                operation_permissions = await self._transform_page_restriction_to_permissions(
-                    restriction_data
-                )
-                permissions.extend(operation_permissions)
-
-            self.logger.debug(
-                f"Found {len(permissions)} view permissions for page {page_id}"
-            )
+            permissions: list[Permission] = []
+            if users or groups:
+                permissions = await self._transform_page_restriction_to_permissions({
+                    "operation": "read",
+                    "restrictions": {"user": {"results": users}, "group": {"results": groups}},
+                })
+                # confluence-administrators "access all pages, including pages with view restrictions".
+                permissions.extend(await self._group_permissions((SUPER_GROUP,)))
+            self.logger.debug(f"Found {len(permissions)} view permissions for page {page_id}")
             return permissions
 
         except Exception as e:
             # Not []: an unreadable ACL is not an absent ACL. See the docstring.
             self.logger.error(
-                f"❌ Could not read view permissions for page {page_id}: {e}"
+                f"Could not read view permissions for page {page_id}: {e}"
             )
             return None
 
@@ -3209,9 +3269,22 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     )
                     return []
 
+                # "View gives you permission to access the content in this space"
+                # (https://confluence.atlassian.com/doc/space-permissions-overview-139521.html): another space
+                # permission held without View opens nothing.
+                viewers = {
+                    self._space_subject_key(e.get("subject")) for e in perm_entries
+                    if isinstance(e, dict) and (e.get("operation") or {}).get("operationKey") == "read"
+                    and (e.get("operation") or {}).get("targetType") == "space"
+                }
                 for entry in perm_entries:
+                    if isinstance(entry, dict) and isinstance(entry.get("subject"), dict) and \
+                            self._space_subject_key(entry["subject"]) not in viewers:
+                        continue
                     entry_permissions = await self._transform_v1_space_permission_entry(entry)
                     permissions.extend(entry_permissions)
+                # confluence-administrators "access all spaces", whatever the space's own permissions say.
+                permissions.extend(await self._group_permissions((SUPER_GROUP,)))
 
             else:
                 # Cloud v2: GET /api/v2/spaces/{id}/permissions (cursor-paginated)
@@ -3307,6 +3380,41 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         except Exception as e:
             self.logger.error(f"❌ Failed to extract cursor from URL '{next_url}': {e}")
             return None
+
+    @staticmethod
+    def _space_subject_key(subject: Any) -> Optional[tuple[str, str]]:
+        """Who a Data Center space permission names: (type, user key or group name)."""
+        if not isinstance(subject, dict):
+            return None
+        kind = subject.get("type")
+        if kind == "user":
+            return kind, str(subject.get("userKey") or subject.get("key") or subject.get("username") or "")
+        if kind == "group":
+            return kind, str(subject.get("name") or subject.get("id") or "")
+        return str(kind), ""
+
+    async def _group_permissions(self, names: tuple[str, ...]) -> list[Permission]:
+        """READ for each of these groups that the user sync saved; a group it didn't save grants nothing."""
+        out = []
+        for name in names:
+            permission = await self._create_permission_from_principal("group", name, PermissionType.READ)
+            if permission:
+                out.append(permission)
+        return out
+
+    async def _logged_in_user_permissions(self) -> list[Permission]:
+        """Who an anonymous View reaches: "allowing anonymous access in a space will allow all logged in users to
+        see that space, even if your site is not Public"
+        (https://confluence.atlassian.com/doc/assign-space-permissions-139460.html). Logging in takes "Can use",
+        "the most basic permission that allows users to log in", held through confluence-users ("In most
+        sites, this is the group that provides permission to log in to Confluence") or confluence-administrators
+        (https://confluence.atlassian.com/doc/global-permissions-overview-138709.html,
+        https://confluence.atlassian.com/doc/confluence-groups-139478.html). Never the whole PipesHub org: that
+        would reach people without a Confluence login.
+        shortcut: "Can use" granted to another group or to one user is not read, so they miss anonymous spaces;
+        from 9.2.5, GET /rest/api/permissions lists every holder; read it when a site needs that.
+        """
+        return await self._group_permissions(CAN_USE_GROUPS)
 
     async def _create_permission_from_principal(
         self,
@@ -3497,22 +3605,21 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if not operation_key:
                 return permissions
 
-            # Check for anonymous access (public space) — Cloud bundled format
-            is_anonymous = entry.get("anonymousAccess", False)
-            if is_anonymous and operation_key == "read":
-                self.logger.debug(
-                    "Space has anonymous read access (public), skipping explicit permissions"
-                )
+            # Anonymous View: Cloud's bundled format flags it, Data Center names an anonymous subject.
+            subject = entry.get("subject")
+            is_anonymous = entry.get("anonymousAccess", False) or (
+                isinstance(subject, dict) and subject.get("type") == "anonymous"
+            )
+            if is_anonymous:
+                if operation_key == "read" and target_type in (None, "space"):
+                    return await self._logged_in_user_permissions()
                 return permissions
 
             permission_type = self._map_confluence_permission(operation_key, target_type)
 
             # DC flat format: one subject per array item
-            subject = entry.get("subject")
             if isinstance(subject, dict):
                 subject_type = subject.get("type")
-                if subject_type == "anonymous":
-                    return permissions
                 if subject_type == "user":
                     user_id = (
                         subject.get("userKey")

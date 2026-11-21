@@ -916,6 +916,7 @@ class TestFetchSpacePermissions:
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._get_server_version = AsyncMock(return_value=(9, 1, 0))
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         connector._create_permission_from_principal = AsyncMock(return_value=Permission(
             entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ
         ))
@@ -940,6 +941,7 @@ class TestFetchSpacePermissions:
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._get_server_version = AsyncMock(return_value=(9, 1, 0))
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         connector._create_permission_from_principal = AsyncMock(
             side_effect=[
                 Permission(entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ),
@@ -981,22 +983,10 @@ class TestFetchPagePermissions:
     async def test_returns_permissions(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+        ds.get_content_restriction_by_operation_v1 = AsyncMock(
             return_value=_resp(
                 200,
-                {
-                    "viewContentRestrictions": {
-                        "results": [
-                            {
-                                "operation": "read",
-                                "restrictions": {
-                                    "user": {"results": []},
-                                    "group": {"results": []},
-                                },
-                            }
-                        ],
-                    }
-                },
+                {"operation": "read", "restrictions": {"user": {"results": [{"userKey": "u1"}]}, "group": {"results": []}}},
             )
         )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -1012,7 +1002,7 @@ class TestFetchPagePermissions:
         """Decision 76: "could not determine" is not "no restrictions"."""
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+        ds.get_content_restriction_by_operation_v1 = AsyncMock(
             return_value=_resp(500, {})
         )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
