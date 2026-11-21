@@ -95,7 +95,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.LIVE, "the reconcile sweep copies taxonomy onto duplicates; a trashed record gets none",
     ),
     # Browse surfaces, already filtered.
-    "list_kb_records": (Rule.LIVE, "KB record list"),
     "get_kb_children": (Rule.LIVE, "KB browse"),
     "get_folder_children": (Rule.LIVE, "folder browse"),
     "get_knowledge_hub_connector_page_v3": (
