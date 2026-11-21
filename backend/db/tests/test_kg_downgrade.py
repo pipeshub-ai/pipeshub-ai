@@ -439,3 +439,36 @@ def test_a_copy_labelled_epoch_8_when_the_trash_columns_are_added_is_relabelled_
         assert c.execute("SELECT mode, backfill_cursor, verified_at IS NOT NULL FROM kg.projection_state WHERE org_id = %s AND app_sk = 1", (org,)).fetchone() == ("enforce", "done", True)
         assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.projection_state'::regclass").fetchone()[0] is True
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+
+
+def test_the_capture_only_revision_refuses_a_services_own_row_and_its_downgrade_takes_the_refusal_back(db):
+    """kg_0021: a change-log row a service inserts itself is refused; down to kg_0020 it is taken again (kg_0004's body) and the catalog is clean; an upgrade refuses it again."""
+    import psycopg
+
+    from .rls_fixture import ORG_A as org
+    from .test_vetted_pins import unit
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def takes(c) -> bool:
+        try:
+            with unit(c, "pipeshub_query", org):
+                c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:forged'])", (org,))
+        except psycopg.errors.InsufficientPrivilege:
+            return False
+        c.execute("DELETE FROM kg.graph_changes")
+        return True
+
+    assert run_migrate(url).returncode == 0
+    with connect(cluster, name) as c:
+        assert not takes(c)
+    r = run_migrate(url, "downgrade", "kg_0020", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert takes(c)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert not takes(c)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []

@@ -156,10 +156,23 @@ async def test_the_log_is_the_writers_own_organisations_and_a_service_cannot_log
         await p.batch_upsert_nodes([{"_key": "r1", "orgId": a, **REC}], "records")
     assert await log(p, b) == [] and len(await log(p, a)) == 1
 
-    async def forge(tx) -> None:
-        await tx.execute("/* pipeshub:test.forge */ INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['3:x'])", b)
+    async def forge(tx) -> None:          # the demotion request is the one row a service inserts itself (kg_0021)
+        await tx.execute("/* pipeshub:test.forge */ INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, 'c1', ARRAY['3:@demote'])", b)
     with ctx(a), pytest.raises(Exception, match="row-level security|violates"):
         await p._q(forge, None, write=True)
+
+
+async def test_a_service_cannot_log_keys_itself_and_its_graph_writes_still_log_them(pg_db) -> None:
+    """kg_0021: a row the service inserts itself would have the worker re-project the keys it names (or hold a connector as pending), so only the capture trigger may."""
+    p, org = prov(pg_db), new_org()
+    for sql in ("INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['3:x'])",
+                "INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, 'c1', ARRAY['3:@demote', '3:x'])"):
+        with pytest.raises(Exception, match="capture triggers only"):
+            await raw(p, org, "/* pipeshub:test.forge_keys */ " + sql, org)
+    assert await log(p, org) == []
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "r1", "orgId": org, **REC}], "records")
+    assert await log(p, org) == [("c1", ["3:r1"])]
 
 
 async def test_a_service_cannot_choose_the_identifier_or_the_transaction_id_of_a_row_it_logs(pg_db) -> None:
@@ -167,7 +180,7 @@ async def test_a_service_cannot_choose_the_identifier_or_the_transaction_id_of_a
     p, org = prov(pg_db), new_org()
 
     async def forge(tx) -> tuple:
-        await tx.execute("/* pipeshub:test.forge_id */ INSERT INTO kg.graph_changes (org_id, id, txid, ends) OVERRIDING SYSTEM VALUE VALUES ($1, 999999999, '1'::xid8, ARRAY['3:x'])", org)
+        await tx.execute("/* pipeshub:test.forge_id */ INSERT INTO kg.graph_changes (org_id, id, txid, ends) OVERRIDING SYSTEM VALUE VALUES ($1, 999999999, '1'::xid8, ARRAY['3:@demote'])", org)
         row = await tx.fetchrow("SELECT id, txid = pg_current_xact_id() AS mine FROM kg.graph_changes WHERE org_id = $1", org)
         return row["id"], row["mine"]
     with ctx(org):
@@ -177,7 +190,7 @@ async def test_a_service_cannot_choose_the_identifier_or_the_transaction_id_of_a
 
     async def claim_next(tx) -> None:
         for i in range(50):
-            await tx.execute("/* pipeshub:test.claim */ INSERT INTO kg.graph_changes (org_id, id, ends) OVERRIDING SYSTEM VALUE VALUES ($1, $2, ARRAY['3:y'])", org, got_id + 1 + i)
+            await tx.execute("/* pipeshub:test.claim */ INSERT INTO kg.graph_changes (org_id, id, ends) OVERRIDING SYSTEM VALUE VALUES ($1, $2, ARRAY['3:@demote'])", org, got_id + 1 + i)
     with ctx(org):
         await p._q(claim_next, None, write=True)
         await p.batch_upsert_nodes([{"_key": "after", "orgId": org, **REC}], "records")

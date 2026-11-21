@@ -54,6 +54,28 @@ def test_the_change_log_refuses_an_entry_that_names_no_node(rdb):
             c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, '{}')", ("a" * 24,))      # a valid org id: only the ends check can refuse it
 
 
+@pytest.mark.parametrize("role", READERS)
+def test_a_service_logs_a_change_only_through_the_capture_trigger(rdb, role):
+    """kg_0021: the INSERT the services hold on the change log is for the capture trigger alone. A row a service inserts itself names keys the worker would re-project
+    (or a whole connector as pending), so it is refused; a write of the graph still logs its keys, and the demotion request (one constant key) is still taken."""
+    from .rls_fixture import ORG_A
+    from .test_vetted_pins import unit
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for row in ("(org_id, ends) VALUES (%s, ARRAY['3:forged'])", "(org_id, app_id, ends) VALUES (%s, 'app1', ARRAY['3:@demote', '3:forged'])",
+                    "(org_id, ends) SELECT %s, ARRAY['3:forged'] FROM generate_series(1, 2)"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege, match="capture triggers"), unit(c, role, ORG_A):
+                c.execute(f"INSERT INTO kg.graph_changes {row}", (ORG_A,))
+        with unit(c, role, ORG_A):
+            c.execute("INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES (%s, 'app1', ARRAY['3:@demote'])", (ORG_A,))
+        assert c.execute("SELECT app_id, ends FROM kg.graph_changes WHERE org_id = %s", (ORG_A,)).fetchall() == [("app1", ["3:@demote"])]
+        c.execute("DELETE FROM kg.graph_changes")
+        if c.execute("SELECT has_table_privilege(%s, 'graph.nodes', 'INSERT')", (role,)).fetchone()[0]:
+            with unit(c, role, ORG_A):
+                c.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES (%s, 'records', 'r1', %s::jsonb)", (ORG_A, '{"connectorId": "app1"}'))
+            assert c.execute("SELECT app_id, ends FROM kg.graph_changes WHERE org_id = %s", (ORG_A,)).fetchall() == [("app1", ["3:r1"])]
+
+
 def test_the_graph_carries_the_eight_capture_triggers_and_refuses_a_truncate(rdb):
     """Statement triggers on the partitioned parents (always enabled, so a replica session logs too); a truncate of either table is refused."""
     cluster, name = rdb
