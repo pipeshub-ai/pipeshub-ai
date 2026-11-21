@@ -24,6 +24,7 @@ import { useFrontendPublicUrl } from '@/lib/hooks/use-frontend-public-url';
 import { joinRedirectUri } from '@/lib/api/frontend-public-url';
 import { ConnectorsApi } from '../../api';
 import { FormField, useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
+import { whenPressEnds } from '@/app/(main)/workspace/components/use-form-validation';
 import {
   nestedConfigFromOAuthRegistrationDoc,
   readAuthValueFromFlatRecord,
@@ -532,7 +533,8 @@ export function AuthenticateTab() {
               onChange={(e) => setInstanceName(e.target.value)}
               onBlur={() => {
                 if (!instanceName.trim()) {
-                  setInstanceNameError(t('workspace.actions.errors.instanceNameRequired'));
+                  // Shown once the press that left the field is over, so the press still lands.
+                  whenPressEnds(() => setInstanceNameError(t('workspace.actions.errors.instanceNameRequired')));
                 }
               }}
               placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}

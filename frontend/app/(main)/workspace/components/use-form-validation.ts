@@ -1,12 +1,64 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+
+/*
+ * A field is usually left by pressing something else, often a button below it. An error line that shows on blur
+ * pushes that button down between mouse-down and mouse-up, and the press is lost. So an error asked for during a
+ * press waits until the press is over: right after its click, or a moment after the release when no click comes
+ * (a touch's mouse events can come a little after it). The keyboard is never held.
+ */
+const PRESS_SETTLE_MS = 400;
+let pressing = false;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
+const afterPress: Array<() => void> = [];
+
+function endPress(): void {
+  pressing = false;
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = null;
+  afterPress.splice(0).forEach((run) => run());
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(
+    'pointerdown',
+    () => {
+      pressing = true;
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = null;
+    },
+    true,
+  );
+  const release = () => {
+    if (!pressing) return;
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = setTimeout(endPress, PRESS_SETTLE_MS);
+  };
+  window.addEventListener('pointerup', release, true);
+  window.addEventListener('pointercancel', release, true);
+  // Captured, so this runs before the click's own handlers; the timeout runs after them.
+  window.addEventListener(
+    'click',
+    () => {
+      if (pressing) setTimeout(endPress, 0);
+    },
+    true,
+  );
+}
+
+/** Runs `show` now, or once the press in progress is over, its click handled first. */
+export function whenPressEnds(show: () => void): void {
+  if (pressing) afterPress.push(show);
+  else show();
+}
 
 /**
  * The one pattern for create and edit forms: a field is marked required, its
  * rule is checked as the person types, the error appears under the field once
- * they leave it (or after a send that the server refused), and the primary
- * button stays disabled until every rule passes.
+ * they leave it (after the press that left it, see {@link whenPressEnds}, or
+ * after a send that the server refused), and the primary button stays
+ * disabled until every rule passes.
  *
  * `rules` maps each field to its current problem, or undefined when it is fine.
  * Compute it from the form values on every render; it is the source of truth
@@ -16,9 +68,15 @@ import { useCallback, useMemo, useState } from 'react';
 export function useFormValidation<F extends string>(rules: Partial<Record<F, string | undefined>>) {
   const [touched, setTouched] = useState<ReadonlySet<string>>(() => new Set());
   const [serverErrors, setServerErrors] = useState<Partial<Record<F, string>>>({});
+  // A reset (Cancel, a closed form) while an error waits for a press to end drops that error.
+  const generation = useRef(0);
 
   const touch = useCallback((field: F) => {
-    setTouched((prev) => (prev.has(field) ? prev : new Set(prev).add(field)));
+    const asked = generation.current;
+    whenPressEnds(() => {
+      if (generation.current !== asked) return;
+      setTouched((prev) => (prev.has(field) ? prev : new Set(prev).add(field)));
+    });
   }, []);
 
   /** After a refused send: show every listed field's problem at once. */
@@ -54,6 +112,7 @@ export function useFormValidation<F extends string>(rules: Partial<Record<F, str
   );
 
   const reset = useCallback(() => {
+    generation.current += 1;
     setTouched(new Set());
     setServerErrors({});
   }, []);
