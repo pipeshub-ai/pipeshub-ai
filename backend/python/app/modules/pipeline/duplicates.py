@@ -15,7 +15,10 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
-from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
+from app.modules.indexing.duplicate_reconcile import (
+    DuplicateReconciler,
+    rearm_failed_reconcile,
+)
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
@@ -140,6 +143,7 @@ class QueuedCopies:
                     # Only costs one redundant reconcile later.
                     self._logger.warning("Could not clear the reconcile flag on record %s: %s", record_id, exc)
                 return
+        await rearm_failed_reconcile(self._graph, self._logger, record_id)
         self._logger.warning(
             "Duplicates of record %s still need reconciling; left pending for the recovery retry", record_id
         )
