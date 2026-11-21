@@ -37,6 +37,21 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connector": {}}
+# Every grant of a viewer in one statement, so a writable transaction (read committed, a snapshot per statement) never joins two states of them: the live
+# records and groups that the grantees ($2) hold a permission edge to (an organisation's only of a sharing type, $4), and, inside its own connector only,
+# what a source account the user authenticated as ($5, connector $6) and its groups, roles and teams hold (never an organisation's). Edges by the key,
+# nodes by primary key (LATERAL ... OFFSET 0: a lookup per row whatever the statistics say).
+_GRANTS_SQL = """/* pipeshub:graph.access_grants_all */ WITH acct AS (SELECT * FROM unnest($5::text[], $6::text[]) AS a(id, cid)),
+  holder AS (SELECT a.id, a.cid FROM acct a
+    UNION SELECT b.to_id, a.cid FROM acct a CROSS JOIN LATERAL (SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'permission' AND b.from_coll = 'users'
+      AND b.from_id = a.id AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER' OFFSET 0) b),
+  hit AS (SELECT e.to_coll, e.to_id, NULL::text AS only_cid FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_id = ANY($2::text[])
+      AND e.from_coll = ANY($3::text[]) AND e.to_coll IN ('records', 'recordGroups') AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))
+    UNION ALL SELECT e.to_coll, e.to_id, h.cid FROM holder h CROSS JOIN LATERAL (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission'
+      AND e.from_id = h.id AND e.from_coll = ANY($3::text[]) AND e.from_coll <> 'organizations' AND e.to_coll IN ('records', 'recordGroups') OFFSET 0) e)
+SELECT n.cid, h.to_id AS id FROM hit h CROSS JOIN LATERAL (SELECT n.doc->>'connectorId' AS cid FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = h.to_coll
+    AND n.id = h.to_id AND NOT coalesce((n.doc->>'isDeleted')::boolean, false) OFFSET 0) n
+WHERE n.cid IS NOT NULL AND (h.only_cid IS NULL OR n.cid = h.only_cid)"""
 
 
 _ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
@@ -172,14 +187,14 @@ class PermissionsMixin(PgBase):
                 return dict(_NO_ACCESS)
             grantees, gated, links = gate
             by_conn: dict[str, list[str]] = {a: [] for a in gated}
-            for cid, ids in (await access_sql.granted_targets(tx, org, grantees, list(ORG_SHARE_PERMISSION_TYPES))).items():
-                if cid in by_conn:
-                    by_conn[cid].extend(ids)
-            for cid, holders in (await self._linked_holders(tx, org, links, gated)).items():
-                # not from an organization here: the edges are read for the account and its groups only
-                by_conn[cid].extend((await access_sql.granted_targets(tx, org, holders, [])).get(cid, []))
+            linked = [lk for lk in links if lk["cid"] and lk["cid"] in by_conn]
+            for r in await tx.fetch(_GRANTS_SQL, org, grantees, access_sql.PRINCIPALS, list(ORG_SHARE_PERMISSION_TYPES),
+                                    [lk["to_id"] for lk in linked], [lk["cid"] for lk in linked]):
+                if r["cid"] in by_conn:
+                    by_conn[r["cid"]].append(r["id"])
             return {"grantee_ids": grantees, "gated_app_ids": gated, "by_connector": {k: list(dict.fromkeys(v)) for k, v in by_conn.items()}}
-        return await self._q(go, transaction)
+        # one snapshot outside a transaction: the gate and the grants are one state of the graph
+        return await self._q(go, transaction, isolation="repeatable_read")
 
     async def _linked_holders(self, tx: Tx, org: str, links: list[Any], gated: list[str]) -> dict[str, list[str]]:
         """Per gated connector, the source accounts the user authenticated it as and their groups, roles and teams: their grants count inside that connector only."""

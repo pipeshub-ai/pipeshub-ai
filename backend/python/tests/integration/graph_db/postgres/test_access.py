@@ -491,3 +491,35 @@ async def test_a_check_inside_a_writable_transaction_reads_every_grant_in_one_st
     finally:
         await w.p.rollback_transaction(tid)
     assert calls and not any(calls)                                    # every grant listed up front, none read per node
+
+
+async def test_a_writable_transactions_check_reads_the_users_and_the_linked_accounts_grants_as_one_state(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In a writable transaction (read committed: a snapshot per statement) the grants are listed up front. The user's own grant on R and a source account's
+    grant on R's parent C are read as one state: a move of the one grant from the user on R to the linked account on C, committed right after the user's
+    own grants were read, must not leave both in the list (R opens only when R and C are both granted)."""
+    await _moved_grant_world(w)
+    await w.nodes("users", {"_key": "src"})
+    await w.edge("authenticatedAs", ("users", "u"), ("users", "src"), connectorId=APP)
+    fetch, moved = uow_module.Tx.fetch, []
+
+    async def move() -> None:
+        await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND to_id = 'r'", w.org), write=True)
+        await w.edge("permission", ("users", "src"), ("records", "c"), type="USER", role="READER")
+
+    async def moved_after_the_users_grants(self, sql: str, *args: object) -> list:
+        rows = await fetch(self, sql, *args)
+        if not moved and ("pipeshub:graph.access_grant_edges" in sql or "pipeshub:graph.access_grants_all" in sql):
+            moved.append(sql.split("*/")[0])
+            await _elsewhere(move)
+        return rows
+    monkeypatch.setattr(uow_module.Tx, "fetch", moved_after_the_users_grants)
+    tid = await w.p.begin_transaction([], [])
+    try:
+        assert set((await w.p.check_access("u", w.org, node_ids=["r"], transaction=tid)).node_ids) == set()
+    finally:
+        await w.p.rollback_transaction(tid)
+    assert moved                                                       # the move landed right after the user's own grants were read
+    monkeypatch.setattr(uow_module.Tx, "fetch", fetch)
+    assert await w.allowed("u", "r") == set()                         # after: C granted through the account, R not
+    await w.edge("permission", ("users", "u"), ("records", "r"), type="USER", role="READER")
+    assert await w.allowed("u", "r") == {"r"}                         # both: the world does open R
