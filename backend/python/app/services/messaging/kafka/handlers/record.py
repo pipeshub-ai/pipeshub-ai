@@ -173,7 +173,6 @@ from app.utils.user_errors import (
     ENRICHMENT_STOPPED_CONNECTOR_REMOVED,
     FOLDER_NOTHING_TO_INDEX,
     RETRIES_EXHAUSTED,
-    RETRY_SCHEDULED,
     STORED_CONTENT_DAMAGED,
     STORED_CONTENT_MISSING,
     duplicate_failed,
@@ -182,6 +181,7 @@ from app.utils.user_errors import (
     is_password_protected,
     rate_limited_gave_up,
     rate_limited_will_retry,
+    retry_reason,
     to_user_reason,
     too_large_refusal,
     unsupported_file_type,
@@ -3167,7 +3167,9 @@ class RecordEventHandler(BaseEventService):
                             include_error_text=not quotes_content(status_exc),  # its context can be the record's own error
                         )
                         if last_exception is not None:
-                            raise last_exception from status_exc
+                            # Not "from": that would replace the error's own cause, which the consumer reads
+                            # to classify it (a killed parse worker's retry). The status failure stays its context.
+                            raise last_exception  # noqa: B904 - the status failure is its context on purpose
                         raise
                     if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
@@ -3210,7 +3212,7 @@ class RecordEventHandler(BaseEventService):
                         )
                         updates = requeue_updates(current, store_only=store_only)
                         if updates:
-                            updates["reason"] = RETRY_SCHEDULED
+                            updates["reason"] = retry_reason(last_exception)
                             updates["processingStartedAt"] = None
                             updated = await self.event_processor.graph_provider.update_node(
                                 record_id, CollectionNames.RECORDS.value, shape_status_write(updates)
@@ -3228,7 +3230,7 @@ class RecordEventHandler(BaseEventService):
                         # re-raised original error would replace with the ordinary retry.
                         if not handed_back:
                             if last_exception is not None:
-                                raise last_exception from revert_exc
+                                raise last_exception  # noqa: B904 - see above: the status failure is its context, not its cause
                             raise RuntimeError(
                                 f"Failed to clear transient IN_PROGRESS status for {record_id}"
                             ) from revert_exc

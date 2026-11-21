@@ -13,8 +13,12 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, EventTypes
-from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    PasswordProtectedError,
+)
 from app.modules.indexing.parse_now_marker import current_run, store_only_active
+from app.modules.parsers.parse_pool import ParseWorkerError
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -23,6 +27,11 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
+from app.utils.user_errors import (
+    PARSE_WORKER_KILLED_RETRYING,
+    PARSE_WORKER_OUT_OF_MEMORY,
+    RETRY_SCHEDULED,
+)
 from tests.unit.attempt_start import attempt_start_via
 
 RECORDS = CollectionNames.RECORDS.value
@@ -291,7 +300,7 @@ class TestFailuresEndInTheMarker:
         harness = await self._fail(RuntimeError("parser busy"), final=False)
 
         assert harness.writes()[-1] == {
-            "parseNowStatus": "QUEUED", "parseNowRev": REV, "parseNowReason": record_module.RETRY_SCHEDULED, "parseNowAt": ANY,
+            "parseNowStatus": "QUEUED", "parseNowRev": REV, "parseNowReason": RETRY_SCHEDULED, "parseNowAt": ANY,
         }
         assert all("indexingStatus" not in write for write in harness.writes())
 
@@ -393,3 +402,64 @@ class TestFailuresEndInTheMarker:
 
         assert not any("parseNowStatus" in write for write in harness.writes())
 
+
+
+class TestRecordWhoseParseWorkerWasKilled:
+    """The first kill of a record's parse worker is retried; what the record shows must match what happens."""
+
+    @staticmethod
+    def _killed_first() -> DocumentProcessingError:
+        killed = ParseWorkerError(PARSE_WORKER_KILLED_RETRYING, "crashed", retrying=True)
+        try:
+            raise DocumentProcessingError("Failed to process document") from killed
+        except DocumentProcessingError as wrapped:
+            return wrapped
+
+    async def test_a_record_that_will_retry_shows_the_memory_pressure_reason(self) -> None:
+        harness = Harness(_record(indexingStatus="IN_PROGRESS"))
+        harness.fail_with = self._killed_first()
+
+        with pytest.raises(DocumentProcessingError):
+            await harness.run(_payload(is_final_failure=False, parseNow=False))
+
+        final = harness.writes()[-1]
+        assert PARSE_WORKER_KILLED_RETRYING in (final.get("reason"), final.get("parseNowReason"))
+
+    async def test_a_record_that_is_failed_for_it_does_not_promise_a_retry(self) -> None:
+        # The last attempt (or a process that has no retry tracker): nothing comes after it.
+        harness = Harness(_record(indexingStatus="QUEUED"))
+        harness.fail_with = self._killed_first()
+
+        with pytest.raises(DocumentProcessingError):
+            await harness.run(_payload(is_final_failure=True))
+
+        final = harness.writes()[-1]
+        assert final.get("indexingStatus") == "FAILED"
+        reasons = [final.get("reason"), final.get("parseNowReason")]
+        assert PARSE_WORKER_KILLED_RETRYING not in reasons
+        assert PARSE_WORKER_OUT_OF_MEMORY in reasons
+
+    async def test_a_failed_status_write_does_not_hide_the_retry_from_the_consumer(self) -> None:
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
+        harness = Harness(_record(indexingStatus="IN_PROGRESS"))
+        harness.fail_with = self._killed_first()
+        write_failure = ConnectionError("graph down")
+
+        async def failing_requeue_write(key: str, collection: str, updates: dict[str, Any]) -> bool:
+            if "reason" in updates:
+                raise write_failure
+            return True
+
+        harness.graph.update_node = AsyncMock(side_effect=failing_requeue_write)
+
+        with pytest.raises(DocumentProcessingError) as raised:
+            await harness.run(_payload(is_final_failure=False, parseNow=False))
+
+        # The consumer reads explicit causes: the worker death must still be the cause, with the write as context.
+        assert isinstance(raised.value.__cause__, ParseWorkerError)
+        assert raised.value.__context__ is write_failure
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
