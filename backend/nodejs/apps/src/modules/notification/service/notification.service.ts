@@ -299,7 +299,8 @@ export class NotificationService {
    * Send a message to a user's sockets, on whichever replica they are.
    * Nothing is held for a user who is offline: the stored notification is the
    * durable copy, and the client fetches it when it connects.
-   * Returns false only when the Socket.IO server is not initialized.
+   * Returns false when the notification is scheduled for later, or when the
+   * Socket.IO server is not initialized.
    */
   sendToUser(userId: string, event: string, data: any): boolean {
     // A scheduled notification is never pushed and never queued for an offline user: a client sees it through its own

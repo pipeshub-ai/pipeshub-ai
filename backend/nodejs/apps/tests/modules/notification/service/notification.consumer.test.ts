@@ -496,6 +496,20 @@ describe('notification/service/notification.consumer', () => {
       expect(JSON.stringify([mockLogger.warn.args, mockLogger.error.args])).to.not.include(note)
     });
 
+    it('a chat notice scheduled for later is stored, but neither pushed nor emailed before its time; a due one is both', async () => {
+      const later = new Date(Date.now() + 3_600_000);
+      insertManyStub.resolves([
+        saved(userA, { visibleAt: later }),
+        saved(userB, { visibleAt: new Date(Date.now() - 1000) }),
+      ]);
+      await run(JSON.stringify(event({ emailIntent, visibleAt: later.toISOString() })));
+      expect(insertManyStub.calledOnce).to.be.true;
+      expect(sendToUser().callCount).to.equal(1);
+      expect(sendToUser().firstCall.args[0]).to.equal(String(userB));
+      expect(mockDispatcher.dispatch.callCount).to.equal(1);
+      expect(mockDispatcher.dispatch.firstCall.args[0]).to.deep.include({ assignedTo: String(userB) });
+    });
+
     it('pushes and emails nothing for a duplicate delivery (E11000 on every doc)', async () => {
       insertManyStub.rejects(duplicateFailure([], [11000, 11000]));
       await run(JSON.stringify(event({ emailIntent })));
