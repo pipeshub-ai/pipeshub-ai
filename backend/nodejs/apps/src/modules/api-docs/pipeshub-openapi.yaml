@@ -61248,11 +61248,15 @@ paths:
                       Only when `success` is `false`. The provider's own code when
                       it was passed in `error`, otherwise one of `invalid_state`,
                       `instance_not_found`, `config_not_found`,
-                      `oauth_config_fetch_error`, `invalid_token` or `server_error`.
+                      `oauth_config_fetch_error`, `invalid_token`, `server_error`, or
+                      `temporarily_unavailable` (PipesHub's own storage did not respond; try again). The
+                      connector's signed-in state is left as it was (an existing sign-in is not cleared), but if
+                      only the final status write failed, the new tokens may already be saved, so don't assume
+                      the old token is still in use.
                     example: "access_denied"
                   errorMessage:
                     type: string
-                    description: Only when `error` is `server_error`. A readable reason for the failed token exchange.
+                    description: Only when `error` is `server_error` or `temporarily_unavailable`. A readable reason for the failed sign-in.
                 required:
                   - success
         '400':

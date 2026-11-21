@@ -130,7 +130,9 @@ from app.connectors.core.base.error.stream_errors import not_downloadable, to_in
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthStateError,
+    OAuthStoreUnavailableError,
     OAuthToken,
+    read_oauth_config,
 )
 from app.connectors.core.constants import (
     AuthFieldKeys,
@@ -7351,9 +7353,9 @@ async def handle_oauth_callback(
 
         # Get configuration
         config_path = _get_config_path_for_instance(connector_id)
-        config = await config_service.get_config(config_path)
+        config = await read_oauth_config(config_service, config_path)
 
-        if not config or not config.get(OAuthConfigKeys.AUTH):
+        if not config.get(OAuthConfigKeys.AUTH):
             mark_request_failure(request, None, error_class="misconfigured", reason="config_not_found")
             return {
                 "success": False,
@@ -7460,13 +7462,15 @@ async def handle_oauth_callback(
             ConnectorStateKeys.AUTHENTICATED_BY: user_id,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms()
         }
-        await connector_registry.update_connector_instance(
+        # The registry answers None for a graph failure rather than raising.
+        if not await connector_registry.update_connector_instance(
             connector_id=connector_id,
             updates=updates,
             user_id=user_id,
             org_id=org_id,
             is_admin=is_admin
-        )
+        ):
+            raise OAuthStoreUnavailableError("The connector's sign-in could not be recorded")
         logger.info(f"Instance {connector_id} marked as authenticated")
 
         return {
@@ -7475,11 +7479,12 @@ async def handle_oauth_callback(
         }
 
     except Exception as e:
+        reason = "temporarily_unavailable" if isinstance(e, OAuthStoreUnavailableError) else "server_error"
         # Text-free: the exchange's errors quote the token URL with its query and the provider's answer.
-        mark_request_failure(request, e, reason="server_error", include_error_text=False)
+        mark_request_failure(request, e, reason=reason, include_error_text=False)
 
-        # A refused caller, or a callback for another sign-in, leaves the connector as it was.
-        if authorized_connector_id and not isinstance(e, OAuthStateError):
+        # A refused caller, a callback for another sign-in, or our own store failing leaves the connector as it was.
+        if authorized_connector_id and not isinstance(e, (OAuthStateError, OAuthStoreUnavailableError)):
             try:
                 updates = {
                     "isAuthenticated": False,
@@ -7498,9 +7503,9 @@ async def handle_oauth_callback(
         error_message = extract_oauth_error_message(e)
         return {
             "success": False,
-            "error": "server_error",
+            "error": reason,
             "error_message": error_message,
-            "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=server_error"
+            "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error={reason}"
         }
 
 
