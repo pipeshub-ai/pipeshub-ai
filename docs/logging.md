@@ -1121,7 +1121,9 @@ error's cause, so it is the service's class (`upstream_5xx`, `unavailable`, `tim
 stays `internal` (ERROR). Its body is never logged (it can hold stored credentials). A Google
 client id or secret that is not configured is ours: 500 `internal` (ERROR). A refresh that succeeds writes `Access token refreshed
 successfully` (INFO); a config reload writes `Connector configuration updated successfully`. The `appEnabled` event the code
-exchange publishes is `broker.event.published` (DEBUG) or `broker.event.publish_failed` (ERROR), with `event_type` and `topic`.
+exchange publishes is `broker.event.published` (DEBUG, with `event_type` and `topic`). When it cannot be published, the request
+answers 503 and its one `http.request.error` (`unavailable`, WARNING) carries the broker error as the cause; the producer writes no
+line of its own.
 
 ### Health probe (Node)
 
