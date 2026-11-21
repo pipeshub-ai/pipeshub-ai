@@ -1018,6 +1018,16 @@ run. Each says why it failed on the request's lines:
   as its `upstream.call.end` says, not `internal`.
 - **The desktop proxy** answers a desktop that is offline (409), slow (504) or refusing (502) itself; the access line's class
   comes from that status.
+- **The OAuth provider** (`/oauth2/token`, `/device_authorization`, `/revoke`, `/introspect`, the `/authorize` redirect, and
+  the OIDC bearer check) answers in RFC 6749 shape (`modules/oauth_provider/utils/oauth-failure.ts`). A refusal (an OAuth
+  error, or a deliberate `BadRequestError`, `NotFoundError`, `UnauthorizedError` or `ForbiddenError`) keeps its 4xx and its
+  RFC code: a dead, rotated or unknown refresh token is `invalid_grant`. It writes one DEBUG `oauth.request.refused` with
+  `code`, and a wrong client credential marks the access line `bad_request`. Anything else is ours, whatever its status (a
+  stored secret that no longer decrypts, a lock timeout's 409, a driver error): one `oauth.request.failed` at
+  `levelFor(classifyRequestError(error, 500))` with the error, the access line marked with that class, and the answer
+  `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
+  retries; `/authorize`: a `server_error` redirect; `/introspect`: `active: false`, as before) with a fixed description.
+  `server_error` is never a refusal's code.
 
 The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and

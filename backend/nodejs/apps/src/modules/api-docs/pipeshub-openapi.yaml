@@ -3942,6 +3942,8 @@ components:
             - `unsupported_grant_type` - Grant type not supported
             - `invalid_scope` - Requested scope is invalid or exceeds allowed
             - `access_denied` - User denied authorization
+            - `server_error` - PipesHub's own failure, never a refusal (status `500`)
+            - `temporarily_unavailable` - PipesHub could not revoke or check a token now; retry (status `503`)
             - `invalid_target` - The requested subject cannot be acted as
               (RFC 8693). Returned by the token-exchange grant for every
               refusal about the person asked for, with one wording, so a
@@ -3959,6 +3961,7 @@ components:
             - invalid_scope
             - access_denied
             - server_error
+            - temporarily_unavailable
             - authorization_pending
             - slow_down
             - expired_token
@@ -28834,7 +28837,10 @@ paths:
         - consent page data (`requiresConsent: true`) when the request can go ahead;
         - `{redirectUrl}` carrying `error`, `error_description` and `state` when a requested
           scope is unknown or none of them is allowed for the app (`invalid_scope`), or a public
-          client sent no `code_challenge` (`invalid_request`).
+          client sent no `code_challenge` (`invalid_request`);
+        - `{redirectUrl}` carrying `error=server_error`, the fixed `error_description` "The
+          authorization server could not complete the request" and `state` when PipesHub itself
+          fails after the redirect URI is checked (for example, its store does not answer).
 
         Requested scopes the app does not allow are dropped rather than refused: the consent page
         lists them under `consentData.notGrantedScopes` and the code never carries them.
@@ -28962,7 +28968,8 @@ paths:
           description: |
             Either the data for the consent page, or a redirect URL carrying an OAuth error
             (an unknown scope or none allowed for the app, or a public client without
-            `code_challenge`).
+            `code_challenge`; or `server_error` with a fixed description when PipesHub itself
+            fails after the redirect URI is checked).
           content:
             application/json:
               schema:
@@ -29718,13 +29725,13 @@ paths:
               another resource than the one its grant was for
             - `invalid_target`, `invalid_request`, `invalid_grant`, `invalid_scope`,
               `unsupported_grant_type` - a refusal from the token-exchange grant (see above)
-            - `server_error` - any other failure, also with status `400`. This includes an unknown or
-              revoked `refresh_token` ("Invalid refresh token") and a `client_credentials` request
-              without `client_secret`, whose `error_description` is the Node `TypeError` text
-              (`The "data" argument must be of type string ... Received undefined`). A
-              `client_credentials` grant whose identity is gone, disabled or being restored is also
-              refused this way ("The identity this application acts as no longer exists", "... is
+            - `invalid_grant` also for an unknown, revoked, expired or already rotated `refresh_token`
+              ("Refresh token not found", "Refresh token has expired"): drop it and sign in again.
+            - `invalid_request` - a `client_credentials` grant whose identity is gone, disabled or
+              being restored ("The identity this application acts as no longer exists", "... is
               disabled", "... is being restored. Try again once that has finished.").
+
+            A refusal is never `server_error`: that code is only PipesHub's own failure, answered `500`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -29737,13 +29744,27 @@ paths:
           description: |
             Client authentication failed (`invalid_client`): no `client_id` in the body or the Basic
             header, an unknown or inactive client, a wrong `client_secret`, or a confidential client
-            using `authorization_code`, `refresh_token` or `device_code` without `client_secret`.
+            using `authorization_code`, `refresh_token` or `device_code` without `client_secret`. Also
+            a `client_credentials` request without `client_secret` ("client_secret is required").
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
         '500':
-          $ref: '#/components/responses/BodyParserFailure'
+          description: |
+            PipesHub could not complete the request (for example, its store did not answer, or a stored
+            client secret no longer decrypts): the flat OAuth body `{ "error": "server_error",
+            "error_description": "The authorization server could not complete the request" }`. The
+            description is always that text; the cause is in PipesHub's log. Retry later.
+
+            The standard error envelope (`INTERNAL_ERROR`) instead when the failure happens before the
+            endpoint (see Body parsers in the introduction).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OAuthErrorResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded
           content:
@@ -29789,6 +29810,7 @@ paths:
         '200':
           description: |
             Token revoked, or it was unknown, already revoked or issued to another client. No body.
+            Never answered when PipesHub failed to revoke it (that is a `503`).
         '400':
           description: |
             The body fails validation (`VALIDATION_ERROR`)
@@ -29806,6 +29828,15 @@ paths:
             (`Invalid client_id`), a confidential client without `client_secret` (`client_secret required
             for confidential clients`), or a wrong `client_secret`. Also returned when `client_id` is
             missing and `token` is not an agent credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        '503':
+          description: |
+            PipesHub could not revoke the token now (RFC 7009 Section 2.2.1): treat the token as still
+            valid and retry. Flat OAuth body `{ "error": "temporarily_unavailable", "error_description":
+            "The authorization server could not complete the request" }`.
           content:
             application/json:
               schema:
@@ -29851,8 +29882,9 @@ paths:
         '200':
           description: |
             Token introspection result. `{active: false}` alone when the token is unknown, expired,
-            revoked, issued to another client, or when `client_secret` is missing (even for a live
-            token). `username` is present only for a token that acts as a user.
+            revoked or issued to another client, and also when PipesHub could not read the token
+            (it fails closed; the cause is in PipesHub's log). `username` is present only for a token
+            that acts as a user.
           content:
             application/json:
               schema:
@@ -29884,7 +29916,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Client authentication failed (`invalid_client`) - unknown or inactive client, or wrong `client_secret`
+          description: Client authentication failed (`invalid_client`) - unknown or inactive client, a missing or wrong `client_secret`
           content:
             application/json:
               schema:
@@ -29978,6 +30010,14 @@ paths:
                 error: insufficient_scope
                 error_description: "Required scopes: openid"
                 scope: openid
+        '503':
+          description: |
+            PipesHub could not check the token now (its store did not answer): the token may be fine, so
+            keep it and retry. Flat OAuth body, `error` is `temporarily_unavailable`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
         '500':
           description: |
             The scope check failed unexpectedly (OAuth body, `error` is `server_error`).
@@ -78583,7 +78623,20 @@ paths:
                 error: invalid_client
                 error_description: Invalid client_id
         '500':
-          $ref: '#/components/responses/BodyParserFailure'
+          description: |
+            PipesHub could not complete the request (for example, its store did not answer, or a stored
+            client secret no longer decrypts): the flat OAuth body `{ "error": "server_error",
+            "error_description": "The authorization server could not complete the request" }`. The
+            description is always that text; the cause is in PipesHub's log. Retry later.
+
+            The standard error envelope (`INTERNAL_ERROR`) instead when the failure happens before the
+            endpoint (see Body parsers in the introduction).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OAuthErrorResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded
           content:
