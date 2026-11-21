@@ -22256,7 +22256,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WITH app, (coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB') AS appOpensEverything
         MATCH (start:App|Record|RecordGroup {{id: $start_id}})
         WHERE start = app
-           OR EXISTS {{ MATCH (start) ((kh_c)<-[kh_h:NODE_RELATION]-(kh_p) WHERE {self._kh_v3_check_hop("kh_c", "kh_p", "kh_h", grant_once=probe)}){{1,49}} (app) }}
+           // The walk's ends are collected before they are tested, so its plan starts at the start (as the check's walks do).
+           OR EXISTS {{ MATCH (start) ((kh_c)<-[kh_h:NODE_RELATION]-(kh_p) WHERE {self._kh_v3_check_hop("kh_c", "kh_p", "kh_h", grant_once=probe)}){{1,49}} (kh_top)
+                        WITH collect(kh_top) AS kh_tops WHERE app IN kh_tops RETURN 1 }}
         // Collected, so the walk above the start is read once, not once for each child the planner might start from.
         WITH app, appOpensEverything, collect(start) AS reached
         UNWIND reached AS start
