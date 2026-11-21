@@ -817,8 +817,8 @@ export class PgUserRepository implements UserRepository, Importable {
   }
 
   // ---- writes
-  async create(orgId: string, fields: UserFields): Promise<UserDto> {
-    return inUnit(undefined, { write: true }, (k) => {
+  async create(orgId: string, fields: UserFields, tx?: Tx): Promise<UserDto> {
+    return inUnit(tx, { write: true }, (k) => {
       assertOrg(k, orgId);
       return insertUser(k, fields, new Date());
     });

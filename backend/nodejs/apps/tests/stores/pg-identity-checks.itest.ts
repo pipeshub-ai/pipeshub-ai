@@ -6,7 +6,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import { asAccount } from '../../src/libs/context/orgContext';
-import { InternalServerError } from '../../src/libs/errors/http.errors';
+import { BadRequestError, InternalServerError } from '../../src/libs/errors/http.errors';
 import { UniqueConstraintError } from '../../src/libs/repositories/errors';
 import { setIdentityPort } from '../../src/libs/repositories/identity';
 import { PgGroupRepository } from '../../src/libs/repositories/group/pg';
@@ -16,6 +16,12 @@ import { PgOrgRepository } from '../../src/libs/repositories/org/pg';
 import { PgResetLinkRepository } from '../../src/libs/repositories/reset-link/pg';
 import { PgUnitOfWork } from '../../src/libs/repositories/pg';
 import { PgUserRepository } from '../../src/libs/repositories/user/pg';
+import { setUserRepository } from '../../src/libs/repositories/user';
+import {
+  MAX_ORG_ADMINS,
+  createUserEnsuringAdminCap,
+  saveUserEnsuringAdminCap,
+} from '../../src/modules/user_management/services/user-admin.service';
 import { createOrgLikeSignUp } from './contract/rest.contract';
 import { IdentityWorld } from './pg-identity-harness';
 import {
@@ -224,6 +230,78 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(
           1,
         );
+      });
+
+      describe('the admin limit, through the services that enforce it', () => {
+        const ROUNDS = 5;
+        let savedDocStore: string | undefined;
+        before(() => {
+          // The services pick the unit of work and the repository from DOC_STORE.
+          savedDocStore = process.env.DOC_STORE;
+          process.env.DOC_STORE = 'postgres';
+          setUserRepository(users);
+        });
+        after(() => {
+          setUserRepository();
+          if (savedDocStore === undefined) delete process.env.DOC_STORE;
+          else process.env.DOC_STORE = savedDocStore;
+        });
+
+        /** An organisation one seat short of the limit, and its first administrator. */
+        const orgWithOneSeat = async (): Promise<{ org: string; actor: string }> => {
+          const org = await world.newOrg();
+          const actor = await world.adminOf(org);
+          for (let i = 1; i < MAX_ORG_ADMINS - 1; i += 1) await account(org, { role: 'admin' });
+          expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(MAX_ORG_ADMINS - 1);
+          return { org, actor };
+        };
+        const newAdmin = () => ({ email: email('adm'), fullName: 'New Admin', role: 'admin' as const });
+        const settle = async (runs: Array<Promise<unknown>>) => {
+          const done = await Promise.allSettled(runs);
+          for (const d of done) {
+            if (d.status === 'rejected') expect(d.reason).to.be.instanceOf(BadRequestError);
+          }
+          return done.filter((d) => d.status === 'fulfilled').length;
+        };
+
+        it('two admin creates for the last seat: the organisation row lock lets exactly one in', async () => {
+          for (let round = 0; round < ROUNDS; round += 1) {
+            const { org, actor } = await orgWithOneSeat();
+            const [a, b] = [newAdmin(), newAdmin()];
+            const ok = await settle([a, b].map((f) => inOrg(org, () => createUserEnsuringAdminCap(org, f, false), actor)));
+            expect(ok, `round ${round}`).to.equal(1);
+            expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(MAX_ORG_ADMINS);
+            expect(
+              await count('SELECT count(*) AS n FROM identity.users WHERE email = ANY($1)', [[a.email, b.email]]),
+            ).to.equal(1);
+          }
+        });
+
+        it('an admin create racing a promotion for the last seat: exactly one wins', async () => {
+          for (let round = 0; round < ROUNDS; round += 1) {
+            const { org, actor } = await orgWithOneSeat();
+            const member = await account(org);
+            const ok = await settle([
+              inOrg(org, () => createUserEnsuringAdminCap(org, newAdmin(), false), actor),
+              inOrg(org, () => saveUserEnsuringAdminCap(org, member._id, { role: 'admin' }, false), actor),
+            ]);
+            expect(ok, `round ${round}`).to.equal(1);
+            expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(MAX_ORG_ADMINS);
+          }
+        });
+
+        it('a taken address inside the locked unit is still a unique-key error on email', async () => {
+          const { org, actor } = await orgWithOneSeat();
+          const taken = (await account(org)).email;
+          let caught: unknown;
+          try {
+            await inOrg(org, () => createUserEnsuringAdminCap(org, { ...newAdmin(), email: taken }, false), actor);
+          } catch (error) {
+            caught = error;
+          }
+          expect(caught).to.be.instanceOf(UniqueConstraintError);
+          expect(String((caught as UniqueConstraintError).metadata?.key)).to.include('email');
+        });
       });
 
       it('creating an organisation is atomic: a failing unit leaves nothing behind, and the first password is stored with it', async () => {

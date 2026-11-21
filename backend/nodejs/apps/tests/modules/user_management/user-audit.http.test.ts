@@ -40,6 +40,7 @@ import { Logger } from '../../../src/libs/services/logger.service';
 import { authJwtGenerator } from '../../../src/libs/utils/createJwt';
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum';
 import * as userRepo from '../../../src/libs/repositories/user';
+import { UniqueConstraintError } from '../../../src/libs/repositories/errors';
 import * as groupRepo from '../../../src/libs/repositories/group';
 import * as credentialRepo from '../../../src/libs/repositories/credential';
 import * as activityRepo from '../../../src/libs/repositories/activity';
@@ -86,6 +87,7 @@ describe('user and group audit lines (HTTP)', function () {
   let clearPasswordFails: boolean;
   let publishFails: boolean;
   let mailQueueFails: boolean;
+  let published: number;
   let notified: Promise<void>;
   let notify: () => void;
   let allocated: { orgId: string; adminUserId: string };
@@ -148,6 +150,7 @@ describe('user and group audit lines (HTTP)', function () {
     clearPasswordFails = false;
     publishFails = false;
     mailQueueFails = false;
+    published = 0;
     notified = new Promise<void>((resolve) => { notify = resolve; });
     root().level = 'debug';
     // Only this file's requests count: other work in the same mocha worker (timers, sweeps, reconnects) logs meanwhile.
@@ -182,8 +185,10 @@ describe('user and group audit lines (HTTP)', function () {
       getAny: async (o: string, id: string) => users.find((u) => u._id === id && u.orgId === o) ?? null,
       getRoleSnapshot: async (o: string, id: string) => { const u = live(o, id); return u ? { role: u.role, kind: u.kind } : null; },
       existsLiveEmail: async (e: string) => users.some((u) => u.email === e && !u.isDeleted),
-      listRemovedIdsByEmail: async () => [],
-      create: async (o: string, f: Row) => { const u = { _id: oid(), orgId: o, isDeleted: false, kind: 'user', ...f }; users.push(u); return { ...u }; },
+      listRemovedIdsByEmail: async (o: string, e: string) => users.filter((u) => u.orgId === o && u.email === e && u.isDeleted).map((u) => u._id),
+      deleteRemoved: async (o: string, id: string) => { const before = users.length; users = users.filter((u) => !(u._id === id && u.orgId === o && u.isDeleted)); return users.length < before; },
+      // The unique email index covers removed accounts too, as both stores' does.
+      create: async (o: string, f: Row) => { if (users.some((u) => u.email === f.email)) throw new UniqueConstraintError('duplicate', { key: 'email' }); const u = { _id: oid(), orgId: o, isDeleted: false, kind: 'user', ...f }; users.push(u); return { ...u }; },
       createMany: async (o: string, rows: Row[]) => rows.map((f) => { const u = { _id: oid(), orgId: o, kind: 'user', ...f }; users.push(u); return { ...u }; }),
       deleteById: async (id: string) => { users = users.filter((u) => u._id !== id); },
       updateProfile: async (o: string, id: string, f: Row) => { const u = live(o, id); if (!u) return null; Object.assign(u, f); return { ...u }; },
@@ -219,6 +224,7 @@ describe('user and group audit lines (HTTP)', function () {
       clearPassword: async () => { if (clearPasswordFails) throw new Error('credential store down'); },
       createWithPassword: async () => undefined,
       discardForUser: async () => undefined,
+      deleteForUser: async () => undefined,
     }));
     sinon.stub(activityRepo, 'getActivityRepository').returns(fake('activity', {
       latestSessionEnding: async () => null,
@@ -250,7 +256,7 @@ describe('user and group audit lines (HTTP)', function () {
 
     registerAppUpstreams(config as never);
     const logger = Logger.getInstance({ service: 'UserManagement' });
-    const events = { start: async () => undefined, stop: async () => undefined, publishEvent: async () => { if (publishFails) throw new Error('outbox down'); } };
+    const events = { start: async () => undefined, stop: async () => undefined, publishEvent: async () => { if (publishFails) throw new Error('outbox down'); published++; } };
     const mailProducer = { publishEvent: async () => { if (mailQueueFails) throw new Error('broker unavailable'); } };
     const mailService = new MailService(...([config, logger, mailProducer] as unknown as ConstructorParameters<typeof MailService>));
     const authService = { passwordMethodEnabled: async () => ({ statusCode: 200, data: { isPasswordAuthEnabled: true } }) };
@@ -300,6 +306,56 @@ describe('user and group audit lines (HTTP)', function () {
   const U = '/api/v1/users';
   const G = '/api/v1/userGroups';
   const newUserId = (email: string) => users.find((u) => u.email === email)!._id;
+  const adminCount = () => users.filter((u) => u.orgId === orgId && !u.isDeleted && u.role === 'admin').length;
+  const fillAdminsTo = (n: number) => { for (let i = adminCount(); i < n; i++) users.push(mkUser(`Admin ${i}`, `admin${i}@acme.test`, 'admin')); };
+  /**
+   * Holds every `create` until two are in flight, so two requests both pass the pre-check before either writes.
+   * Returns a function that puts the plain repository back.
+   */
+  const holdCreatesUntilTwo = () => {
+    const stub = userRepo.getUserRepository as sinon.SinonStub;
+    const repo = stub();
+    let release: (() => void) | undefined;
+    const bothIn = new Promise<void>((resolve) => { release = resolve; });
+    let arrived = 0;
+    stub.returns(new Proxy(repo, {
+      get: (t, k: string) => (k !== 'create' ? (t as Row)[k] : async (...args: unknown[]) => {
+        if (++arrived === 2) release!();
+        await bothIn;
+        return (t as Row).create(...args);
+      }),
+    }));
+    return () => stub.returns(repo);
+  };
+  /** The admin count answers the pre-check, then fails: the store goes down right after the write. */
+  const failRecount = () => {
+    const stub = userRepo.getUserRepository as sinon.SinonStub;
+    const repo = stub();
+    let counts = 0;
+    stub.returns(new Proxy(repo, {
+      get: (t, k: string) => (k !== 'countActiveAdmins' ? (t as Row)[k] : async (...args: unknown[]) => {
+        if (++counts > 1) throw new Error('store down');
+        return (t as Row).countActiveAdmins(...args);
+      }),
+    }));
+  };
+  /** Two admin creates sent at once; resolves after both access lines are written. */
+  async function createTwoAdminsAtOnce() {
+    records.length = 0;
+    const send = (fullName: string, email: string) => fetch(`${baseUrl}${U}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...requestId(), authorization: `Bearer ${token(ada)}` },
+      body: JSON.stringify({ fullName, email, role: 'admin' }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const statuses = (await Promise.all([send('Cora Created', CREATED), send('Ned New', NEW2)])).map((r) => r.status);
+    const deadline = Date.now() + 2000;
+    while (records.filter((r) => r.message === 'http.request.end').length < 2) {
+      if (Date.now() > deadline) expect.fail('missing http.request.end');
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    return statuses;
+  }
 
   describe('users', () => {
     it('T1 create → user.create success, target = the new account', async () => {
@@ -314,6 +370,95 @@ describe('user and group audit lines (HTTP)', function () {
         { event: 'user.create', outcome: 'success', actor: ada._id, target: newUserId(CREATED) },
         { event: 'user.role.change', outcome: 'success', reason: 'new_admin', actor: ada._id, target: newUserId(CREATED) },
       ]);
+    });
+
+    it('T1e create as admin with the org at the admin cap → 400 like promotion, user.create failure admin_limit, nothing written', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS);
+      const res = await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED, role: 'admin' });
+      expect(res.status).to.equal(400);
+      expect(res.body.error.message).to.equal('An organization can have at most 5 admins.');
+      expect(users.some((u) => u.email === CREATED)).to.equal(false);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS);
+      expect(published).to.equal(0);
+      expect(audits()).to.deep.equal([{ event: 'user.create', outcome: 'failure', reason: 'admin_limit', actor: ada._id }]);
+      expect(failureLines().map((r) => r.message)).to.deep.equal(['http.request.error']);
+      expectNoPrivateData();
+    });
+
+    it('T1f create as admin taking the last admin seat → 201, user.create then user.role.change new_admin', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS - 1);
+      expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED, role: 'admin' })).status).to.equal(201);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS);
+      expect(audits()).to.deep.equal([
+        { event: 'user.create', outcome: 'success', actor: ada._id, target: newUserId(CREATED) },
+        { event: 'user.role.change', outcome: 'success', reason: 'new_admin', actor: ada._id, target: newUserId(CREATED) },
+      ]);
+    });
+
+    it('T1g two admin creates at once for the last seat (no replica set) → both refused, the cap holds, no row left', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS - 1);
+      const everyoneBefore = [...everyone.users];
+      holdCreatesUntilTwo();
+      expect(await createTwoAdminsAtOnce()).to.deep.equal([400, 400]);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS - 1);
+      // Removed rows included: a soft-deleted leftover would keep the address taken.
+      expect(users.filter((u) => [CREATED, NEW2].includes(u.email))).to.deep.equal([]);
+      expect(everyone.users).to.deep.equal(everyoneBefore);
+      expect(published).to.equal(0);
+      expect(audits()).to.deep.equal([
+        { event: 'user.create', outcome: 'failure', reason: 'admin_limit', actor: ada._id },
+        { event: 'user.create', outcome: 'failure', reason: 'admin_limit', actor: ada._id },
+      ]);
+      expectNoPrivateData();
+    });
+
+    it('T1h an address refused by the cap can be created again: the refusal left no row holding it', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS - 1);
+      const unhold = holdCreatesUntilTwo();
+      expect(await createTwoAdminsAtOnce()).to.deep.equal([400, 400]);
+      unhold();
+      expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED, role: 'admin' })).status).to.equal(201);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS);
+    });
+
+    it('T1k the re-count fails after an admin create (no replica set) → 500, the account is removed, nothing else written', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS - 1);
+      const everyoneBefore = [...everyone.users];
+      failRecount();
+      expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED, role: 'admin' })).status).to.equal(500);
+      // Removed rows included: no account of any kind is left holding the address.
+      expect(users.filter((u) => u.email === CREATED)).to.deep.equal([]);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS - 1);
+      expect(everyone.users).to.deep.equal(everyoneBefore);
+      expect(published).to.equal(0);
+      expect(audits()).to.deep.equal([]);
+      expectNoPrivateData();
+    });
+
+    it('T14b the re-count fails after a promotion (no replica set) → 500, the user is a member again', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS - 1);
+      failRecount();
+      expect((await call('PUT', `${U}/${max._id}`, ada, { role: 'admin' })).status).to.equal(500);
+      expect(live(orgId, max._id)!.role).to.equal('member');
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS - 1);
+      expect(audits()).to.deep.equal([]);
+    });
+
+    it('T1i create a member with the org at the admin cap → 201, no cap refusal', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS);
+      expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED })).status).to.equal(201);
+      expect(audits()).to.deep.equal([{ event: 'user.create', outcome: 'success', actor: ada._id, target: newUserId(CREATED) }]);
+    });
+
+    it('T1j a demo admin with the org at the admin cap → refused before the removed sample account is cleared', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS);
+      const removedSample = mkUser('Dora Demo', DEMO, 'member', { isDeleted: true });
+      users.push(removedSample);
+      const res = await call('POST', U, ada, { fullName: 'Dora Demo', email: DEMO, password: PASSWORD, role: 'admin' });
+      expect(res.status).to.equal(400);
+      expect(users.filter((u) => u.email === DEMO)).to.deep.equal([removedSample]);
+      expect(audits()).to.deep.equal([{ event: 'user.create', outcome: 'failure', reason: 'admin_limit', actor: ada._id }]);
+      expectNoPrivateData();
     });
 
     it('T1d [guard] the creation event cannot be published → account undone, 500, no user.create line', async () => {

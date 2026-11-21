@@ -256,7 +256,7 @@ export interface UserRepository {
 
   // --- writes
   /** Throws `UniqueConstraintError{key}` on a duplicate address or slug. */
-  create(orgId: string, fields: UserFields): Promise<UserDto>;
+  create(orgId: string, fields: UserFields, tx?: Tx): Promise<UserDto>;
   createMany(orgId: string, rows: UserFields[]): Promise<UserDto[]>;
   /** Writes the given fields on the live account; null when there is none. */
   updateProfile(

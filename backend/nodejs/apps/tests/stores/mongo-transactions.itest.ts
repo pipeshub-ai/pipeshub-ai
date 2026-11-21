@@ -20,6 +20,7 @@ import { Org } from '../../src/modules/user_management/schema/org.schema';
 import { Users, type User } from '../../src/modules/user_management/schema/users.schema';
 import {
   MAX_ORG_ADMINS,
+  createUserEnsuringAdminCap,
   saveUserEnsuringAdminCap,
   saveUserEnsuringOrgRetainsAdmin,
 } from '../../src/modules/user_management/services/user-admin.service';
@@ -207,6 +208,69 @@ describe('MongoDB code paths against a real MongoDB', function () {
     if (rsAvailable) {
       expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
       expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+    }
+  });
+
+  const newAdminFields = () => ({
+    email: `new-admin-${randomUUID().slice(0, 8)}@example.com`,
+    fullName: 'New Admin',
+    role: 'admin' as const,
+  });
+
+  it(`refuses to create an admin past ${MAX_ORG_ADMINS} admins, and leaves no account`, async () => {
+    const orgId = await newOrg();
+    for (let i = 0; i < MAX_ORG_ADMINS; i += 1) {
+      await newUser(orgId, 'admin');
+    }
+    const fields = newAdminFields();
+    let caught: unknown;
+    try {
+      await createUserEnsuringAdminCap(orgId, fields, rsAvailable);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).to.be.instanceOf(BadRequestError);
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+    expect(await Users.countDocuments({ email: fields.email })).to.equal(0);
+  });
+
+  it(`never exceeds ${MAX_ORG_ADMINS} admins when two admins are created at once, and a refused create leaves no account`, async () => {
+    const orgId = await newOrg();
+    for (let i = 0; i < MAX_ORG_ADMINS - 1; i += 1) {
+      await newUser(orgId, 'admin');
+    }
+    const a = newAdminFields();
+    const b = newAdminFields();
+
+    const { ok, refused } = await raceSaves([
+      async () => { await createUserEnsuringAdminCap(orgId, a, rsAvailable); },
+      async () => { await createUserEnsuringAdminCap(orgId, b, rsAvailable); },
+    ]);
+
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS - 1 + ok);
+    expect(await Users.countDocuments({ email: { $in: [a.email, b.email] } })).to.equal(ok);
+    expect(ok).to.be.at.most(1);
+    if (rsAvailable) {
+      expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
+    }
+  });
+
+  it(`never exceeds ${MAX_ORG_ADMINS} admins when an admin create races a promotion`, async () => {
+    const orgId = await newOrg();
+    for (let i = 0; i < MAX_ORG_ADMINS - 1; i += 1) {
+      await newUser(orgId, 'admin');
+    }
+    const member = await newUser(orgId, 'member');
+
+    const { ok, refused } = await raceSaves([
+      async () => { await createUserEnsuringAdminCap(orgId, newAdminFields(), rsAvailable); },
+      async () => { await saveUserEnsuringAdminCap(orgId, String(member._id), { role: 'admin' }, rsAvailable); },
+    ]);
+
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS - 1 + ok);
+    expect(ok).to.be.at.most(1);
+    if (rsAvailable) {
+      expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
     }
   });
 });

@@ -596,10 +596,12 @@ export class MongoUserRepository implements UserRepository {
     return !!(await Users.findOne({ email, orgId, isDeleted: true }));
   }
 
-  async create(orgId: string, fields: UserFields): Promise<UserDto> {
+  async create(orgId: string, fields: UserFields, tx?: Tx): Promise<UserDto> {
+    const session = sessionOf(tx);
     const user = new Users({ ...fields, orgId });
     try {
-      await user.save();
+      if (session) await user.save({ session });
+      else await user.save();
     } catch (error) {
       throw mapMongoError(error);
     }
