@@ -5,6 +5,7 @@ Before, the stored members were kept for as long as the refusal lasted, so a per
 reading its mail, posts and files with no bound.
 """
 
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -160,12 +161,14 @@ class SharePoint:
     async def sync(self) -> None:
         g = self.c._group_grace
         await g.load()
-        if self.full:
-            await self.c._perform_initial_full_sync()
-        else:
-            self.applied.append(await self.c._perform_delta_sync("https://graph/delta", "k"))
-        await self.c._reread_closed_groups()
-        await g.finish()
+        try:
+            if self.full:
+                await self.c._perform_initial_full_sync()
+            else:
+                self.applied.append(await self.c._perform_delta_sync("https://graph/delta", "k"))
+            await self.c._reread_closed_groups()
+        finally:
+            await g.finish()  # as run_sync does
 
 
 WORLDS = {"outlook": Outlook, "sharepoint": SharePoint}
@@ -482,3 +485,36 @@ async def test_a_group_read_again_before_its_notice_is_delivered_is_dropped_from
     assert _written(world.proc, "g1")[-1] == ["ann@x.com"], "members written back"
     assert len(_notices(world)) == 1, "no close notice for a group that has its members again"
     assert world.c.user_sync_point.data[GROUP_CHECK_KEY]["pending_notice"] == "[]"
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_fails_after_a_good_read_keeps_the_count_and_the_owed_notice(world: Outlook | SharePoint) -> None:
+    """The count and the owed notice are cleared only once the group's members are written. Cleared at the read, a
+    write that raised (a partial batch the graph refuses) left a closed group uncounted, and once its change page had
+    moved on nothing read it again."""
+    import json
+
+    ok = world.answer
+    world.c.notify_and_wait.return_value = NotificationOutcome.FAILED
+    world.answer = _odata(403)
+    for _ in range(N):
+        await world.sync()
+    if isinstance(world, SharePoint) and not world.full:
+        # the group's change is behind the delta link now: only the re-read of closed groups reaches it
+        world.c.msgraph_client.get_groups_delta_response = AsyncMock(return_value={"groups": [], "delta_link": "https://graph/next-delta"})
+    world.answer = ok
+
+    async def refuse_the_write(batch: list) -> None:
+        if any(g.source_user_group_id == "g1" and users for g, users in batch):
+            raise RuntimeError("graph memory limit")
+
+    world.proc.on_new_user_groups.side_effect = refuse_the_write
+    with contextlib.suppress(RuntimeError):
+        await world.sync()
+    state = world.c.user_sync_point.data[GROUP_CHECK_KEY]
+    assert json.loads(state["streaks"]).get("g1", 0) >= N, "still counted: its members were not written"
+    assert state["pending_notice"] == '["g1"]', "the close is still owed"
+    world.proc.on_new_user_groups.side_effect = None
+    await world.sync()
+    assert _written(world.proc, "g1")[-1] == ["ann@x.com"], "the next sync reads it again and writes the members"
+    assert world.c.user_sync_point.data[GROUP_CHECK_KEY]["streaks"] == "{}"

@@ -848,6 +848,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
             grace = GroupMemberGrace(self, self.user_sync_point)
             await grace.load()
+            # Cleared only once the batch holding the group is written: cleared first, a write that fails would
+            # leave a closed group uncounted and its stored members as they were.
+            batch_read: list[str] = []
             # groups are Pydantic Group objects from _get_all_microsoft_365_groups
             for group in groups:
                 try:
@@ -899,7 +902,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     # the stored members, within the grace, while the mailbox and its conversations sync as usual.
                     try:
                         members = await self._get_group_members(group_id)
-                        grace.read(group_id)
+                        batch_read.append(group_id)
                     except Exception as e:
                         self._full_sync_incomplete = True
                         self._skipped["groups"] += 1
@@ -946,6 +949,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     # Process batch if size reached
                     if len(user_groups_batch) >= batch_size:
                         await self.data_entities_processor.on_new_user_groups(user_groups_batch)
+                        for read_id in batch_read:
+                            grace.read(read_id)
+                        batch_read = []
                         self.logger.info(f"Processed batch of {len(user_groups_batch)} groups")
                         user_groups_batch = []
 
@@ -968,6 +974,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             if user_groups_batch:
                 await self.data_entities_processor.on_new_user_groups(user_groups_batch)
                 self.logger.info(f"Processed final batch of {len(user_groups_batch)} groups")
+            for read_id in batch_read:
+                grace.read(read_id)
             await grace.finish()
 
             # Process remaining group mailbox RecordGroups

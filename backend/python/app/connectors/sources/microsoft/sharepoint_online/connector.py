@@ -3308,7 +3308,7 @@ class SharePointConnector(BaseConnector):
         """Entra groups closed past the grace are no longer held on a group-change page, so each sync reads their
         members again here: the first read that succeeds writes them back."""
         refreshed = []
-        # "<id>/owners" counts an owners claim; the site groups that hold it are read every sync anyway.
+        # "<id>/members" and "<id>/owners" count claim reads, which run every sync anyway.
         for group_id in (g for g in self._group_grace.closed_ids() if "/" not in g):
             try:
                 async with self.rate_limiter:
@@ -3316,15 +3316,21 @@ class SharePointConnector(BaseConnector):
                 if group is None:
                     raise EmptyGraphAnswer(f"Graph answered group {group_id} with no body")
                 refreshed.append(await self._group_with_members(group))
-                self._group_grace.read(group_id)
             except Exception as e:
                 if getattr(e, 'response_status_code', None) == HTTPStatus.NOT_FOUND:
                     self._group_grace.read(group_id)  # deleted: the group-change delta removes it
                     continue
                 self._health.skipped(f"members of Entra group {group_id}", e)
                 await self._group_grace.refused(group_id, e)
-        if refreshed:
-            await self.data_entities_processor.on_new_user_groups(refreshed)
+        await self._write_groups_then_mark_read(refreshed, [g.source_user_group_id for g, _ in refreshed])
+
+    async def _write_groups_then_mark_read(self, groups: list[tuple[AppUserGroup, list[AppUser]]], read: list[str]) -> None:
+        """Write groups, then clear the count of those whose members were read. Cleared first, a write that fails
+        would leave a closed group uncounted: nothing would read it again once its change page has moved on."""
+        if groups:
+            await self.data_entities_processor.on_new_user_groups(groups)
+        for group_id in read:
+            self._group_grace.read(group_id)
 
     async def _sync_site_groups(self, sites: list[Site] | None) -> None:
         self.logger.info("Starting SharePoint Site Groups fetch...")
@@ -3398,7 +3404,9 @@ class SharePointConnector(BaseConnector):
         its claim, a directory role it is nested in, an owners claim in a role assignment. Raises when they can't be
         read, so what they stand for keeps what is stored, until Microsoft has refused them past the grace: then they
         count as none. Every such read goes through here, so none keeps stored access with no bound."""
-        key = f"{group_id}/owners" if is_owner else group_id
+        # Its own key: a good read here must not clear the count of the Entra group's own node, which only an Entra
+        # group write brings up to date. A claim is read again every sync, so clearing it at once strands nothing.
+        key = f"{group_id}/owners" if is_owner else f"{group_id}/members"
         try:
             users = await self._fetch_graph_group_members(group_id, is_owner=is_owner)
         except Exception as e:
@@ -3532,7 +3540,7 @@ class SharePointConnector(BaseConnector):
         """Every Entra group with its members. True when every group's members were read."""
         groups = await self.msgraph_client.get_all_user_groups()
         results = await asyncio.gather(*[self._group_with_members(group) for group in groups], return_exceptions=True)
-        group_with_members = []
+        group_with_members, read = [], []
         complete = True
         for group, result in zip(groups, results):
             if isinstance(result, Exception):
@@ -3542,10 +3550,9 @@ class SharePointConnector(BaseConnector):
                 else:
                     complete = False
             else:
-                self._group_grace.read(group.id)
+                read.append(group.id)
                 group_with_members.append(result)
-        if group_with_members:
-            await self.data_entities_processor.on_new_user_groups(group_with_members)
+        await self._write_groups_then_mark_read(group_with_members, read)
         self.logger.info(f"Initial full sync completed: processed {len(groups)} Azure AD groups")
         return complete
 
@@ -3598,11 +3605,11 @@ class SharePointConnector(BaseConnector):
                 except Exception as e:
                     applied = False
                     self._health.skipped(f"groups containing Entra group {group_id}", e)
-            refreshed = []
+            refreshed, read = [], []
             for group in changed.values():
                 try:
                     refreshed.append(await self._group_with_members(group))
-                    self._group_grace.read(group.id)
+                    read.append(group.id)
                 except Exception as e:
                     self._health.skipped(f"members of Entra group {getattr(group, 'display_name', group.id)}", e)
                     if await self._group_grace.refused(group.id, e):
@@ -3611,8 +3618,7 @@ class SharePointConnector(BaseConnector):
                         refreshed.append((self._app_user_group(group), []))
                     else:
                         applied = False
-            if refreshed:
-                await self.data_entities_processor.on_new_user_groups(refreshed)
+            await self._write_groups_then_mark_read(refreshed, read)
             if not applied:
                 return False
             if result.get('next_link'):
