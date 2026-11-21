@@ -6,6 +6,7 @@ reading its mail, posts and files with no bound.
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -430,7 +431,7 @@ async def test_a_close_waits_while_its_notice_cannot_be_saved(world: Outlook | S
     assert sp.data[GROUP_CHECK_KEY]["pending_notice"] == '["g1"]', "still owed: the notice was not delivered"
 
 
-async def _run_sync(w: SharePoint, read: Any) -> object:
+async def _run_sync(w: SharePoint, read: Callable[[], Awaitable[object]]) -> object:
     """One sync's worth of a role-assignment read: the grace loaded, the run's caches empty, the grace finished."""
     w.c._reset_permission_caches()
     await w.c._group_grace.load()
