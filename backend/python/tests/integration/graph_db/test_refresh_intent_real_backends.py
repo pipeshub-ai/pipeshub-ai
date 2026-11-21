@@ -268,6 +268,13 @@ async def test_a_clear_that_names_the_time_it_read_does_not_undo_a_renewal(store
     assert ri.ID_FIELD not in await store.doc("t")
 
 
+async def _live_record_properties(store: _Store) -> set[str]:
+    client = store.graph.http_client  # type: ignore[attr-defined]
+    session = await client._get_session()
+    async with session.get(f"{client.base_url}/_db/{client.database}/_api/collection/{RECORDS}/properties") as resp:
+        return set((await resp.json()).get("schema", {}).get("rule", {}).get("properties", {}))
+
+
 def _previous_release_schema() -> dict:
     """The record schema of the release before the refresh fields (generation 3): without them, closed."""
     import copy
@@ -285,7 +292,10 @@ async def test_an_older_process_starting_does_not_narrow_away_the_refresh_fields
     """Rolling deploy with the schema guard: a process of the previous release applies its (generation 3) schema at start, which must not
     replace the live generation that lists the fields; and when the live schema is that older one, this release's start widens it."""
     from app.schema.arango.documents import RECORD_SCHEMA_GENERATION, record_schema
-    from app.services.graph_db.arango.record_schema_guard import generation_of_schema
+    from app.services.graph_db.arango.record_schema_guard import (
+        RecordSchemaGuard,
+        generation_of_schema,
+    )
 
     store = arango_store
     provider = store.graph
@@ -298,8 +308,13 @@ async def test_an_older_process_starting_does_not_narrow_away_the_refresh_fields
         async with session.get(f"{client.base_url}/_db/{client.database}/_api/collection/{RECORDS}/properties") as resp:
             return generation_of_schema({"rule": (await resp.json()).get("schema", {}).get("rule", {})}) or 0
 
-    assert await provider._apply_schema(RECORDS, _previous_release_schema()) is True        # type: ignore[attr-defined]
+    # A process of the previous release: its own guard, carrying ITS schema (without the fields) and ITS generation, starts against the
+    # live collection. (Not this process's `_apply_schema`, which widens with this release's schema and never installs the older one.)
+    older = RecordSchemaGuard(client, store.graph.logger, schema=_previous_release_schema(), generation=RECORD_SCHEMA_GENERATION - 1)  # type: ignore[attr-defined]
+    assert await older.ensure_wide("startup") is False, "the older process must not replace the newer live schema"
     assert await live_generation() == RECORD_SCHEMA_GENERATION, "an older generation must not narrow the live one"
+    live_properties = await _live_record_properties(store)
+    assert {ri.ID_FIELD, ri.AT_FIELD, ri.DONE_ID_FIELD} <= live_properties, "the refresh fields are still in the live schema"
     await ri.clear_intent(provider, k, "A", {ri.DONE_ID_FIELD: "A"})                        # a record holding the new fields stays writable
     assert (await store.doc("rd"))[ri.DONE_ID_FIELD] == "A"
 
