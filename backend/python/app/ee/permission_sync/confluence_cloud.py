@@ -42,10 +42,8 @@ from app.models.permission import EntityType, Permission, PermissionType
 # Ids per CQL search when checking which stored items a sync filter leaves out
 ID_SEARCH_CHUNK = 50
 
-
 # Each item's own read restriction, for finding changed restrictions without the audit log
 RESTRICTION_EXPAND_PARAMS = "restrictions.read.restrictions.user,restrictions.read.restrictions.group"
-
 
 RESTRICTION_LISTING_LIMIT = 100
 
@@ -75,32 +73,24 @@ def read_restriction_fingerprint(item: dict[str, Any]) -> str | None:
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
-
 # Confluence v2 space permission access-class principals (ROLES-mode / default ACLs), as
 # normalised by _access_class_id: Cloud spells them "access-class"/"ALL_LICENSED_USERS" or
 # "ACCESS_CLASS"/"all-licensed-users".
 ACCESS_CLASS_LICENSED_USERS = "ALL_LICENSED_USERS"
 
-
 ACCESS_CLASS_PRODUCT_ADMINS = "ALL_PRODUCT_ADMINS"
-
 
 ACCESS_CLASS_AUTHENTICATED_USERS = "AUTHENTICATED_USERS"
 
-
 ACCESS_CLASS_ANONYMOUS_USERS = "ANONYMOUS_USERS"
-
 
 # Synced groups an access class stands for: exact names, then name prefixes. Cloud sites
 # name them per site, e.g. "confluence-users-acme" and "confluence-admins-acme".
 LICENSED_USER_GROUP_NAMES = ("confluence-users",)
 
-
 LICENSED_USER_GROUP_PREFIXES = ("confluence-users-",)
 
-
 PRODUCT_ADMIN_GROUP_NAMES = ("org-admins", "confluence-administrators", "site-admins", "system-administrators")
-
 
 PRODUCT_ADMIN_GROUP_PREFIXES = ("confluence-admins-",)
 

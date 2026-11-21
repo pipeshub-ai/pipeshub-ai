@@ -69,55 +69,41 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 GROUP_PAGE_SIZE: int = 50
 
-
 # --- Permission-scheme vocabulary (GET /rest/api/3/permissionscheme/{id}/permission) ---
 # The only grant that decides who can see a project's issues at all; every other grant type
 # in the scheme is ignored when building the RecordGroup ACL.
 BROWSE_PROJECTS_PERMISSION: str = "BROWSE_PROJECTS"
 
-
 # holder.type values. Anything not listed here is logged as unknown and skipped.
 HOLDER_TYPE_GROUP: str = "group"
 
-
 HOLDER_TYPE_APPLICATION_ROLE: str = "applicationRole"
-
 
 HOLDER_TYPE_USER: str = "user"
 
-
 HOLDER_TYPE_ANYONE: str = "anyone"
-
 
 HOLDER_TYPE_PROJECT_ROLE: str = "projectRole"
 
-
 HOLDER_TYPE_PROJECT_LEAD: str = "projectLead"
-
 
 # JSM portal customers — external users PipesHub does not sync.
 HOLDER_TYPE_SD_PORTAL_CUSTOMER: str = "sd.customer.portal.only"
 
-
 # App-only project role: its members are Atlassian apps, not people, so it grants nobody.
 ATLASSIAN_ADDONS_PROJECT_ROLE: str = "atlassian-addons-project-access"
 
-
 # Synthetic ORG-scope external ids for grants not tied to a concrete group or user.
 ORG_SCOPE_ANYONE_AUTHENTICATED: str = "anyone_authenticated"
-
 
 # actor.type values in a project role's actor list
 # (GET /rest/api/3/project/{projectIdOrKey}/role/{id}).
 ROLE_ACTOR_TYPE_USER: str = "atlassian-user-role-actor"
 
-
 ROLE_ACTOR_TYPE_GROUP: str = "atlassian-group-role-actor"
-
 
 # Marks a group a level names by a name no read resolved to an id: it names no group read, so its members are unknown.
 _UNRESOLVED_GROUP: str = "unresolved-group-name:"
-
 
 # Groups a reindex reads again per project to apply its issues' levels (``_reindex_level_readers``).
 REINDEX_GROUP_READS: int = 20

@@ -48,7 +48,6 @@ from app.models.permission import EntityType, Permission, PermissionType
 # ------------------------------------------------------------------------------
 USE_DATA_CENTER_APIS = True
 
-
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
