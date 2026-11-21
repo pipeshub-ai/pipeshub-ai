@@ -32,6 +32,16 @@ function cacheDisplayName(redisMode: string): string {
 
 const STORAGE_WARNING_TIMEOUT_MS = 2000;
 
+// GET /services: each Python /health answers from memory, so a slow answer
+// means that service's event loop is busy, not down. 3s marked busy services
+// unhealthy under load. Kept under the 10s docker-compose healthcheck timeout,
+// which calls this route; no Helm probe does (they call GET /).
+const SERVICE_HEALTH_TIMEOUT_MS = 8000;
+
+// The memory report reads every vector collection's configuration and Qdrant's
+// telemetry, which took about 12s on a loaded instance. Not a probe target.
+const VECTOR_MEMORY_TIMEOUT_MS = 20000;
+
 // The graph and vector stores are probed through the connector service. When
 // that service refuses the connection (it is still starting, or it is down) the
 // store was never asked, so its state is unknown rather than unhealthy; the
@@ -355,17 +365,18 @@ export function createHealthRouter(
       const parsingBackend = process.env.PARSING_SERVICE_URL || 'http://localhost:8092';
       const extractionBackend = process.env.EXTRACTION_SERVICE_URL || 'http://localhost:8093';
 
+      const probe = { timeout: SERVICE_HEALTH_TIMEOUT_MS };
       const baseSettled = Promise.allSettled([
-        axios.get(aiHealthUrl, { timeout: 3000 }),
-        axios.get(connectorHealthUrl, { timeout: 3000 }),
-        axios.get(indexingHealthUrl, { timeout: 3000 }),
-        axios.get(doclingHealthUrl, { timeout: 3000 }),
-        axios.get(embeddingHealthUrl, { timeout: 3000 }),
+        axios.get(aiHealthUrl, probe),
+        axios.get(connectorHealthUrl, probe),
+        axios.get(indexingHealthUrl, probe),
+        axios.get(doclingHealthUrl, probe),
+        axios.get(embeddingHealthUrl, probe),
       ]);
       const parsingSettled = parsingServicesEnabled
         ? Promise.allSettled([
-            axios.get(`${parsingBackend}/health`, { timeout: 3000 }),
-            axios.get(`${extractionBackend}/health`, { timeout: 3000 }),
+            axios.get(`${parsingBackend}/health`, probe),
+            axios.get(`${extractionBackend}/health`, probe),
           ])
         : null;
 
@@ -439,7 +450,7 @@ export function createHealthRouter(
           `${appConfig.connectorBackend}/health/vector-db/memory`,
           {
             headers: buildProxyHeaders(req),
-            timeout: 5000,
+            timeout: VECTOR_MEMORY_TIMEOUT_MS,
             validateStatus: () => true,
           },
         );
