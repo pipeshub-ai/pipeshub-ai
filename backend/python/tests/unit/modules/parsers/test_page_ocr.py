@@ -37,7 +37,7 @@ def _text_page(c: canvas.Canvas, lines: int = 12) -> None:
     c.showPage()
 
 
-def make_pdf(pages: list[str]) -> bytes:
+def make_pdf(pages: list[str], glyphs: int = 12) -> bytes:
     """Pages of 'text' (ordinary), 'outlined' (text as paths, a short footer) or 'blank'."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(612, 792))
@@ -46,7 +46,7 @@ def make_pdf(pages: list[str]) -> bytes:
             _text_page(c)
         elif kind == "outlined":
             c.drawString(72, 40, "Schedule footer, page 93")
-            _draw_outlined_text(c, 72, 600)
+            _draw_outlined_text(c, 72, 600, glyphs)
             c.showPage()
         else:
             c.showPage()
@@ -223,3 +223,120 @@ async def test_processor_route_indexes_the_outlined_page(pdf: bytes) -> None:
             pass
     texts = [str(b.data) for b in captured.block_containers.blocks]
     assert any("32,903,605" in t for t in texts)
+
+
+def _chart_pdf() -> bytes:
+    """A text document whose page 2 is a picture of a chart with its labels drawn as outlines."""
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+
+    picture = Image.new("RGB", (200, 120), (30, 90, 200))
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(612, 792))
+    _text_page(c)
+    c.drawImage(ImageReader(picture), 72, 500, width=300, height=180)
+    _draw_outlined_text(c, 72, 400)
+    c.showPage()
+    _text_page(c)
+    c.save()
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_pictures_on_an_ocr_page_stay_and_text_is_replaced() -> None:
+    from app.models.blocks import BlockType
+
+    pdf = _chart_pdf()
+    proc, parsed = await _parse(pdf)
+    before = await proc.create_blocks(parsed, skip_llm_enrichment=True)
+    images_before = [b for b in before.blocks if b.type == BlockType.IMAGE and b.citation_metadata.page_number == 2]
+    assert images_before, "the fixture must hold a picture on page 2"
+    with patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=_stub_handler())):
+        assert await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t")) == [2]
+    after = await proc.create_blocks(parsed, skip_llm_enrichment=True)
+    page2 = [b for b in after.blocks if b.citation_metadata.page_number == 2]
+    assert len([b for b in page2 if b.type == BlockType.IMAGE]) == len(images_before)
+    assert any("32,903,605" in str(b.data) for b in page2 if b.type != BlockType.IMAGE)
+
+
+def test_ocr_text_takes_the_place_of_the_first_replaced_region() -> None:
+    from app.modules.parsers.pdf.opencv_layout_analyzer import (
+        LayoutRegion,
+        LayoutRegionType,
+    )
+
+    def region(kind: LayoutRegionType, text: str) -> LayoutRegion:
+        return LayoutRegion(type=kind, bbox=(0, 0, 1, 1), text=text)
+
+    img, tbl = LayoutRegionType.IMAGE, LayoutRegionType.TABLE
+    txt = LayoutRegionType.TEXT
+    old = [region(img, "i1"), region(txt, "a"), region(img, "i2"), region(tbl, "t"), region(txt, "b")]
+    new = [region(txt, "OCR1"), region(txt, "OCR2")]
+    assert [r.text for r in page_ocr._with_ocr_text(old, new)] == ["i1", "OCR1", "OCR2", "i2"]
+    only_pictures = [region(img, "i1"), region(img, "i2")]
+    assert [r.text for r in page_ocr._with_ocr_text(only_pictures, new)] == ["i1", "i2", "OCR1", "OCR2"]
+
+
+def _fake_page(chars_drawn: int = 0, image_share: float = 0.0) -> SimpleNamespace:
+    images = [{"x0": 0, "x1": 100 * image_share, "top": 0, "bottom": 100}] if image_share else []
+    return SimpleNamespace(
+        curves=[0] * chars_drawn, rects=[], lines=[], images=images, width=100.0, height=100.0
+    )
+
+
+def test_score_boundaries() -> None:
+    from app.modules.parsers.pdf import pdf_inspection as pi
+
+    score = pi.textless_page_score
+    # Characters: the ceiling is exclusive.
+    assert score(_fake_page(500), pi.TEXTLESS_PAGE_MAX_CHARS - 1) > 0
+    assert score(_fake_page(500), pi.TEXTLESS_PAGE_MAX_CHARS) == 0
+    assert score(_fake_page(0, 1.0), pi.TEXTLESS_PAGE_MAX_CHARS) == 0
+    # Drawn objects: more than the floor.
+    assert score(_fake_page(pi.TEXTLESS_PAGE_MIN_DRAWN), 10) == 0
+    assert score(_fake_page(pi.TEXTLESS_PAGE_MIN_DRAWN + 1), 10) == pi.TEXTLESS_PAGE_MIN_DRAWN + 1
+    # Image share: at the threshold counts, just under does not.
+    assert score(_fake_page(0, 0.75), 10) > 0
+    assert score(_fake_page(0, 0.74), 10) == 0
+    assert score(_fake_page(0, 0.5), 10) == 0
+    # A mostly-image page the share rule alone selects, however much it draws below the floor.
+    assert score(_fake_page(5, 0.9), 0) > 0
+
+
+def test_cap_keeps_the_highest_scoring_pages() -> None:
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(612, 792))
+    for glyphs in (8, 14, 10):  # page 2 draws the most, then page 3, then page 1
+        c.drawString(72, 40, "Schedule footer")
+        _draw_outlined_text(c, 72, 600, glyphs)
+        c.showPage()
+    c.save()
+    assert textless_pages(buf.getvalue(), 1) == ([2], 3)
+    assert textless_pages(buf.getvalue(), 2) == ([2, 3], 3)
+
+
+def test_a_text_page_with_a_full_page_picture_is_not_selected() -> None:
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(612, 792))
+    c.drawImage(ImageReader(Image.new("RGB", (50, 50), (200, 200, 200))), 0, 0, width=612, height=792)
+    for i in range(12):
+        c.drawString(72, 760 - i * 16, TEXT_LINE)
+    c.showPage()
+    c.save()
+    assert textless_pages(buf.getvalue(), 25) == ([], 0)
+
+
+def test_a_mostly_image_page_with_a_short_caption_is_selected() -> None:
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(612, 792))
+    c.drawImage(ImageReader(Image.new("RGB", (50, 50), (200, 200, 200))), 0, 0, width=612, height=792)
+    c.drawString(72, 40, "Fig 1")
+    c.showPage()
+    c.save()
+    assert textless_pages(buf.getvalue(), 25) == ([1], 1)

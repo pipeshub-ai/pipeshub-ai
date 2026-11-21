@@ -4,7 +4,7 @@ The whole-document OCR check answers for a document, so a page whose text is dra
 schedule, a chart with its labels) inside a document that is otherwise text is never read: it has
 about as many characters as a page number and thousands of curves. ``ocr_textless_pages`` finds those
 pages (``pdf_inspection.textless_pages``), reads only them with the configured VLM OCR and replaces
-each page's regions with the OCR text, so page order, page numbers and every other page stay as they were.
+each page's text regions with the OCR text (pictures stay), so page order, page numbers and every other page stay as they were.
 """
 from __future__ import annotations
 
@@ -49,6 +49,25 @@ def regions_from_markdown(markdown: str, page: ParsedPageData) -> list[LayoutReg
         for paragraph in _PARAGRAPH_SPLIT_RE.split(markdown or "")
         if paragraph.strip()
     ]
+
+
+def _with_ocr_text(regions: list[LayoutRegion], text_regions: list[LayoutRegion]) -> list[LayoutRegion]:
+    """*regions* with their text, table and list regions replaced by *text_regions*; pictures stay.
+
+    The OCR text takes the place of the first replaced region, so the order of what remains is unchanged;
+    a page with only pictures gets it after them.
+    """
+    kept: list[LayoutRegion] = []
+    placed = False
+    for region in regions:
+        if region.type == LayoutRegionType.IMAGE:
+            kept.append(region)
+        elif not placed:
+            kept.extend(text_regions)
+            placed = True
+    if not placed:
+        kept.extend(text_regions)
+    return kept
 
 
 async def _vlm_ocr_handler(config: ConfigurationService, logger: logging.Logger) -> Optional[OCRHandler]:
@@ -118,9 +137,9 @@ async def ocr_textless_pages(
         if not isinstance(index, int) or not 1 <= index <= len(numbers):
             continue
         page = by_number[numbers[index - 1]]
-        regions = regions_from_markdown(ocr_page.get("markdown", ""), page)
-        if regions:
-            page.regions = regions
+        text_regions = regions_from_markdown(ocr_page.get("markdown", ""), page)
+        if text_regions:
+            page.regions = _with_ocr_text(page.regions, text_regions)
             replaced.append(page.page_number)
     logger.info("Page OCR: read %d of %d pages without a text layer", len(replaced), found)
     return sorted(replaced)
