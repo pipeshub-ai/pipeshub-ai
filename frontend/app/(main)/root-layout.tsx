@@ -1,15 +1,14 @@
 'use client'
 
 import React, { Suspense, useEffect, useState } from "react"
-import { Flex, Box, Text } from "@radix-ui/themes"
-import { MaterialIcon } from "../components/ui/MaterialIcon"
+import { Flex, Box } from "@radix-ui/themes"
 import { ThemeProvider, ThemeScript } from "../components/theme-provider"
 import { SWRConfig } from "swr"
 import { axiosFetcher } from "@/lib/api"
 import { logoutAndRedirect } from "@/config"
 import { UploadProgressTracker } from "../components/upload-progress-tracker"
 import { ToastContainer } from "../components/feedback"
-import { I18nextProvider, useTranslation } from 'react-i18next'
+import { I18nextProvider } from 'react-i18next'
 import i18n from '@/lib/i18n/config'
 import { useLanguageStore } from '@/lib/store/language-store'
 import { UserProfileInitializer } from './components/user-profile-initializer'
@@ -47,7 +46,6 @@ export default function RootLayout({
   sidebar: React.ReactNode
 }) {
   const [mounted, setMounted] = useState(false)
-  const { t } = useTranslation()
   const language = useLanguageStore((state) => state.language)
 
   // Set mounted flag and sync i18n after hydration
@@ -93,13 +91,6 @@ export default function RootLayout({
             <Suspense fallback={null}>
               <OrgUrlCleaner />
             </Suspense>
-            {/* Landscape block — pure CSS visibility, no JS */}
-            <div className="landscape-block-overlay">
-              <MaterialIcon name="screen_rotation" size={48} color="var(--gray-11)" />
-              <Text size="3" style={{ color: 'var(--gray-11)', maxWidth: '220px' }}>
-                {t('common.rotateLandscape')}
-              </Text>
-            </div>
             <ServerUrlGuard>
               <AuthGuard>
                 <HealthGate>
