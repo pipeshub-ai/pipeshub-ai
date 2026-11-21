@@ -186,6 +186,8 @@ function timeRange(from: unknown, to: unknown): TimeRange | undefined {
 export const MAX_BULK_INVITE = 1000;
 export const USER_DELETE_NOT_RECORDED =
   "We couldn't delete this user just now. They are still a member; please try again in a moment.";
+export const USER_PROMOTED_DURING_DELETE =
+  'This user was made an admin while being deleted, so the account was kept. Cleanup that had already run is not undone.';
 
 // Linear-time email check: each segment excludes its following separator
 // (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS). The local
@@ -1676,10 +1678,20 @@ export class UserController {
       await ProjectService.removeUserFromAllProjects(orgId, userId);
 
       await getCredentialRepository().clearPassword(userId, user.email);
-      await getUserRepository().markDeleted(orgId, userId, {
+      // Only while still a member: someone promoted since the check above may be
+      // the admin a concurrent demotion counted on, and removing them could
+      // leave the organisation with none.
+      const removed = await getUserRepository().markDeleted(orgId, userId, {
         signedOut: true,
         deletedBy: req.user?.userId ?? req.user?._id,
+        onlyMember: true,
       });
+      if (!removed) {
+        throw userRefusal(
+          new BadRequestError(USER_PROMOTED_DURING_DELETE),
+          'not_member',
+        );
+      }
       auditUserChange('user.delete', userId);
 
       await this.eventService.start();

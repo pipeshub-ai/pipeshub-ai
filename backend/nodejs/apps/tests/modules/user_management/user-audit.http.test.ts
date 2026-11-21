@@ -25,7 +25,7 @@ import { Container } from 'inversify';
 import { createUserRouter } from '../../../src/modules/user_management/routes/users.routes';
 import { createUserGroupRouter } from '../../../src/modules/user_management/routes/userGroups.routes';
 import { createOrgRouter } from '../../../src/modules/user_management/routes/org.routes';
-import { UserController } from '../../../src/modules/user_management/controller/users.controller';
+import { USER_PROMOTED_DURING_DELETE, UserController } from '../../../src/modules/user_management/controller/users.controller';
 import { UserGroupController } from '../../../src/modules/user_management/controller/userGroups.controller';
 import { OrgController } from '../../../src/modules/user_management/controller/org.controller';
 import { MailService } from '../../../src/modules/user_management/services/mail.service';
@@ -82,6 +82,7 @@ describe('user and group audit lines (HTTP)', function () {
   let activityFails: boolean;
   let everyoneWriteFails: boolean;
   let clearPasswordFails: boolean;
+  let promotedDuringDelete: boolean;
   let publishFails: boolean;
   let mailQueueFails: boolean;
   let published: number;
@@ -146,6 +147,7 @@ describe('user and group audit lines (HTTP)', function () {
     activityFails = false;
     everyoneWriteFails = false;
     clearPasswordFails = false;
+    promotedDuringDelete = false;
     publishFails = false;
     mailQueueFails = false;
     published = 0;
@@ -193,7 +195,8 @@ describe('user and group audit lines (HTTP)', function () {
       updateProfile: async (o: string, id: string, f: Row) => { const u = live(o, id); if (!u) return null; Object.assign(u, f); return { ...u }; },
       emailTakenByOther: async (_o: string, e: string, id: string) => users.some((u) => u.email === e && u._id !== id && !u.isDeleted),
       listLiveMembershipsByEmail: async (e: string) => users.filter((u) => u.email === e && !u.isDeleted),
-      markDeleted: async (o: string, id: string) => { const u = live(o, id); if (u) u.isDeleted = true; },
+      // Like both stores: matched on org and id (a removed row too), and on the role when asked.
+      markDeleted: async (o: string, id: string, extra?: Row) => { const u = users.find((x) => x._id === id && x.orgId === o); if (!u || (extra?.onlyMember && u.role !== 'member')) return null; u.isDeleted = true; return { ...u }; },
       listByEmails: async (o: string, es: string[]) => users.filter((u) => u.orgId === o && es.includes(u.email)).map((u) => ({ ...u })),
       restoreByEmails: async (o: string, es: string[]) => users.filter((u) => u.orgId === o && es.includes(u.email) && u.isDeleted).map((u) => { u.isDeleted = false; return { ...u }; }),
       promoteToAdmin: async (_o: string, ids: string[]) => { for (const u of users) if (ids.includes(u._id)) u.role = 'admin'; },
@@ -221,7 +224,12 @@ describe('user and group audit lines (HTTP)', function () {
     sinon.stub(credentialRepo, 'getCredentialRepository').returns(fake('credential', {
       unblock: async (id: string) => blocked.delete(id),
       blockedUserIds: async () => [],
-      clearPassword: async () => { if (clearPasswordFails) throw new Error('credential store down'); },
+      clearPassword: async (id: string) => {
+        if (clearPasswordFails) throw new Error('credential store down');
+        // The last step before the removal: another admin promotes the person meanwhile.
+        const u = promotedDuringDelete ? users.find((x) => x._id === id) : undefined;
+        if (u) u.role = 'admin';
+      },
       createWithPassword: async () => undefined,
       discardForUser: async () => undefined,
       deleteForUser: async () => undefined,
@@ -844,6 +852,17 @@ describe('user and group audit lines (HTTP)', function () {
     it('T22 delete an admin → user.delete failure not_member', async () => {
       expect((await call('DELETE', `${U}/${ada._id}`, ada)).status).to.equal(400);
       expect(audits()).to.deep.equal([{ event: 'user.delete', outcome: 'failure', reason: 'not_member', actor: ada._id, target: ada._id }]);
+    });
+
+    it('T22b promoted to admin while being deleted → kept as an admin, user.delete failure not_member, no event', async () => {
+      promotedDuringDelete = true;
+      const res = await call('DELETE', `${U}/${max._id}`, ada);
+      expect(res.status).to.equal(400);
+      expect(res.body.error.message).to.equal(USER_PROMOTED_DURING_DELETE);
+      expect(audits()).to.deep.equal([{ event: 'user.delete', outcome: 'failure', reason: 'not_member', actor: ada._id, target: max._id }]);
+      expect(max).to.include({ role: 'admin', isDeleted: false });
+      expect(published).to.equal(0);
+      expectNoPrivateData();
     });
 
     it('T21b [guard] deletion fails after the activity row → no user.delete line', async () => {
