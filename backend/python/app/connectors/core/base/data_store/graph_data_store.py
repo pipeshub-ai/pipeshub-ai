@@ -436,6 +436,19 @@ class GraphTransactionStore(TransactionStore):
             connector_id, CollectionNames.APPS.value, {}, expected, transaction=self.txn,
         )
 
+    async def set_app_access_limit(self, connector_id: str, access_limit: str | None, permission_model: str) -> None:
+        """Write the connector's ``accessLimit`` (None: no limit) and its ``permissionModel`` in one write, and raise when the app
+        document was not written. Both decide who reads the connector's records, so its structure generation moves in this
+        transaction."""
+        self.structural_connectors.add(connector_id)
+        ensure_written(
+            await self.graph_provider.update_node(
+                connector_id, CollectionNames.APPS.value,
+                {"accessLimit": access_limit, "permissionModel": permission_model}, transaction=self.txn,
+            ),
+            f"the access limit of connector {connector_id}",
+        )
+
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
 
@@ -2044,6 +2057,9 @@ _HARMLESS_WRITERS = frozenset({
     "name_default_knowledge_base",
     # an empty write that only locks the app document
     "lock_app_if_unchanged",
+    # writes the app document, and adds its connector to `structural_connectors` itself (it is not a provider method, so
+    # `_CONNECTOR_WRITERS` cannot list it)
+    "set_app_access_limit",
 })
 CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
 

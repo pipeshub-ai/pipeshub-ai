@@ -1,4 +1,5 @@
 from app.config.constants.arangodb import (
+    AccessLimit,
     AccessRule,
     Connectors,
     ConnectorScopes,
@@ -290,6 +291,11 @@ app_schema = {
                     PermissionModel.RECORD_LEVEL.value,
                     None,
                 ],
+            },
+            # Who reaches the connector while it is limited (see AccessLimit); absent or null: no limit.
+            "accessLimit": {
+                "type": ["string", "null"],
+                "enum": [AccessLimit.CREATOR.value, AccessLimit.ORG.value, None],
             },
             # KB-specific optional fields
             "orgId": {"type": ["string", "null"]},

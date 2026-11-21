@@ -3784,6 +3784,29 @@ class TestAppMetadataCoverage:
         assert meta.vector_membership_backfilled is True
         assert meta.vector_membership_backfill_after_key == "rec-9"
 
+    @pytest.mark.parametrize(("stored", "read"), [
+        ({"accessLimit": "CREATOR"}, "CREATOR"),
+        ({"accessLimit": "ORG"}, "ORG"),
+        ({"accessLimit": None}, None),  # ArangoDB keeps a cleared field as null
+        ({}, None),  # absent: the connector is not limited
+    ])
+    def test_from_db_document_reads_the_access_limit(self, stored, read) -> None:
+        from app.models.entities import AppMetadata
+
+        doc = {
+            "_key": "conn-99",
+            "name": "Drive",
+            "type": "connector",
+            "appGroup": "Google",
+            "scope": "team",
+            "createdAtTimestamp": 100,
+            "updatedAtTimestamp": 200,
+            **stored,
+        }
+        meta = AppMetadata.from_db_document(doc)
+        assert meta.access_limit == read
+        assert AppMetadata.model_validate(meta.model_dump()).access_limit == read
+
 
 class TestMeetingRecordCoverage:
     def _record_doc(self, **extra: Any) -> Dict[str, Any]:

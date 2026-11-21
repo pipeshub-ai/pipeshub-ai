@@ -338,6 +338,42 @@ class TestAppSchemaPermissionModel:
         validator.validate(_valid_app_doc(permissionModel="RECORD_LEVEL"))
 
 
+class TestAppSchemaAccessLimit:
+    """``accessLimit`` says who reaches a limited connector; the app schema is
+    strict, so the field has to be listed before anything can write it."""
+
+    @pytest.mark.parametrize("limit", ["CREATOR", "ORG", None])
+    def test_accepts_the_two_limits_and_none(self, limit) -> None:
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        validator.validate(_valid_app_doc(accessLimit=limit, permissionModel="APP_LEVEL"))
+
+    def test_a_document_without_it_is_still_valid(self) -> None:
+        Draft4Validator(adapt_schema(documents.app_schema)).validate(_valid_app_doc())
+
+    @pytest.mark.parametrize("limit", ["USERS", "creator", "", True, 1, ["CREATOR"]])
+    def test_rejects_anything_else(self, limit) -> None:
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        with pytest.raises(ValidationError):
+            validator.validate(_valid_app_doc(accessLimit=limit))
+
+    def test_the_values_are_the_enum(self) -> None:
+        from app.config.constants.arangodb import AccessLimit
+
+        listed = documents.app_schema["rule"]["properties"]["accessLimit"]["enum"]
+        assert listed == [*(limit.value for limit in AccessLimit), None]
+
+    def test_the_update_validator_of_the_other_backends_takes_it(self, monkeypatch) -> None:
+        """Neo4j and PostgreSQL validate every app write against this schema."""
+        from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+
+        monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "strict")
+        validator, apps = NodeSchemaValidator(), CollectionNames.APPS.value
+        validator.validate_node_update(apps, {"accessLimit": "CREATOR", "permissionModel": "APP_LEVEL"})
+        validator.validate_node_update(apps, {"accessLimit": None, "permissionModel": "RECORD_LEVEL"})
+        with pytest.raises(SchemaValidationError):
+            validator.validate_node_update(apps, {"accessLimit": "EVERYONE"})
+
+
 class TestAppSchemaVectorMembership:
     def test_accepts_backfill_fields(self):
         validator = Draft4Validator(adapt_schema(documents.app_schema))

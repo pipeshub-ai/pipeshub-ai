@@ -271,6 +271,50 @@ class TestPersistAndBackfill:
         assert updated == {"a": PermissionModel.APP_LEVEL.value, "b": PermissionModel.APP_LEVEL.value}
 
     @pytest.mark.asyncio
+    async def test_a_limited_instance_stays_app_level_across_a_restart(self) -> None:
+        """While ``accessLimit`` is set the instance is held at APP_LEVEL. The
+        sweep used to put the type's model back on every start, which would
+        undo the limit; an instance with no limit is corrected as before."""
+        registry = _registry()
+        registry._connectors = {
+            "DRIVE": {"config": {"permissionModel": PermissionModel.RECORD_LEVEL.value}},
+        }
+        graph = _graph()
+        graph.get_all_documents = AsyncMock(
+            return_value=[
+                # limited, and already written the way the limit writes it: left alone
+                {"_key": "limited", "type": "DRIVE", "isActive": True, "accessLimit": "CREATOR",
+                 "permissionModel": PermissionModel.APP_LEVEL.value},
+                {"_key": "limited-org", "type": "DRIVE", "isActive": True, "accessLimit": "ORG",
+                 "permissionModel": PermissionModel.APP_LEVEL.value},
+                # limited but holding the type's model: put back to APP_LEVEL, never left record-level
+                {"_key": "limited-stale", "type": "DRIVE", "isActive": True, "accessLimit": "CREATOR",
+                 "permissionModel": PermissionModel.RECORD_LEVEL.value},
+                # not limited (absent, or cleared to null) and stale: corrected to the type's model
+                {"_key": "open-stale", "type": "DRIVE", "isActive": True,
+                 "permissionModel": PermissionModel.APP_LEVEL.value},
+                {"_key": "cleared-stale", "type": "DRIVE", "isActive": True, "accessLimit": None,
+                 "permissionModel": PermissionModel.APP_LEVEL.value},
+                {"_key": "open-current", "type": "DRIVE", "isActive": True,
+                 "permissionModel": PermissionModel.RECORD_LEVEL.value},
+            ]
+        )
+        graph.update_node = AsyncMock(return_value=True)
+        graph.batch_update_connector_status = AsyncMock(return_value=0)
+        registry._graph_provider = graph
+
+        assert await registry.sync_with_database() is True
+
+        written = {call.args[0]: call.args[2] for call in graph.update_node.await_args_list}
+        assert written == {
+            "limited-stale": {"permissionModel": PermissionModel.APP_LEVEL.value},
+            "open-stale": {"permissionModel": PermissionModel.RECORD_LEVEL.value},
+            "cleared-stale": {"permissionModel": PermissionModel.RECORD_LEVEL.value},
+        }
+        # the sweep never writes the limit itself
+        assert all("accessLimit" not in fields for fields in written.values())
+
+    @pytest.mark.asyncio
     async def test_requests_root_membership_once_for_root_scoped_connectors(self) -> None:
         """Slack search matches on a record's root group, and instances synced
         before that field existed have none. Marking them un-backfilled hands
