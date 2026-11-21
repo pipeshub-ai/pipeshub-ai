@@ -25,6 +25,7 @@ import {
   saveUserEnsuringOrgRetainsAdmin,
 } from '../../src/modules/user_management/services/user-admin.service';
 import { BadRequestError } from '../../src/libs/errors/http.errors';
+import { adminInviter, withoutSideStores } from './admin-invite-race';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -272,5 +273,46 @@ describe('MongoDB code paths against a real MongoDB', function () {
     if (rsAvailable) {
       expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
     }
+  });
+
+  describe('bulk admin invites racing for the last seats', () => {
+    let restoreSideStores: () => void;
+    before(() => { restoreSideStores = withoutSideStores(); });
+    after(() => restoreSideStores());
+
+    /** One invite batch: a removed member, a pending member and a new address — three new admins. */
+    async function batch(orgId: string) {
+      const tag = randomUUID().slice(0, 8);
+      const removed = await Users.create({ orgId, email: `removed-${tag}@example.com`, fullName: 'Removed', role: 'member', isDeleted: true });
+      const pending = await Users.create({ orgId, email: `pending-${tag}@example.com`, fullName: 'Pending', role: 'member', hasLoggedIn: false });
+      return { removed, pending, fresh: `fresh-${tag}@example.com` };
+    }
+
+    it(`never passes ${MAX_ORG_ADMINS} admins, and a refused batch leaves no trace`, async () => {
+      const orgId = await newOrg();
+      await newUser(orgId, 'admin');
+      await newUser(orgId, 'admin');
+      const a = await batch(orgId);
+      const b = await batch(orgId);
+      const invite = adminInviter(rsAvailable);
+
+      const done = await Promise.allSettled([a, b].map((x) => invite(orgId, [x.removed.email, x.pending.email, x.fresh])));
+      for (const d of done) if (d.status === 'rejected') expect(d.reason).to.be.instanceOf(BadRequestError);
+      const ok = done.filter((d) => d.status === 'fulfilled').length;
+
+      expect(await adminCount(orgId)).to.equal(2 + 3 * ok);
+      for (const [x, d] of [[a, done[0]], [b, done[1]]] as const) {
+        const removed = await Users.findById(x.removed._id).lean();
+        const pending = await Users.findById(x.pending._id).lean();
+        const fresh = await Users.find({ email: x.fresh }).lean();
+        if (d.status === 'fulfilled') {
+          expect([removed?.isDeleted, removed?.role, pending?.role, fresh.map((u) => u.role)]).to.deep.equal([false, 'admin', 'admin', ['admin']]);
+        } else {
+          // Removed again and a member, as it was; the pending account is still a member; no row for the new address.
+          expect([removed?.isDeleted, removed?.role, pending?.role, fresh.length]).to.deep.equal([true, 'member', 'member', 0]);
+        }
+      }
+      if (rsAvailable) expect(ok).to.equal(1);
+    });
   });
 });

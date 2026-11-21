@@ -608,9 +608,18 @@ export class MongoUserRepository implements UserRepository {
     return dto(user);
   }
 
-  async createMany(orgId: string, rows: UserFields[]): Promise<UserDto[]> {
+  async createMany(
+    orgId: string,
+    rows: UserFields[],
+    tx?: Tx,
+  ): Promise<UserDto[]> {
+    const session = sessionOf(tx);
+    const docs = rows.map((r) => ({ ...r, orgId }));
     try {
-      const created = await Users.create(rows.map((r) => ({ ...r, orgId })));
+      // In a transaction the saves must not run in parallel on one session.
+      const created = session
+        ? await Users.create(docs, { session, ordered: true })
+        : await Users.create(docs);
       return created.map(dto);
     } catch (error) {
       throw mapMongoError(error);
@@ -650,27 +659,38 @@ export class MongoUserRepository implements UserRepository {
     return dto(user);
   }
 
-  async restoreByEmails(orgId: string, emails: string[]): Promise<UserDto[]> {
-    await Users.updateMany(
-      { email: { $in: emails }, isDeleted: true, orgId },
-      { $set: { isDeleted: false } },
-    );
-    const rows = await Users.find({
+  async restoreByEmails(
+    orgId: string,
+    emails: string[],
+    tx?: Tx,
+  ): Promise<UserDto[]> {
+    const session = sessionOf(tx);
+    const filter = { email: { $in: emails }, isDeleted: true, orgId };
+    const restore = { $set: { isDeleted: false } };
+    if (session) await Users.updateMany(filter, restore, { session });
+    else await Users.updateMany(filter, restore);
+    const query = Users.find({
       email: { $in: emails },
       orgId,
       isDeleted: false,
     });
+    const rows = session ? await query.session(session) : await query;
     return rows.map(dto);
   }
 
-  async promoteToAdmin(orgId: string, ids: string[]): Promise<void> {
+  async promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void> {
     // Narrowed to people. The schema refuses to promote a service account, so
     // without this a batch that happened to include one would fail as a whole
     // and take the genuine invites with it.
-    await Users.updateMany(
-      { _id: { $in: ids }, orgId, kind: { $ne: 'service' } },
-      { $set: { role: 'admin' } },
-    );
+    const session = sessionOf(tx);
+    const filter = {
+      _id: { $in: ids },
+      orgId,
+      kind: { $ne: 'service' as const },
+    };
+    const promote = { $set: { role: 'admin' as const } };
+    if (session) await Users.updateMany(filter, promote, { session });
+    else await Users.updateMany(filter, promote);
   }
 
   async setRole(orgId: string, id: string, role: UserRole): Promise<void> {

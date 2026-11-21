@@ -88,6 +88,7 @@ describe('user and group audit lines (HTTP)', function () {
   let publishFails: boolean;
   let mailQueueFails: boolean;
   let published: number;
+  let mailsQueued: number;
   let notified: Promise<void>;
   let notify: () => void;
   let allocated: { orgId: string; adminUserId: string };
@@ -151,6 +152,7 @@ describe('user and group audit lines (HTTP)', function () {
     publishFails = false;
     mailQueueFails = false;
     published = 0;
+    mailsQueued = 0;
     notified = new Promise<void>((resolve) => { notify = resolve; });
     root().level = 'debug';
     // Only this file's requests count: other work in the same mocha worker (timers, sweeps, reconnects) logs meanwhile.
@@ -257,7 +259,7 @@ describe('user and group audit lines (HTTP)', function () {
     registerAppUpstreams(config as never);
     const logger = Logger.getInstance({ service: 'UserManagement' });
     const events = { start: async () => undefined, stop: async () => undefined, publishEvent: async () => { if (publishFails) throw new Error('outbox down'); published++; } };
-    const mailProducer = { publishEvent: async () => { if (mailQueueFails) throw new Error('broker unavailable'); } };
+    const mailProducer = { publishEvent: async () => { if (mailQueueFails) throw new Error('broker unavailable'); mailsQueued++; } };
     const mailService = new MailService(...([config, logger, mailProducer] as unknown as ConstructorParameters<typeof MailService>));
     const authService = { passwordMethodEnabled: async () => ({ statusCode: 200, data: { isPasswordAuthEnabled: true } }) };
     const notifications = { start: async () => undefined, publishEvent: async () => { notify(); } };
@@ -308,54 +310,59 @@ describe('user and group audit lines (HTTP)', function () {
   const newUserId = (email: string) => users.find((u) => u.email === email)!._id;
   const adminCount = () => users.filter((u) => u.orgId === orgId && !u.isDeleted && u.role === 'admin').length;
   const fillAdminsTo = (n: number) => { for (let i = adminCount(); i < n; i++) users.push(mkUser(`Admin ${i}`, `admin${i}@acme.test`, 'admin')); };
-  /**
-   * Holds every `create` until two are in flight, so two requests both pass the pre-check before either writes.
-   * Returns a function that puts the plain repository back.
-   */
-  const holdCreatesUntilTwo = () => {
+  /** Wraps one method of the in-memory user repository; returns a function that puts the plain one back. */
+  const wrapUserRepo = (name: string, wrap: (real: (...args: any[]) => Promise<any>) => (...args: any[]) => Promise<any>) => {
     const stub = userRepo.getUserRepository as sinon.SinonStub;
     const repo = stub();
+    const wrapped = wrap((...args) => (repo as Row)[name](...args));
+    stub.returns(new Proxy(repo, { get: (t, k: string) => (k === name ? wrapped : (t as Row)[k]) }));
+    return () => stub.returns(repo);
+  };
+  /** Holds calls of `name` until two are in flight, so two requests both pass every check before either writes. */
+  const holdUntilTwo = (name: string) => {
     let release: (() => void) | undefined;
     const bothIn = new Promise<void>((resolve) => { release = resolve; });
     let arrived = 0;
-    stub.returns(new Proxy(repo, {
-      get: (t, k: string) => (k !== 'create' ? (t as Row)[k] : async (...args: unknown[]) => {
-        if (++arrived === 2) release!();
-        await bothIn;
-        return (t as Row).create(...args);
-      }),
-    }));
-    return () => stub.returns(repo);
-  };
-  /** The admin count answers the pre-check, then fails: the store goes down right after the write. */
-  const failRecount = () => {
-    const stub = userRepo.getUserRepository as sinon.SinonStub;
-    const repo = stub();
-    let counts = 0;
-    stub.returns(new Proxy(repo, {
-      get: (t, k: string) => (k !== 'countActiveAdmins' ? (t as Row)[k] : async (...args: unknown[]) => {
-        if (++counts > 1) throw new Error('store down');
-        return (t as Row).countActiveAdmins(...args);
-      }),
-    }));
-  };
-  /** Two admin creates sent at once; resolves after both access lines are written. */
-  async function createTwoAdminsAtOnce() {
-    records.length = 0;
-    const send = (fullName: string, email: string) => fetch(`${baseUrl}${U}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...requestId(), authorization: `Bearer ${token(ada)}` },
-      body: JSON.stringify({ fullName, email, role: 'admin' }),
-      signal: AbortSignal.timeout(5000),
+    return wrapUserRepo(name, (real) => async (...args) => {
+      if (++arrived === 2) release!();
+      await bothIn;
+      return real(...args);
     });
-    const statuses = (await Promise.all([send('Cora Created', CREATED), send('Ned New', NEW2)])).map((r) => r.status);
+  };
+  /** The admin count answers the first `n` calls, then fails: the store goes down right after the write. */
+  const failCountAfter = (n: number) => {
+    let counts = 0;
+    return wrapUserRepo('countActiveAdmins', (real) => async (...args) => {
+      if (++counts > n) throw new Error('store down');
+      return real(...args);
+    });
+  };
+  /** An admin's POST, sent without waiting for its access line. */
+  const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...requestId(), authorization: `Bearer ${token(ada)}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(5000),
+  });
+  /** Waits until `n` access lines have been written since the records were last cleared. */
+  async function requestsEnded(n: number) {
     const deadline = Date.now() + 2000;
-    while (records.filter((r) => r.message === 'http.request.end').length < 2) {
+    while (records.filter((r) => r.message === 'http.request.end').length < n) {
       if (Date.now() > deadline) expect.fail('missing http.request.end');
       await new Promise((resolve) => setImmediate(resolve));
     }
+  }
+  /** Two admin POSTs sent at once; resolves with their statuses after both access lines are written. */
+  async function postTwoAtOnce(path: string, bodies: [unknown, unknown]) {
+    records.length = 0;
+    const statuses = (await Promise.all(bodies.map((b) => post(path, b)))).map((r) => r.status);
+    await requestsEnded(2);
     return statuses;
   }
+  const createTwoAdminsAtOnce = () => postTwoAtOnce(U, [
+    { fullName: 'Cora Created', email: CREATED, role: 'admin' },
+    { fullName: 'Ned New', email: NEW2, role: 'admin' },
+  ]);
 
   describe('users', () => {
     it('T1 create → user.create success, target = the new account', async () => {
@@ -398,7 +405,7 @@ describe('user and group audit lines (HTTP)', function () {
     it('T1g two admin creates at once for the last seat (no replica set) → both refused, the cap holds, no row left', async () => {
       fillAdminsTo(MAX_ORG_ADMINS - 1);
       const everyoneBefore = [...everyone.users];
-      holdCreatesUntilTwo();
+      holdUntilTwo('create');
       expect(await createTwoAdminsAtOnce()).to.deep.equal([400, 400]);
       expect(adminCount()).to.equal(MAX_ORG_ADMINS - 1);
       // Removed rows included: a soft-deleted leftover would keep the address taken.
@@ -414,7 +421,7 @@ describe('user and group audit lines (HTTP)', function () {
 
     it('T1h an address refused by the cap can be created again: the refusal left no row holding it', async () => {
       fillAdminsTo(MAX_ORG_ADMINS - 1);
-      const unhold = holdCreatesUntilTwo();
+      const unhold = holdUntilTwo('create');
       expect(await createTwoAdminsAtOnce()).to.deep.equal([400, 400]);
       unhold();
       expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED, role: 'admin' })).status).to.equal(201);
@@ -424,7 +431,7 @@ describe('user and group audit lines (HTTP)', function () {
     it('T1k the re-count fails after an admin create (no replica set) → 500, the account is removed, nothing else written', async () => {
       fillAdminsTo(MAX_ORG_ADMINS - 1);
       const everyoneBefore = [...everyone.users];
-      failRecount();
+      failCountAfter(1);
       expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED, role: 'admin' })).status).to.equal(500);
       // Removed rows included: no account of any kind is left holding the address.
       expect(users.filter((u) => u.email === CREATED)).to.deep.equal([]);
@@ -437,7 +444,7 @@ describe('user and group audit lines (HTTP)', function () {
 
     it('T14b the re-count fails after a promotion (no replica set) → 500, the user is a member again', async () => {
       fillAdminsTo(MAX_ORG_ADMINS - 1);
-      failRecount();
+      failCountAfter(1);
       expect((await call('PUT', `${U}/${max._id}`, ada, { role: 'admin' })).status).to.equal(500);
       expect(live(orgId, max._id)!.role).to.equal('member');
       expect(adminCount()).to.equal(MAX_ORG_ADMINS - 1);
@@ -535,6 +542,97 @@ describe('user and group audit lines (HTTP)', function () {
       for (let i = 1; i < MAX_ORG_ADMINS; i++) users.push(mkUser(`Admin ${i}`, `admin${i}@acme.test`, 'admin'));
       expect((await call('POST', `${U}/bulk/invite`, ada, { emails: [NEW1], role: 'admin' })).status).to.equal(400);
       expect(audits()).to.deep.equal([{ event: 'user.invite', outcome: 'failure', reason: 'admin_limit', actor: ada._id }]);
+    });
+
+    it('T8b two admin invites at once for the last seat (no replica set) → both refused, nothing left, no line but the refusals', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS - 1);
+      const everyoneBefore = [...everyone.users];
+      holdUntilTwo('createMany');
+      expect(await postTwoAtOnce(`${U}/bulk/invite`, [{ emails: [NEW1], role: 'admin' }, { emails: [NEW2], role: 'admin' }])).to.deep.equal([400, 400]);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS - 1);
+      // Removed rows included: a refused batch leaves no account holding either address.
+      expect(users.filter((u) => [NEW1, NEW2].includes(u.email))).to.deep.equal([]);
+      expect(everyone.users).to.deep.equal(everyoneBefore);
+      expect([published, mailsQueued]).to.deep.equal([0, 0]);
+      expect(audits()).to.deep.equal([
+        { event: 'user.invite', outcome: 'failure', reason: 'admin_limit', actor: ada._id },
+        { event: 'user.invite', outcome: 'failure', reason: 'admin_limit', actor: ada._id },
+      ]);
+      expectNoPrivateData();
+    });
+
+    it('T8c seats filled while a mixed admin batch is being written → the batch is taken back: removed again as a member, pending admin untouched', async () => {
+      const pam = mkUser('Pam Pending', 'pam@acme.test', 'admin', { hasLoggedIn: false });
+      users.push(pam);
+      expect(adminCount()).to.equal(2);
+      // dan (removed member), mia (pending member) and NEW1 make three new admins: the checks before the write pass.
+      let open!: () => void;
+      const opened = new Promise<void>((resolve) => { open = resolve; });
+      let reached!: () => void;
+      const atRestore = new Promise<void>((resolve) => { reached = resolve; });
+      const calls: Row[] = [];
+      wrapUserRepo('restoreByEmails', (real) => async (...args) => { calls.push({ restoreByEmails: args[1] }); reached(); await opened; return real(...args); });
+      wrapUserRepo('createMany', (real) => async (...args) => { const made = await real(...args); calls.push({ createMany: made.map((u: Row) => u._id) }); return made; });
+      wrapUserRepo('deleteById', (real) => async (...args) => { calls.push({ deleteById: args[0] }); return real(...args); });
+
+      const invite = post(`${U}/bulk/invite`, { emails: [dan.email, mia.email, pam.email, NEW1], role: 'admin' });
+      await atRestore;
+      for (let i = 0; i < 3; i++) {
+        expect((await call('POST', U, ada, { fullName: `Filler ${i}`, email: `filler${i}@acme.test`, role: 'admin' })).status).to.equal(201);
+      }
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS);
+      records.length = 0;
+      open();
+      expect((await invite).status).to.equal(400);
+      await requestsEnded(1);
+
+      const newId = calls.find((c) => c.createMany)!.createMany[0];
+      const fillerIds = users.filter((u) => u.email.startsWith('filler')).map((u) => u._id);
+      expect(calls.filter((c) => !fillerIds.includes(c.deleteById))).to.deep.equal([
+        { restoreByEmails: [dan.email] }, { createMany: [newId] }, { deleteById: newId },
+      ]);
+      expect([dan.isDeleted, dan.role]).to.deep.equal([true, 'member']);
+      expect(mia.role).to.equal('member');
+      expect(pam.role).to.equal('admin');
+      expect(users.some((u) => u.email === NEW1)).to.equal(false);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS);
+      expect(audits()).to.deep.equal([{ event: 'user.invite', outcome: 'failure', reason: 'admin_limit', actor: ada._id }]);
+
+      // Removed as a member, so a member invite brings it back as one, and the cap holds.
+      expect((await call('POST', `${U}/bulk/invite`, ada, { emails: [dan.email] })).status).to.equal(200);
+      expect([dan.isDeleted, dan.role]).to.deep.equal([false, 'member']);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS);
+    });
+
+    it("T8d the re-count fails after an admin batch is written (no replica set) → 500, the batch is taken back (F50's count-failure undo)", async () => {
+      // Counts: the invite's fast refusal, the helper's pre-check, then the re-count after the write.
+      failCountAfter(2);
+      expect((await call('POST', `${U}/bulk/invite`, ada, { emails: [dan.email, mia.email, NEW1], role: 'admin' })).status).to.equal(500);
+      expect([dan.isDeleted, dan.role, mia.role]).to.deep.equal([true, 'member', 'member']);
+      expect(users.some((u) => u.email === NEW1)).to.equal(false);
+      expect(adminCount()).to.equal(1);
+      expect(audits()).to.deep.equal([]);
+    });
+
+    it('T8e with the org at the admin cap, a member invite and a re-invite of a pending admin still go through (nobody new becomes admin)', async () => {
+      const pam = mkUser('Pam Pending', 'pam@acme.test', 'admin', { hasLoggedIn: false });
+      users.push(pam);
+      fillAdminsTo(MAX_ORG_ADMINS);
+      expect((await call('POST', `${U}/bulk/invite`, ada, { emails: [NEW1] })).status).to.equal(200);
+      expect((await call('POST', `${U}/bulk/invite`, ada, { emails: [pam.email], role: 'admin' })).status).to.equal(200);
+      expect(audits()).to.deep.equal([{ event: 'user.invite', outcome: 'success', reason: 'reinvite', actor: ada._id, target: pam._id }]);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS);
+    });
+
+    it('T8f an admin batch whose insert fails partway (no replica set) leaves no admin: the role is granted last', async () => {
+      fillAdminsTo(MAX_ORG_ADMINS - 2);
+      wrapUserRepo('createMany', (real) => async (o: string, rows: Row[]) => {
+        await real(o, rows.slice(0, 1));
+        throw new UniqueConstraintError('duplicate', { key: 'email' });
+      });
+      expect((await call('POST', `${U}/bulk/invite`, ada, { emails: [NEW1, NEW2], role: 'admin' })).status).to.not.equal(200);
+      expect(adminCount()).to.equal(MAX_ORG_ADMINS - 2);
+      expect(users.filter((u) => [NEW1, NEW2].includes(u.email) && u.role === 'admin')).to.deep.equal([]);
     });
 
     it('T4b invite a new address as admin → user.invite new, then user.role.change new_admin', async () => {

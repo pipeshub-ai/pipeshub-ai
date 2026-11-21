@@ -556,7 +556,8 @@ describe('user-admin.service', () => {
       expect(updateStub.firstCall.args[0]).to.deep.include({ _id: userId });
     });
 
-    it('does not save when pre-check finds the org is already at 5 admins', async () => {
+    // Inside the transaction the count follows the save, so a refusal rolls the save back.
+    it('replica set: the count after the save finds 6 admins, so the unit of work throws and the save rolls back', async () => {
       const save = sinon.stub().resolves();
       const user = {
         _id: userId,
@@ -573,7 +574,7 @@ describe('user-admin.service', () => {
       } as any);
       sinon.stub(Org, 'updateOne').resolves({} as any);
       sinon.stub(Users, 'countDocuments').returns({
-        session: sinon.stub().callsFake(() => Promise.resolve(5)),
+        session: sinon.stub().callsFake(() => Promise.resolve(6)),
       } as any);
 
       try {
@@ -583,7 +584,8 @@ describe('user-admin.service', () => {
         expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);
       }
 
-      expect(save.called).to.equal(false);
+      expect(save.calledOnce).to.equal(true);
+      expect(withTransaction.calledOnce).to.equal(true);
     });
 
     it('non-RS, the re-count fails after the save: the user is set back to member, then the count error is raised', async () => {
@@ -702,23 +704,24 @@ describe('user-admin.service', () => {
       expect(repo.deleteById.firstCall.args).to.deep.equal([userId]);
     });
 
-    it('replica set: lock, count and create in one unit of work', async () => {
+    it('replica set: lock, create, then count, in one unit of work', async () => {
       inSession();
-      const repo = stubRepo([4]);
+      const repo = stubRepo([5]);
       expect(await createUserEnsuringAdminCap(orgId, fields, true)).to.equal(created);
-      expect(calls).to.deep.equal(['lock', 'count', 'create']);
+      expect(calls).to.deep.equal(['lock', 'create', 'count']);
       expect(txs.lock).to.not.equal(undefined);
       expect(txs.count).to.equal(txs.lock);
       expect(txs.create).to.equal(txs.lock);
       expect(repo.deleteById.called).to.equal(false);
     });
 
-    it('replica set, at the cap: admin_limit survives the unit of work and nothing is created', async () => {
+    it('replica set, over the cap after the create: admin_limit is thrown inside the unit of work, nothing undone by hand', async () => {
       inSession();
-      stubRepo([5]);
+      const repo = stubRepo([6]);
       const error = await refusal(() => createUserEnsuringAdminCap(orgId, fields, true));
       expect(refusalReason(error)).to.equal('admin_limit');
-      expect(calls).to.deep.equal(['lock', 'count']);
+      expect(calls).to.deep.equal(['lock', 'create', 'count']);
+      expect(repo.deleteById.called).to.equal(false);
     });
   });
   describe('refusal tags (the audit reason, invisible to the client)', () => {
@@ -776,7 +779,7 @@ describe('user-admin.service', () => {
     });
 
     it('admin cap inside a transaction: admin_limit survives the unit of work', async () => {
-      inTransaction(5);
+      inTransaction(6);
       expect(refusalReason(await rejection(() => saveUserEnsuringAdminCap(orgId, userId, {}, true)))).to.equal('admin_limit');
     });
 
