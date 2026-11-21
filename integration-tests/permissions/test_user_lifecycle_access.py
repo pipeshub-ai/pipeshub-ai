@@ -50,7 +50,7 @@ from messaging.test_e2e_record_pipeline import poll_until
 
 logger = logging.getLogger("user-lifecycle-access")
 
-pytestmark = [pytest.mark.integration, pytest.mark.permissions]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.permissions]
 
 KB_PREFIX = "it-user-lifecycle"
 # authenticateWithPassword locks the account on the tenth wrong password.

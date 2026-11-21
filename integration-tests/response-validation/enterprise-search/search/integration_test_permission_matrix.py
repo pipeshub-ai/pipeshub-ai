@@ -80,6 +80,7 @@ SEARCH_LIMIT = 10
 GENERAL_QUERY = "quarterly review budget owner"
 
 pytestmark = [
+    pytest.mark.live_model,
     pytest.mark.integration,
     pytest.mark.permissions,
     # Rows grant and revoke on one shared collection, so they run one at a time.

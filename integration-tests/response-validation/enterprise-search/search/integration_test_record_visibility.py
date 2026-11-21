@@ -60,7 +60,7 @@ SEARCH_QUERY = "every year asana undertakes which exercise?"
 # These grant and revoke on the shared session KB, so they must not interleave
 # with each other. Granting a *second* user changes nothing for the admin, so
 # the rest of the suite is unaffected.
-pytestmark = pytest.mark.xdist_group("record-visibility")
+pytestmark = [pytest.mark.xdist_group("record-visibility"), pytest.mark.live_model]
 
 
 def _permissions_url(base_url: str, kb_id: str) -> str:

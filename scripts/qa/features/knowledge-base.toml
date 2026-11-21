@@ -1,0 +1,764 @@
+# Knowledge bases ("collections"), folders, files, trash, storage and public URLs.
+
+[[feature]]
+id = "knowledge-base.collections"
+title = "Collections (knowledge bases)"
+flow = "knowledge-base"
+what = "A user creates, lists, opens, renames and deletes collections. What a user can do depends on their role on the collection (owner, writer, reader)."
+routes = [
+  "POST /api/v1/knowledgeBase",
+  "GET /api/v1/knowledgeBase",
+  "GET /api/v1/knowledgeBase/{kbId}",
+  "PUT /api/v1/knowledgeBase/{kbId}",
+  "DELETE /api/v1/knowledgeBase/{kbId}",
+]
+pages = [
+  "frontend/app/(main)/knowledge-base/page.tsx",
+  "frontend/app/(main)/@sidebar/knowledge-base/page.tsx",
+]
+code = [
+  "backend/nodejs/apps/src/modules/knowledge_base/routes/kb.routes.ts",
+  "backend/nodejs/apps/src/modules/knowledge_base/controllers/kb_controllers.ts",
+  "backend/python/app/connectors/sources/localKB/api/kb_router.py",
+  "backend/python/app/connectors/sources/localKB/handlers/kb_service.py",
+  "frontend/app/(main)/knowledge-base/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.collections.create"
+  says = "POST /api/v1/knowledgeBase with a name creates a collection and makes the caller its owner; an empty or blank name gets 400."
+  priority = "P0"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_crud.py::TestKnowledgeBaseCrud::test_create_knowledge_base_success",
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_crud.py::TestKnowledgeBaseCrud::test_create_knowledge_base_negative",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.collections.list-get"
+  says = "GET /api/v1/knowledgeBase lists only the collections the caller has a role on, and GET /api/v1/knowledgeBase/{kbId} returns one with the caller's role."
+  priority = "P0"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_crud.py::TestKnowledgeBaseCrud::test_list_knowledge_bases_success",
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_crud.py::TestKnowledgeBaseCrud::test_get_knowledge_base_success",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.collections.no-role-404"
+  says = "A user with no role on a collection gets 404, not 403, from every collection route, so ids cannot be probed; a user with a role that is too low gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/connectors/sources/test_kb_service_access_control.py",
+    "node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.collections.scopes"
+  says = "A token without kb:read gets 403 from the GET routes, without kb:write from create and update, and without kb:delete from DELETE /api/v1/knowledgeBase/{kbId}; a call with no sign-in gets 401."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.collections.update"
+  says = "PUT /api/v1/knowledgeBase/{kbId} renames a collection for a writer or owner; an empty body gets 400 and an empty name gets 400."
+  priority = "P1"
+  tests = ["it:response-validation/knowledgebase/integration_test_knowledgebase_crud.py::TestKnowledgeBaseCrud::test_update_knowledge_base_success"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.collections.delete-owner-only"
+  says = "Only the owner can delete a collection (a writer gets 403, except for a hidden collection with no owner left); the delete removes its records, stored files and vectors."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_crud.py::TestKnowledgeBaseCrud::test_delete_knowledge_base_success",
+    "py:tests/unit/connectors/sources/localKB/test_kb_delete_stored_files.py",
+    "e2e:tests/e2e/knowledge-base/kb-delete-collection.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.collections.deleting-state"
+  says = "While a collection is being deleted, every change to it (upload, folder, rename) gets 409 with the code KB_BEING_DELETED, and a caller with no role is not told that."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/connectors/sources/localKB/test_kb_deleting.py",
+    "node:tests/modules/knowledge_base/routes/kb.routes.http.deleting.test.ts",
+  ]
+
+[[feature]]
+id = "knowledge-base.folders"
+title = "Folders and moving items"
+flow = "knowledge-base"
+what = "A writer creates, renames and deletes folders (nested up to 20 levels) and moves files and folders inside a collection."
+routes = [
+  "POST /api/v1/knowledgeBase/{kbId}/folder",
+  "POST /api/v1/knowledgeBase/{kbId}/folder/{folderId}/subfolder",
+  "PUT /api/v1/knowledgeBase/{kbId}/folder/{folderId}",
+  "DELETE /api/v1/knowledgeBase/{kbId}/folder/{folderId}",
+  "PUT /api/v1/knowledgeBase/{kbId}/record/{recordId}/move",
+]
+code = [
+  "backend/nodejs/apps/src/modules/knowledge_base/routes/kb.routes.ts",
+  "backend/python/app/connectors/sources/localKB/api/kb_router.py",
+  "backend/python/app/connectors/sources/localKB/handlers/kb_service.py",
+  "frontend/app/(main)/knowledge-base/utils/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.folders.create"
+  says = "POST .../folder creates a folder at the root of the collection and POST .../folder/{folderId}/subfolder creates one inside a folder; a root create never lands in a subfolder because of a stray parent id in the query or body."
+  priority = "P0"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_folder_crud.py::TestFolderCrud::test_create_root_folder_success",
+    "it:response-validation/knowledgebase/integration_test_folder_crud.py::TestFolderCrud::test_create_subfolder_success",
+    "node:tests/modules/knowledge_base/routes/kb.routes.folder.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.folders.name-rules"
+  says = "A folder name that is empty, contains markup, a / or a \\, or is already used by a sibling folder is refused (400 or 409); a folder nested deeper than 20 levels gets 400."
+  priority = "P1"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_folder_crud.py::TestFolderCrud::test_create_root_folder_negative",
+    "it:response-validation/knowledgebase/integration_test_folder_crud.py::TestFolderCrud::test_update_folder_negative",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.folders.rename-delete"
+  says = "PUT .../folder/{folderId} renames a folder and DELETE removes it with everything inside; delete needs the kb:delete scope and the owner or writer role."
+  priority = "P1"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_folder_crud.py::TestFolderCrud::test_update_folder_success",
+    "it:response-validation/knowledgebase/integration_test_folder_crud.py::TestFolderCrud::test_delete_folder_success",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.folders.move"
+  says = "PUT .../record/{recordId}/move moves a file or folder into another folder or to the root of the same collection; a move into a trashed folder or a name already used there is refused."
+  priority = "P1"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_folder_crud.py::TestFolderCrud::test_move_record_to_folder_success",
+    "it:response-validation/knowledgebase/integration_test_folder_crud.py::TestFolderCrud::test_move_record_to_root_success",
+    "it:response-validation/knowledgebase/integration_test_folder_crud.py::TestFolderCrud::test_move_record_negative",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.folders.reader-refused"
+  says = "A reader of a collection gets 403 from folder create, rename, delete and move."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.folders.move-into-itself"
+  says = "A folder cannot be moved into itself, and a move that would nest it deeper than 20 levels gets 400."
+  priority = "P1"
+  tests = []
+
+[[feature]]
+id = "knowledge-base.upload"
+title = "Upload files to a collection"
+flow = "knowledge-base"
+what = "A writer uploads files, or a whole folder tree, to a collection root or a folder; files are checked one by one and each reports its own result."
+routes = [
+  "POST /api/v1/knowledgeBase/{kbId}/upload",
+  "GET /api/v1/knowledgeBase/limits",
+]
+code = [
+  "backend/nodejs/apps/src/modules/knowledge_base/controllers/kb_controllers.ts",
+  "backend/nodejs/apps/src/modules/knowledge_base/constants/kb.constants.ts",
+  "backend/nodejs/apps/src/modules/knowledge_base/validators/validators.ts",
+  "backend/nodejs/apps/src/modules/storage/mimetypes/mimetypes.ts",
+  "frontend/app/(main)/knowledge-base/api.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.upload.success"
+  says = "Uploading a supported file stores it in the collection's storage area, creates a record in the collection and queues it for indexing."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/knowledge_base/routes/kb.routes.upload.http.test.ts",
+    "e2e:tests/e2e/knowledge-base/kb-upload.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.upload.partial"
+  says = "In a batch, an oversize or unsupported file fails alone with its own message and the others are saved; when every file fails nothing is stored."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/knowledge_base/routes/kb.routes.upload.http.test.ts",
+    "e2e:tests/e2e/knowledge-base/kb-upload.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.upload.limits"
+  says = "GET /api/v1/knowledgeBase/limits returns maxFilesPerRequest (1000) and maxFileSizeBytes (the platform setting, 30 MB by default); more files than the limit in one request is refused."
+  priority = "P1"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_upload_limits.py::TestUploadLimits::test_get_upload_limits_success",
+    "node:tests/modules/knowledge_base/constants/upload.constants.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.upload.role"
+  says = "A reader, a user with no role, or a user for a missing collection or folder gets 403 or 404 and nothing is stored; a collection that is being deleted gets 409."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/knowledge_base/controllers/kb_upload_precheck.test.ts",
+    "node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts",
+    "node:tests/modules/knowledge_base/routes/kb.routes.http.deleting.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.upload.path-tricks"
+  says = "A file name with path separators or traversal never stores the file outside the uploader's own storage area, and a file is judged by its extension, not the type the client claims."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/knowledge_base/routes/kb.routes.upload.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.upload.duplicate-name"
+  says = "A file whose name is already used in the same folder, or twice in one batch, fails and the first copy is kept."
+  priority = "P1"
+  tests = [
+    "e2e:tests/e2e/knowledge-base/kb-upload.spec.ts",
+    "py:tests/integration/graph_db/test_kb_duplicate_name_checks.py",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.upload.scope"
+  says = "A token without kb:upload gets 403 from POST /api/v1/knowledgeBase/{kbId}/upload, even when it has kb:write."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.upload.folder-tree"
+  says = "Files sent with folder paths create the folders on the way in one step, and a path nested deeper than 20 levels gets 400 with nothing stored."
+  priority = "P1"
+  tests = []
+
+[[feature]]
+id = "knowledge-base.records"
+title = "Files and records"
+flow = "knowledge-base"
+what = "A user opens a file's record page, reads its metadata and content, renames it, replaces its file, or deletes it."
+routes = [
+  "GET /api/v1/knowledgeBase/record/{recordId}",
+  "PUT /api/v1/knowledgeBase/record/{recordId}",
+  "DELETE /api/v1/knowledgeBase/record/{recordId}",
+  "GET /api/v1/knowledgeBase/stream/record/{recordId}",
+]
+pages = ["frontend/app/(main)/record/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/knowledge_base/controllers/kb_controllers.ts",
+  "backend/nodejs/apps/src/modules/knowledge_base/routes/kb.routes.ts",
+  "backend/python/app/connectors/sources/localKB/api/kb_router.py",
+  "frontend/app/(main)/record/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.records.get"
+  says = "GET /api/v1/knowledgeBase/record/{recordId} returns the record and its file details without the internal database keys (_id, _rev); a record the caller cannot access gets 404."
+  priority = "P0"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_records_crud.py::TestKnowledgeBaseRecordsCrud::test_get_record_by_id_success",
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_records_crud.py::TestKnowledgeBaseRecordsCrud::test_get_record_by_id_negative",
+    "node:tests/modules/knowledge_base/routes/kb.routes.records.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.records.stream"
+  says = "GET /api/v1/knowledgeBase/stream/record/{recordId} streams the file with its type and name; a version that is not a whole number gets 400."
+  priority = "P0"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_records_crud.py::TestKnowledgeBaseRecordsCrud::test_stream_record_buffer_success",
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_records_crud.py::TestKnowledgeBaseRecordsCrud::test_stream_record_buffer_negative",
+    "node:tests/modules/knowledge_base/routes/kb.routes.records.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.records.rename-replace"
+  says = "PUT /api/v1/knowledgeBase/record/{recordId} renames a record or replaces its file with a new version (a name already used beside it gets 409); a reader gets 403 and nothing is stored."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/knowledge_base/routes/kb.routes.upload.http.test.ts",
+    "node:tests/modules/knowledge_base/routes/kb.routes.records.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.records.delete"
+  says = "DELETE /api/v1/knowledgeBase/record/{recordId} removes the record from the collection (to the trash when the trash is on); a record already gone gets 404."
+  priority = "P0"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_records_crud.py::TestKnowledgeBaseRecordsCrud::test_delete_record_by_id_success",
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_records_crud.py::TestKnowledgeBaseRecordsCrud::test_delete_record_by_id_negative",
+    "it:resilience/test_soft_delete_trash.py::test_a_deleted_record_is_hidden_and_keeps_what_a_restore_needs",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.records.access"
+  says = "A record in a collection the caller has no role on gets 404 from the record routes."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts"]
+
+[[feature]]
+id = "knowledge-base.trash"
+title = "Recently deleted and restore"
+flow = "knowledge-base"
+what = "A writer sees a collection's recently deleted items and restores one or many of them; items past the retention period (14 days by default) are purged by a background job."
+routes = [
+  "GET /api/v1/knowledgeBase/{kbId}/trash",
+  "POST /api/v1/knowledgeBase/record/{recordId}/restore",
+  "POST /api/v1/knowledgeBase/records/restore",
+]
+pages = [
+  "frontend/app/(main)/knowledge-base/recently-deleted/page.tsx",
+  "frontend/app/(main)/@sidebar/knowledge-base/recently-deleted/page.tsx",
+]
+code = [
+  "backend/python/app/connectors/sources/localKB/handlers/kb_service.py",
+  "backend/python/app/connectors/services/trash_purge.py",
+  "backend/nodejs/apps/src/modules/knowledge_base/validators/validators.ts",
+  "frontend/app/(main)/knowledge-base/recently-deleted/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.trash.list"
+  says = "GET .../{kbId}/trash lists the deleted items with where each was, who deleted it and when it will go; a bad page or a limit over 100 gets 400, and a turned-off trash gets 403."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/connectors/sources/localKB/test_kb_trash_list.py",
+    "node:tests/modules/knowledge_base/routes/kb.routes.records.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.trash.list-roles"
+  says = "A reader gets 403 and a user with no role gets 404 from the trash listing, and the listing needs kb:delete."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/connectors/sources/localKB/test_kb_trash_list.py",
+    "node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.trash.restore"
+  says = "Restoring an item brings back everything deleted with it under its own id, searchable again; a name now taken beside it comes back as 'name (restored)'."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/connectors/sources/localKB/test_kb_restore.py",
+    "it:resilience/test_soft_delete_trash.py::test_a_restored_record_comes_back_under_its_id_and_is_searchable_again",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.trash.restore-rules"
+  says = "Restore is refused with 403 when the trash is turned off or the caller is not an owner or writer of the collection, 404 for a record in another org, and 409 while the folder it was in is still in the trash."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/connectors/sources/localKB/test_kb_restore.py"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.trash.bulk-limit"
+  says = "POST /api/v1/knowledgeBase/records/restore needs 1 to 100 ids and refuses other bodies before any work is done."
+  priority = "P2"
+  tests = [
+    "py:tests/unit/connectors/sources/localKB/test_kb_restore_router.py",
+    "node:tests/modules/knowledge_base/routes/kb.routes.records.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.trash.purge"
+  says = "The purge job removes an item from every store only after the retention period, runs on one replica at a time, and stops when its kill switch is off."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/connectors/services/test_trash_purge.py",
+    "it:resilience/test_soft_delete_trash.py::test_the_purge_removes_the_record_from_every_store",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.trash.scopes"
+  says = "The trash list and both restore routes need the kb:delete scope; a token without it gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.trash.bulk-results"
+  says = "A bulk restore reports an outcome per id: one refused id does not stop the others, and ids from one deleted batch are restored once."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/connectors/sources/localKB/test_kb_restore.py",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.trash.restore-live"
+  says = "Restoring an item that is not in the trash answers 200 and says there was nothing to restore."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "knowledge-base.hub"
+title = "Browse the knowledge hub"
+flow = "knowledge-base"
+what = "A user browses everything they can reach (collections and connected apps) as one tree, root first and then children of a node."
+routes = [
+  "GET /api/v1/knowledgeBase/knowledge-hub/nodes",
+  "GET /api/v1/knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}",
+]
+code = [
+  "backend/python/app/connectors/sources/localKB/api/knowledge_hub_router.py",
+  "backend/python/app/connectors/sources/localKB/handlers/knowledge_hub_service.py",
+  "backend/python/app/connectors/sources/localKB/handlers/kh_merge.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.hub.browse"
+  says = "The root call lists the caller's top-level nodes and the children call lists one node's items, with paging, sorting and search."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/connectors/sources/localKB/test_knowledge_hub_service.py",
+    "node:tests/modules/knowledge_base/routes/kb.routes.records.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.hub.scope"
+  says = "A token without kb:read gets 403 from the knowledge hub routes."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts"]
+
+[[feature]]
+id = "knowledge-base.demo-data"
+title = "Acme Corp demo data switch"
+flow = "knowledge-base"
+what = "A user shows or hides the Acme Corp demo data for themselves; an admin turns it off or on for everyone."
+routes = [
+  "GET /api/v1/knowledgeBase/demo-data/status",
+  "PUT /api/v1/knowledgeBase/demo-data/preference",
+  "PUT /api/v1/knowledgeBase/demo-data/workspace",
+]
+code = ["backend/nodejs/apps/src/modules/knowledge_base/controllers/kb_controllers.ts"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.demo-data.admin-only"
+  says = "PUT /api/v1/knowledgeBase/demo-data/workspace by a member who is not an admin gets 403 and changes nothing."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.demo-data.preference"
+  says = "PUT .../demo-data/preference stores the caller's own choice and GET .../demo-data/status returns it with the workspace setting."
+  priority = "P2"
+  tests = [
+    "node:tests/modules/knowledge_base/validators/demo-data-preference.test.ts",
+    "node:tests/modules/knowledge_base/controllers/demo-data-workspace.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.demo-data.hidden"
+  says = "Demo records are refused with 404 to a user who turned the demo data off, and for everyone when an admin turned it off."
+  priority = "P1"
+  tests = []
+
+[[feature]]
+id = "knowledge-base.indexing"
+title = "Indexing of uploaded files"
+flow = "knowledge-base"
+what = "An uploaded file is queued for indexing (parse, embed, graph) and its status shows on the record; a user can retry indexing for one record or a whole record group."
+routes = [
+  "POST /api/v1/knowledgeBase/reindex/record/{recordId}",
+  "POST /api/v1/knowledgeBase/reindex/record-group/{recordGroupId}",
+]
+code = [
+  "backend/nodejs/apps/src/modules/knowledge_base/services/records_events.service.ts",
+  "backend/python/app/indexing_main.py",
+  "backend/python/app/events/**",
+  "backend/python/app/connectors/services/reindex_events.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.indexing.reindex-record"
+  says = "POST .../reindex/record/{recordId} queues one record again; depth must be -1 to 100 and an unknown record gets an error."
+  priority = "P0"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_records_crud.py::TestKnowledgeBaseRecordsCrud::test_reindex_record_by_id_success",
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_records_crud.py::TestKnowledgeBaseRecordsCrud::test_reindex_record_by_id_negative",
+    "node:tests/modules/knowledge_base/validators/validators.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.indexing.reindex-group"
+  says = "POST .../reindex/record-group/{recordGroupId} queues every record of a collection or app again."
+  priority = "P1"
+  tests = [
+    "it:response-validation/knowledgebase/integration_test_knowledgebase_records_crud.py::TestKnowledgeBaseRecordsCrud::test_reindex_kb_connector_success",
+    "e2e:tests/e2e/knowledge-base/kb-all-records-reindex.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.indexing.scope"
+  says = "A token without kb:write gets 403 from both reindex routes."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/knowledge_base/routes/kb.routes.scoping.http.test.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.indexing.end-to-end"
+  says = "A file uploaded to a collection reaches indexingStatus COMPLETED and can be found by search and cited in chat."
+  priority = "P0"
+  tests = ["e2e:tests/e2e/chat/chat-cited-answer.spec.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.indexing.reindex-locked"
+  says = "A reindex of a record or record group whose collection or app is syncing, queued or being deleted gets 409 with a message that names what is running."
+  priority = "P1"
+  tests = []
+
+[[feature]]
+id = "knowledge-base.internal-storage"
+title = "Internal storage service"
+flow = "knowledge-base"
+what = "Backend services store, read, version and remove document files through service-to-service routes; users never call them. Files live on local disk, S3 or Azure Blob."
+routes = [
+  "* /api/v1/document/internal/**",
+  "POST /api/v1/document/updateAppConfig",
+]
+code = [
+  "backend/nodejs/apps/src/modules/storage/routes/storage.routes.ts",
+  "backend/nodejs/apps/src/modules/storage/controllers/**",
+  "backend/nodejs/apps/src/modules/storage/providers/**",
+  "backend/nodejs/apps/src/modules/storage/services/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.service-token-only"
+  says = "Every internal storage route accepts only the storage service token: no header, a malformed or expired token, or a user token gets 401, and the old user-facing routes are gone."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:storage/test_auth.py::test_no_auth_header",
+    "it:storage/test_auth.py::test_malformed_token",
+    "it:storage/test_auth.py::test_expired_token",
+    "it:storage/test_auth.py::test_user_token_is_refused_by_internal_routes",
+    "it:storage/test_auth.py::test_former_user_routes_are_gone",
+    "node:tests/modules/storage/routes/storage.routes.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.upload-download"
+  says = "A file uploaded through /internal/upload comes back byte for byte from /buffer and /download, and a missing document gets 404."
+  priority = "P0"
+  tests = [
+    "it:storage/test_upload.py::test_upload_non_versioned",
+    "it:storage/test_buffer.py::test_buffer_bytes_match_upload",
+    "it:storage/test_download.py::test_upload_then_download_content",
+    "it:storage/test_document.py::test_get_nonexistent_document",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.versions"
+  says = "uploadNextVersion adds a version, rollBack returns to an earlier one, rolling back to the latest or a missing version fails, and the name, path, extension and org of the document never change."
+  priority = "P1"
+  tests = [
+    "it:storage/test_versioning.py",
+    "it:storage/test_upload_rollback.py",
+    "it:storage/test_metadata_integrity.py",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.upload-validation"
+  says = "Upload without a file or a document name, with an unsupported type, or with a slash in the name is refused."
+  priority = "P1"
+  tests = [
+    "it:storage/test_upload.py::test_upload_without_file",
+    "it:storage/test_upload.py::test_upload_without_document_name",
+    "it:storage/test_upload.py::test_upload_unsupported_mime_type",
+    "it:storage/test_upload.py::test_upload_document_name_with_slash",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.delete"
+  says = "Deleting a document makes its buffer return 404; purge removes the stored files, and a malformed id gets 400."
+  priority = "P1"
+  tests = [
+    "it:storage/test_document.py::test_delete_document",
+    "it:storage/test_document.py::test_deleted_document_buffer_returns_404",
+    "it:storage/test_document.py::test_malformed_document_id_is_a_400",
+    "node:tests/modules/storage/controllers/storage.controller.purge.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.placeholder"
+  says = "A placeholder creates a document with no file yet and a direct upload can fill it."
+  priority = "P2"
+  tests = [
+    "it:storage/test_placeholder.py::test_create_placeholder",
+    "it:storage/test_placeholder.py::test_placeholder_then_direct_upload",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.is-modified"
+  says = "isModified is false on a fresh upload and true after the bytes are replaced."
+  priority = "P2"
+  tests = [
+    "it:storage/test_is_modified.py::test_is_modified_false_on_fresh_upload",
+    "it:storage/test_is_modified.py::TestIsModifiedAfterBufferUpdate::test_03_is_modified_true",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.update-app-config"
+  says = "POST /api/v1/document/updateAppConfig needs the config-fetch service token and reloads the storage settings without a restart."
+  priority = "P1"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.artifacts"
+  says = "Artifact sets keep many files per content revision: presign, list, read-urls, file read and write, and delete work for local disk, and a path outside the revision is refused."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/storage/routes/storage.artifacts.http.test.ts",
+    "node:tests/modules/storage/validators/artifact-properties-path.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.move-tree"
+  says = "move-tree moves a folder and everything below it, refuses paths that escape or nest, and treats nothing to move as success; a user token is refused."
+  priority = "P1"
+  kind = "security"
+  tests = [
+    "it:pattern_match/test_internal_storage_routes.py::TestMoveTree::test_moves_a_folder_and_everything_below_it",
+    "it:pattern_match/test_internal_storage_routes.py::TestMoveTree::test_paths_that_escape_or_nest_are_refused",
+    "it:pattern_match/test_internal_storage_routes.py::TestMoveTree::test_nothing_to_move_is_not_an_error",
+    "it:pattern_match/test_internal_storage_routes.py::TestMoveTree::test_a_user_token_is_refused",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.connector-delete"
+  says = "Deleting a connector id removes only that connector's folder, and an id that could name another folder is refused."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:pattern_match/test_internal_storage_routes.py::TestConnectorStorageDelete::test_removes_only_that_connectors_folder",
+    "it:pattern_match/test_internal_storage_routes.py::TestConnectorStorageDelete::test_a_connector_id_that_could_name_another_folder_is_refused",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.internal-storage.listings"
+  says = "The record listings return only live documents of a virtual record, and the flat-layout listing pages by document id."
+  priority = "P2"
+  tests = [
+    "it:pattern_match/test_internal_storage_routes.py::TestRecordListings::test_a_soft_deleted_document_is_not_listed",
+    "it:pattern_match/test_internal_storage_routes.py::TestRecordListings::test_flat_listing_pages_by_document_id",
+  ]
+
+[[feature]]
+id = "knowledge-base.storage-config"
+title = "Storage configuration"
+flow = "knowledge-base"
+what = "An admin chooses where uploaded files are kept: local disk, Amazon S3 or Azure Blob. Credentials are stored encrypted and are never handed to a browser session."
+routes = [
+  "GET /api/v1/configurationManager/storageConfig",
+  "POST /api/v1/configurationManager/storageConfig",
+]
+pages = []
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/routes/cm_routes.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/nodejs/apps/src/modules/storage/config/storage.config.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.storage-config.admin-only"
+  says = "GET and POST storageConfig need an admin and the config scope; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.storage-config.no-secrets-to-browser"
+  says = "GET storageConfig from a user session returns an empty object for S3, Azure and local storage; only the service token gets the decrypted values."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/storage/controllers/storage.controller.storage-config.test.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.storage-config.validation"
+  says = "POST storageConfig checks the body by storage type; S3 with only one of the access key and secret gets 400, and with neither it uses the machine's IAM role."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/configuration_manager/validators/validators.test.ts",
+    "node:tests/modules/configuration_manager/controller/cm_controller.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "knowledge-base.storage-config.switch"
+  says = "After the storage type is changed, new uploads go to the new store without a restart."
+  priority = "P1"
+  tests = []
+  manual = "Needs a real S3 or Azure account; the repo has no simulator for them."
+
+  [[feature.behavior]]
+  id = "knowledge-base.storage-config.not-set"
+  says = "GET storageConfig from the service token answers 400 while no storage type has been saved."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "knowledge-base.public-urls"
+title = "Public URLs"
+flow = "knowledge-base"
+what = "An admin sets the public URL of the frontend and of the connector service, which are used in links, emails and OAuth redirects. The desktop app reads the frontend URL before sign-in."
+routes = [
+  "POST /api/v1/configurationManager/frontendPublicUrl",
+  "GET /api/v1/configurationManager/frontendPublicUrl",
+  "GET /api/v1/configurationManager/public/desktopFrontendUrl",
+  "POST /api/v1/configurationManager/connectorPublicUrl",
+  "GET /api/v1/configurationManager/connectorPublicUrl",
+]
+code = [
+  "backend/nodejs/apps/src/modules/configuration_manager/routes/cm_routes.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts",
+  "backend/nodejs/apps/src/modules/configuration_manager/validator/validators.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "knowledge-base.public-urls.admin-write"
+  says = "POST frontendPublicUrl and POST connectorPublicUrl need an admin and the config:write scope; a member gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/configuration_manager/routes/cm_routes.guards.test.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.public-urls.validation"
+  says = "A value that is not a valid URL gets 400 and nothing is stored."
+  priority = "P1"
+  tests = ["node:tests/modules/configuration_manager/validator/validators.test.ts"]
+
+  [[feature.behavior]]
+  id = "knowledge-base.public-urls.read"
+  says = "GET frontendPublicUrl and GET connectorPublicUrl return the stored value to a signed-in caller with the config:read scope."
+  priority = "P1"
+  tests = []
+
+[ignore]
+routes = []

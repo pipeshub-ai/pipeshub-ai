@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa improve model output",
+  "type": "object",
+  "required": [
+    "tests"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "tests": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "level",
+          "title",
+          "covers",
+          "content"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "stronger",
+              "missing"
+            ]
+          },
+          "for": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "unit",
+              "integration",
+              "e2e"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "covers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 30000
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa plan input (floor + context for the model)",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "edition",
+    "profile",
+    "change",
+    "floor",
+    "stack",
+    "matrix",
+    "unmapped",
+    "missing",
+    "candidates",
+    "budget"
+  ],
+  "properties": {
+    "schema": {
+      "const": "qa-plan-input/v1"
+    },
+    "edition": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string",
+      "enum": [
+        "fast",
+        "standard",
+        "conservative",
+        "full"
+      ]
+    },
+    "floor": {
+      "type": "object",
+      "required": [
+        "tests",
+        "items"
+      ],
+      "properties": {
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "items": {
+          "type": "object"
+        }
+      }
+    },
+    "stack": {
+      "type": "object",
+      "required": [
+        "graph_db",
+        "broker"
+      ]
+    },
+    "matrix": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unmapped": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "missing": {
+      "type": "array"
+    },
+    "candidates": {
+      "type": "array"
+    },
+    "budget": {
+      "type": "object",
+      "required": [
+        "extra_minutes"
+      ]
+    },
+    "flows": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}
