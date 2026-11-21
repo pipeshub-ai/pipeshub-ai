@@ -540,10 +540,10 @@ _KH_INTERNAL_PROPERTIES = frozenset({"khSortName", "khScope"})
 _KH_TREE_TYPES = (Neo4jRelationshipType.NODE_RELATIONS.value, Neo4jRelationshipType.INHERIT_PERMISSIONS.value)
 
 
-# G-55: a record's insert-only fields (createdAtTimestamp, incarnationId) and its trash state are written by ``ON CREATE SET``;
+# a record's insert-only fields (createdAtTimestamp, incarnationId) and its trash state are written by ``ON CREATE SET``;
 # ``SET n += rest`` then merges the document without them, so a re-sync keeps the stored values and a null cannot delete them.
 # A placeholder replaced by a real record takes the earlier positive date (the id is never touched). ``rest`` is the document
-# to merge, ``ins`` only the keys an insert adds to it: each row is sent once and written once, on create or on match (QA-G55-2).
+# to merge, ``ins`` only the keys an insert adds to it: each row is sent once and written once, on create or on match.
 _CYPHER_RECORD_INSERT_ONLY = """
             ON CREATE SET n += rest, n += ins
             ON MATCH SET n += rest
@@ -9688,7 +9688,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             by_type: dict[tuple[str | None, bool], list[Record]] = {}
             for record in records:
-                # rows that replace a stored placeholder go in their own statement, which tests the stored row (G-55)
+                # rows that replace a stored placeholder go in their own statement, which tests the stored row
                 by_type.setdefault((RECORD_TYPE_COLLECTION_MAPPING.get(record.record_type), record._promotes_stub), []).append(record)
             for (_, promoting), group in by_type.items():
                 statement, parameters = self._upsert_record_with_type_cypher(

@@ -4075,7 +4075,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         known_new: Collection[str] = (),
         promotes: Collection[str] = (),
     ) -> None:
-        """Write ``records`` documents with the insert-only fields (G-55); see ``batch_upsert_documents`` for the call order.
+        """Write ``records`` documents with the insert-only fields; see ``batch_upsert_documents`` for the call order.
 
         ``docs`` are in ArangoDB form. ``known_new`` are keys the caller knows are not stored (inserted first). ``promotes``
         are keys of records that replace a placeholder: they go through one conditional AQL ``UPDATE`` that takes the earlier

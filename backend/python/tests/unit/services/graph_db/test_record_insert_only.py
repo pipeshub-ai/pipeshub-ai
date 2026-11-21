@@ -1,4 +1,4 @@
-"""Insert-only ``createdAtTimestamp`` and ``incarnationId`` (G-55): the parts that need no database.
+"""Insert-only ``createdAtTimestamp`` and ``incarnationId``: the parts that need no database.
 
 The stores are checked on real servers in ``tests/integration/graph_db/test_record_insert_only_real_backends.py`` and
 ``tests/integration/graph_db/postgres/test_record_insert_only.py``.
@@ -68,7 +68,7 @@ def test_positive_min_ignores_values_that_are_not_real_dates(stored, incoming, w
 
 
 def test_the_flags_default_to_incarnation_off_and_insert_only_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """D-172: release N writes no id unless the operator turns it on; the date rule is on. Nothing is set in the environment."""
+    """The first release writes no id unless the operator turns it on; the date rule is on. Nothing is set in the environment."""
     monkeypatch.delenv("RECORD_INCARNATION_WRITE", raising=False)
     monkeypatch.delenv("RECORD_CREATED_AT_INSERT_ONLY", raising=False)
     assert record_incarnation_write() is False and record_created_at_insert_only() is True
@@ -220,7 +220,7 @@ async def test_a_demoted_real_record_is_frozen_and_a_second_promotion_keeps_the_
     assert promoted.created_at == 300
 
 
-# ---- the ArangoDB bulk call (S12, S26, R3-1) ----------------------------------------------------------------------
+# ---- the ArangoDB bulk call  ----------------------------------------------------------------------
 
 class _Resp:
     def __init__(self, status: int, body: object) -> None:
@@ -270,7 +270,7 @@ def _row(key: str, *, new: bool) -> dict:
 
 
 async def test_the_patch_drops_nulls_like_the_older_write(client) -> None:
-    """QA-G55-8: ``keepNull=false``, so a None in an update removes the key as ``overwriteMode=update`` did."""
+    """The patch sends ``keepNull=false``, so a None in an update removes the key as ``overwriteMode=update`` did."""
     session = MagicMock()
     session.request.side_effect = [_ok()]
     with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=session):

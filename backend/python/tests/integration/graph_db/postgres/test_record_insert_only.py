@@ -1,4 +1,4 @@
-"""The insert-only record fields (G-55) on the PostgreSQL graph provider (a migrated database: PG_CORE_URL)."""
+"""The insert-only record fields on the PostgreSQL graph provider (a migrated database: PG_CORE_URL)."""
 
 from __future__ import annotations
 

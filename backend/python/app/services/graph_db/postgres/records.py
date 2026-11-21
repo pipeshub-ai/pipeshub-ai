@@ -76,7 +76,7 @@ async def _upsert_docs(tx: Tx, org: str, coll: str, docs: list[dict]) -> None:
 
 
 async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
-    """``_upsert_docs`` for the ``records`` collection, with the insert-only fields (G-55).
+    """``_upsert_docs`` for the ``records`` collection, with the insert-only fields.
 
     A new record is written whole, with an incarnation id minted when ``RECORD_INCARNATION_WRITE`` is on. An existing record is
     merged from the document without ``createdAtTimestamp``, ``incarnationId`` and the trash state, so a re-sync keeps its stored
@@ -89,7 +89,7 @@ async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
     if not by_id:
         return
     # One document per row: the update branch derives what an existing record may take from it in SQL (``x2.doc - dropped keys``), so the
-    # payload is not doubled and the batch is looked up once per conflicting row (QA-G55-2: two lookups and two documents cost 20-25 % at 500).
+    # payload is not doubled and the batch is looked up once per conflicting row (two lookups and two documents per row cost 20-25 % at 500 records per call).
     rows = [{"id": i, "doc": record_insert_doc(by_id[i])} for i in sorted(by_id)]
     dropped = list(RECORD_UPDATE_DROPPED_FIELDS) if record_created_at_insert_only() else []
     await tx.execute("""/* pipeshub:graph.records_upsert_record_docs */ WITH x AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb))

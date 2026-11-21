@@ -114,7 +114,7 @@ def _clean() -> Any:  # noqa: ANN401
 @pytest.mark.parametrize("path", ["metadata_update", "resync_unchanged", "resync_new_revision"])
 async def test_a_connector_resync_of_a_live_record_does_not_stop_its_run(monkeypatch: pytest.MonkeyPatch, path: str) -> None:
     doc = await _written_doc(OriginTypes.CONNECTOR.value, path)
-    # QA-G32B-1 found the connector paths rewriting the stamp; the store and the processor now keep it (G-55).
+    # The store and the processor keep the stored stamp on a re-sync.
     assert doc["createdAtTimestamp"] == STORED_CREATED, "a re-sync keeps the stored stamp"
     guard = await _guard(monkeypatch, OriginTypes.CONNECTOR.value, {**doc, "_key": REC})
     _Clock.t += RECHECK_S + 1                                  # the run's next check, 30 s later, no marker at all
@@ -153,7 +153,7 @@ async def test_a_connector_record_really_deleted_is_still_stopped(monkeypatch: p
     assert current_guard(ORG, REC) is guard
 
 
-# ---- G-55: the incarnation id decides for every origin ------------------------------------------------------------------
+# ---- the incarnation id decides for every origin ------------------------------------------------------------------
 
 async def _guard_with_id(monkeypatch: pytest.MonkeyPatch, started_id: str | None, live: dict[str, Any] | None, *, flag: bool = True,
                          origin: str = OriginTypes.CONNECTOR.value) -> Any:  # noqa: ANN401
@@ -196,7 +196,7 @@ async def test_a_run_that_started_without_an_id_goes_on_when_the_record_gets_one
 
 
 async def test_a_run_that_started_with_an_id_and_finds_none_compares_the_stamp(monkeypatch: pytest.MonkeyPatch) -> None:
-    """R1-4: a re-create by a writer that leaves the key out is a new incarnation: a different stamp stops the run, the same does not."""
+    """A re-create by a writer that leaves the key out is a new incarnation: a different stamp stops the run, the same does not."""
     assert await (await _guard_with_id(monkeypatch, "inc-A", _live(createdAtTimestamp=STORED_CREATED + 5000))).check(None) is True
     assert await (await _guard_with_id(monkeypatch, "inc-A", _live())).check(None) is False
 
@@ -208,6 +208,6 @@ async def test_with_the_flag_off_the_id_is_not_read_and_the_older_rule_holds(mon
 
 
 async def test_the_start_id_comes_from_the_graph_read_not_the_event(monkeypatch: pytest.MonkeyPatch) -> None:
-    """R1-12: the guard takes its start values from the record dict it is given (the graph read); nothing else carries an id."""
+    """The guard takes its start values from the record dict it is given (the graph read); nothing else carries an id."""
     guard = await _guard_with_id(monkeypatch, "inc-A", _live(incarnationId="inc-A"))
     assert guard.incarnation == "inc-A" and guard.created_at_start == STORED_CREATED

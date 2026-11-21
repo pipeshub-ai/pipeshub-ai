@@ -145,7 +145,7 @@ class CoreMixin(PgBase):
         docs = list({d["id"]: d for d in (_node(n, collection) for n in nodes)}.values())     # a repeated id: the last one wins
         await self._validate_upserts(collection, docs, transaction)      # what is checked is what is written
         if collection == CollectionNames.RECORDS.value:
-            # insert-only fields (G-55): the merge below must neither overwrite them nor, through the clears step, remove them
+            # insert-only fields: the merge below must neither overwrite them nor, through the clears step, remove them
             await self._upsert_record_nodes(docs, transaction)
             return True
         # a field set to None is removed (``SET n += {x: null}``), so the nulls are cleared before the merge
@@ -163,7 +163,7 @@ class CoreMixin(PgBase):
         return True
 
     async def _upsert_record_nodes(self, docs: list[dict], transaction: str | None) -> None:
-        """``batch_upsert_nodes`` for ``records`` (G-55): the nulls of the other fields clear as before, but the insert-only
+        """``batch_upsert_nodes`` for ``records``: the nulls of the other fields clear as before, but the insert-only
         fields and the trash state are left alone on an existing record (their nulls clear nothing)."""
         from app.services.graph_db.common.utils import (
             RECORD_UPDATE_DROPPED_FIELDS,

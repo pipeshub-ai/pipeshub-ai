@@ -360,7 +360,7 @@ class Record(BaseModel):
     # What the stored document said about the record's current run when it was read. Never serialised: it only lets the
     # save path decide, from the stored values, whether a write continues the run or starts a new one.
     _stored_run: dict | None = PrivateAttr(default=None)
-    # Write hints from the processor, never stored (G-55). ``_known_new``: the vertex is known not to exist, so the ArangoDB
+    # Write hints from the processor, never stored. ``_known_new``: the vertex is known not to exist, so the ArangoDB
     # store inserts first. ``_promotes_stub``: the stored row is a placeholder this record replaces, so its date is the earlier.
     _known_new: bool = PrivateAttr(default=False)
     _promotes_stub: bool = PrivateAttr(default=False)

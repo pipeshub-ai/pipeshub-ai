@@ -439,7 +439,7 @@ record_schema = {
             "entityExtractorVersion": {"type": ["string", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
-            # Names the life of the vertex: minted at insert, changed only by a restore from the trash (G-55).
+            # Names the life of the vertex: minted at insert, changed only by a restore from the trash.
             "incarnationId": {"type": ["string", "null"]},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
             "isShared": {"type": ["boolean", "null"], "default": False},

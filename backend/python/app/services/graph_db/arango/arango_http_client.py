@@ -996,7 +996,7 @@ class ArangoHTTPClient:
         txn_id: Optional[str] = None,
         drop: Sequence[str] = (),
     ) -> dict[str, Any]:
-        """Upsert documents whose update must not carry some keys (G-55: a record's insert-only fields).
+        """Upsert documents whose update must not carry some keys (a record's insert-only fields).
 
         Each row is ``{"key", "insert", "new"}`` and optionally ``"patch"``: ``insert`` is the whole document, written when the key does
         not exist; the patch is what an existing document may be changed by, ``insert`` without the ``drop`` keys unless the row gives

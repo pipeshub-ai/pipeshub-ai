@@ -31,7 +31,7 @@ STAGE_STATE_PROPERTIES = frozenset({
 
 #: The record schema's property names as the previous release defined them.
 RECORD_PROPERTIES = frozenset({
-    "incarnationId",      # G-55: names the life of the vertex; identity, not pipeline state. Minted at insert, changed only by a restore
+    "incarnationId",      # names the life of the vertex; identity, not pipeline state. Minted at insert, changed only by a restore
     "accessRule", "connectorId", "connectorName", "contentRev", "createdAtTimestamp", "definition",
     "deleteBatchId", "deleteSource", "deletedAtTimestamp", "deletedByUserId", "duplicateReconcileAttempts",
     "duplicateReconcileDueAt", "duplicateReconcilePending", "embedDeliveryId", "embedDigest", "embedDone",

@@ -2342,7 +2342,7 @@ class DataSourceEntitiesProcessor:
 
     @staticmethod
     def _carry_insert_only_fields(record: Record, existing_record: Record) -> None:
-        """A record written over a stored one keeps the stored ``createdAtTimestamp`` and ``incarnationId`` (G-55).
+        """A record written over a stored one keeps the stored ``createdAtTimestamp`` and ``incarnationId``.
 
         The graph store enforces the same rule on the stored row; this makes the record this code hands on (events, logs, the
         return value) agree with it. A stored placeholder that the incoming record replaces is the first full write: the date

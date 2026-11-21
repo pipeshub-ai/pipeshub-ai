@@ -117,7 +117,7 @@ class DeliveryGuard:
     wm_record: str | None = None
     wm_org: str | None = None
     created: Any = None
-    #: The record's ``incarnationId`` and its ``createdAtTimestamp`` as the graph read at run start gave them (G-55), whatever the
+    #: The record's ``incarnationId`` and its ``createdAtTimestamp`` as the graph read at run start gave them, whatever the
     #: origin. ``incarnation`` is None for a record stored before the field existed, or when it is not written yet.
     incarnation: Any = None
     created_at_start: Any = None
@@ -212,13 +212,13 @@ class DeliveryGuard:
             return await self._read(seen, changed=changed)
 
     def _newer_incarnation(self, result: ProbeResult) -> bool:
-        """Whether the live record is a different incarnation than the one this run started with (G-55).
+        """Whether the live record is a different incarnation than the one this run started with.
 
         Both ids held: different means a delete and a re-create, whatever the origin and even when the source reuses its ids.
         This run started with an id and the live record has none: a writer that does not know the field re-created it
         (a process not yet on the release that writes it), so the dates decide: the run's start date against the live one.
         No id at the start (a record stored before the field): the older rule, the stamp of an uploaded record only (a
-        connector that builds ``created_at`` from the clock rewrote it on every re-sync before G-55; the live record is
+        connector that builds ``created_at`` from the clock rewrote it on every re-sync before the stamp was kept; the live record is
         never called new for lacking an id the run did not see).
         """
         if self.incarnation is not None:

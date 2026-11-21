@@ -445,7 +445,7 @@ TRASH_STATE_FIELDS = (
     "trashedExternalRecordId",
 )
 
-# Record fields a write to an existing record never changes (G-55). ``createdAtTimestamp`` is when PipesHub first stored the
+# Record fields a write to an existing record never changes. ``createdAtTimestamp`` is when PipesHub first stored the
 # record; ``incarnationId`` names the life of the record's vertex and changes only in ``restore_records``. Both are written when
 # the vertex is inserted. Insert-only applies to the ``records`` collection, not to its type documents or any other collection.
 INSERT_ONLY_RECORD_FIELDS = ("createdAtTimestamp", "incarnationId")
@@ -466,7 +466,7 @@ def record_created_at_insert_only() -> bool:
 
 
 def record_incarnation_write() -> bool:
-    """``RECORD_INCARNATION_WRITE`` (default off in the release that adds ``incarnationId``, D-172): the store mints the id at
+    """``RECORD_INCARNATION_WRITE`` (default off in the release that adds ``incarnationId``): the store mints the id at
     insert, ``restore_records`` resets it, and the orphan guard compares it. A process on an older closed ArangoDB record schema
     refuses a record carrying a field it does not know, so the field is accepted by the schema first and written one release later."""
     return _env_on("RECORD_INCARNATION_WRITE", "false")
@@ -598,7 +598,7 @@ def restore_items(
             fields["externalRecordId"] = external_id
             reclaims.append({"id": item["id"], "ext": external_id})
         if record_incarnation_write():
-            # every restore from the trash starts a new incarnation (G-55): the vectors went at the trash, so a run that
+            # every restore from the trash starts a new incarnation: the vectors went at the trash, so a run that
             # began before it serves a deleted incarnation. Written in the restore's own statement, never through an upsert.
             fields["incarnationId"] = new_incarnation_id()
         items.append({"id": item["id"], "set": fields})

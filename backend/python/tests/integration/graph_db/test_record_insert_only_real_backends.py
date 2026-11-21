@@ -1,4 +1,4 @@
-"""The insert-only record fields (G-55) on real ArangoDB and Neo4j.
+"""The insert-only record fields on real ArangoDB and Neo4j.
 
   docker run -d --name g55-arango -p 18529:8529 -e ARANGO_ROOT_PASSWORD=ensure-it-pass arangodb:3.12.4
   docker run -d --name g55-neo4j -p 17687:7687 -e NEO4J_AUTH=neo4j/ensure-it-pass neo4j:5.26.0

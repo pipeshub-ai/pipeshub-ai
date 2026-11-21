@@ -1,4 +1,4 @@
-"""One set of cases for the insert-only record fields (G-55), run against each graph store.
+"""One set of cases for the insert-only record fields, run against each graph store.
 
 ``createdAtTimestamp`` is written when a record's vertex is inserted and never by an update; ``incarnationId`` is minted by the
 store at insert and changed only by a restore from the trash. A placeholder replaced by a real record takes the earlier positive
@@ -114,7 +114,7 @@ async def stub_then_real(store: StoreAdapter, flag: bool, *, hinted: bool) -> No
 
 
 async def a_promotion_ignores_an_unreal_date(store: StoreAdapter, flag: bool) -> None:
-    """R3-3: a date that is not a positive number never replaces the stored one."""
+    """A date that is not a positive number never replaces the stored one."""
     key = new_key()
     await store.upsert([make_record(key, created_at=500, placeholder=True, known_new=True)])
     await store.upsert([make_record(key, created_at=0, promotes=True)])
@@ -182,7 +182,7 @@ async def concurrent_first_inserts_agree(store: StoreAdapter, flag: bool) -> Non
 
 
 async def a_stale_promotion_hint_is_ignored(store: StoreAdapter, flag: bool) -> None:
-    """QA-G55-4 (M09): the hint was read before another writer promoted the stub; the stored row is real now, so its date stays."""
+    """A promotion hint was read before another writer promoted the stub; the stored row is real now, so its date stays."""
     key = new_key()
     await store.upsert([make_record(key, created_at=500, known_new=True)])
     await store.upsert([make_record(key, created_at=200, promotes=True, name="stale-hint")])
@@ -192,7 +192,7 @@ async def a_stale_promotion_hint_is_ignored(store: StoreAdapter, flag: bool) -> 
 
 
 async def the_move_path_keeps_both_fields_and_releases(store: StoreAdapter, flag: bool) -> None:
-    """QA-G55-4 (M20): the path that releases a trashed holder's external id is insert-only too, keeps the holder's trash batch,
+    """The path that releases a trashed holder's external id is insert-only too, keeps the holder's trash batch,
     and a stub promoted through it takes the earlier date and keeps its id."""
     key, holder = new_key(), new_key()
     ext = f"ext-shared-{key}"
@@ -222,7 +222,7 @@ async def the_move_path_keeps_both_fields_and_releases(store: StoreAdapter, flag
 
 
 async def with_the_kill_switch_off_no_store_mints(store: StoreAdapter, flag: bool) -> None:
-    """QA-G55-5: ``RECORD_CREATED_AT_INSERT_ONLY=false`` restores the older write on every store, so none mints an id (a minted id would be
+    """``RECORD_CREATED_AT_INSERT_ONLY=false`` restores the older write on every store, so none mints an id (a minted id would be
     overwritten by the next update). Run with the switch off and the incarnation flag on."""
     key = new_key()
     await store.upsert([make_record(key, created_at=100, known_new=True)])
@@ -232,7 +232,7 @@ async def with_the_kill_switch_off_no_store_mints(store: StoreAdapter, flag: boo
 
 
 async def a_null_removes_the_stored_key(store: StoreAdapter, flag: bool) -> None:
-    """QA-G55-8: an update carrying None removes the key on every store, as the older write did (ArangoDB stored the null)."""
+    """An update carrying None removes the key on every store, as the older write did (ArangoDB stored the null)."""
     key = new_key()
     first = make_record(key, created_at=100, known_new=True)
     first.weburl = "https://example.com/a"
@@ -245,7 +245,7 @@ async def a_null_removes_the_stored_key(store: StoreAdapter, flag: bool) -> None
 
 
 async def a_marked_stub_is_no_promotion(store: StoreAdapter, flag: bool) -> None:
-    """QA-G55-9: a row marked as a promotion that is itself a placeholder takes no date from the stored stub on any store."""
+    """A row marked as a promotion that is itself a placeholder takes no date from the stored stub on any store."""
     key = new_key()
     await store.upsert([make_record(key, created_at=500, placeholder=True, known_new=True)])
     await store.upsert([make_record(key, created_at=300, placeholder=True, promotes=True)])

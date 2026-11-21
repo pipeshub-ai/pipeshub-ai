@@ -1,5 +1,5 @@
 # ruff: noqa: ANN201, ANN202, RUF100
-"""Speed gate of the insert-only record write (G-55), on a real store. Not collected by pytest.
+"""Speed gate of the insert-only record write, on a real store. Not collected by pytest.
 
 The shipped write paths against a baseline that already carries ``incarnationId`` (the gate: ratio of medians >= 0.90 at every batch
 size), and that baseline against the write without the field (stated, not gated). The records are realistic (about 35 fields, ~1.7 KB, all valid on the strict ArangoDB schema).

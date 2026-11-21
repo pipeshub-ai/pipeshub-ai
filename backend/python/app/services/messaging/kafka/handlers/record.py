@@ -1996,7 +1996,7 @@ class RecordEventHandler(BaseEventService):
             # The stamp tells a delete plus a re-upload apart for an uploaded record only: a connector that sets
             # ``created_at`` to now rewrites it on every re-sync of a live record (D-186).
             created=record.get("createdAtTimestamp") if record.get("origin") == OriginTypes.UPLOAD.value else None,
-            # G-55: the record's own incarnation id, for every origin (read from the graph, never from an event payload).
+            # the record's own incarnation id, for every origin (read from the graph, never from an event payload).
             incarnation=record.get("incarnationId") if record_incarnation_write() else None,
             created_at_start=record.get("createdAtTimestamp"),
             probe=probe,
