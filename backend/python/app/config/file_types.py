@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Final, Literal
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-REGISTRY_VERSION: Final = 3
+REGISTRY_VERSION: Final = 4
 
 Tier = Literal["heavy", "light"]
 MimeRole = Literal["gate", "parse", "tier", "kind", "ext_hint", "code", "reconcile", "ooxml"]
@@ -521,6 +521,11 @@ FILE_TYPES: tuple[FileType, ...] = (
     _new(key="potx", format="potx", password_check_by_name=False, extensions=("potx",), mimes=(f"{_PPTX_BASE}.template",),
          tier="heavy", mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx",
          route=Route.PPTX, prep=Prep.OOXML_SLIDES, ooxml_container=True, blocks_like="pptx"),
+    # Read as the pptx it is: python-pptx opens a macro-enabled deck, so nothing rewrites it first.
+    _new(key="pptm", format="pptx", extensions=("pptm",),
+         mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), tier="heavy",
+         mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx", route=Route.PPTX,
+         ooxml_container=True, blocks_like="pptx", since=3, route_since=4),
     # Exclude-only, in filter order.
     _exclude("zip", "application/zip", file_mime_map=True),
     _exclude("7z", "application/x-7z-compressed"),
@@ -565,12 +570,6 @@ FILE_TYPES: tuple[FileType, ...] = (
                               "tf", "tfvars")),
     _repo_text("css", "text/css"),
     _repo_text("sql", "application/sql"),
-    # An Office container only the password check knows.
-    # Read by its mime only, as the pptx it is: python-pptx opens a macro-enabled deck as it is.
-    FileType(key="pptm", format="pptx", extensions=("pptm",),
-             mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), mime_indexable=True,
-             mime_tier="heavy", mime_kind="docling_docx", route=Route.PPTX, ooxml_container=True,
-             since=3, route_since=3),
     # PipesHub's own types: connectors write these mimes, no file carries them.
     _internal("gmail", "text/gmail_content", "application/vnd.google-apps.gmail", format="html",
               mime_indexable=True, mime_tier="light", route=Route.GMAIL),

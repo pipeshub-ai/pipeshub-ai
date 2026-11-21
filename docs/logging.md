@@ -1112,6 +1112,35 @@ at its class's level; when the orchestrator threw, it already logged the failure
 requested` (an admin asking why a person can or cannot read a record) is one INFO line with `record_id`, `status`, `code`,
 `outcome`, and `target_user_id` and `admitted` in the metadata.
 
+### Legacy Google Workspace routes (Node)
+
+`POST /api/v1/connectors/getTokenFromCode` and `POST /api/v1/connectors/internal/refreshIndividualConnectorToken` write no line of
+their own for a failure: each call to Google's token endpoint has its `upstream.call.end` (with Google's `status`), and the
+request has its one `http.request.error`. A failed call to the configuration manager is answered 500 as before. A 5xx's status is the
+error's cause, so it is the service's class (`upstream_5xx`, `unavailable`, `timeout`; WARNING); any other answer, a 408 included,
+stays `internal` (ERROR). Its body is never logged (it can hold stored credentials). A Google
+client id or secret that is not configured is ours: 500 `internal` (ERROR). A refresh that succeeds writes `Access token refreshed
+successfully` (INFO); a config reload writes `Connector configuration updated successfully`. The `appEnabled` event the code
+exchange publishes is `broker.event.published` (DEBUG) or `broker.event.publish_failed` (ERROR), with `event_type` and `topic`.
+
+### Health probe (Node)
+
+`GET /api/v1/health` (the Helm probe) checks the graph and vector databases through the connector service and writes one
+`health.check.changed` line when a check's state changes: WARNING when it turns `unhealthy` or `unknown` (the connector service
+refused the connection), INFO when it is `healthy` again, DEBUG while a probe finds the state the last one found. The first probe
+of a healthy check is DEBUG; a pod that starts before the connector service writes one WARNING `unknown` and then one INFO. The
+line has `status` (the check's HTTP status), `error_class` and `reason` (`timeout`, `request_failed`, `connector_refused`), with
+`check` (`graph_db`, `vector_db`), `state` and `previous` in the metadata. The state is kept per process. A store type the Python
+services have not written yet is DEBUG (the answer says `pending`). An unexpected failure of the probe goes to the error
+middleware: one `http.request.error` and a 500.
+
+### Stored configuration (Node)
+
+At start-up the Node services read their broker, cache and database settings from the key-value store. When a stored value
+cannot be read or decrypted, the environment's defaults are used, as before, and one WARNING `Stored config unreadable; using
+the environment defaults` names the `path`. An unreadable deployment record is rewritten with the Node-owned keys only, with one
+WARNING. Neither line logs the error's message for a parse failure: it would quote the decrypted value.
+
 ## Redaction
 
 Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
