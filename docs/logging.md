@@ -792,10 +792,13 @@ which every Postgres graph provider runs through) write one record per call that
   (log with `exc_info=True` instead), `%s` of the error, and asyncio's "Task exception was never retrieved", whose message holds
   the task's `repr` with the exception's text.
 - **A PostgreSQL connection the pool could not open writes no record**: no statement exists yet. Its error is stamped text-hidden
-  all the same: `ConnectionLost("cannot connect")` for an OS error, and the asyncpg server error itself otherwise (28P01 names the
-  database user, 57P03, 53300). Diagnose from `cause_type`: `ConnectionRefusedError` (the host answered, the port is closed),
-  `gaierror` (DNS), `OSError` (no route), `InvalidPasswordError`, `CannotConnectNowError`, `TooManyConnectionsError`. The
-  configured DSN names the host. What is lost is a plain `OSError`'s errno and which host of a multi-host DSN failed.
+  all the same. An outage is `ConnectionLost("cannot connect")`, class `unavailable`: an OS error, a connection exception
+  (08xxx, PgBouncer's own refusals included, even a permanent one such as its auth misconfiguration), a shutdown or start-up
+  (57P01-57P03) or a full server (53300). `KernelDB.run` retries it, except 53300 (`TooManyConnections`), which neither `run` nor the
+  vector search retries (every attempt would fork a backend on a full server). Any other server refusal is the asyncpg error itself (28P01 names the database user). Diagnose from `cause_type`:
+  `ConnectionRefusedError` (the host answered, the port is closed), `gaierror` (DNS), `OSError` (no route),
+  `InvalidPasswordError`, `CannotConnectNowError`, `TooManyConnectionsError`. The configured DSN names the host. What is lost
+  is a plain `OSError`'s errno and which host of a multi-host DSN failed.
 - **Classes.** Only our bugs and our configuration are ERROR classes. Conflicts and lost races (ArangoDB 1200, 1210, 29, 1654,
   1655; Neo4j constraint, deadlock, entity lost to a delete; Postgres 23xxx, 40001, 40P01) are `conflict`; ArangoDB 18 and 1500,
   Neo4j transaction timeouts and Postgres 57014/55P03 are `timeout`; Postgres 22xxx, 54xxx, 23502 and 23514, and Neo4j data
