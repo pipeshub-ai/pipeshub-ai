@@ -212,9 +212,11 @@ services:
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
-      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
-      # RECORD_RERANK_MODEL names the configured LLM it uses (default: the default chat model).
+      # On unless set to false. RECORD_RERANK_STRATEGY is cross_encoder (default, local ONNX model
+      # RECORD_RERANK_CROSS_ENCODER_MODEL) or llm_listwise (RECORD_RERANK_MODEL, else the default chat model).
       - RECORD_RERANK=${RECORD_RERANK:-}
+      - RECORD_RERANK_STRATEGY=${RECORD_RERANK_STRATEGY:-}
+      - RECORD_RERANK_CROSS_ENCODER_MODEL=${RECORD_RERANK_CROSS_ENCODER_MODEL:-}
       - RECORD_RERANK_MODEL=${RECORD_RERANK_MODEL:-}
       - RECORD_RERANK_DENSE_POOL=${RECORD_RERANK_DENSE_POOL:-}
       - RECORD_RERANK_TOOL_SEARCHES=${RECORD_RERANK_TOOL_SEARCHES:-}

@@ -375,10 +375,12 @@ config:
   # "true" through extraEnv. With it on, no one connector type holds more than
   # 4 of the first 10 records of a search API result; the records it pushes
   # down come back after the first page.
-  # RECORD_RERANK is not part of this mode: it is off unless set to "true"
-  # through extraEnv. With it on, one call to a configured LLM
-  # (RECORD_RERANK_MODEL, else the default chat model) reorders the records of
-  # enterprise-search chat's upfront search before they are cut down.
+  # RECORD_RERANK is not part of this mode: it is on unless set to "false"
+  # through extraEnv. It reorders the records of enterprise-search chat's
+  # upfront search before they are cut down, by default with a local ONNX
+  # cross-encoder (RECORD_RERANK_CROSS_ENCODER_MODEL); RECORD_RERANK_STRATEGY
+  # "llm_listwise" uses one call to a configured LLM instead (RECORD_RERANK_MODEL,
+  # else the default chat model).
   # RECORD_RERANK_DENSE_POOL="true" also offers it the records a dense-only
   # search ranks that the search missed.
   # RECORD_RERANK_TOOL_SEARCHES="true" reranks the agent's own searches too,

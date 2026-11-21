@@ -75,6 +75,7 @@ def _isolated(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         monkeypatch.delenv(name, raising=False)
     for name in [name for name in os.environ if name.startswith("RECORD_RERANK")]:
         monkeypatch.delenv(name)
+    monkeypatch.setenv("RECORD_RERANK", "false")
     monkeypatch.setenv(FUSION_RECORD_CUT_ENV_VAR, "true")
     register_record_reranker(_STRATEGY)(_Scripted)
     _Scripted.ranking, _Scripted.error, _Scripted.requests = [], None, []
