@@ -76,6 +76,13 @@ export function sessionRow(d: NeutralDoc): Row | null {
     is_archived: d.isArchived ?? false,
     archived_by: idText(d.archivedBy),
     is_pinned: d.isPinned === true,
+    is_temporary: d.isTemporary === true,
+    expires_at:
+      d.expiresAt instanceof Date
+        ? d.expiresAt
+        : typeof d.expiresAt === 'string' || typeof d.expiresAt === 'number'
+          ? new Date(d.expiresAt)
+          : null,
     last_activity_at: msToIso(d.lastActivityAt),
     status: str(d.status),
     fail_reason: str(d.failReason),

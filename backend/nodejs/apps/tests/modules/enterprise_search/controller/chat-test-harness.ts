@@ -316,6 +316,18 @@ export class InMemoryChatStore {
     const withSession = <T>(query: FakeQuery<T>, options: SessionOption): FakeQuery<T> =>
       options?.session != null ? query.session(options.session) : query
 
+    // Parallel mocha workers can leave a previous file's stub on these globals;
+    // restore before wrapping again so install stays idempotent.
+    const restub = <T extends object>(
+      obj: T,
+      method: keyof T & string,
+      fake: (...args: never[]) => unknown,
+    ): void => {
+      const current = obj[method] as { restore?: () => void }
+      if (typeof current?.restore === 'function') current.restore()
+      sinon.stub(obj, method).callsFake(fake as never)
+    }
+
     // Real Mongoose `save()` runs, so its session rules apply: `save({ session })` ties the
     // session to the document and a later bare `save()` reuses it. Only the collection
     // write, the driver call, is faked, and it refuses an ended session as the driver does.
@@ -324,8 +336,8 @@ export class InMemoryChatStore {
       return Promise.resolve({ acknowledged: true, matchedCount: 1, modifiedCount: 1 })
     }
     for (const collection of [ChatSession.collection, Citation.collection]) {
-      sinon.stub(collection, 'insertOne').callsFake(((_doc: unknown, options?: SessionOption) => acknowledge(options)) as never)
-      sinon.stub(collection, 'updateOne').callsFake(((_filter: unknown, _update: unknown, options?: SessionOption) =>
+      restub(collection, 'insertOne', ((_doc: unknown, options?: SessionOption) => acknowledge(options)) as never)
+      restub(collection, 'updateOne', ((_filter: unknown, _update: unknown, options?: SessionOption) =>
         acknowledge(options)) as never)
     }
     const realSessionSave = ChatSession.prototype.save
@@ -419,9 +431,31 @@ export class InMemoryChatStore {
       store.citations.push(this)
       return realCitationSave.call(this, options as never)
     } as never)
-    sinon.stub(Citation, 'updateMany').callsFake((() => {
+    restub(Citation, 'updateMany', (() => {
       store.writes.push('citation.updateMany')
       return new FakeQuery(() => ({ modifiedCount: 0 }))
+    }) as never)
+    restub(Citation, 'deleteMany', ((filter: Filter) => {
+      store.writes.push('citation.deleteMany')
+      for (let i = store.citations.length - 1; i >= 0; i -= 1) {
+        if (matchesFilter(plain(store.citations[i] as never), filter)) store.citations.splice(i, 1)
+      }
+      return Promise.resolve({ deletedCount: 1 })
+    }) as never)
+    restub(ChatSession, 'deleteOne', ((filter: Filter) => {
+      const index = store.sessions.findIndex((s) => matchesFilter(plain(s), filter))
+      if (index >= 0) {
+        store.sessions.splice(index, 1)
+        store.writes.push('chatSession.deleteOne')
+      }
+      return Promise.resolve({ deletedCount: index >= 0 ? 1 : 0 })
+    }) as never)
+    restub(ChatSessionMessage, 'deleteMany', ((filter: Filter) => {
+      store.writes.push('message.deleteMany')
+      for (let i = store.messages.length - 1; i >= 0; i -= 1) {
+        if (matchesFilter(plain(store.messages[i] as never), filter)) store.messages.splice(i, 1)
+      }
+      return Promise.resolve({ deletedCount: 1 })
     }) as never)
     sinon.stub(Users, 'find').callsFake((() => new FakeQuery(() => [])) as never)
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
