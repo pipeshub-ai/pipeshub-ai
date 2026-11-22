@@ -410,6 +410,7 @@ class ExtensionTypes(Enum):
     DOCM = "docm"
     DOTX = "dotx"
     POTX = "potx"
+    PPTM = "pptm"
 
 # Common file types PipesHub cannot index. Sync filters offer them so a user can
 # exclude them (Not in); they are kept out of ExtensionTypes because that enum

@@ -1577,16 +1577,17 @@ def test_the_address_and_site_lookups_read_their_keys_where_the_plain_statements
 
 # ---- indexes built and dropped outside the upgrade's transaction (db.migrate's online step) ------------------------------------------------
 ONLINE = ("nodes_record_ticket_url", "nodes_record_pending_vrid", "nodes_record_weburl", "nodes_record_ticket_site", "nodes_block_record_seek",
-          "nodes_block_name_seek", "nodes_codefile_path_seek")
+          "nodes_block_name_seek", "nodes_codefile_path_seek", "nodes_record_refresh_intent")
 RETIRED = ("nodes_block_record", "nodes_block_name")
 _DDL = re.compile(r"^(CREATE (UNIQUE )?INDEX|DROP INDEX|ALTER INDEX|REINDEX)\b", re.I)
 
 
 def _populate(c, n: int = 3000) -> str:
-    """Rows every online index of graph_0014..0018 holds; returns the leaf they are in."""
+    """Rows every online index of graph_0014..0020 holds; returns the leaf they are in."""
     as_role(c, "pipeshub_connectors", A)
     c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'recordType', 'TICKET', "
-              "'webUrl', 'https://s.atlassian.net/browse/K-' || i, 'pendingVirtualRecordId', 'v' || i) FROM generate_series(1, %s) i", (A, A, n))
+              "'webUrl', 'https://s.atlassian.net/browse/K-' || i, 'pendingVirtualRecordId', 'v' || i, 'refreshIntentId', 'ri' || i) "
+              "FROM generate_series(1, %s) i", (A, A, n))
     c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || i, jsonb_build_object('orgId', %s::text, 'recordId', 'r' || i, 'connectorId', 'c1', "
               "'nameFolded', 'n' || i) FROM generate_series(1, %s) i", (A, A, n))
     c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || i, jsonb_build_object('orgId', %s::text, 'filePath', 'src/p' || i || '.py') "
@@ -1613,8 +1614,8 @@ def _left_of(c, indexes) -> list[str]:
 
 
 def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_drops_none(db, monkeypatch, capsys):
-    """From graph_0013 on a populated graph: every index of graph_0014..0018 is built before the upgrade's transaction, concurrently on the leaf
-    that holds rows; the indexes graph_0019 retires go after the commit; the transaction itself runs no index statement at all (one there would
+    """From graph_0013 on a populated graph: every index of graph_0014..0020 is built before the upgrade's transaction, concurrently on the leaf
+    that holds rows; the indexes graph_0020 retires go after the commit; the transaction itself runs no index statement at all (one there would
     keep the writers, or for a drop every reader, of graph.nodes waiting until the commit)."""
     from sqlalchemy import Engine, event
 
@@ -1652,7 +1653,7 @@ def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_dro
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in ONLINE)
         assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (19, 0)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (20, 0)
 
 
 def test_an_online_build_a_stopped_run_left_invalid_is_rebuilt(db):
@@ -1712,7 +1713,7 @@ def test_the_indexes_built_for_an_upgrade_that_did_not_commit_are_dropped(db, tm
 
 
 def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_done_by_the_next_run(db):
-    """graph_0019 retires two graph_0001 indexes: a new install ends without them, a downgrade brings them back as graph_0001 made them, and an
+    """graph_0020 retires two graph_0001 indexes: a new install ends without them, a downgrade brings them back as graph_0001 made them, and an
     upgrade whose drop waits on a reader still commits (exit 0, a warning); the next run drops them. No min_code_epoch: nothing reads them, so a
     rollback to an earlier build keeps working."""
     from .conftest import run_migrate
@@ -1721,7 +1722,7 @@ def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_do
     assert run_migrate(url).returncode == 0
     with connect(cluster, name) as c:
         assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
-    r = run_migrate(url, "downgrade", "graph_0018", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    r = run_migrate(url, "downgrade", "graph_0019", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout + r.stderr
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in RETIRED)
@@ -1736,7 +1737,7 @@ def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_do
         assert f"WARNING index graph.{index} was not dropped" in r.stdout, r.stdout
     with connect(cluster, name) as c:
         assert all(_exists(c, i) for i in RETIRED)
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (19, 0)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (20, 0)
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout + r.stderr
     for index in RETIRED:

@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 from dataclasses import dataclass, field
@@ -14,8 +15,16 @@ from aiohttp import ClientSession
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.web.address_guard import guarded_session_kwargs
-from app.utils.oauth_errors import is_permanent_grant_rejection, oauth_error_code
+from app.utils.encryption.encryption_service import DecryptionError
+from app.utils.logging_fields import log_event, log_once
+from app.utils.oauth_errors import (
+    MAX_TOKEN_LIFETIME_S,
+    is_permanent_grant_rejection,
+    oauth_error_code,
+)
 from app.utils.url_fetcher import private_addresses_blocked
+
+logger = logging.getLogger(__name__)
 
 
 class GrantType(Enum):
@@ -54,6 +63,86 @@ class TokenResponseError(ValueError):
 def _require_access_token(data: object) -> None:
     if not isinstance(data, dict) or "access_token" not in data:
         raise TokenResponseError("OAuth token response missing required 'access_token' field. ")
+
+
+class OAuthStateError(ValueError):
+    """The callback is not for the sign-in in progress: its state is stale, replayed or forged, or its code was used.
+    Nothing was exchanged or saved. The client sent an expired or spent state or code, so it is the request's fault."""
+
+    log_error_class = "bad_request"
+
+
+class OAuthStoreUnavailableError(Exception):
+    """Our own config or graph store failed while saving a sign-in or a connector's settings, so they were not recorded
+    (a provider's sign-in itself did not fail)."""
+
+    log_error_class = "unavailable"
+
+
+# RFC 6749 4.1.2: a code lives at most 10 minutes. The claim only has to outlast one exchange; used_codes guards replays.
+_CODE_CLAIM_TTL_SECONDS = 600
+
+
+def _code_claim_path(credentials_path: str, code: str) -> str:
+    # Hashed: the code is a credential. Outside credentials_path, whose /services/toolsets/ prefix is scanned as records.
+    return "/services/oauth-code-claims/" + hashlib.sha256(f"{credentials_path}\n{code}".encode()).hexdigest()
+
+
+async def read_oauth_config(config_service: ConfigurationService, path: str) -> dict[str, Any]:
+    """The config at ``path`` ({} when unset). A store that did not answer is an OAuthStoreUnavailableError; a value
+    that is there but does not decode in the encrypted layer (a changed SECRET_KEY) reads as unset, as before, since
+    retrying cannot fix it."""
+    try:
+        config = await config_service.get_config(path, raise_on_error=True)
+    except (ValueError, DecryptionError):
+        return {}
+    except Exception as e:
+        raise OAuthStoreUnavailableError("The OAuth config could not be read") from e
+    return config if isinstance(config, dict) else {}
+
+
+class MalformedTokenError(ValueError):
+    """A token field is not what OAuth defines (a provider's answer or a saved record). Names the field, never its value."""
+
+    refresh_reason = "malformed_token"
+
+    def __init__(self, field_name: str) -> None:
+        super().__init__(f"OAuth token field '{field_name}' is malformed")
+        self.field_name = field_name
+
+
+def _is_empty(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _timestamp(value: object) -> datetime:
+    """created_at in OAuthToken's convention, a naive local datetime: ISO 8601 text, a Unix time (GitLab) or a datetime."""
+    try:
+        if isinstance(value, str):
+            value = datetime.fromisoformat(value)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = datetime.fromtimestamp(value)
+        # is_expired compares with the naive datetime.now(): an aware value would raise TypeError there.
+        # Converting goes through UTC, so an offset at either end of datetime's range overflows.
+        if isinstance(value, datetime) and value.tzinfo:
+            value = value.astimezone().replace(tzinfo=None)
+    except (ValueError, OverflowError, OSError):
+        value = None  # their text quotes the value
+    if not isinstance(value, datetime):
+        raise MalformedTokenError("created_at")
+    return value
+
+
+def _seconds(field_name: str, value: object) -> int | float:
+    if isinstance(value, str):
+        try:
+            value = int(value)  # some providers send "3599"
+        except ValueError:
+            pass
+    # NaN compares false and inf is past the bound, so both fail here too.
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) <= MAX_TOKEN_LIFETIME_S:
+        return value
+    raise MalformedTokenError(field_name)
 
 
 class OAuthTokenRequestError(Exception):
@@ -213,16 +302,31 @@ class OAuthToken:
         """Create token from dictionary, filtering out unknown fields"""
         # Make a shallow copy to avoid mutating the caller's dict
         data = dict(data)
-        if 'created_at' in data:
-            if isinstance(data['created_at'], str):
-                data['created_at'] = datetime.fromisoformat(data['created_at'])
-            elif isinstance(data['created_at'], int):
-                # GitLab and others return Unix timestamp
-                data['created_at'] = datetime.fromtimestamp(data['created_at'])
+        for name in ("created_at", "expires_in", "refresh_token_expires_in"):
+            if name in data and _is_empty(data[name]):
+                del data[name]  # empty is absent: created_at defaults to now, the others to None
+        if "created_at" in data:
+            data["created_at"] = _timestamp(data["created_at"])
+        if "expires_in" in data:
+            data["expires_in"] = _seconds("expires_in", data["expires_in"])
+        if "refresh_token_expires_in" in data:
+            try:
+                data["refresh_token_expires_in"] = _seconds("refresh_token_expires_in", data["refresh_token_expires_in"])
+            except MalformedTokenError:
+                # Nothing reads it, and raising would lock out a saved record that works today.
+                data["refresh_token_expires_in"] = None
+                if log_once("oauth_service:field_ignored:refresh_token_expires_in", 3600):
+                    log_event(logger, "oauth_token.field_ignored", level=logging.WARNING, field="refresh_token_expires_in")
         # Filter to only known fields to handle varying OAuth provider responses
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered_data = {k: v for k, v in data.items() if k in known_fields}
-        return cls(**filtered_data)
+        token = cls(**filtered_data)
+        if token.expires_in:
+            try:
+                token.created_at + timedelta(seconds=token.expires_in)  # is_expired's sum: a time at datetime's edge overflows
+            except OverflowError:
+                raise MalformedTokenError("created_at") from None
+        return token
 
 
 class OAuthProvider:
@@ -371,12 +475,6 @@ class OAuthProvider:
                         status=response.status,
                         error_code=error_code,
                     )
-                # Convert string numbers to integers for expires_in if present
-                if 'expires_in' in token_data and token_data['expires_in']:
-                    try:
-                        token_data['expires_in'] = int(token_data['expires_in'])
-                    except (ValueError, TypeError):
-                        pass
                 return token_data
             else:
                 return await response.json()
@@ -437,9 +535,11 @@ class OAuthProvider:
             token.refresh_token = refresh_token
 
         # Update the stored credentials with the new token
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        try:
+            config = await read_oauth_config(self.configuration_service, self.credentials_path)
+        except OAuthStoreUnavailableError:
+            # Saving without the rest of the record would wipe it; every caller saves the token itself.
+            return token
 
         # Best effort: callers verify the write and retry it. A copy, because
         # get_config hands back the cached dict and a failed write must not change it.
@@ -465,9 +565,7 @@ class OAuthProvider:
     async def revoke_token(self) -> bool:
         """Revoke access token"""
         # Default implementation - override in specific providers
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        config = await read_oauth_config(self.configuration_service, self.credentials_path)
         config['credentials'] = None
         await self.configuration_service.set_config(self.credentials_path, config)
         return True
@@ -500,9 +598,8 @@ class OAuthProvider:
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256"
             })
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        # An unread record must not be saved back as just this session: it holds the sign-in, filters and sync settings.
+        config = await read_oauth_config(self.configuration_service, self.credentials_path)
         # Replace entire oauth session data - this clears any old state, codes, etc.
         # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
@@ -511,9 +608,7 @@ class OAuthProvider:
         return self._get_authorization_url(state=state, **extra)
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        config = await read_oauth_config(self.configuration_service, self.credentials_path)
 
         oauth_data = config.get('oauth', {}) or {}
         stored_state = oauth_data.get("state")
@@ -534,11 +629,12 @@ class OAuthProvider:
                     self.token = token
                     return token
                 except (TypeError, ValueError, KeyError):
-                    # If stored creds are malformed, fall back to error
+                    # Not an OAuthStateError: this code was used and the saved credentials no longer load, so
+                    # the connector is marked signed out.
                     raise ValueError("Invalid or expired state")
 
-            # State mismatch and not a duplicate callback -> genuine error
-            raise ValueError("Invalid or expired state")
+            # State mismatch and not a duplicate callback
+            raise OAuthStateError("Invalid or expired state")
 
         # Check if this specific code has already been used (prevent duplicate code usage)
         used_codes = oauth_data.get("used_codes", [])
@@ -552,9 +648,11 @@ class OAuthProvider:
                     self.token = token
                     return token
                 except (TypeError, ValueError, KeyError):
-                    pass
-            # Code was used but no valid credentials - treat as error
-            raise ValueError("Authorization code has already been used")
+                    # Not an OAuthStateError: the saved credentials no longer load, so the connector is marked signed out.
+                    raise ValueError("Authorization code has already been used") from None
+            # Code was used and nothing was saved
+            raise OAuthStateError("Authorization code has already been used")
+        await self._claim_code(code)
         try:
             token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
             self.token = token
@@ -574,9 +672,7 @@ class OAuthProvider:
                 "used_codes": used_codes  # Keep used codes to prevent replay attacks
             }
 
-            await self.configuration_service.set_config(self.credentials_path, config)
-
-            return token
+            saved = await self.configuration_service.set_config(self.credentials_path, config)
         except Exception:
             # If token exchange fails, still mark the code as used to prevent retry loops
             used_codes.append(code)
@@ -584,3 +680,19 @@ class OAuthProvider:
             config['oauth'] = oauth_data
             await self.configuration_service.set_config(self.credentials_path, config)
             raise
+        if not saved:
+            raise OAuthStoreUnavailableError("The OAuth credentials could not be saved")
+        return token
+
+    async def _claim_code(self, code: str) -> None:
+        """Only one callback exchanges a code. Two that read the config before either saved would both pass the
+        used_codes check, and the provider's refusal of the second would write its stale copy over the first's tokens."""
+        try:
+            claimed = await self.configuration_service.create_config_if_absent(
+                _code_claim_path(self.credentials_path, code), {"claimed": True}, ttl_seconds=_CODE_CLAIM_TTL_SECONDS,
+            )
+        except Exception as e:
+            raise OAuthStoreUnavailableError("The authorization code could not be claimed") from e
+        if not claimed:
+            # Another callback is exchanging it, or one that did not finish spent it (the claim outlives a failed save).
+            raise OAuthStateError("Authorization code was already submitted")

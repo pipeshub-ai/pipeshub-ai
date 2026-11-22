@@ -106,7 +106,7 @@ describe('startConnectorSync', () => {
 
     expect(await startConnectorSync({ _key: 'c1' })).toEqual({ kind: 'backend' });
 
-    expect(api.sent.find((r) => r.url.endsWith('/toggle'))?.body).toEqual({ type: 'sync' });
+    expect(api.sent.find((r) => r.url.endsWith('/toggle'))?.body).toEqual({ type: 'sync', enabled: true });
     expect(api.count(`POST ${BASE}/c1/resync`)).toBe(0);
     expect(card()).toMatchObject({ isActive: true, status: 'SYNCING' });
   });
@@ -193,7 +193,7 @@ describe('toggleConnectorSyncOn', () => {
     expect(await toggleConnectorSyncOn('c1', 'Local FS')).toEqual({ kind: 'backend' });
 
     expect(desktop.checkRootPathConflict).toHaveBeenCalledWith('c1', '/Users/ada/Notes');
-    expect(api.sent[0].body).toEqual({ type: 'sync', deviceId: 'dev-1', deviceName: 'Ada’s laptop' });
+    expect(api.sent[0].body).toEqual({ type: 'sync', enabled: true, deviceId: 'dev-1', deviceName: 'Ada’s laptop' });
   });
 
   it('stops the watcher it started when another device owns the connector', async () => {
@@ -210,7 +210,7 @@ describe('toggleConnectorSyncOn', () => {
   it('sends no device for an ordinary connector', async () => {
     const api = fakeApi({ [`POST ${BASE}/c1/toggle`]: { status: 200 } });
     await toggleConnectorSyncOn('c1', 'Slack');
-    expect(api.sent[0].body).toEqual({ type: 'sync' });
+    expect(api.sent[0].body).toEqual({ type: 'sync', enabled: true });
   });
 });
 

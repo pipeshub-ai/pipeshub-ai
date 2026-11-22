@@ -186,7 +186,7 @@ class TestDispatchStopsOnEveryBackpressureSignal:
                 tp, _kafka_message(offset, connector_id=f"c{offset}")
             )
         consumer.backpressure_coordinator = MagicMock()
-        consumer.backpressure_coordinator.is_paused = MagicMock(return_value=True)
+        consumer.backpressure_coordinator.pause_remaining = MagicMock(return_value=5.0)
 
         await consumer._IndexingKafkaConsumer__dispatch_phase()
 
@@ -201,7 +201,7 @@ class TestDispatchStopsOnEveryBackpressureSignal:
                 "record-events", f"{index}-0", _redis_fields(index, f"c{index}")
             )
         consumer.backpressure_coordinator = MagicMock()
-        consumer.backpressure_coordinator.is_paused = MagicMock(return_value=True)
+        consumer.backpressure_coordinator.pause_remaining = MagicMock(return_value=5.0)
 
         await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
 

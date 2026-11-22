@@ -215,11 +215,13 @@ class PgBase:
         self._txns: dict[str, _Txn] = {}
 
     # ---- plumbing ----------------------------------------------------------------------------------------------
-    async def _q(self, fn: Callable[[Tx], Awaitable[Any]], transaction: str | None, *, write: bool = False) -> Any:  # noqa: ANN401
+    async def _q(self, fn: Callable[[Tx], Awaitable[Any]], transaction: str | None, *, write: bool = False,
+                 isolation: str = "read_committed") -> Any:  # noqa: ANN401
+        """``fn`` in the caller's transaction, or in a unit of its own (``isolation`` applies to that unit only)."""
         if transaction:
             return await self._txn(transaction).run(fn)
         # Fails closed: no ambient org raises MissingOrgContext. A system context (org enumeration at start-up) reads through the jobs role.
-        return await self._db.run(fn, write=write, jobs=current_or_system().kind == "system")
+        return await self._db.run(fn, write=write, isolation=isolation, jobs=current_or_system().kind == "system")
 
     async def _validate_upserts(self, collection: str, docs: list[dict], transaction: str | None = None) -> None:
         """Check every document before the first write. A payload lacking required fields is legal only for a node that exists: one read per batch

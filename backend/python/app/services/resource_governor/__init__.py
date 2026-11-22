@@ -34,6 +34,7 @@ from app.services.resource_governor.tiers import (
     gate_pool,
     index_pool,
     parse_cost,
+    reader_tier,
 )
 
 __all__ = [
@@ -59,4 +60,5 @@ __all__ = [
     "gate_pool",
     "index_pool",
     "parse_cost",
+    "reader_tier",
 ]

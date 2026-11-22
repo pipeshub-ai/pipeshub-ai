@@ -104,6 +104,7 @@ class ProbeResult:
     found: bool
     live: bool = True
     created: Any = None
+    incarnation: Any = None
 
 
 
@@ -116,6 +117,10 @@ class DeliveryGuard:
     wm_record: str | None = None
     wm_org: str | None = None
     created: Any = None
+    #: The record's ``incarnationId`` and its ``createdAtTimestamp`` as the graph read at run start gave them, whatever the
+    #: origin. ``incarnation`` is None for a record stored before the field existed, or when it is not written yet.
+    incarnation: Any = None
+    created_at_start: Any = None
     probe: Callable[[], Awaitable[ProbeResult]] | None = None
     #: The parsing service's guard: the request said not to stop (a record re-parsed too often after a 410, or an older caller).
     stop_disabled: bool = False
@@ -206,6 +211,23 @@ class DeliveryGuard:
                 return self.gone
             return await self._read(seen, changed=changed)
 
+    def _newer_incarnation(self, result: ProbeResult) -> bool:
+        """Whether the live record is a different incarnation than the one this run started with.
+
+        Both ids held: different means a delete and a re-create, whatever the origin and even when the source reuses its ids.
+        This run started with an id and the live record has none: a writer that does not know the field re-created it
+        (a process not yet on the release that writes it), so the dates decide: the run's start date against the live one.
+        No id at the start (a record stored before the field): the older rule, the stamp of an uploaded record only (a
+        connector that builds ``created_at`` from the clock rewrote it on every re-sync before the stamp was kept; the live record is
+        never called new for lacking an id the run did not see).
+        """
+        if self.incarnation is not None:
+            if result.incarnation is not None:
+                return result.incarnation != self.incarnation
+            return (self.created_at_start is not None and result.created is not None
+                    and result.created != self.created_at_start)
+        return self.created is not None and result.created is not None and result.created != self.created
+
     async def _read(self, seen: tuple[str | None, str | None], *, changed: bool) -> bool:
         assert self.probe is not None
         try:
@@ -220,7 +242,7 @@ class DeliveryGuard:
         self._last_read = self.clock()
         if not result.found or not result.live:
             return self._mark_gone("graph")
-        if self.created is not None and result.created is not None and result.created != self.created:
+        if self._newer_incarnation(result):
             return self._mark_gone("graph", "incarnation")
         self.wm_record, self.wm_org = seen
         self.confirm_first = False
@@ -249,7 +271,7 @@ class DeliveryGuard:
             if not result.found or not result.live:
                 self._mark_gone("graph")
                 return "gone"
-            if self.created is not None and result.created is not None and result.created != self.created:
+            if self._newer_incarnation(result):
                 self._mark_gone("graph", "incarnation")
                 return "gone"
             self.wm_record, self.wm_org = seen

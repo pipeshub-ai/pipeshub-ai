@@ -378,7 +378,7 @@ class Neo4jClient:
             return True
 
         except Exception as e:
-            error_class.log_failure(self.logger, "db.connect.failed", e, backend="neo4j")
+            error_class.log_failure(self.logger, "db.connect.failed", e, backend="neo4j", include_error_text=False)  # names the host
             await self._close_driver_safely(driver)
             return False
 
@@ -547,7 +547,7 @@ class Neo4jClient:
             if owned:
                 self.logger.info("Disconnected from Neo4j")
         except (ClientError, ServiceUnavailable) as e:
-            error_class.log_failure(self.logger, "db.disconnect.failed", e, backend="neo4j")
+            error_class.log_failure(self.logger, "db.disconnect.failed", e, backend="neo4j", include_error_text=False)
 
     @_logged("begin_transaction")
     async def begin_transaction(
@@ -902,7 +902,7 @@ class Neo4jClient:
                     f"not rebuilding within {self._rebuild_cooldown:.0f}s"
                 ) from cause
             self.logger.warning(
-                "Neo4j driver unreachable — rebuilding its connection pool: %s", cause
+                "Neo4j driver unreachable — rebuilding its connection pool: %s", type(cause).__name__  # its text names hosts
             )
             with self._drivers_lock:
                 self._rebuilt_at[loop] = now

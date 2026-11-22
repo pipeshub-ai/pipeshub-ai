@@ -1,5 +1,6 @@
 """Unit tests for app.connectors.core.base.token_service.mcp_token_refresh_service."""
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,6 +14,10 @@ from app.connectors.core.base.token_service.mcp_token_refresh_service import (
     PROACTIVE_REFRESH_WINDOW_SECONDS,
     MCPTokenRefreshService,
 )
+from app.utils import logging_fields
+from app.utils.logger import log_record_fields
+from app.utils.structured_logging import DefaultLoggingProvider
+from tests.unit.api.routes.mcp_route_fakes import FakeConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
@@ -419,19 +424,67 @@ class TestRefreshAllTokensInternal:
 
 
 class TestLoadTokenParseFailure:
+    """A saved record the background refresh can't parse is never refreshed ahead of expiry, so it is said once an
+    hour as misconfigured, with the org, never at DEBUG only (F26e: main skipped it silently)."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_gate(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+        monkeypatch.setattr("app.utils.logger.get_provider", lambda: DefaultLoggingProvider())
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
+        caplog.set_level(logging.DEBUG)
+
+    @staticmethod
+    def _checks(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+        return [{"level": r.levelno, **log_record_fields(r)} for r in caplog.records
+                if r.getMessage() == "credential_refresh.check_failed"]
+
     @pytest.mark.asyncio
-    async def test_invalid_oauth_token_shape_returns_false(
-        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    async def test_invalid_oauth_token_shape_returns_false_and_says_so(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock, caplog: pytest.LogCaptureFixture,
     ) -> None:
         mock_config_service.get_config = AsyncMock(
             return_value={
                 "isAuthenticated": True,
+                "orgId": "org-1",
                 "oauthTokens": {"refreshToken": "rt"},  # missing required accessToken
             }
         )
-        token, has_oauth, _ = await service._load_token_from_config(CONFIG_PATH)
-        assert has_oauth is False
-        assert token is None
+        token, has_oauth, org_id = await service._load_token_from_config(CONFIG_PATH)
+
+        assert (token, has_oauth, org_id) == (None, False, "org-1")
+        [check] = self._checks(caplog)
+        assert check.items() >= {
+            "level": logging.ERROR, "outcome": "failure", "error_class": "misconfigured", "reason": "malformed_token",
+            "error_type": "MCPMalformedTokenError", "mcp_server_id": "inst-1", "owner_id": "user-1", "org_id": "org-1",
+        }.items()
+        assert "access_token" in str(check["error_message"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("oauth", [
+        {"expiresIn": "soon-FIELD-MARKER-26E"}, {"expiresIn": 10**20}, {"createdAt": "bad-FIELD-MARKER-26E"},
+    ], ids=["expires_in_text", "expires_in_past_the_bound", "created_at_text"])
+    async def test_a_scan_says_it_once_an_hour_with_the_org_and_goes_on(
+        self, caplog: pytest.LogCaptureFixture, oauth: dict[str, object],
+    ) -> None:
+        bad, good = CONFIG_PATH, "/services/mcp/credentials/inst-2/user-1"
+        tokens = {"accessToken": "at", "refreshToken": "rt", "tokenUrl": "https://auth.example.com/token"}
+        store = FakeConfigService({
+            "/services/mcp/instances/inst-1": {"_id": "inst-1"}, "/services/mcp/instances/inst-2": {"_id": "inst-2"},
+            bad: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": {**tokens, "expiresIn": 3600, **oauth}},
+            good: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": tokens},
+        })
+        service = MCPTokenRefreshService(store)
+
+        with patch.object(service, "_refresh_credential", new=AsyncMock()) as refresh:
+            await service._refresh_all_tokens_internal()
+            await service._refresh_all_tokens_internal()
+
+        assert [(c["level"], c["error_class"], c["reason"], c["trigger"], c["org_id"]) for c in self._checks(caplog)] == [
+            (logging.ERROR, "misconfigured", "malformed_token", "scan", "org-1"),
+            (logging.DEBUG, "misconfigured", "malformed_token", "scan", "org-1"),
+        ]
+        assert [call.args[0] for call in refresh.await_args_list] == [good, good]  # the scan goes on to the next
+        assert "FIELD-MARKER-26E" not in caplog.text
 
 
 class TestRefreshCredential:

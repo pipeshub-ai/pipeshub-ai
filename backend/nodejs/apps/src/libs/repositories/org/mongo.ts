@@ -20,7 +20,12 @@ import type {
   OrgRepository,
 } from './types';
 
-const dto = (row: unknown): OrgDto => toPlain<OrgDto>(row);
+// The admin-role lease is a lock, not organisation data.
+const dto = (row: unknown): OrgDto => {
+  const org = toPlain<OrgDto & { adminRoleLease?: unknown }>(row);
+  delete org.adminRoleLease;
+  return org;
+};
 const logoDto = (row: unknown): OrgLogoDto => toPlain<OrgLogoDto>(row);
 
 export class MongoOrgRepository implements OrgRepository {

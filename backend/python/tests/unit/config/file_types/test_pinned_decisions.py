@@ -96,11 +96,10 @@ def test_every_allowed_delta_follows_its_reviewed_rule() -> None:
 
 def test_the_changed_lists_change_only_by_the_new_types() -> None:
     pinned, now = _PINNED["globals"], ALLOWED_GLOBAL_DELTAS
-    new = ["msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx"]
+    new = ["msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx", "pptm"]
     assert now["ExtensionTypes"] == [*pinned["ExtensionTypes"], *new]
     assert {k: v for k, v in now["MimeTypes"].items() if k not in pinned["MimeTypes"]}.keys() == {
-        "MSG", "ODT", "RTF", "XLSM", "DOCM", "DOTX", "POTX", "LOG", "CFG",
-        "PPTM",  # indexable by its mime only (pptm-mime), so it is not in ExtensionTypes
+        "MSG", "ODT", "RTF", "XLSM", "DOCM", "DOTX", "POTX", "LOG", "CFG", "PPTM",
     }
     assert {k: now["MimeTypes"][k] for k in pinned["MimeTypes"]} == pinned["MimeTypes"]
     assert now["EXCLUDABLE_FILE_EXTENSIONS"] == [e for e in pinned["EXCLUDABLE_FILE_EXTENSIONS"] if e != "log"]
@@ -123,7 +122,7 @@ def test_no_rule_lets_a_cell_main_indexed_change_unless_it_is_listed() -> None:
         != (gen.case_key(row) in delta_rules.EXISTING_CELL_EXCEPTIONS)
     ]
     assert not leaks, "\n".join(leaks[:40])
-    assert len(delta_rules.EXISTING_CELL_EXCEPTIONS) == 7
+    assert len(delta_rules.EXISTING_CELL_EXCEPTIONS) == 8
     assert all(gen.case_key(json.loads(k)) == k for k in delta_rules.EXISTING_CELL_EXCEPTIONS)
 
 
@@ -131,6 +130,27 @@ def test_main_indexed_cells_differ_only_where_listed() -> None:
     rows = {gen.case_key(r): r for r in _PINNED["rows"]}
     changed = {k for k in ALLOWED_DELTAS if delta_rules.main_indexed(rows[k])}
     assert changed == set(delta_rules.EXISTING_CELL_EXCEPTIONS)
+
+
+@pytest.mark.parametrize(
+    ("mime", "column", "new", "why"),
+    [
+        # Main read a .pptm stored as text/plain as text; the deck reader takes it (package-not-text).
+        ("text/plain", "legacy", "process_pptx_document", "package-not-text"),
+        # Main refused these spellings; the .pptm extension now reads them as the deck.
+        ("application/x-pdf", "legacy", "process_pptx_document", "new-type"),
+        ("text/plain; charset=utf-8", "parse_format", "pptx", "new-type"),
+        # A cell main read under any other mime keeps main's reader: no reviewed reason covers a change.
+        ("application/pdf", "legacy", "process_pptx_document", None),
+        ("text/html", "kind", "docling_docx", None),
+    ],
+)
+def test_a_pptm_cell_main_read_keeps_its_reader_unless_it_was_read_as_text(
+    mime: str, column: str, new: str, why: str | None
+) -> None:
+    row = {gen.case_key(r): r for r in _PINNED["rows"]}[gen.case_key(["pptm", mime, "file.pptm", "FILE"])]
+    assert delta_rules.main_indexed(row) is (why != "new-type")
+    assert delta_rules.classify_cell(delta_rules.Oracle(_PINNED), row, column, new) == why
 
 
 def test_only_the_listed_log_and_cfg_cells_are_bounded_by_size() -> None:

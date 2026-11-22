@@ -10,10 +10,23 @@ from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.domain.values import ContactValue
 from app.utils.url_redaction import SENSITIVE_QUERY_PARAMS
 
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Signing and tracking parameters change per copy of a link and say nothing about
 # what it points at; credentials must never reach a key or the graph.
 _VOLATILE_PARAM = re.compile(r"^(?:x-amz-|x-goog-|utm_)|^(?:fbclid|gclid|mc_cid|mc_eid)$")
+
+
+def is_email_shaped(text: str) -> bool:
+    """Whether ``text`` reads as an email address: a local part, one ``@``, and a
+    domain with a dot inside it, none of them holding whitespace. What
+    ``re.match(r"^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")`` accepts, a final newline
+    included (``$`` matches before one), without that pattern's backtracking:
+    the domain's dot could be taken by either side of it, so a long domain
+    that fails at its end was retried once per dot."""
+    body = text[:-1] if text.endswith("\n") else text
+    local, at, domain = body.partition("@")
+    if not at or not local or "@" in domain or any(char.isspace() for char in body):
+        return False
+    return "." in domain[1:-1]
 
 
 def _query_key(query: str) -> str:
@@ -30,7 +43,7 @@ def _query_key(query: str) -> str:
 def normalize_contact(kind: EntityKind, surface: str) -> ContactValue | None:
     text = (surface or "").strip()
     if kind is EntityKind.EMAIL:
-        if not _EMAIL.match(text):
+        if not is_email_shaped(text):
             return None
         # The local part is case-sensitive by RFC 5321 but by no mainstream provider,
         # and "Jane.Doe@" and "jane.doe@" are one person to every reader.

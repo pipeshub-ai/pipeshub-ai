@@ -2245,7 +2245,7 @@ class TestReindexAccessBeforeLock:
     def _locked_connector_record_gp() -> AsyncMock:
         gp = AsyncMock()
 
-        async def get_document(key, collection) -> dict[str, str]:
+        async def get_document(key, collection, *_a, **_k) -> dict[str, str]:
             if collection == CollectionNames.RECORDS.value:
                 return {"origin": OriginTypes.CONNECTOR.value, "connectorId": "conn-1"}
             if collection == CollectionNames.RECORD_GROUPS.value:

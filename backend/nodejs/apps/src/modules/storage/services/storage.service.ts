@@ -6,6 +6,8 @@ import {
   SignObjectUrlOptions,
   SignedObjectUrl,
   ObjectPage,
+  ConditionalCapabilities,
+  ConditionalDeleteResult,
   StorageServiceResponse,
 } from '../types/storage.service.types';
 
@@ -241,6 +243,27 @@ export interface StorageServiceInterface {
    * is not an error; any other failure rejects.
    */
   deleteObjects?(storageKeys: string[]): Promise<void>;
+
+  /**
+   * Removes each object only if its ETag is still the listed one. An object that changed stays and is returned in
+   * `changed`; one already gone is a success. Present only when the store honours the condition.
+   */
+  deleteObjectsIfMatch?(
+    items: { key: string; etag: string }[],
+  ): Promise<ConditionalDeleteResult>;
+
+  /** What the store honours, probed once (S3-compatibles) or known (Azure, local). Absent: nothing conditional. */
+  conditionalCapabilities?(): Promise<ConditionalCapabilities>;
+
+  /**
+   * Local storage's stand-in for a signed conditional PUT: replaces the object only if its ETag is `etag`.
+   * `gone` when there is no object, `changed` when its ETag differs.
+   */
+  writeObjectIfMatch?(
+    storageKey: string,
+    data: Buffer,
+    etag: string,
+  ): Promise<'written' | 'gone' | 'changed'>;
 
   /**
    * Opens a storage key for reading, checked to be a regular file inside the

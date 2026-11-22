@@ -25,7 +25,8 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.connectors.services.reindex_force import user_forced_reindex
+from app.modules.indexing import refresh_intent
+from app.connectors.services.reindex_force import user_forced_intent_id, user_forced_reindex
 from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
@@ -92,6 +93,7 @@ from app.connectors.core.base.data_processor.record_links import (
 )
 from app.models.permission import EntityType, Permission, PermissionType, read_role
 from app.modules.code_graph import deleted_files
+from app.modules.indexing.parse_now_marker import PARSE_NOW_STATUS
 from app.modules.indexing.record_diagnostics import FIRST_QUEUED_AT, INDEXING_ATTEMPTS, WriteKind
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.services.cache.invalidation_hooks import (
@@ -103,7 +105,8 @@ from app.services.cache.invalidation_hooks import (
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
-from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
+from app.services.graph_db.common.record_visibility import HAS_INDEXED_COPY, RecordVisibility, is_live_record
+from app.services.graph_db.common.utils import positive_min, record_created_at_insert_only
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
@@ -1140,6 +1143,7 @@ class DataSourceEntitiesProcessor:
                 # Prepare record group BEFORE saving (so record_group_id is included in first save)
                 record_group_id = await self._handle_record_group(parent_record, tx_store)
 
+                parent_record._known_new = True
                 await tx_store.batch_upsert_records([parent_record])
 
                 # Link record to group AFTER saving (when record.id is available for edges)
@@ -1311,6 +1315,7 @@ class DataSourceEntitiesProcessor:
                     record=record,
                     record_name=related_ext_record.record_name,
                 )
+                related_record._known_new = True
                 await tx_store.batch_upsert_records([related_record])
 
             if related_record is not None and related_record.is_placeholder:
@@ -2336,6 +2341,22 @@ class DataSourceEntitiesProcessor:
             and existing_record.indexing_status != ProgressStatus.COMPLETED.value
         )
 
+    @staticmethod
+    def _carry_insert_only_fields(record: Record, existing_record: Record) -> None:
+        """A record written over a stored one keeps the stored ``createdAtTimestamp`` and ``incarnationId``.
+
+        The graph store enforces the same rule on the stored row; this makes the record this code hands on (events, logs, the
+        return value) agree with it. A stored placeholder that the incoming record replaces is the first full write: the date
+        is the earlier positive one, and the store is told so (``_promotes_stub``) because an ArangoDB bulk update cannot read the
+        stored row. The id is never changed by a write."""
+        if record_created_at_insert_only():
+            if existing_record.is_placeholder and not record.is_placeholder:
+                record.created_at = positive_min(existing_record.created_at, record.created_at) or record.created_at
+                record._promotes_stub = True
+            elif existing_record.created_at:
+                record.created_at = existing_record.created_at
+        record.incarnation_id = getattr(existing_record, "incarnation_id", None)
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
@@ -3168,6 +3189,7 @@ class DataSourceEntitiesProcessor:
                 # A new record's vectors are its own: a virtualRecordId chosen by the
                 # caller would serve another record's indexed content under this one.
                 record.virtual_record_id = None
+            carried_from_same_id = False
             if (
                 isinstance(same_id, dict)
                 and record.origin != OriginTypes.UPLOAD
@@ -3183,11 +3205,24 @@ class DataSourceEntitiesProcessor:
                 # its vectors stay keyed by the stored virtualRecordId.
                 self._preserve_indexing_state(record, renamed)
                 record.virtual_record_id = record.virtual_record_id or renamed.virtual_record_id
+                self._carry_insert_only_fields(record, renamed)
+                carried_from_same_id = True
             elif publishes_event:
                 self._stamp_queued_at(record)
+            if isinstance(same_id, dict) and not carried_from_same_id:
+                # Stored under this id (a rename or move that changes the revision): the store keeps its date and id, so
+                # the record handed on does too.
+                self._carry_insert_only_fields(record, SimpleNamespace(
+                    created_at=same_id.get("createdAtTimestamp"),
+                    incarnation_id=same_id.get("incarnationId"),
+                    is_placeholder=bool(same_id.get("isPlaceholder")),
+                ))
+            # Not stored under this id either: the ArangoDB store inserts first (one call), and a wrong guess only costs a patch.
+            record._known_new = not stored_under_its_id
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
+            self._carry_insert_only_fields(record, existing_record)
             # Connectors that track their own version pass a non-zero value; fill
             # it in for those that leave it at the default (GitLab, Jira) so the
             # stored version isn't pinned at 0 forever. Bump only on a real
@@ -3377,6 +3412,7 @@ class DataSourceEntitiesProcessor:
         replace = replace_permissions or (
             permissions_fetched
             and existing_record is not None
+            and not record.adds_permissions
             and self._first_full_sync_visit(record.connector_id, PERMISSIONS_REWRITTEN, record.id)
         )
         await self._handle_record_permissions(record, permissions, tx_store, replace=replace)
@@ -4113,7 +4149,7 @@ class DataSourceEntitiesProcessor:
                                 1 if content_changed else 0
                             )
 
-                    new_record.created_at = old_record.created_at
+                    self._carry_insert_only_fields(new_record, old_record)
                     if not needs_reindex:
                         # The move rewrites the whole vertex, and nothing is
                         # re-parsed, so the checksum and parse/extraction state
@@ -5056,6 +5092,9 @@ class DataSourceEntitiesProcessor:
             # A user's Force reindex: every stored paid result is bypassed and paid for again. The platform's own
             # reindexes of unchanged records (a policy change) keep reusing them.
             payload["refreshPaidOutputs"] = True
+            if (intent_id := user_forced_intent_id()) and refresh_intent.write_enabled():
+                # The refresh's identity, the same one the walk stored on the record: a re-send keeps it.
+                payload["refreshIntentId"] = intent_id
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:
@@ -7490,6 +7529,41 @@ class DataSourceEntitiesProcessor:
         if edges:
             await self._access_changed([connector_id])
 
+    async def drop_indexed_copies(self, records: list[Record], connector_id: str) -> None:
+        """Take records out of search until they are indexed again, then queue that: their stored copy holds
+        content that must no longer be served (search serves a record while it has an indexed copy)."""
+        live = [r for r in records if r.id]
+        for start in range(0, len(live), 500):
+            chunk = live[start:start + 500]
+            async with self.data_store_provider.transaction() as tx_store:
+                now = get_epoch_timestamp_in_ms()
+                updates = []
+                for r in chunk:
+                    stored = await tx_store.get_record_by_key(r.id, raise_on_error=True)
+                    # A stored parse-now copy is served by id too: it waits for the new copy like search does.
+                    fields = {"indexingStatus": ProgressStatus.QUEUED.value, "queuedAtTimestamp": now,
+                              HAS_INDEXED_COPY: False, PARSE_NOW_STATUS: ProgressStatus.QUEUED.value}
+                    updates.append({"id": r.id, **fields, **run_reference(stored, WriteKind.QUEUE, now)})
+                await tx_store.batch_update_nodes(updates, CollectionNames.RECORDS.value)
+        if live:
+            await self._access_changed([connector_id])
+            await self.reindex_existing_records(live)
+
+    async def resume_inheriting_permissions(
+        self, record_id: str, connector_id: str, *, parent_record_id: str | None = None,
+        record_group_id: str | None = None,
+    ) -> None:
+        """Undo stop_inheriting_permissions: inherit again from the parent record, or from the group when
+        the record hangs off it."""
+        async with self.data_store_provider.transaction() as tx_store:
+            if parent_record_id:
+                await tx_store.create_inherit_permissions_relation_record(record_id, parent_record_id)
+            elif record_group_id:
+                await tx_store.create_inherit_permissions_relation_record_group(record_id, record_group_id)
+            else:
+                return
+        await self._access_changed([connector_id])
+
     @retry_on_deadlock()
     async def delete_group_permission_from_record(self, record_id: str, group_external_id: str, connector_id: str) -> None:
         """Delete a group's (by its id at the source) permission edge to a record. A group the store does not hold
@@ -7706,6 +7780,40 @@ class DataSourceEntitiesProcessor:
             removed = await tx_store.remove_user_access_to_connector(connector_id, user.id)
         if removed:
             await self._access_changed([connector_id])
+        return removed
+
+    async def get_user_granted_records(self, connector_id: str, user_node_id: str) -> list[dict[str, Any]]:
+        """The connector's records the user (graph node id) holds a direct USER grant on. A failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_user_granted_records(connector_id, user_node_id)
+
+    @retry_on_deadlock()
+    async def remove_user_grants(self, connector_id: str, user_node_id: str, record_ids: list[str]) -> None:
+        """Delete the user's own direct grants on these records; everyone else's stay."""
+        if not record_ids:
+            return
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            await tx_store.batch_delete_edges([
+                {
+                    "from_id": user_node_id,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": record_id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                }
+                for record_id in record_ids
+            ], collection=CollectionNames.PERMISSION.value)
+
+    @retry_on_deadlock()
+    async def withdraw_user_from_connector(self, connector_id: str, user_node_id: str) -> int:
+        """Take away everything the user holds on the connector directly: their grants and their link to it.
+        For a per-user connection that was revoked, went stale or was disconnected."""
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            removed = await tx_store.remove_user_access_to_connector(connector_id, user_node_id)
+            await tx_store.delete_edge(
+                user_node_id, CollectionNames.USERS.value,
+                connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value,
+            )
         return removed
 
     @retry_on_deadlock()

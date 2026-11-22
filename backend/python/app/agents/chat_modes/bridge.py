@@ -47,7 +47,10 @@ from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.error_classification import classify_exception
+from app.agents.agent_loop.error_classification import (
+    classify_exception,
+    run_error_text,
+)
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks import (
     CitationCollector,
@@ -356,7 +359,7 @@ async def _run_no_tools_degradation(
             yield create_sse_event(event["event"], event["data"])
     except Exception as exc:
         run_timing.end(log, "error", mode="no_tools", exc=exc)
-        yield create_sse_event("error", {"error": f"Stream error: {exc}"})
+        yield create_sse_event("error", {"error": classify_exception(exc)[1]})
         return
     run_timing.end(log, "done", mode="no_tools")
 
@@ -764,7 +767,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
                 finalizer = AnswerFinalizer(context, collector)
                 await finalizer.run(
-                    agent_success=result.success, agent_error=result.error,
+                    agent_success=result.success, agent_error=run_error_text(result),
                     agent_output=result.output, event_sink=context.event_sink,
                     streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,
                     # Stop Generation (Phase 3b) — see the matching call in
