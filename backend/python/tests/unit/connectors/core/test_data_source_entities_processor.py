@@ -41,6 +41,12 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     RecordGroupWithPermissions,
     UserGroupWithMembers,
 )
+from app.connectors.core.sync.sync_progress import (
+    ChangeKind,
+    SyncProgress,
+    reset_current_sync_progress,
+    set_current_sync_progress,
+)
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -57,12 +63,6 @@ from app.models.entities import (
     SQLViewRecord,
     TicketRecord,
     User,
-)
-from app.connectors.core.sync.sync_progress import (
-    ChangeKind,
-    SyncProgress,
-    reset_current_sync_progress,
-    set_current_sync_progress,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
