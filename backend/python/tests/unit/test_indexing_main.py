@@ -3526,6 +3526,29 @@ class TestRepublishStrandedRecords:
             assert await _run_stranded(graph, producer) == 1
 
     @pytest.mark.asyncio
+    async def test_a_duplicate_the_promotion_left_queued_for_its_parser_is_sent(self) -> None:
+        """The finished twin read another parser than the parked copy's, so its promotion left the copy QUEUED. That copy waits for
+        its own event or for this sweep (``STRANDED_RECORD_REPUBLISH_AFTER_SECONDS``); the twin never releases it again."""
+        from app.modules.pipeline import parser_identity as pi
+
+        twin = {
+            **self._twin(ProgressStatus.COMPLETED.value), "virtualRecordId": "vr-1", "extractionStatus": ProgressStatus.COMPLETED.value,
+            "mimeType": "text/plain", "recordName": "a.txt", "recordType": "FILE", "lastIndexTimestamp": 5,
+            pi.IDENTITY_FIELD: "inproc:txt@1", pi.IDENTITY_AT_FIELD: 5, pi.IDENTITY_VRID_FIELD: "vr-1",
+        }
+        parked = {"_key": "r1", "mimeType": "text/markdown", "recordName": "b.md", "recordType": "FILE"}
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("RECORD_PARSER_IDENTITY_WRITE", "true")
+            assert pi.plan_promotions(twin, [parked], {"r1": {"extension": "md"}}, at=9, vrid="vr-1") == {}
+        graph = self._parked_graph(twin)
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        assert [c.kwargs["payload"]["recordId"] for c in producer.send_event.await_args_list] == ["r1"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "twin_fields",
         [
