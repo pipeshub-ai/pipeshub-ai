@@ -5,12 +5,17 @@ that cannot be resolved does; an unlimited connector keeps its name. An org admi
 
 from __future__ import annotations
 
+import copy
+import json
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from app.modules.agents.knowledge_scope import hide_names_the_viewer_cannot_open
+from app.modules.agents.knowledge_scope import (
+    _without_titles,
+    hide_names_the_viewer_cannot_open,
+)
 from tests.support.agent_routes import (
     AGENTS,
     USERS,
@@ -29,10 +34,15 @@ SOURCES: dict[str, tuple[str | None, str, str]] = {
 }
 
 
+TITLE = "Board minutes 2026"      # a folder title the agent builder saved on alice's creator-limited source
+_SAVED = {"recordGroups": ["rg-board"], "nodes": [{"id": "rg-board", "name": TITLE, "nodeType": "recordGroup"}]}
+
+
 def _entry(key: str) -> dict[str, Any]:
     limit = SOURCES[key][0]
+    saved = {"filters": json.dumps(_SAVED), "filtersParsed": copy.deepcopy(_SAVED)} if key == "byAlice" else {}
     return {"_key": f"k-{key}", "connectorId": key, "name": f"Name {key}", "displayName": f"Name {key}", "type": "SLACK",
-            "accessLimit": limit}
+            "accessLimit": limit, **saved}
 
 
 @pytest.fixture
@@ -107,8 +117,13 @@ def test_a_chat_turn_names_to_the_model_only_the_sources_the_caller_may_open(
 
     async def llm(*_a: object, **_k: object) -> tuple[object, dict, dict]:
         return object(), {"isMultimodal": False, "provider": "openai"}, {}
+
+    async def turn_filters(*, agent_knowledge: list[dict[str, Any]], **_k: object) -> dict[str, Any]:
+        # Every source on: the narrowed source's selection is checked by the graph's access check, which the stand-in has not.
+        return {"apps": [k["connectorId"] for k in agent_knowledge]}
     monkeypatch.setattr("app.api.routes.agent.run_agent_loop_stream", loop)
     monkeypatch.setattr("app.api.routes.agent.get_llm_for_chat", llm)
+    monkeypatch.setattr("app.api.routes.agent._resolve_turn_filters", turn_filters)
     client, viewer = _client(graph, viewer)
     client.post("/api/v1/agent/shared/chat/stream", headers=as_user(viewer), json={"query": "hi"})
     (query_info,) = calls
@@ -160,3 +175,51 @@ async def test_an_admin_sees_every_name_without_a_lookup_and_a_member_the_id() -
     as_member = [dict(e) for e in entries]
     await hide_names_the_viewer_cannot_open(graph, [as_member], "u-1", "org-1", is_admin=False)
     assert [k["name"] for k in as_member] == ["creator", "org", "junk"]
+
+
+def _leaks(payload: object) -> set[str]:
+    text = json.dumps(payload, default=str)
+    return {secret for secret in ("Name byAlice", TITLE) if secret in text}
+
+
+@pytest.mark.parametrize(("viewer", "hidden"), [("bob", True), ("bob-admin", False)])
+def test_a_refused_member_gets_neither_the_name_nor_the_saved_titles_anywhere(
+    graph: InMemoryGraph, monkeypatch: pytest.MonkeyPatch, viewer: str, hidden: bool,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def loop(query_info: dict, *_a: object, **_k: object) -> Any:  # noqa: ANN401 - an async iterator
+        calls.append(query_info)
+
+        async def gen() -> Any:  # noqa: ANN401
+            if False:
+                yield ""
+        return gen()
+
+    async def llm(*_a: object, **_k: object) -> tuple[object, dict, dict]:
+        return object(), {"isMultimodal": False, "provider": "openai"}, {}
+
+    async def turn_filters(*, agent_knowledge: list[dict[str, Any]], **_k: object) -> dict[str, Any]:
+        # Every source on: the narrowed source's selection is checked by the graph's access check, which the stand-in has not.
+        return {"apps": [k["connectorId"] for k in agent_knowledge]}
+    monkeypatch.setattr("app.api.routes.agent.run_agent_loop_stream", loop)
+    monkeypatch.setattr("app.api.routes.agent.get_llm_for_chat", llm)
+    monkeypatch.setattr("app.api.routes.agent._resolve_turn_filters", turn_filters)
+    client, user = _client(graph, viewer)
+    one = client.get("/api/v1/agent/shared", headers=as_user(user)).json()
+    many = client.get("/api/v1/agent/", headers=as_user(user)).json()
+    client.post("/api/v1/agent/shared/chat/stream", headers=as_user(user), json={"query": "hi"})
+    (chat,) = calls
+    for payload in (one, many, chat["knowledge"]):
+        assert _leaks(payload) == (set() if hidden else {"Name byAlice", TITLE})
+    # The ids that limit the source stay, so the source is searched exactly as before.
+    (source,) = [k for k in one["agent"]["knowledge"] if k["connectorId"] == "byAlice"]
+    assert source["filtersParsed"]["recordGroups"] == ["rg-board"] and json.loads(source["filters"])["recordGroups"] == ["rg-board"]
+
+
+def test_titles_are_left_out_of_either_form_and_an_unreadable_limit_stays_as_it_is() -> None:
+    as_text = json.loads(_without_titles(json.dumps(_SAVED)))
+    assert as_text == {"recordGroups": ["rg-board"], "nodes": [{"id": "rg-board", "nodeType": "recordGroup"}]}
+    assert _without_titles(copy.deepcopy(_SAVED)) == as_text
+    for value in ("not json", "", None, {"recordGroups": ["x"]}, ["x"]):
+        assert _without_titles(value) == value

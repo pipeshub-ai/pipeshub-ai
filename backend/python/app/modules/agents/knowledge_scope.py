@@ -368,7 +368,8 @@ async def hide_names_the_viewer_cannot_open(
     """Show, in place, the id instead of the name of every knowledge source whose connector is limited (``accessLimit``, which
     ``get_agent`` and ``get_all_agents`` carry on each source) and does not admit the viewer, as a source that cannot be resolved
     reads. The limit is weighed by the connector list a member gets (``apply_access_limit``), asked only when a source is limited.
-    A failed lookup admits nothing, so it hides the name. An admin of the request's org sees every name, as on the connectors page."""
+    A failed lookup admits nothing, so it hides the name. The node titles saved in ``filters`` and ``filtersParsed`` are left out
+    with it. An admin of the request's org sees every name, as on the connectors page."""
     if is_admin:
         return
     limited = [k for ks in knowledge_lists for k in ks or [] if isinstance(k, dict) and k.get("accessLimit") is not None]
@@ -385,6 +386,25 @@ async def hide_names_the_viewer_cannot_open(
     for k in limited:
         if str(k.get("connectorId") or "") not in opens:
             k["name"] = k["displayName"] = k.get("connectorId")
+            # The folder and file titles the agent builder saved go too; the ids that limit the search stay.
+            for field in ("filters", "filtersParsed"):
+                if field in k:
+                    k[field] = _without_titles(k[field])
+
+
+def _without_titles(filters: object) -> object:
+    """``filters`` with the ``name`` of each saved node (``nodes[].name``) left out, as a JSON string when it came as one. A
+    value that is not such an object is returned as it is: an unreadable limit must stay unreadable, never become no limit."""
+    parsed = filters
+    if isinstance(filters, str):
+        try:
+            parsed = json.loads(filters)
+        except ValueError:
+            return filters
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("nodes"), list):
+        return filters
+    stripped = {**parsed, "nodes": [{f: v for f, v in n.items() if f != "name"} if isinstance(n, dict) else n for n in parsed["nodes"]]}
+    return json.dumps(stripped) if isinstance(filters, str) else stripped
 
 
 __all__ = [
