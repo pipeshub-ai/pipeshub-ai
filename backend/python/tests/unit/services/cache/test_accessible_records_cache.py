@@ -110,6 +110,18 @@ class FakeRedis:
         self.strings[key] = str(value)
         return value
 
+    # The server clock `seeded_incr`'s script seeds a missing counter from; each seed reads a later time.
+    clock_us = 1_700_000_000_000_000
+
+    async def eval(self, script, numkeys, key, by):
+        """`seeded_incr`'s script (the only one the cache runs): seed a missing key from the clock, then INCRBY."""
+        self.calls.append(("eval", key, by))
+        if key not in self.strings:
+            FakeRedis.clock_us += 1_000_000
+            self.strings[key] = str(FakeRedis.clock_us)
+        self.strings[key] = str(int(self.strings[key]) + int(by))
+        return int(self.strings[key])
+
     async def hdel(self, key: str, *fields: str) -> int:
         self.calls.append(("hdel", key, *fields))
         bucket = self.hashes.get(key, {})
@@ -151,6 +163,9 @@ class BrokenRedis(FakeRedis):
         raise ConnectionError("redis down")
 
     def pipeline(self, transaction=False):
+        raise ConnectionError("redis down")
+
+    async def eval(self, script, numkeys, key, by):
         raise ConnectionError("redis down")
 
 
@@ -708,22 +723,37 @@ class TestFillFromBeforeAChangeIsNeverWritten:
         assert await fill == {"old": "r"}, "the search itself is still answered"
         assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
 
-    @pytest.mark.parametrize("evicted", [False, True])
-    async def test_a_lost_epoch_does_not_let_an_earlier_fill_write(self, evicted: bool) -> None:
-        # On an evicting cache Redis the epoch can vanish between a change's bump and the fill's write. A missing epoch
-        # read as "" on both sides, so a fill that started before the change put the revoked map back.
-        redis = FakeRedis()
-        cache = _cache(redis)
+    async def test_epochs_live_on_the_main_redis_and_survive_a_flush_of_the_cache_redis(self) -> None:
+        # The cache Redis may evict anything; only the maps live there. The epoch that rejects a fill from before a
+        # change stays on the main Redis, so losing every map is a miss, never a stale write.
+        main, maps = FakeRedis(), FakeRedis()
+        cache = AccessibleRecordsCache(MagicMock(), maps, 300, True, epoch_client=main)
         epoch_key = cache._connector_epoch_key(ORG, CONNECTOR)
-        if evicted:
-            redis.strings.pop(epoch_key, None)  # never bumped, or evicted before the fill
         load, started, release = _held_loader({"old": "r"})
         fill = asyncio.create_task(cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, load))
         await started.wait()
 
         await cache.invalidate_connector(ORG, CONNECTOR)
-        if evicted:
-            redis.strings.pop(epoch_key, None)  # the bump is lost to eviction
+        maps.strings.clear()
+        maps.hashes.clear()  # the cache Redis is flushed (or evicts everything)
+        release.set()
+
+        assert await fill == {"old": "r"}
+        assert cache._user_connector_key(ORG, CONNECTOR) not in maps.hashes
+        assert epoch_key in main.strings and epoch_key not in maps.strings
+
+    async def test_an_epoch_lost_on_the_main_redis_still_rejects_an_earlier_fill(self) -> None:
+        # A failover or restore can lose an epoch between a change's bump and a fill's write. A missing epoch counts
+        # as changed, and a bump after the loss seeds above every earlier value.
+        redis = FakeRedis()
+        cache = _cache(redis)
+        epoch_key = cache._connector_epoch_key(ORG, CONNECTOR)
+        load, started, release = _held_loader({"old": "r"})
+        fill = asyncio.create_task(cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, load))
+        await started.wait()
+
+        await cache.invalidate_connector(ORG, CONNECTOR)
+        redis.strings.pop(epoch_key)  # lost
         release.set()
 
         assert await fill == {"old": "r"}
@@ -813,7 +843,7 @@ class TestFillFromBeforeAChangeIsNeverWritten:
         await cache.invalidate_connector(ORG, CONNECTOR)
 
         assert int(redis.strings[epoch]) == first + 1
-        assert redis.expires[epoch] == AccessibleRecordsCache.EPOCH_TTL_SECONDS
+        assert epoch not in redis.expires  # on the main Redis with no TTL: nothing evicts it
 
 
 class TestCrossSlotSafety:

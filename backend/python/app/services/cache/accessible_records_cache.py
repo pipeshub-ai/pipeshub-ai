@@ -48,6 +48,7 @@ from app.services.redis.connection_provider_factory import (
     get_redis_provider,
     uses_pg_state,
 )
+from app.services.redis.generation import seeded_incr
 from app.services.redis.loop_clients import LoopBoundClients
 from app.utils.loop_local import LoopLocal
 
@@ -79,8 +80,8 @@ def _ttl_from_env(default: int) -> int:
         return default
 
 
-def _epoch_base() -> str:
-    return str(time.time_ns() // 1000)
+def _split(client: "RedisClient | LoopBoundClients[RedisClient] | None") -> "tuple[LoopBoundClients[RedisClient] | None, RedisClient | None]":
+    return (client, None) if isinstance(client, LoopBoundClients) else (None, client)
 
 
 class AccessibleRecordsCache(IAccessibleRecordsCache):
@@ -103,9 +104,6 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
     # Waits between background attempts at a delete that failed; the last
     # repeats until the delete lands or the entries' TTL has passed.
     INVALIDATION_RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0, 5.0, 10.0)
-    # An epoch that expired or was evicted only rejects the fills that read it
-    # (see `_read_epoch`); a day keeps that rare.
-    EPOCH_TTL_SECONDS = 86400
 
     def __init__(
         self,
@@ -115,17 +113,16 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         enabled: bool,  # noqa: FBT001 - positional keeps the test fakes terse
         key_namespace: str = "",
         bus: "PgCacheBus | None" = None,
+        epoch_client: "RedisClient | LoopBoundClients[RedisClient] | None" = None,
     ) -> None:
         """``redis_client`` is either one client, used from a single loop, or
         the per-loop holder `create()` builds: the indexing service invalidates
-        from its consumer's worker loop as well as the main one."""
+        from its consumer's worker loop as well as the main one. It holds the
+        maps; ``epoch_client`` (same shape; ``redis_client`` when not given)
+        holds the connector epochs, on the main Redis where nothing evicts them."""
         self.logger = logger
-        if isinstance(redis_client, LoopBoundClients):
-            self._loop_clients: LoopBoundClients[RedisClient] | None = redis_client
-            self._redis: RedisClient | None = None
-        else:
-            self._loop_clients = None
-            self._redis = redis_client
+        self._loop_clients, self._redis = _split(redis_client)
+        self._epoch_loop_clients, self._epoch_redis = _split(epoch_client)
         self._ttl = ttl_seconds
         self._bus = bus      # REDIS_MODE=postgres: invalidations reach the other processes through it
         self._enabled = enabled and redis_client is not None
@@ -163,9 +160,11 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             return NoopAccessibleRecordsCache()
 
         clients: LoopBoundClients[RedisClient] | None = None
+        epoch_clients: LoopBoundClients[RedisClient] | None = None
         try:
             redis_config = await config_service.get_redis_config()
             provider = get_redis_provider(RedisConnectionConfig.for_cache(redis_config))
+            main = get_redis_provider(RedisConnectionConfig.from_redis_config(redis_config))
             options = ClientOptions(
                 decode_responses=True,
                 socket_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
@@ -173,6 +172,9 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             )
             clients = LoopBoundClients(lambda: provider.create_client(options))
             await clients.get().ping()
+            if main is not provider:
+                epoch_clients = LoopBoundClients(lambda: main.create_client(options))
+                await epoch_clients.get().ping()
         except Exception as e:
             logger.warning(
                 "Accessible-records cache unavailable (%s); falling back to live queries", str(e)
@@ -180,8 +182,9 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             # `create_client()` hands out caller-owned clients (not the
             # provider's shared one) -- release them ourselves on failure, or
             # the ping-that-never-succeeded connection leaks for good.
-            if clients is not None:
-                await clients.aclose()
+            for held in (clients, epoch_clients):
+                if held is not None:
+                    await held.aclose()
             return NoopAccessibleRecordsCache()
 
         bus = None
@@ -209,7 +212,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             return cache
 
         logger.info("Accessible-records cache ready (ttl=%ss)", ttl)
-        return cls(logger, clients, ttl, enabled=True, key_namespace=provider.key_namespace)
+        return cls(logger, clients, ttl, enabled=True, key_namespace=provider.key_namespace, epoch_client=epoch_clients)
 
     @property
     def enabled(self) -> bool:
@@ -230,6 +233,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             await bus.stop()
         client, self._redis = self._redis, None
         loop_clients, self._loop_clients = self._loop_clients, None
+        epoch_client, self._epoch_redis = self._epoch_redis, None
+        epoch_loop_clients, self._epoch_loop_clients = self._epoch_loop_clients, None
         self._enabled = False
         with self._pending_lock:
             retries = list(self._retry_tasks.items())
@@ -237,18 +242,25 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         for loop, task in retries:
             if not loop.is_closed():
                 loop.call_soon_threadsafe(task.cancel)
-        if loop_clients is not None:
-            await loop_clients.aclose()
-        if client is not None:
-            try:
-                await client.aclose()
-            except Exception as e:
-                self.logger.debug("Error closing accessible-records cache: %s", str(e))
+        for held in (loop_clients, epoch_loop_clients):
+            if held is not None:
+                await held.aclose()
+        for one in (client, epoch_client):
+            if one is not None:
+                try:
+                    await one.aclose()
+                except Exception as e:
+                    self.logger.debug("Error closing accessible-records cache: %s", str(e))
 
     def _client(self) -> "RedisClient":
         if self._loop_clients is not None:
             return self._loop_clients.get()
         return self._redis  # type: ignore[return-value]
+
+    def _epoch_client(self) -> "RedisClient":
+        if self._epoch_loop_clients is not None:
+            return self._epoch_loop_clients.get()
+        return self._epoch_redis or self._client()
 
     # ---- keys ---------------------------------------------------------
 
@@ -367,19 +379,16 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         return stored
 
     async def _read_epoch(self, epoch_key: str) -> str | None:
-        """The epoch, created from an epoch-microsecond base when missing; None (and
-        the breaker tripped) when Redis could not answer.
+        """The epoch; None (and the breaker tripped) when Redis could not answer.
 
-        The epoch can be lost (an evicting cache Redis, an expiry, a failover).
-        A missing epoch must never read the same as the one a fill started from,
-        or a fill that read the graph before a change could write the old map back
-        after the change's bump was lost. So it is created from a base above any
-        value it had, bumps do the same (`_delete_now`), and `_write` refuses
-        when the epoch is missing."""
+        Epochs live on the main Redis with no TTL, so nothing evicts them. A
+        failover or restore can still lose one, and a lost epoch must never
+        read the same as the one a fill started from, or a fill that read the
+        graph before a change could write the old map back. So a missing epoch
+        is seeded from the server's clock in the same script as the read or
+        bump (`seeded_incr`), and `_write` refuses when it is missing."""
         try:
-            client = self._client()
-            await client.set(epoch_key, _epoch_base(), nx=True, ex=self.EPOCH_TTL_SECONDS)
-            return await client.get(epoch_key) or ""
+            return str(await seeded_incr(self._epoch_client(), epoch_key, 0))
         except Exception as e:
             self._mark_down("read", e)
             return None
@@ -400,8 +409,9 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         written = False
         try:
             client = self._client()
+            epochs = self._epoch_client()
             # A missing epoch (None) never equals the one read: lost means changed.
-            if epoch_key is not None and await client.get(epoch_key) != epoch:
+            if epoch_key is not None and await epochs.get(epoch_key) != epoch:
                 return
             if field is None:
                 await client.set(key, json.dumps(value, separators=(",", ":")), ex=self._ttl)
@@ -410,7 +420,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
                 await client.hset(key, field, envelope)
                 await client.expire(key, self._ttl)
             written = True
-            if epoch_key is not None and await client.get(epoch_key) != epoch:
+            if epoch_key is not None and await epochs.get(epoch_key) != epoch:
                 await (client.delete(key) if field is None else client.hdel(key, field))
         except Exception as e:
             self._mark_down("write", e)
@@ -530,14 +540,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         epochs = [key for key in keys if self._is_epoch_key(key)]
         others = [key for key in keys if not self._is_epoch_key(key)]
         client = self._client()
-        if epochs:
-            async with client.pipeline(transaction=False) as pipe:
-                for key in epochs:
-                    # From the base when lost, so a bump never lands on a value a fill already read.
-                    pipe.set(key, _epoch_base(), nx=True, ex=self.EPOCH_TTL_SECONDS)
-                    pipe.incr(key)
-                    pipe.expire(key, self.EPOCH_TTL_SECONDS)
-                await pipe.execute()
+        for key in epochs:  # one connector per change, so one script call
+            await seeded_incr(self._epoch_client(), key, 1)
         if others:
             async with client.pipeline(transaction=False) as pipe:
                 for key in others:

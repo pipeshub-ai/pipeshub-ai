@@ -125,7 +125,7 @@ class TestCallersPickTheirRole:
     async def test_without_a_cache_url_every_cache_uses_the_main_redis(self, config_service: MagicMock) -> None:
         seen: list[RedisConnectionConfig] = []
         await _open_every_cache(config_service, seen)
-        assert len(seen) == 4
+        assert len(seen) == 6  # four caches, plus the counters of the viewer-scope cache and the accessible-records epochs
         assert {(c.host, c.password) for c in seen} == {("main-redis", "main-secret")}
 
     async def test_with_a_cache_url_caches_go_there_and_the_main_role_does_not(
@@ -134,8 +134,10 @@ class TestCallersPickTheirRole:
         monkeypatch.setenv("REDIS_CACHE_URL", "redis://:cache-secret@cache-redis:6390")
         caches: list[RedisConnectionConfig] = []
         await _open_every_cache(config_service, caches)
-        assert len(caches) == 4
-        assert {(c.host, c.port, c.password) for c in caches} == {("cache-redis", 6390, "cache-secret")}
+        # The cached values go to the cache Redis; the viewer-scope counters and the accessible-records epochs, whose
+        # loss would change what is served, stay on the main one.
+        assert sorted((c.host, c.port, c.password) for c in caches) == (
+            [("cache-redis", 6390, "cache-secret")] * 4 + [("main-redis", 6379, "main-secret")] * 2)
 
         main: list[RedisConnectionConfig] = []
         await _open_main_role_clients(config_service, main)

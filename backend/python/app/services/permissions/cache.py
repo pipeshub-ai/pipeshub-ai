@@ -1,10 +1,12 @@
 """`ViewerScopeCache`: Redis, keyed by (org, user, acl_version). A prefilter input only; it never admits.
 
 The ACL version is a counter per organisation plus one global counter (for events that name no organisation);
-their sum is the version. A counter that does not exist is created with an epoch-microsecond base (`SET NX`), so a
-counter lost to a failover, an eviction or a restore restarts far above every value it ever had and cannot make an
-old entry current again. A permission event bumps it *after* its write committed, so the next lookup uses a
-new key and cannot see an entry computed before the change. Nothing is deleted and nothing needs a scan.
+their sum is the version. The counters live on the main Redis with no TTL, where nothing evicts them; only the entries
+go to the cache Redis (``REDIS_CACHE_URL``, when set), which may evict them freely. A counter lost to a failover or a
+restore is seeded from the server's clock in the same script as its increment (`seeded_incr`), so it restarts far
+above every value it had and cannot make an old entry current again. A permission event bumps it *after* its write
+committed, so the next lookup uses a new key and cannot see an entry computed before the change. Nothing is deleted
+and nothing needs a scan.
 
 Redis trouble never widens anything:
 - the version cannot be read -> no cache is used, the caller computes from the graph;
@@ -27,6 +29,7 @@ import time
 from typing import TYPE_CHECKING, Protocol, cast
 
 from app.core.org_context import spawn_detached
+from app.services.redis.generation import seeded_incr
 
 from .metrics import SCOPE_CACHE
 from .scopes import ViewerScopes
@@ -61,11 +64,14 @@ class ViewerScopeCache:
     def __init__(
         self, client: Callable[[], RedisLike] | None, ttl_seconds: int = DEFAULT_TTL_SECONDS, namespace: str = "",
         connect: Callable[[], Awaitable[Callable[[], RedisLike]]] | None = None,
+        counters: Callable[[], RedisLike] | None = None,
     ) -> None:
-        """`client` returns the Redis client to use now (a provider's client is bound to the running loop). Without
-        one, `connect` is tried again (at most once per backoff) whenever the cache is used, so a process that began
-        while Redis was down does not stay without a cache, and therefore without bumps, for its whole life."""
+        """`client` returns the Redis client for entries now (a provider's client is bound to the running loop), and
+        `counters` the one for the version counters (the main Redis; `client` when not given). Without a client,
+        `connect` is tried again (at most once per backoff) whenever the cache is used, so a process that began while
+        Redis was down does not stay without a cache, and therefore without bumps, for its whole life."""
         self._client = client
+        self._counters = counters or client
         self._connect = connect
         self._next_connect = 0.0
         self._ttl = ttl_seconds
@@ -98,8 +104,11 @@ class ViewerScopeCache:
         async def connect() -> Callable[[], RedisLike]:
             conf = await config_service.get_redis_config()
             provider = get_redis_provider(RedisConnectionConfig.for_cache(conf))
+            main = get_redis_provider(RedisConnectionConfig.from_redis_config(conf))
             await provider.get_client().ping()  # pyright: ignore[reportUnknownMemberType]
+            await main.get_client().ping()  # pyright: ignore[reportUnknownMemberType]
             cache._prefix = f"{provider.key_namespace}:{cls.KEY_PREFIX}" if provider.key_namespace else cls.KEY_PREFIX
+            cache._counters = cast("Callable[[], RedisLike]", main.get_client)
             return cast("Callable[[], RedisLike]", provider.get_client)
 
         cache = cls(None, ttl_seconds, connect=connect)
@@ -137,6 +146,7 @@ class ViewerScopeCache:
             return
         try:
             self._client = await self._connect()
+            self._counters = self._counters or self._client
         except Exception as exc:
             self._next_connect = time.monotonic() + self.DOWN_BACKOFF_SECONDS
             _logger.warning("viewer-scope cache unavailable (%s); computing from the graph", type(exc).__name__)
@@ -159,19 +169,15 @@ class ViewerScopeCache:
         await self._ensure_client()
         if not self.usable:
             return None
-        assert self._client is not None
+        assert self._counters is not None
         try:
-            client = self._client()
+            client = self._counters()
             keys = [self._ver_key(_GLOBAL), self._ver_key(org_id)]
             parts = await client.mget(keys)
-            if any(p is None for p in parts):
-                for key, part in zip(keys, parts, strict=True):
-                    if part is None:
-                        await client.set(key, _epoch_base(), nx=True)
-                parts = await client.mget(keys)
-                if any(p is None for p in parts):
-                    return None
-            return sum(int(p) for p in parts if p is not None)
+            total = 0
+            for key, part in zip(keys, parts, strict=True):
+                total += int(part) if part is not None else await seeded_incr(client, key, 0)
+            return total
         except Exception as exc:
             self._trip("version read", exc)
             return None
@@ -246,28 +252,28 @@ class ViewerScopeCache:
     async def _bump_once(self, target: str) -> None:
         """Move the counter here and, without a shared Redis, in every other process. A publish that fails raises, so the bump
         counts as lost: this process stops serving cached scopes and retries it, as for a Redis bump that failed."""
-        assert self._client is not None
-        await _incr_from_base(self._client(), self._ver_key(target))
+        assert self._counters is not None
+        await seeded_incr(self._counters(), self._ver_key(target), 1)
         if self._bus is not None:
             await self._bus.publish("v", target, "")
 
     async def _apply_remote(self, kind: str, org_id: str, _scope_id: str) -> None:
         """A bump published by a process (this one included: its own notification comes back too, and one more move is harmless)."""
-        if kind != "v" or self._client is None:
+        if kind != "v" or self._counters is None:
             await self._flush_local()
             return
         try:
-            await _incr_from_base(self._client(), self._ver_key(org_id))
+            await seeded_incr(self._counters(), self._ver_key(org_id), 1)
         except Exception as exc:
             self._trip("remote bump", exc)
 
     async def _flush_local(self) -> None:
         """Some bumps may have been missed (a reconnect, a message that could not be read): move the global counter, which is part
         of every version, so no entry cached before is used again."""
-        if self._client is None:
+        if self._counters is None:
             return
         try:
-            await _incr_from_base(self._client(), self._ver_key(_GLOBAL))
+            await seeded_incr(self._counters(), self._ver_key(_GLOBAL), 1)
         except Exception as exc:
             self._trip("flush", exc)
 
@@ -277,18 +283,6 @@ class ViewerScopeCache:
         bus, self._bus = self._bus, None
         if bus is not None:
             await bus.stop()
-
-
-def _epoch_base() -> str:
-    return str(time.time_ns() // 1000)
-
-
-async def _incr_from_base(client: RedisLike, key: str) -> None:
-    """INCR a version counter that may have been lost (eviction, failover, restore). A bare INCR would restart it at 1, and a
-    second loss within one entry TTL would make an old version current again; from the epoch base it only ever moves past
-    every value it had (one bump per microsecond would be needed to catch up)."""
-    await client.set(key, _epoch_base(), nx=True)
-    await client.incr(key)
 
 
 def count(result: str) -> None:

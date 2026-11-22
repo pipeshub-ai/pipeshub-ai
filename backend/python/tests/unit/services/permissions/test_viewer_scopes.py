@@ -146,26 +146,40 @@ async def test_a_revoke_is_visible_on_the_next_call() -> None:
     assert "s2" in before.readable_scopes and "s2" not in after.readable_scopes and after.version == before.version + 1
 
 
-async def test_a_revoke_is_visible_after_the_version_counter_was_evicted_twice(monkeypatch: pytest.MonkeyPatch) -> None:
-    # On an evicting cache Redis a counter is lost often. A bare INCR restarts it at 1, so a second loss within the entry
-    # TTL made the version of an entry from before the revoke current again.
-    clock = iter(range(1_700_000_000_000_000_000, 1_800_000_000_000_000_000, 1_000_000_000))
-    monkeypatch.setattr("app.services.permissions.cache.time.time_ns", lambda: next(clock))
-    server = fakeredis.FakeServer()
-    client = fakeredis.FakeAsyncRedis(server=server, decode_responses=True)
-    graph, cache = Graph({"g1", "s2"}), ViewerScopeCache(lambda: client)
+async def test_the_counters_live_on_the_main_redis_and_survive_a_flush_of_the_cache_redis() -> None:
+    # The cache Redis may evict anything; only the entries live there. Losing them all is a miss, never a stale answer.
+    main = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    entries = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    graph = Graph({"g1", "s2"})
+    cache = ViewerScopeCache(lambda: entries, counters=lambda: main)
     service = graph.service(cache)
-    ver_key = cache._ver_key(ORG)
 
-    await client.delete(ver_key)  # evicted
-    await cache.bump(ORG)
     before = await service.resolve_now(ORG, USER)
+    assert all(":ver:" not in key for key in await entries.keys("*"))
+    assert all(":vs:" not in key for key in await main.keys("*"))
+    await entries.flushall()
+    assert (await service.resolve_now(ORG, USER)) == before and graph.resolves == 2  # recomputed, same version
     graph.admitted.discard("s2")
-    await client.delete(ver_key)  # evicted again
-    await cache.bump(ORG)  # the revoke's bump
+    await cache.bump(ORG)
     after = await service.resolve_now(ORG, USER)
 
-    assert "s2" in before.readable_scopes and "s2" not in after.readable_scopes and after.version != before.version
+    assert "s2" in before.readable_scopes and "s2" not in after.readable_scopes and after.version == before.version + 1
+
+
+async def test_a_counter_lost_on_the_main_redis_never_restarts_below_its_old_value() -> None:
+    # A failover or restore can still lose a counter. It is seeded from the server clock in the same script as the
+    # increment, so the version moves past every value it had and an entry from before a revoke is never current again.
+    client = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    graph, cache = Graph({"g1", "s2"}), ViewerScopeCache(lambda: client)
+    service = graph.service(cache)
+    before = await service.resolve_now(ORG, USER)
+
+    await client.delete(cache._ver_key(ORG))  # lost
+    graph.admitted.discard("s2")
+    await cache.bump(ORG)
+    after = await service.resolve_now(ORG, USER)
+
+    assert after.version > before.version and "s2" not in after.readable_scopes
 
 
 async def test_a_bump_of_one_organisation_leaves_another_cached_and_a_global_bump_drops_all() -> None:
