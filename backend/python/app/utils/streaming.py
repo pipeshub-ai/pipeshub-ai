@@ -46,7 +46,7 @@ from app.utils.citations import (
 )
 from app.utils.error_class import log_failure
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
-from app.utils.is_truncated import is_truncated
+from app.utils.is_truncated import TruncatedReplyError, is_truncated
 from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
@@ -1116,35 +1116,46 @@ def _is_oversized_number(exc: BaseException) -> bool:
     return isinstance(exc, ValueError) and "integer string conversion" in str(exc)
 
 
-class TruncatedReplyError(OutputParserException):
-    """The reply stopped at the per-call output cap: what parsed of it is incomplete."""
+#: Output tokens added to a per-call cap for a model that may reason: its reasoning counts
+#: against the same limit, and many models reason without being asked (Gemini 2.5 and later,
+#: OpenAI's reasoning families), so without it the visible reply could be cut off early.
+REASONING_OUTPUT_RESERVE = 8192
+
+# Model families known not to reason. Any other model may, and gets the reserve.
+_NON_REASONING_PREFIXES = ("gpt-3.5", "gpt-4", "chatgpt-4o", "gemini-1.", "gemini-2.0")
 
 
-#: Output tokens added to a per-call cap for a model set up to reason, whose reasoning counts
-#: against the same limit; without it the visible reply would be cut off before it starts.
-REASONING_OUTPUT_RESERVE = 4096
+def _model_name(llm: BaseChatModel) -> str:
+    name = getattr(llm, "model_name", None) or getattr(llm, "model", None) or ""
+    return str(name).lower().rsplit("/", 1)[-1]
 
 
 def _reasoning_reserve(llm: BaseChatModel) -> int:
+    """Output tokens to leave for reasoning on top of a cap; 0 only for a model known not to reason."""
     thinking = getattr(llm, "thinking", None)
-    if isinstance(thinking, Mapping):
-        if thinking.get("type") == "disabled":
-            thinking = None
-        elif isinstance(thinking.get("budget_tokens"), int):
-            # Anthropic requires max_tokens above the thinking budget.
-            return thinking["budget_tokens"]
-    for attr in ("reasoning_effort", "reasoning", "thinking_budget", "thinking_config"):
-        if getattr(llm, attr, None) not in (None, 0, "none", "minimal"):
-            return REASONING_OUTPUT_RESERVE
-    return REASONING_OUTPUT_RESERVE if thinking else 0
+    if isinstance(llm, ChatAnthropic):
+        # Claude reasons only when asked to. Anthropic requires max_tokens above the thinking budget.
+        if isinstance(thinking, Mapping) and thinking.get("type") not in (None, "disabled"):
+            budget = thinking.get("budget_tokens")
+            return budget if isinstance(budget, int) and budget > 0 else REASONING_OUTPUT_RESERVE
+        return REASONING_OUTPUT_RESERVE if getattr(llm, "reasoning_effort", None) else 0
+    if getattr(llm, "thinking_budget", None) == 0 or getattr(llm, "reasoning_effort", None) == "none":
+        return 0
+    name = _model_name(llm)
+    if isinstance(llm, ChatMistralAI) and "magistral" not in name:
+        return 0
+    if name.startswith(_NON_REASONING_PREFIXES):
+        return 0
+    return REASONING_OUTPUT_RESERVE
 
 
 def with_output_cap(llm: BaseChatModel, max_output_tokens: int | None) -> BaseChatModel | None:
-    """A copy of ``llm`` whose replies stop after ``max_output_tokens`` (plus any reasoning
-    allowance), or None for a model this does not know how to cap.
+    """``llm`` with its replies capped at ``max_output_tokens`` plus a reasoning reserve, or
+    None for a model this does not know how to cap.
 
-    The model's own limit wins when it is lower. Bedrock is left alone: its thinking budget
-    lives in request fields that a cap here could fall below.
+    The model's own limit stands when it is lower: ``llm`` itself comes back, so the caller
+    still reads the raw reply and can tell a cut-off one. Bedrock is left alone: its thinking
+    budget lives in request fields that a cap here could fall below.
     """
     if not max_output_tokens or max_output_tokens <= 0:
         return None
@@ -1157,7 +1168,7 @@ def with_output_cap(llm: BaseChatModel, max_output_tokens: int | None) -> BaseCh
     cap = max_output_tokens + _reasoning_reserve(llm)
     current = getattr(llm, field, None)
     if isinstance(current, int) and 0 < current <= cap:
-        return None
+        return llm
     try:
         return llm.model_copy(update={field: cap})
     except Exception as exc:
@@ -1170,7 +1181,7 @@ def _capped_reply(result: Any) -> Any:  # noqa: ANN401 - whatever the structured
     if not (isinstance(result, dict) and "raw" in result and "parsed" in result):
         return result
     if is_truncated(result.get("raw")):
-        raise TruncatedReplyError("the reply reached its output-token cap")
+        raise TruncatedReplyError("the reply reached its output-token limit")
     error = result.get("parsing_error")
     if error is not None:
         raise error
@@ -1227,6 +1238,7 @@ async def invoke_with_structured_output_and_reflection(
     on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
     raise_unavailable: bool = False,
     max_output_tokens: int | None = None,
+    raise_truncated: bool = False,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
@@ -1234,8 +1246,10 @@ async def invoke_with_structured_output_and_reflection(
     With ``raise_unavailable`` a provider outage raises ``LLMUnavailableError`` instead of
     returning None, for callers that must tell an outage from output they cannot use.
 
-    With ``max_output_tokens`` each reply is capped (``with_output_cap``); a reply cut off
-    at the cap is not usable, so the call returns None after one warning and is not retried.
+    With ``max_output_tokens`` each reply is capped (``with_output_cap``) and its stop reason
+    read. A reply cut off at its limit is not usable and is not asked for again (the same
+    request would stop at the same limit): the call returns None after one warning, or with
+    ``raise_truncated`` raises ``TruncatedReplyError`` for the caller to report.
 
     Args:
         llm: The LangChain chat model to use
@@ -1326,11 +1340,9 @@ async def invoke_with_structured_output_and_reflection(
             logger.warning("The %s reply holds a number too long to read (%s); the reply is discarded", schema.__name__, e)
             return None
         if isinstance(e, TruncatedReplyError):
-            # Not retried: the same request would stop at the same cap.
-            logger.warning(
-                "The %s reply stopped at its %s-token output cap; the reply is discarded",
-                schema.__name__, max_output_tokens,
-            )
+            if raise_truncated:
+                raise
+            logger.warning("The %s reply was cut off at its output cap; the reply is discarded", schema.__name__)
             return None
         if raise_call_errors:
             raise
@@ -1438,6 +1450,8 @@ Respond only with valid JSON that matches the schema."""
                 raise
             except Exception as reflection_error:
                 if raise_unavailable and isinstance(reflection_error, LLMUnavailableError):
+                    raise
+                if raise_truncated and isinstance(reflection_error, TruncatedReplyError):
                     raise
                 if isinstance(reflection_error, TruncatedReplyError) or _is_oversized_number(reflection_error):
                     # Asking again would stop at the same cap, or run away again.

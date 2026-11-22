@@ -141,46 +141,93 @@ def test_an_out_of_range_count_reads_as_no_header_row(answer: object, expected: 
 def _gemini(**kwargs: object):  # noqa: ANN202
     from langchain_google_genai import ChatGoogleGenerativeAI
 
-    return ChatGoogleGenerativeAI(model="gemini-test", google_api_key="offline", **kwargs)
+    return ChatGoogleGenerativeAI(model=kwargs.pop("model", "gemini-test"), google_api_key="offline", **kwargs)
 
 
-def test_the_cap_is_set_on_a_copy_of_the_model() -> None:
-    from langchain_anthropic import ChatAnthropic
+RESERVE = streaming.REASONING_OUTPUT_RESERVE
+CEILING = table_enrichment.TABLE_CALL_MAX_OUTPUT_TOKENS
+
+
+@pytest.mark.parametrize(
+    ("model", "reserve"),
+    [
+        # Reason by default, with nothing on the model object to say so.
+        pytest.param(lambda: _gemini(model="gemini-3.8-flash"), RESERVE, id="gemini-3.8-flash"),
+        pytest.param(lambda: _gemini(model="models/gemini-2.5-flash"), RESERVE, id="gemini-2.5-flash"),
+        pytest.param(lambda: _openai(model="gpt-6-luna"), RESERVE, id="gpt-6-luna"),
+        pytest.param(lambda: _openai(model="o4-mini"), RESERVE, id="o4-mini"),
+        # Unknown: when in doubt, the reserve.
+        pytest.param(lambda: _gemini(model="gemini-test"), RESERVE, id="unknown-gemini"),
+        # Known not to reason, or told not to.
+        pytest.param(lambda: _openai(model="gpt-4.1"), 0, id="gpt-4.1"),
+        pytest.param(lambda: _openai(model="gpt-4o-mini"), 0, id="gpt-4o-mini"),
+        pytest.param(lambda: _gemini(model="gemini-2.0-flash"), 0, id="gemini-2.0-flash"),
+        pytest.param(lambda: _gemini(model="gemini-2.5-flash", thinking_budget=0), 0, id="thinking-budget-0"),
+        pytest.param(lambda: _openai(model="gpt-6-luna", reasoning_effort="none"), 0, id="reasoning-none"),
+        pytest.param(lambda: _anthropic(), 0, id="claude-no-thinking"),
+        pytest.param(lambda: _anthropic(thinking={"type": "enabled", "budget_tokens": 3000}), 3000, id="claude-thinking-budget"),
+    ],
+)
+def test_a_model_that_may_reason_keeps_room_to_reason(model, reserve: int) -> None:
+    llm = model()
+    capped = streaming.with_output_cap(llm, 2048)
+    limit = getattr(capped, "max_output_tokens", None) or capped.max_tokens
+    assert limit == 2048 + reserve
+    # A copy: the model the caller holds keeps its own settings.
+    assert capped is not llm
+
+
+def _openai(**kwargs: object):  # noqa: ANN202
     from langchain_openai import ChatOpenAI
 
-    gemini = _gemini()
-    capped = streaming.with_output_cap(gemini, 2048)
-    assert capped.max_output_tokens == 2048
-    assert gemini.max_output_tokens is None
-    # Reasoning counts against the same limit, so a reasoning model gets an allowance on top.
-    assert streaming.with_output_cap(_gemini(reasoning_effort="low"), 2048).max_output_tokens == (
-        2048 + streaming.REASONING_OUTPUT_RESERVE
-    )
-    assert streaming.with_output_cap(ChatOpenAI(model="m", api_key="offline"), 2048).max_tokens == 2048
-    thinking = ChatAnthropic(
-        model="m", api_key="offline", max_tokens=64000, thinking={"type": "enabled", "budget_tokens": 3000}
-    )
-    # Anthropic requires max_tokens above the thinking budget.
-    assert streaming.with_output_cap(thinking, 2048).max_tokens == 5048
-    # A lower limit of the model's own stands; an unknown model is left alone.
-    assert streaming.with_output_cap(_gemini(max_output_tokens=1000), 2048) is None
+    return ChatOpenAI(api_key="offline", **kwargs)
+
+
+def _anthropic(**kwargs: object):  # noqa: ANN202
+    from langchain_anthropic import ChatAnthropic
+
+    return ChatAnthropic(model="claude-test", api_key="offline", max_tokens=64000, **kwargs)
+
+
+def test_a_lower_limit_of_the_models_own_stands() -> None:
+    own = _gemini(max_output_tokens=1000)
+    # The model itself, so the caller still reads the raw reply and its stop reason.
+    assert streaming.with_output_cap(own, 2048) is own
     assert streaming.with_output_cap(MagicMock(), 2048) is None
-    assert streaming.with_output_cap(gemini, None) is None
+    assert streaming.with_output_cap(_gemini(), None) is None
 
 
 @pytest.mark.asyncio
-async def test_table_calls_carry_an_output_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_every_table_call_carries_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
     caps: list[object] = []
 
     async def _invoke(_llm: object, _messages: object, schema: type[BaseModel], *_a: object, **kw: object):  # noqa: ANN202
-        caps.append(kw.get("max_output_tokens"))
+        caps.append((schema.__name__, kw.get("max_output_tokens")))
+        if schema.__name__ == "TableSummaryHeaders":
+            return TableSummaryHeaders(summary="s", headers=["Name", "Age"], header_row_count=1)
+        return None
 
     monkeypatch.setattr(table_enrichment, "invoke_with_structured_output_and_reflection", _invoke)
     await enrich_table_grid(MagicMock(), GRID, logger=logging.getLogger("t"))
-    assert len(caps) == 2
-    first, summary = caps
-    assert isinstance(first, int) and 0 < first <= table_enrichment.FIRST_CALL_MAX_OUTPUT_TOKENS
-    assert isinstance(summary, int) and 0 < summary <= table_enrichment.SUMMARY_CALL_MAX_OUTPUT_TOKENS
+    # First call (no answer), the summary follow-up, then the rows in a batch.
+    assert caps == [
+        ("TableEnrichment", CEILING), ("TableSummaryHeaders", CEILING), ("KeyedRowDescriptions", CEILING),
+    ]
+
+
+def _cut_off_model(sent: list, text: str):  # noqa: ANN202
+    from unittest.mock import patch
+
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    async def _cut_off(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN202
+        sent.append(self.max_output_tokens)
+        message = AIMessage(content=text, response_metadata={"finish_reason": "MAX_TOKENS"})
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+    return patch.object(ChatGoogleGenerativeAI, "_agenerate", _cut_off)
 
 
 @pytest.mark.asyncio
@@ -188,28 +235,51 @@ async def test_a_reply_cut_off_at_the_cap_degrades_once_and_is_not_asked_again(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A real Gemini model with its transport stubbed: every reply stops at the cap mid-JSON."""
-    from unittest.mock import patch
-
-    from langchain_core.messages import AIMessage
-    from langchain_core.outputs import ChatGeneration, ChatResult
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
-    sent_caps: list[object] = []
-
-    async def _cut_off(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN202
-        sent_caps.append(self.max_output_tokens)
-        # LangChain's partial JSON parser would repair this into {"summary": "Ages of"}.
-        message = AIMessage(content='{"summary": "Ages of', response_metadata={"finish_reason": "MAX_TOKENS"})
-        return ChatResult(generations=[ChatGeneration(message=message)])
-
-    with patch.object(ChatGoogleGenerativeAI, "_agenerate", _cut_off), caplog.at_level(logging.WARNING):
+    sent: list[object] = []
+    # LangChain's partial JSON parser would repair this into {"summary": "Ages of"}.
+    with _cut_off_model(sent, '{"summary": "Ages of'), caplog.at_level(logging.WARNING):
         result = await enrich_table_grid(_gemini(), GRID, logger=logging.getLogger("t"))
 
     # The first call and the summary follow-up, each once, each capped.
-    assert len(sent_caps) == 2
-    assert all(isinstance(cap, int) and cap <= table_enrichment.FIRST_CALL_MAX_OUTPUT_TOKENS for cap in sent_caps)
+    assert sent == [CEILING + RESERVE] * 2
     assert result.failed and result.degraded
     assert result.summary != "Ages of"
-    cut = [r for r in caplog.records if "output cap" in r.getMessage()]
-    assert len(cut) == 2
+    assert len([r for r in caplog.records if "output cap" in r.getMessage()]) == 2
     assert not [r for r in caplog.records if "call failed" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_off_reply_is_caught_under_the_models_own_lower_limit() -> None:
+    sent: list[object] = []
+    with _cut_off_model(sent, '{"summary": "Quarterly sales by re'):
+        answer = await streaming.invoke_with_structured_output_and_reflection(
+            _gemini(max_output_tokens=300), [("user", "x")], TableSummaryHeaders, 1, max_output_tokens=900
+        )
+    assert sent == [300]
+    assert answer is None
+
+
+@pytest.mark.asyncio
+async def test_a_cut_off_row_batch_falls_back_once_and_is_not_split(caplog: pytest.LogCaptureFixture) -> None:
+    rows = [{"Name": f"n{i}", "Age": str(i)} for i in range(24)]
+    sent: list[object] = []
+    body = '{"descriptions": [{"key": "' + row_keys(rows)[0] + '", "description": "' + "and " * 2000
+    with _cut_off_model(sent, body), caplog.at_level(logging.WARNING):
+        texts = await table_enrichment.describe_row_dicts(_gemini(), rows, "s", logging.getLogger("t"))
+
+    # One call: a cut-off batch is neither split nor asked again.
+    assert sent == [CEILING + RESERVE]
+    # Every row keeps its plain text; none takes the cut-off description.
+    assert texts == [f"Name: n{i}, Age: {i}" for i in range(24)]
+    degraded = [r.getMessage() for r in caplog.records if "row batch degraded" in r.getMessage()]
+    assert len(degraded) == 1 and "reason=parse" in degraded[0]
+
+
+def test_a_whole_corpus_sized_reply_fits_under_the_ceiling() -> None:
+    """The ceiling is a safety stop, not a budget: the longest whole reply a table batch needs
+    stays well under it. Worst case of a 50-row batch, each row a long, wide row."""
+    from app.utils.concurrency import TABLE_ROW_BATCH_SIZE
+
+    summary, per_header, per_row = 250, 8, 160  # tokens: verbose summary, header name, long row
+    worst = 40 + summary + 30 * per_header + TABLE_ROW_BATCH_SIZE * (12 + per_row)
+    assert worst < CEILING

@@ -71,6 +71,7 @@ from app.utils.indexing_metrics import (
     note_table_result,
     track_indexing_enrichment,
 )
+from app.utils.is_truncated import TruncatedReplyError
 from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -95,24 +96,15 @@ MIN_RETRY_CALLS = 4
 #: One reflection per call, for an answer that did not parse; the old count reflection is gone
 #: because keys make a wrong count harmless.
 _REFLECTIONS = 1
-#: Output-token caps of the first call and the summary-only call. A reply needs a summary, one
-#: short name per column and (first call only) one description per row; a model that runs a
-#: field on would otherwise write until the provider's own limit, tens of thousands of tokens.
-#: A cut-off first reply only means its rows are described in batches; a cut-off summary reply
-#: leaves the plain summary. Row batches are not capped here.
-_CAP_BASE_TOKENS = 768
-_CAP_TOKENS_PER_COLUMN = 24
-_CAP_TOKENS_PER_ROW = 96
-FIRST_CALL_MAX_OUTPUT_TOKENS = 8192
-SUMMARY_CALL_MAX_OUTPUT_TOKENS = 2048
+#: Output-token ceiling of every table call (first, summary-only and row batch), on top of the
+#: reasoning reserve ``with_output_cap`` adds. A safety ceiling against a reply that runs a
+#: field on to the provider's own limit (tens of thousands of tokens), not a budget: it is far
+#: above any whole reply a table batch needs. A cut-off reply is discarded and not asked again.
+TABLE_CALL_MAX_OUTPUT_TOKENS = 16384
 
 
-def _output_cap(rows: int, columns: int, ceiling: int) -> int:
-    return min(ceiling, _CAP_BASE_TOKENS + _CAP_TOKENS_PER_COLUMN * columns + _CAP_TOKENS_PER_ROW * rows)
-
-
-def _width(rows: Sequence[Sequence[str]]) -> int:
-    return max((len(row) for row in rows), default=0)
+class _ReplyCutOff(Exception):
+    """A row batch's reply stopped at its output limit."""
 
 
 class _ModelCallFailed(Exception):
@@ -407,7 +399,8 @@ async def _call_row_batch(
                 rendered=_rendered(messages),
                 params={"flow": _FLOW_ROWS},
                 call=lambda: invoke_with_structured_output_and_reflection(
-                    run.llm, messages, KeyedRowDescriptions, _REFLECTIONS, raise_call_errors=True
+                    run.llm, messages, KeyedRowDescriptions, _REFLECTIONS, raise_call_errors=True,
+                    max_output_tokens=TABLE_CALL_MAX_OUTPUT_TOKENS, raise_truncated=True,
                 ),
                 encode=lambda answer: answer.model_dump(),
                 decode=_strict_decode_keyed(KeyedRowDescriptions),
@@ -419,6 +412,8 @@ async def _call_row_batch(
             raise
         except run.propagate:
             raise
+        except TruncatedReplyError as e:
+            raise _ReplyCutOff from e
         except Exception as e:
             raise _ModelCallFailed(str(e)) from e
     if parsed is None:
@@ -542,6 +537,15 @@ async def _describe_batch(
     """Describe *rows_data* with one call, splitting it on a poor answer. ``None`` = fall back."""
     try:
         answer = await _call_row_batch(run, rows_data)
+    except _ReplyCutOff:
+        # Not split or asked again: a reply that runs to its limit would do so again. Only this
+        # batch's rows fall back, reported once by note_degraded.
+        n = len(rows_data)
+        best = list(salvage) if salvage is not None else [None] * n
+        missing = sum(1 for b in best if not _usable(b))
+        if missing:
+            run.note_degraded("parse", n, n - missing, missing)
+        return [b if _usable(b) else None for b in best]
     except _ModelCallFailed as e:  # a failed call is not retried: a split would only add load
         run.logger.warning("Table row batch call failed: %s", type(e.__cause__).__name__)
         n = len(rows_data)
@@ -663,7 +667,7 @@ async def _first_call(
         params={"flow": _FLOW_COMBINED, "count": len(send_batch)},
         call=lambda: invoke_with_structured_output_and_reflection(
             llm, messages, TableEnrichment, _REFLECTIONS, raise_call_errors=True,
-            max_output_tokens=_output_cap(len(send_batch), _width(send_batch), FIRST_CALL_MAX_OUTPUT_TOKENS),
+            max_output_tokens=TABLE_CALL_MAX_OUTPUT_TOKENS,
         ),
         encode=lambda enrichment: enrichment.model_dump(),
         decode=_strict_decode_keyed(TableEnrichment),
@@ -690,7 +694,7 @@ async def _summary_and_headers_call(
         params={"flow": _FLOW_SUMMARY, "count": len(sample)},
         call=lambda: invoke_with_structured_output_and_reflection(
             llm, messages, TableSummaryHeaders, _REFLECTIONS, raise_call_errors=True,
-            max_output_tokens=_output_cap(0, _width(sample), SUMMARY_CALL_MAX_OUTPUT_TOKENS),
+            max_output_tokens=TABLE_CALL_MAX_OUTPUT_TOKENS,
         ),
         encode=lambda answer: answer.model_dump(),
         decode=TableSummaryHeaders.model_validate,
