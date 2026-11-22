@@ -1396,6 +1396,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:Record) ON (n.pendingVirtualRecordId)"
         )
 
+        # SINGLE: refreshIntentId. The intent sweep reads the few records that carry a Force reindex not yet served;
+        # only a record with the property is in the index.
+        indexes.append(
+            "CREATE INDEX record_refresh_intent_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.refreshIntentId)"
+        )
+
         # get_document_id_by_virtual_record_id falls back to this field when the
         # keyed lookup misses, which it does for every record indexed the first
         # time; unindexed, that is a label scan per record.
@@ -8018,6 +8025,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             AND record.id <> $record_id
             AND record.indexingStatus = $queued_status
             AND {cypher_live_record("record")}
+            AND record.refreshIntentId IS NULL
             """
 
             params = {
@@ -8148,6 +8156,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             AND record.indexingStatus = $queued_status
             AND record.orgId = $org_id
             AND {cypher_live_record("record")}
+            AND record.refreshIntentId IS NULL
             """
 
             params = {
@@ -8214,33 +8223,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not updated_records:
                 return 0
 
-            # Same batch as the promotion: a crash after it would otherwise
-            # leave the duplicates COMPLETED with no taxonomy and nothing to
-            # trigger the copy, since a redelivery finds nothing QUEUED. Only
-            # an indexed primary has anything to copy.
+            # The reference's bookkeeping goes first: a crash between the two writes leaves a pending marker that finds no
+            # copies, never copies promoted with nothing to trigger their taxonomy. Only an indexed primary has anything to copy.
             if new_indexing_status in _RECONCILED_STATUSES:
-                updated_records.append({
+                bookkeeping_ok = await self.batch_update_nodes([{
                     "id": record_id,
                     DUPLICATE_RECONCILE_PENDING_FIELD: True,
                     DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
                     DUPLICATE_RECONCILE_DUE_AT_FIELD: current_timestamp + DUPLICATE_RECONCILE_GRACE_MS,
-                })
+                }], CollectionNames.RECORDS.value, transaction)
+                if not bookkeeping_ok:
+                    return -1
 
-            success = await self.batch_update_nodes(
-                updated_records, CollectionNames.RECORDS.value, transaction
-            )
-            if not success:
-                self.logger.warning(
-                    "⚠️ Failed to update queued duplicate records for %s - some records may not exist",
-                    record_id,
-                )
-                return -1
-
+            promoted = await self._promote_queued_copies(updated_records, transaction)
             self.logger.debug(
-                f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
+                f"✅ Updated {promoted} of {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
             )
 
-            return len(queued_records)
+            return promoted
 
         except SchemaValidationError:
             raise
@@ -8248,6 +8248,29 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="update_queued_duplicates_status")
             return -1
+
+    async def _promote_queued_copies(self, updates: list[dict], transaction: str | None) -> int:
+        """Write each copy's new status only while it is still QUEUED and holds no Force reindex request, in the statement that
+        checks it (a request stored after the copies were read is not overwritten). Returns how many copies were written."""
+        if not updates:
+            return 0
+        collection = CollectionNames.RECORDS.value
+        for node in updates:
+            self.validator.validate_node_update(collection, node)
+        nodes = [self._arango_to_neo4j_node(node, collection) for node in updates]
+        label = collection_to_label(collection)
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $nodes AS node_data
+            MATCH (n:{label} {{id: node_data.id}})
+            WHERE n.indexingStatus = 'QUEUED' AND n.refreshIntentId IS NULL
+            SET n += node_data
+            RETURN n.id AS id
+            """,
+            parameters={"nodes": _in_lock_order(nodes, _by_id)},
+            txn_id=transaction,
+        )
+        return len(rows or [])
 
     async def copy_document_relationships(
         self,
@@ -16721,7 +16744,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
 
 
-    async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
+    async def update_indexing_status_for_record_ids(
+        self, record_ids: list[str], status: str, *, fields: dict[str, Any] | None = None
+    ) -> None:
         """
         Update indexingStatus to the specified status for each id (deduplicated).
         Skips missing ids and isInternal records.
@@ -16729,13 +16754,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             record_ids: List of record IDs to update
             status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+            fields: Further fields set in the same statement (a Force reindex's refresh intent)
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
             return
         coll = CollectionNames.RECORDS.value
         try:
-            self.validator.validate_node_update(coll, {"indexingStatus": status})
+            self.validator.validate_node_update(coll, {"indexingStatus": status, **(fields or {})})
             label = collection_to_label(coll)
             run_with, run_patch = cypher_parts("n", WriteKind.STATUS_VAR, status="$status")
             # One statement, so the run rule reads the stored record it writes. Internal and placeholder records are skipped.
@@ -16747,14 +16773,55 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 REMOVE n.{_MATCH_LOCK}
                 {run_with}
                 SET n.indexingStatus = $status, n += {run_patch}
+                {"SET n += $fields" if fields else ""}
                 """,
-                parameters={"ids": unique_ids, "status": status, "now": get_epoch_timestamp_in_ms()},
+                parameters={"ids": unique_ids, "status": status, "now": get_epoch_timestamp_in_ms(), **({"fields": dict(fields)} if fields else {})},
                 txn_id=None,
             )
         except SchemaValidationError:
             raise
         except Exception as e:
+            if fields:
+                raise        # with ``fields`` (a Force reindex's request) a lost write must not be read as a request that was made
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
+
+    async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
+        """Set ``fields`` on each existing record that is neither internal nor a placeholder, whatever its status; the
+        statement writes nothing else. Returns how many were written; a failure raises."""
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids or not fields:
+            return 0
+        coll = CollectionNames.RECORDS.value
+        self.validator.validate_node_update(coll, dict(fields))
+        label = collection_to_label(coll)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label})
+            WHERE n.id IN $ids AND coalesce(n.isInternal, false) = false AND coalesce(n.isPlaceholder, false) = false
+            SET n += $fields
+            RETURN count(n) AS written
+            """,
+            parameters={"ids": unique_ids, "fields": dict(fields)},
+            txn_id=None,
+        )
+        return int((rows[0].get("written") if rows else 0) or 0)
+
+    async def get_records_with_refresh_intent(
+        self, org_id: str, *, after_key: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_records_with_refresh_intent`. The index on ``refreshIntentId`` serves the filter."""
+        label = collection_to_label(CollectionNames.RECORDS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label})
+            WHERE n.refreshIntentId IS NOT NULL AND n.orgId = $org AND coalesce(n.isDeleted, false) = false
+              AND ($after IS NULL OR n.id > $after)
+            RETURN n ORDER BY n.id ASC LIMIT $limit
+            """,
+            parameters={"org": org_id, "after": after_key, "limit": max(1, int(limit))},
+            txn_id=None,
+        )
+        return [self._neo4j_to_arango_node(dict(r["n"]), CollectionNames.RECORDS.value) for r in rows or []]
 
     async def reset_indexing_status_for_connector(
         self,

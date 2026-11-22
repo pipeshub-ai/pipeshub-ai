@@ -171,6 +171,7 @@ class Routes(Enum):
     STORAGE_PAID_RESULTS_PURGE_BATCH = "/api/v1/document/internal/paid-results/purge-batch"
     STORAGE_PAID_RESULTS_PURGE_CUTOFF = "/api/v1/document/internal/paid-results/{recordId}/purge-cutoff"
     STORAGE_PAID_RESULTS_DELETE = "/api/v1/document/internal/paid-results/{recordId}/delete"
+    STORAGE_PAID_RESULTS_DELETE_IF_MATCH = "/api/v1/document/internal/paid-results/{recordId}/delete-if-match"
 
     # User-facing, permission-checked record bytes
     KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"

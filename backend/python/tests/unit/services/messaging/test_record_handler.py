@@ -4961,6 +4961,55 @@ class TestReconcilePendingFlag:
         assert handler._reconcile_promoted_duplicates.await_count == record_module.RECONCILE_ATTEMPTS
 
     @pytest.mark.asyncio
+    async def test_failure_after_a_sweep_cleared_the_flag_rearms_it(self, monkeypatch) -> None:
+        monkeypatch.setattr(record_module, "RECONCILE_RETRY_DELAY_SECONDS", 0)
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_node = AsyncMock()
+        gp.get_document = AsyncMock(return_value={
+            "indexingStatus": "COMPLETED", DUPLICATE_RECONCILE_PENDING_FIELD: False,
+            "duplicateReconcileAttempts": 0, "duplicateReconcileDueAt": None,
+        })
+        gp.update_node_fields_if_match = AsyncMock(return_value=True)
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=False)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        gp.update_node_fields_if_match.assert_awaited_once()
+        assert gp.update_node_fields_if_match.await_args.args[2][DUPLICATE_RECONCILE_PENDING_FIELD] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rearmed", [True, False])
+    async def test_the_recovery_line_is_logged_only_when_the_marker_was_rearmed(self, monkeypatch, rearmed) -> None:
+        monkeypatch.setattr(record_module, "RECONCILE_RETRY_DELAY_SECONDS", 0)
+        monkeypatch.setattr(record_module, "rearm_failed_reconcile", AsyncMock(return_value=rearmed))
+        handler = _make_handler()
+        handler.event_processor.graph_provider.update_node = AsyncMock()
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=False)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        logged = any("left pending for the recovery retry" in str(c.args[0]) for c in handler.logger.warning.call_args_list)
+        assert logged is rearmed
+
+    @pytest.mark.asyncio
+    async def test_a_successful_reconcile_is_not_rearmed(self) -> None:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_node = AsyncMock()
+        gp.get_document = AsyncMock(return_value={
+            "indexingStatus": "COMPLETED", DUPLICATE_RECONCILE_PENDING_FIELD: False,
+            "duplicateReconcileAttempts": 0, "duplicateReconcileDueAt": None,
+        })
+        gp.update_node_fields_if_match = AsyncMock(return_value=True)
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=True)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        gp.update_node_fields_if_match.assert_not_awaited()
+        assert self._flag_writes(gp) == [False]
+
+    @pytest.mark.asyncio
     async def test_a_transient_failure_is_retried(self, monkeypatch):
         monkeypatch.setattr(record_module, "RECONCILE_RETRY_DELAY_SECONDS", 0)
         handler = _make_handler()

@@ -287,7 +287,7 @@ NAMES = sorted(n for n, f in vars(SyncStateMixin).items() if not n.startswith("_
 CALLS = {
     "get_user_sync_state": ("e", "s"), "update_user_sync_state": ("e", "st", "s"), "get_drive_sync_state": ("d",), "update_drive_sync_state": ("d", "st"),
     "store_page_token": ("c", "r", "e", "t"), "get_page_token_db": ("c",), "backfill_indexed_copy_flags": (), "reset_indexing_status_for_connector": ("c", "s"),
-    "update_queued_duplicates_status": ("r", "s"),
+    "update_queued_duplicates_status": ("r", "s"), "_promote_queued_copies": ([], None),
 }
 
 
