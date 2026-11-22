@@ -23,3 +23,9 @@ def unit_test_fixtures() -> dict[str, object]:
     needs extra per-test setup or clean-up returns its fixtures here. Here there are none.
     """
     return {}
+
+
+def extra_app_schema_pins() -> dict[int, str]:
+    """App schema rule hashes, by generation, that this build adds to the shared pins
+    (tests/unit/schema/test_record_schema_generation.py). Here there are none."""
+    return {}
