@@ -20,7 +20,13 @@ from app.models.entities import Record
 from app.modules.indexing.record_diagnostics import WriteKind, sql_patch, with_run_patch
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
-from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
+from app.services.graph_db.common.utils import (
+    RECORD_UPDATE_DROPPED_FIELDS,
+    TRASHED_EXTERNAL_ID_PREFIX,
+    collapse_repeated_records,
+    record_created_at_insert_only,
+    record_insert_doc,
+)
 from app.services.graph_db.interface.graph_db_provider import UNSUPPORTED_PAGE_FIELDS
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
@@ -68,6 +74,36 @@ async def _upsert_docs(tx: Tx, org: str, coll: str, docs: list[dict]) -> None:
         INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
         ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(graph.nodes.doc || (SELECT x2.doc FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
                      org, coll, _j([{"id": i, "doc": by_id[i]} for i in sorted(by_id)]))
+
+
+async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
+    """``_upsert_docs`` for the ``records`` collection, with the insert-only fields.
+
+    A new record is written whole, with an incarnation id minted when ``RECORD_INCARNATION_WRITE`` is on. An existing record is
+    merged from the document without ``createdAtTimestamp``, ``incarnationId`` and the trash state, so a re-sync keeps its stored
+    values and a null cannot remove them. The one exception is a placeholder replaced by a real record (the stored row says
+    ``isPlaceholder``, the incoming one does not): its date becomes the earlier of the two positive values, decided here from the
+    stored row, so two writers that both read the stub cannot both overwrite it. The id is never touched."""
+    by_id: dict[str, dict] = {}
+    for d in docs:
+        by_id[d["id"]] = {**by_id.get(d["id"], {}), **d}      # callers hand one row per id (collapsed or merged); with the switch off, last wins as before
+    if not by_id:
+        return
+    # One document per row: the update branch derives what an existing record may take from it in SQL (``x2.doc - dropped keys``), so the
+    # payload is not doubled and the batch is looked up once per conflicting row (two lookups and two documents per row cost 20-25 % at 500 records per call).
+    rows = [{"id": i, "doc": record_insert_doc(by_id[i])} for i in sorted(by_id)]
+    insert_only = record_created_at_insert_only()
+    dropped = list(RECORD_UPDATE_DROPPED_FIELDS) if insert_only else ["incarnationId"]
+    await tx.execute("""/* pipeshub:graph.records_upsert_record_docs */ WITH x AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb))
+        INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
+        ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(
+            graph.nodes.doc || (SELECT (x2.doc - $4::text[]) || CASE
+                WHEN $5::boolean AND coalesce((graph.nodes.doc->>'isPlaceholder')::boolean, false) AND x2.doc->>'isPlaceholder' = 'false'
+                     AND jsonb_typeof(x2.doc->'createdAtTimestamp') = 'number' AND (x2.doc->>'createdAtTimestamp')::numeric > 0
+                THEN jsonb_build_object('createdAtTimestamp', CASE WHEN jsonb_typeof(graph.nodes.doc->'createdAtTimestamp') = 'number' AND (graph.nodes.doc->>'createdAtTimestamp')::numeric > 0
+                    THEN LEAST((graph.nodes.doc->>'createdAtTimestamp')::numeric, (x2.doc->>'createdAtTimestamp')::numeric) ELSE (x2.doc->>'createdAtTimestamp')::numeric END)
+                ELSE '{}'::jsonb END FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
+                     org, _RECORDS, _j(rows), dropped, insert_only)
 
 
 _RECORD_BY_EXTERNAL_PAGE = 100       # the function's LIMIT
@@ -287,6 +323,7 @@ class RecordsMixin(PgBase):
         org = current_org_id()
         if not records:
             return
+        records = collapse_repeated_records(records)          # one row per id, by the rule every store applies
         by_type: dict[str | None, list] = {}
         for rec in records:
             by_type.setdefault(RECORD_TYPE_COLLECTION_MAPPING.get(rec.record_type), []).append(rec)
@@ -309,7 +346,7 @@ class RecordsMixin(PgBase):
                     WHERE h.org_id = $1 AND h.coll = 'records' AND x.ext IS NOT NULL AND h.doc->>'connectorId' = x.cid AND h.doc->>'externalRecordId' = x.ext
                       AND h.id <> x.id AND coalesce((h.doc->>'isDeleted')::boolean, false)""",
                                  org, _j([{"id": b["id"], "ext": b.get("externalRecordId"), "cid": b.get("connectorId")} for b in all_bases]), TRASHED_EXTERNAL_ID_PREFIX)
-            await _upsert_docs(tx, org, _RECORDS, all_bases)
+            await _upsert_record_docs(tx, org, all_bases)
             for coll in sorted(c for c in by_type if c):
                 types = types_by_type[coll]
                 await _upsert_docs(tx, org, coll, types)
