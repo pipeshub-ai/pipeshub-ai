@@ -37,6 +37,7 @@ from app.connectors.core.base.error.stream_errors import (
 )
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.retrieval import degraded_notice
+from app.services.ai_models.discovery.catalog import lookup_catalog
 from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.citations import (
@@ -1121,8 +1122,20 @@ def _is_oversized_number(exc: BaseException) -> bool:
 #: OpenAI's reasoning families), so without it the visible reply could be cut off early.
 REASONING_OUTPUT_RESERVE = 8192
 
-# Model families known not to reason. Any other model may, and gets the reserve.
+# Model families known not to reason: ``-chat`` variants (gpt-5.x-chat-latest, deepseek-chat)
+# and these prefixes. A name that says it reasons always gets the reserve; any other model
+# may reason, and gets it too.
 _NON_REASONING_PREFIXES = ("gpt-3.5", "gpt-4", "chatgpt-4o", "gemini-1.", "gemini-2.0")
+_REASONING_WORDS = ("thinking", "reasoning", "reasoner")
+
+# Our provider ids for the model catalog, by model class.
+_CATALOG_PROVIDER = (
+    (ChatGoogleGenerativeAI, "gemini"),
+    (AzureChatOpenAI, "azureOpenAI"),
+    (ChatOpenAI, "openAI"),
+    (ChatAnthropic, "anthropic"),
+    (ChatMistralAI, "mistral"),
+)
 
 
 def _model_name(llm: BaseChatModel) -> str:
@@ -1142,20 +1155,40 @@ def _reasoning_reserve(llm: BaseChatModel) -> int:
     if getattr(llm, "thinking_budget", None) == 0 or getattr(llm, "reasoning_effort", None) == "none":
         return 0
     name = _model_name(llm)
-    if isinstance(llm, ChatMistralAI) and "magistral" not in name:
+    if any(word in name for word in _REASONING_WORDS):
+        return REASONING_OUTPUT_RESERVE
+    if "-chat" in name or name.startswith(_NON_REASONING_PREFIXES):
         return 0
-    if name.startswith(_NON_REASONING_PREFIXES):
+    if isinstance(llm, ChatMistralAI) and "magistral" not in name:
         return 0
     return REASONING_OUTPUT_RESERVE
 
 
-def with_output_cap(llm: BaseChatModel, max_output_tokens: int | None) -> BaseChatModel | None:
-    """``llm`` with its replies capped at ``max_output_tokens`` plus a reasoning reserve, or
-    None for a model this does not know how to cap.
+def _known_output_limit(llm: BaseChatModel) -> int | None:
+    """The most output tokens the model accepts, when its profile or the model catalog says;
+    None when unknown, as for any model behind an OpenAI-compatible endpoint of its own."""
+    if isinstance(llm, ChatOpenAI) and not isinstance(llm, AzureChatOpenAI):
+        base = getattr(llm, "openai_api_base", None)
+        if base and "api.openai.com" not in str(base):
+            return None
+    profile = getattr(llm, "profile", None)
+    limit = profile.get("max_output_tokens") if isinstance(profile, Mapping) else None
+    if not (isinstance(limit, int) and limit > 0):
+        name = str(getattr(llm, "model_name", None) or getattr(llm, "model", None) or "").rsplit("/", 1)[-1]
+        provider = next((pid for cls, pid in _CATALOG_PROVIDER if isinstance(llm, cls)), None)
+        entry = lookup_catalog(provider, name) if provider and name else None
+        limit = entry.get("max_output_tokens") if entry else None
+    return limit if isinstance(limit, int) and limit > 0 else None
 
-    The model's own limit stands when it is lower: ``llm`` itself comes back, so the caller
-    still reads the raw reply and can tell a cut-off one. Bedrock is left alone: its thinking
-    budget lives in request fields that a cap here could fall below.
+
+def with_output_cap(llm: BaseChatModel, max_output_tokens: int | None) -> BaseChatModel | None:
+    """``llm`` with its replies capped at ``max_output_tokens`` plus a reasoning reserve, never
+    above the most the model accepts; or None for a model this does not know how to cap.
+
+    ``llm`` itself comes back, uncapped, when the model's own limit is already lower or when
+    the most it accepts is unknown (a cap above it is refused with a 400 on every call): the
+    caller still reads the raw reply and can tell a cut-off one. Bedrock is left alone: its
+    thinking budget lives in request fields that a cap here could fall below.
     """
     if not max_output_tokens or max_output_tokens <= 0:
         return None
@@ -1165,15 +1198,38 @@ def with_output_cap(llm: BaseChatModel, max_output_tokens: int | None) -> BaseCh
         field = "max_tokens"
     else:
         return None
-    cap = max_output_tokens + _reasoning_reserve(llm)
+    reserve = _reasoning_reserve(llm)
+    cap = max_output_tokens + reserve
     current = getattr(llm, field, None)
     if isinstance(current, int) and 0 < current <= cap:
+        return llm
+    limit = _known_output_limit(llm)
+    if limit is None:
+        return llm
+    cap = min(cap, limit)
+    if isinstance(llm, ChatAnthropic) and cap <= reserve:
+        # Anthropic refuses max_tokens at or below the thinking budget.
         return llm
     try:
         return llm.model_copy(update={field: cap})
     except Exception as exc:
         logger.debug("Output cap not applied to %s: %s", type(llm).__name__, type(exc).__name__)
-        return None
+        return llm
+
+
+_OUTPUT_LIMIT_REFUSAL = re.compile(
+    r"max_tokens|max_completion_tokens|max_output_tokens|maxoutputtokens|output tokens|completion tokens"
+    r"|context length|context window|maximum context",
+    re.IGNORECASE,
+)
+
+
+def _is_output_limit_refusal(exc: BaseException) -> bool:
+    """A 400 refusing the output-token limit the request carried."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    text = str(exc)
+    is_400 = status == 400 or (status is None and "400" in text)
+    return is_400 and bool(_OUTPUT_LIMIT_REFUSAL.search(text))
 
 
 def _capped_reply(result: Any) -> Any:  # noqa: ANN401 - whatever the structured model returns
@@ -1286,6 +1342,7 @@ async def invoke_with_structured_output_and_reflection(
         if capped is not None
         else _apply_structured_output(llm, schema=schema)
     )
+    cap_sent = capped is not None and capped is not llm
     provider = provider_key(llm)
     # Use the base llm: structured-output wrappers drop constructor callbacks;
     # get_llm_invoke_config reattaches them with Opik.
@@ -1296,7 +1353,7 @@ async def invoke_with_structured_output_and_reflection(
     dropped: frozenset[str] = frozenset()
 
     async def _call(request: list) -> Any:  # noqa: ANN401 - whatever the structured model returns
-        nonlocal cache, dropped
+        nonlocal cache, dropped, llm_with_structured_output, cap_sent
         # Each refusal names a parameter this request still carries, and the
         # resend drops it, so the loop ends.
         while True:
@@ -1307,6 +1364,16 @@ async def invoke_with_structured_output_and_reflection(
                     call_kwargs={name: value for name, value in kwargs.items() if name not in dropped},
                 ))
             except Exception as exc:
+                if cap_sent and _is_output_limit_refusal(exc):
+                    # The model's real limit is below the one on record. Sent once more without
+                    # the cap, and every later call of this one too, so this happens once.
+                    logger.warning(
+                        "The %s request's output cap was refused; resending without it", schema.__name__,
+                        extra={"error_type": type(exc).__name__},
+                    )
+                    cap_sent = False
+                    llm_with_structured_output = _apply_structured_output(llm, schema=schema, include_raw=True)
+                    continue
                 refused = refused_cache_params(exc, sent - dropped)
                 if not refused:
                     raise

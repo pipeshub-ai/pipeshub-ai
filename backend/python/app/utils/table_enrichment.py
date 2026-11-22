@@ -57,6 +57,7 @@ from app.services.paid_cache.keys import KIND_TABLE_ROWS, KIND_TABLE_SUMMARY
 # module-level `from ... import name` here would bind its own reference and silently
 # bypass those patches.
 from app.utils import indexing_helpers
+from app.utils import streaming as _streaming
 from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.concurrency import (
     MAX_CONCURRENT_ROW_BATCHES,
@@ -71,7 +72,6 @@ from app.utils.indexing_metrics import (
     note_table_result,
     track_indexing_enrichment,
 )
-from app.utils.is_truncated import TruncatedReplyError
 from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -96,11 +96,17 @@ MIN_RETRY_CALLS = 4
 #: One reflection per call, for an answer that did not parse; the old count reflection is gone
 #: because keys make a wrong count harmless.
 _REFLECTIONS = 1
-#: Output-token ceiling of every table call (first, summary-only and row batch), on top of the
-#: reasoning reserve ``with_output_cap`` adds. A safety ceiling against a reply that runs a
+#: Output-token ceiling of the table calls, on top of the reasoning reserve ``with_output_cap``
+#: adds and never above what the model accepts. A safety ceiling against a reply that runs a
 #: field on to the provider's own limit (tens of thousands of tokens), not a budget: it is far
-#: above any whole reply a table batch needs. A cut-off reply is discarded and not asked again.
+#: above any whole first or summary reply. A row batch's ceiling grows with its rows, so a
+#: large configured batch (``INDEXING_TABLE_ROW_BATCH_SIZE``) still fits.
 TABLE_CALL_MAX_OUTPUT_TOKENS = 16384
+ROW_BATCH_TOKENS_PER_ROW = 120
+
+
+def row_batch_output_cap(rows: int) -> int:
+    return max(TABLE_CALL_MAX_OUTPUT_TOKENS, ROW_BATCH_TOKENS_PER_ROW * rows)
 
 
 class _ReplyCutOff(Exception):
@@ -400,7 +406,7 @@ async def _call_row_batch(
                 params={"flow": _FLOW_ROWS},
                 call=lambda: invoke_with_structured_output_and_reflection(
                     run.llm, messages, KeyedRowDescriptions, _REFLECTIONS, raise_call_errors=True,
-                    max_output_tokens=TABLE_CALL_MAX_OUTPUT_TOKENS, raise_truncated=True,
+                    max_output_tokens=row_batch_output_cap(len(rows_data)), raise_truncated=True,
                 ),
                 encode=lambda answer: answer.model_dump(),
                 decode=_strict_decode_keyed(KeyedRowDescriptions),
@@ -412,7 +418,8 @@ async def _call_row_batch(
             raise
         except run.propagate:
             raise
-        except TruncatedReplyError as e:
+        # Looked up on the helper's module at raise time, so a reloaded module's class still matches.
+        except _streaming.TruncatedReplyError as e:
             raise _ReplyCutOff from e
         except Exception as e:
             raise _ModelCallFailed(str(e)) from e
@@ -521,8 +528,8 @@ async def _resolve_batch(
     if can_split and run.budget.take(2):
         mid = n // 2
         left, right = await gather_or_cancel(
-            _describe_batch(run, rows_data[:mid], best[:mid]),
-            _describe_batch(run, rows_data[mid:], best[mid:]),
+            _describe_batch(run, rows_data[:mid], best[:mid], split_cut_off=False),
+            _describe_batch(run, rows_data[mid:], best[mid:], split_cut_off=False),
         )
         return left + right
     run.note_degraded("budget" if can_split else reason, n, n - missing, missing)
@@ -533,14 +540,25 @@ async def _describe_batch(
     run: _Run,
     rows_data: Sequence[dict],
     salvage: Optional[list[Optional[str]]] = None,
+    *,
+    split_cut_off: bool = True,
 ) -> list[Optional[str]]:
     """Describe *rows_data* with one call, splitting it on a poor answer. ``None`` = fall back."""
     try:
         answer = await _call_row_batch(run, rows_data)
     except _ReplyCutOff:
-        # Not split or asked again: a reply that runs to its limit would do so again. Only this
-        # batch's rows fall back, reported once by note_degraded.
         n = len(rows_data)
+        # A whole batch can outgrow its cap, so it is split in half once, within the table's
+        # retry budget. A half cut off again is a reply that runs on: its rows fall back,
+        # reported once by note_degraded, and it is not asked again.
+        if split_cut_off and n >= 2 and run.budget.take(2):
+            mid = n // 2
+            halves = salvage if salvage is not None else [None] * n
+            left, right = await gather_or_cancel(
+                _describe_batch(run, rows_data[:mid], halves[:mid], split_cut_off=False),
+                _describe_batch(run, rows_data[mid:], halves[mid:], split_cut_off=False),
+            )
+            return left + right
         best = list(salvage) if salvage is not None else [None] * n
         missing = sum(1 for b in best if not _usable(b))
         if missing:

@@ -158,9 +158,15 @@ CEILING = table_enrichment.TABLE_CALL_MAX_OUTPUT_TOKENS
         pytest.param(lambda: _openai(model="o4-mini"), RESERVE, id="o4-mini"),
         # Unknown: when in doubt, the reserve.
         pytest.param(lambda: _gemini(model="gemini-test"), RESERVE, id="unknown-gemini"),
+        # A name that says it reasons, whatever its prefix.
+        pytest.param(lambda: _openai(model="gpt-4o-reasoning-ft"), RESERVE, id="gpt-4o-reasoning-ft"),
+        pytest.param(lambda: _gemini(model="gemini-2.0-flash-thinking-exp-01-21"), RESERVE, id="gemini-2.0-thinking"),
+        pytest.param(lambda: _openai(model="deepseek-reasoner"), RESERVE, id="deepseek-reasoner"),
         # Known not to reason, or told not to.
         pytest.param(lambda: _openai(model="gpt-4.1"), 0, id="gpt-4.1"),
         pytest.param(lambda: _openai(model="gpt-4o-mini"), 0, id="gpt-4o-mini"),
+        pytest.param(lambda: _openai(model="gpt-5.2-chat-latest"), 0, id="gpt-5.2-chat-latest"),
+        pytest.param(lambda: _openai(model="deepseek-chat"), 0, id="deepseek-chat"),
         pytest.param(lambda: _gemini(model="gemini-2.0-flash"), 0, id="gemini-2.0-flash"),
         pytest.param(lambda: _gemini(model="gemini-2.5-flash", thinking_budget=0), 0, id="thinking-budget-0"),
         pytest.param(lambda: _openai(model="gpt-6-luna", reasoning_effort="none"), 0, id="reasoning-none"),
@@ -169,12 +175,52 @@ CEILING = table_enrichment.TABLE_CALL_MAX_OUTPUT_TOKENS
     ],
 )
 def test_a_model_that_may_reason_keeps_room_to_reason(model, reserve: int) -> None:
+    assert streaming._reasoning_reserve(model()) == reserve
+
+
+@pytest.mark.parametrize(
+    ("model", "sent"),
+    [
+        # The cap plus the reserve, clamped to the most the model accepts (its profile, else the catalog).
+        pytest.param(lambda: _gemini(model="gemini-3.8-flash"), 2048 + RESERVE, id="gemini-3.8-flash"),
+        pytest.param(lambda: _openai(model="gpt-6-luna"), 2048 + RESERVE, id="gpt-6-luna"),
+        pytest.param(lambda: _openai(model="gpt-3.5-turbo"), 2048, id="gpt-3.5-turbo"),
+        pytest.param(lambda: _anthropic(thinking={"type": "enabled", "budget_tokens": 3000}, model="claude-sonnet-5-5"),
+                     5048, id="claude-thinking"),
+    ],
+)
+def test_the_cap_carries_the_reserve(model, sent: int) -> None:
     llm = model()
     capped = streaming.with_output_cap(llm, 2048)
-    limit = getattr(capped, "max_output_tokens", None) or capped.max_tokens
-    assert limit == 2048 + reserve
-    # A copy: the model the caller holds keeps its own settings.
     assert capped is not llm
+    assert (getattr(capped, "max_output_tokens", None) or capped.max_tokens) == sent
+
+
+@pytest.mark.parametrize(
+    ("model", "limit"),
+    [
+        ("gpt-3.5-turbo", 4096), ("gpt-4", 8192), ("gpt-4-turbo", 4096),
+        ("gpt-4o-2024-05-13", 4096), ("gpt-5.2-chat-latest", 16384), ("gpt-5.3-chat-latest", 16384),
+    ],
+)
+def test_the_cap_never_exceeds_what_the_model_accepts(model: str, limit: int) -> None:
+    capped = streaming.with_output_cap(_openai(model=model), CEILING)
+    assert capped.max_tokens is not None and capped.max_tokens <= limit
+
+
+@pytest.mark.parametrize(
+    "llm",
+    [
+        pytest.param(lambda: _openai(model="deepseek-chat", base_url="http://127.0.0.1:9/v1"), id="deepseek-compatible"),
+        pytest.param(lambda: _openai(model="llama-3.1-8b-instruct", base_url="http://127.0.0.1:9/v1"), id="vllm"),
+        pytest.param(lambda: _openai(model="my-model"), id="unknown-openai-name"),
+        pytest.param(lambda: _gemini(model="gemini-test"), id="unknown-gemini"),
+    ],
+)
+def test_no_cap_is_sent_when_the_models_limit_is_unknown(llm) -> None:
+    model = llm()
+    # The model itself: nothing changes in the request, and the raw reply is still read.
+    assert streaming.with_output_cap(model, CEILING) is model
 
 
 def _openai(**kwargs: object):  # noqa: ANN202
@@ -186,7 +232,7 @@ def _openai(**kwargs: object):  # noqa: ANN202
 def _anthropic(**kwargs: object):  # noqa: ANN202
     from langchain_anthropic import ChatAnthropic
 
-    return ChatAnthropic(model="claude-test", api_key="offline", max_tokens=64000, **kwargs)
+    return ChatAnthropic(model=kwargs.pop("model", "claude-test"), api_key="offline", max_tokens=64000, **kwargs)
 
 
 def test_a_lower_limit_of_the_models_own_stands() -> None:
@@ -238,7 +284,7 @@ async def test_a_reply_cut_off_at_the_cap_degrades_once_and_is_not_asked_again(
     sent: list[object] = []
     # LangChain's partial JSON parser would repair this into {"summary": "Ages of"}.
     with _cut_off_model(sent, '{"summary": "Ages of'), caplog.at_level(logging.WARNING):
-        result = await enrich_table_grid(_gemini(), GRID, logger=logging.getLogger("t"))
+        result = await enrich_table_grid(_gemini(model="gemini-3.8-flash"), GRID, logger=logging.getLogger("t"))
 
     # The first call and the summary follow-up, each once, each capped.
     assert sent == [CEILING + RESERVE] * 2
@@ -260,19 +306,143 @@ async def test_a_cut_off_reply_is_caught_under_the_models_own_lower_limit() -> N
 
 
 @pytest.mark.asyncio
-async def test_a_cut_off_row_batch_falls_back_once_and_is_not_split(caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_cut_off_row_batch_is_split_once_then_falls_back(caplog: pytest.LogCaptureFixture) -> None:
     rows = [{"Name": f"n{i}", "Age": str(i)} for i in range(24)]
     sent: list[object] = []
     body = '{"descriptions": [{"key": "' + row_keys(rows)[0] + '", "description": "' + "and " * 2000
     with _cut_off_model(sent, body), caplog.at_level(logging.WARNING):
-        texts = await table_enrichment.describe_row_dicts(_gemini(), rows, "s", logging.getLogger("t"))
+        texts = await table_enrichment.describe_row_dicts(
+            _gemini(model="gemini-3.8-flash"), rows, "s", logging.getLogger("t")
+        )
 
-    # One call: a cut-off batch is neither split nor asked again.
-    assert sent == [CEILING + RESERVE]
+    # The batch, then its two halves once; a half cut off again is not split further.
+    assert sent == [CEILING + RESERVE] * 3
     # Every row keeps its plain text; none takes the cut-off description.
     assert texts == [f"Name: n{i}, Age: {i}" for i in range(24)]
     degraded = [r.getMessage() for r in caplog.records if "row batch degraded" in r.getMessage()]
-    assert len(degraded) == 1 and "reason=parse" in degraded[0]
+    assert len(degraded) == 2 and all("reason=parse" in m for m in degraded)
+
+
+def _keyed_answer(messages: list) -> object:
+    import re
+
+    from app.modules.parsers.excel.prompt_template import KeyedRowDescriptions
+
+    keys = re.findall(r"^\[([A-Za-z2-7]{4})\]:", "\n".join(str(m.content) for m in messages), re.MULTILINE)
+    return KeyedRowDescriptions(descriptions=[{"key": k, "description": f"described {k}"} for k in keys]), len(keys)
+
+
+@pytest.mark.asyncio
+async def test_a_batch_too_big_for_its_cap_is_described_by_its_halves(monkeypatch: pytest.MonkeyPatch) -> None:
+    sizes: list[int] = []
+
+    async def _invoke(_llm: object, messages: list, schema: type[BaseModel], *_a: object, **_kw: object):  # noqa: ANN202
+        answer, n = _keyed_answer(messages)
+        sizes.append(n)
+        if n > 12:
+            raise streaming.TruncatedReplyError("the reply reached its output-token limit")
+        return answer
+
+    monkeypatch.setattr(table_enrichment, "invoke_with_structured_output_and_reflection", _invoke)
+    rows = [{"Name": f"n{i}"} for i in range(24)]
+    texts = await table_enrichment.describe_row_dicts(MagicMock(), rows, "s", logging.getLogger("t"))
+    assert sorted(sizes) == [12, 12, 24]
+    assert all(t.startswith("described ") for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_a_row_batch_cap_grows_with_its_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    caps: list[object] = []
+
+    async def _invoke(_llm: object, messages: list, schema: type[BaseModel], *_a: object, **kw: object):  # noqa: ANN202
+        caps.append(kw.get("max_output_tokens"))
+        return _keyed_answer(messages)[0]
+
+    monkeypatch.setattr(table_enrichment, "invoke_with_structured_output_and_reflection", _invoke)
+    for n in (10, 300):
+        await table_enrichment.describe_row_dicts(
+            MagicMock(), [{"A": str(i)} for i in range(n)], "s", logging.getLogger("t")
+        )
+    assert caps == [CEILING, 300 * table_enrichment.ROW_BATCH_TOKENS_PER_ROW]
+
+
+class _TooLarge(Exception):
+    status_code = 400
+
+
+@pytest.mark.asyncio
+async def test_a_refused_cap_is_dropped_once(caplog: pytest.LogCaptureFixture) -> None:
+    """A model whose real limit is below the one on record: the 400 is answered by one resend
+    without the cap, not by failing every table."""
+    from unittest.mock import patch
+
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+    from langchain_openai import ChatOpenAI
+
+    sent: list[object] = []
+    ok = TableSummaryHeaders(summary="s", headers=["a"], header_row_count=0).model_dump_json()
+
+    async def _agen(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN202
+        sent.append(self.max_tokens)
+        if self.max_tokens:
+            raise _TooLarge("Error code: 400 - max_tokens is too large: 8192. This model supports at most 4096 completion tokens")
+        message = AIMessage(content=ok, response_metadata={"finish_reason": "stop"})
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+    with patch.object(ChatOpenAI, "_agenerate", _agen), caplog.at_level(logging.WARNING):
+        answer = await streaming.invoke_with_structured_output_and_reflection(
+            _openai(model="gpt-4"), [("user", "x")], TableSummaryHeaders, 1, raise_call_errors=True,
+            max_output_tokens=CEILING,
+        )
+    assert sent == [8192, None]
+    assert answer is not None and answer.summary == "s"
+    assert len([r for r in caplog.records if "output cap was refused" in r.getMessage()]) == 1
+
+
+@pytest.mark.asyncio
+async def test_another_bad_request_is_not_resent() -> None:
+    from unittest.mock import patch
+
+    from langchain_openai import ChatOpenAI
+
+    sent: list[object] = []
+
+    async def _agen(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN202
+        sent.append(self.max_tokens)
+        raise _TooLarge("Error code: 400 - invalid image")
+
+    with patch.object(ChatOpenAI, "_agenerate", _agen), pytest.raises(_TooLarge):
+        await streaming.invoke_with_structured_output_and_reflection(
+            _openai(model="gpt-4"), [("user", "x")], TableSummaryHeaders, 1, raise_call_errors=True,
+            max_output_tokens=CEILING,
+        )
+    assert sent == [8192]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_off_batch_is_caught_after_the_modules_are_reloaded(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import importlib
+
+    import app.utils.is_truncated as is_truncated_module
+    import app.utils.opik as opik_module
+
+    importlib.reload(is_truncated_module)
+    importlib.reload(opik_module)
+    reloaded = importlib.reload(streaming)
+    monkeypatch.setattr(
+        table_enrichment, "invoke_with_structured_output_and_reflection",
+        reloaded.invoke_with_structured_output_and_reflection,
+    )
+    sent: list[object] = []
+    with _cut_off_model(sent, '{"descriptions": [{"key": "K", "description": "cut'), caplog.at_level(logging.WARNING):
+        texts = await table_enrichment.describe_row_dicts(
+            _gemini(model="gemini-3.8-flash"), [{"A": str(i)} for i in range(5)], "s", logging.getLogger("t")
+        )
+    assert texts == [f"A: {i}" for i in range(5)]
+    assert not [r for r in caplog.records if "call failed" in r.getMessage()]
 
 
 def test_a_whole_corpus_sized_reply_fits_under_the_ceiling() -> None:
