@@ -362,11 +362,15 @@ async def hide_names_the_viewer_cannot_open(
     knowledge_lists: Iterable[Sequence[object]],
     user_id: str,
     org_id: str,
+    *,
+    is_admin: bool,
 ) -> None:
     """Show, in place, the id instead of the name of every knowledge source whose connector is limited (``accessLimit``, which
     ``get_agent`` and ``get_all_agents`` carry on each source) and does not admit the viewer, as a source that cannot be resolved
     reads. The limit is weighed by the connector list a member gets (``apply_access_limit``), asked only when a source is limited.
-    A failed lookup admits nothing, so it hides the name."""
+    A failed lookup admits nothing, so it hides the name. An admin of the request's org sees every name, as on the connectors page."""
+    if is_admin:
+        return
     limited = [k for ks in knowledge_lists for k in ks or [] if isinstance(k, dict) and k.get("accessLimit") is not None]
     if not limited:
         return

@@ -30,7 +30,7 @@ from app.agents.openapi import attachments as api_toolset_attachments
 from app.agents.openapi.service import ApiToolsetError, connected_tool_refs
 from app.agents.openapi.store import ApiToolsetStore
 from app.agents.registry.toolset_registry import ToolsetRegistry
-from app.api.middlewares.auth import connection_limit, require_scopes
+from app.api.middlewares.auth import connection_limit, is_request_admin, require_scopes
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
@@ -3344,7 +3344,8 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
 
         agent.update(perm)
         await hide_names_the_viewer_cannot_open(
-            services["graph_provider"], [agent.get("knowledge") or []], user_context["userId"], org_key
+            services["graph_provider"], [agent.get("knowledge") or []], user_context["userId"], org_key,
+            is_admin=is_request_admin(request),
         )
 
         _mark_deprecated_tools(agent, services["logger"])
@@ -3421,6 +3422,7 @@ async def get_agents(
             [agent.get("knowledge") or [] for agent in agents if isinstance(agent, dict)],
             user_context["userId"],
             org_key,
+            is_admin=is_request_admin(request),
         )
 
         creator_keys = {
@@ -4806,9 +4808,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
-                # The names reach the prompt and the answer: a limited connector the caller cannot open is named by its id.
+                # The names reach the prompt and the answer: a limited connector a member cannot open is named by its id.
                 await hide_names_the_viewer_cannot_open(
-                    graph_provider, [agent_knowledge], user_context.get("userId", ""), org_key
+                    graph_provider, [agent_knowledge], user_context.get("userId", ""), org_key,
+                    is_admin=is_request_admin(request),
                 )
                 # An unbound service agent would read a collection as its creator, so it reads none,
                 # the caller's project collection included (project_files_knowledge reads it from filters).
