@@ -99,6 +99,22 @@ async def test_another_error_is_not_retried(p) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("syntax error"), CONFLICT], ids=["not-retried", "retries-exhausted"])
+async def test_only_a_lost_round_writes_a_step_line(p, caplog, error) -> None:
+    """The failure the loop gives up on is raised without a line of its own (and unmarked), so the handler that catches it
+    writes the one failure line; each round lost to a concurrent writer writes ``step=cascade`` (docs/logging.md)."""
+    p.logger = logging.getLogger("tests.arango_cascade_retry")
+    p._delete_nodes_by_keys = AsyncMock(side_effect=error)
+
+    with caplog.at_level(logging.DEBUG, logger=p.logger.name):
+        result = await p.delete_connector_instance("c1", "org1")
+
+    assert result["success"] is False
+    steps = [r.step for r in caplog.records if getattr(r, "event_name", None) == "graph.provider.step_failed"]
+    assert steps == ["cascade"] * (CASCADE_ATTEMPTS - 1 if error is CONFLICT else 0)
+
+
+@pytest.mark.asyncio
 async def test_a_caller_owned_transaction_is_never_retried(p) -> None:
     p._delete_nodes_by_keys = AsyncMock(side_effect=CONFLICT)
 

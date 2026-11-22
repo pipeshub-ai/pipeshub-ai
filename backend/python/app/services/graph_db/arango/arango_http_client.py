@@ -306,6 +306,8 @@ class ArangoHTTPClient:
         self.logger = logger
         # Set by the provider that knows the records schema; None leaves every write as it was.
         self.record_guard: RecordSchemaGuard | None = None
+        # The same for the apps schema, applied at start and by the poll only (an apps write refused meanwhile is not sent again).
+        self.apps_guard: RecordSchemaGuard | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """
@@ -357,7 +359,7 @@ class ArangoHTTPClient:
                     return False
 
         except Exception as e:
-            error_class.log_failure(self.logger, "db.connect.failed", e, backend="arango")
+            error_class.log_failure(self.logger, "db.connect.failed", e, backend="arango", include_error_text=False)  # names the host
             return False
 
     async def disconnect(self) -> None:

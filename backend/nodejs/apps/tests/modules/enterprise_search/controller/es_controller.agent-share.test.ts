@@ -7,6 +7,8 @@ import * as conversationArtifacts from '../../../../src/modules/artifacts/servic
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /**
  * Sharing an agent conversation is read-only: the owner shares, a recipient can
@@ -160,6 +162,9 @@ const sharedWithOf = (s: Setup): string[] =>
 const share = (userIds: unknown, accessLevel?: string) => ({ userIds, ...(accessLevel ? { accessLevel } : {}) })
 
 describe('es_controller agent-chat sharing: read-only for recipients, owner-only to change', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   // The users of the caller's organisation, and every filter the recipient lookup was asked with.
   let orgUsers: Set<string>
   let userLookups: Array<Record<string, any>>

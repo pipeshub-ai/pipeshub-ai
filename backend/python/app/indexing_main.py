@@ -2604,7 +2604,7 @@ async def start_kafka_consumers(
         # EmbeddingServerEmbeddings instances used by this consumer's
         # pipeline default to (see app.services.messaging.backpressure) —
         # passing it explicitly here is what lets the consumer's read loop
-        # actually see their 429 signals and pause new reads.
+        # actually see their 429 signals and hold the work that calls them.
         record_kafka_consumer = MessagingFactory.create_consumer(
             fairness=indexing_fairness(lambda pool: consumer_concurrency.slot_pool_limit(record_kafka_consumer, pool)),
             broker_type=broker_type,

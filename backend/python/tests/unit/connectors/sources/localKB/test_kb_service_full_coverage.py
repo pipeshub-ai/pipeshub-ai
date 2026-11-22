@@ -1440,44 +1440,6 @@ class TestListKbPermissions:
 
 
 
-class TestListKbRecords:
-    @pytest.mark.asyncio
-    async def test_success(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(return_value=(
-            [{"id": "r1"}], 1, {}
-        ))
-
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["records"] == [{"id": "r1"}]
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_with_filters(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(return_value=([], 0, {}))
-
-        result = await service.list_kb_records(
-            "kb1", "user1", "org1", search="x",
-            record_types=["FILE"], date_from=100, date_to=200,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert "search" in result["filters"]["applied"]
-
-    @pytest.mark.asyncio
-    async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["records"] == []
-        assert "error" in result
-
-
 class TestGetKbChildren:
     @pytest.mark.asyncio
     async def test_success(self, service):

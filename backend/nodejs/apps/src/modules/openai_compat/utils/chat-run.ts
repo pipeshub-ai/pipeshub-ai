@@ -11,6 +11,8 @@ import {
   Json,
 } from './openai-format';
 import { ChatModel } from './chat-models';
+import { upstreamFetch } from '../../../libs/http/upstream-call';
+import { injectRequestHeaders } from '../../../libs/context/request-context';
 
 export interface ChatRunRequest {
   /** `appConfig.esBackend`: this Node API's own origin. */
@@ -31,10 +33,15 @@ export interface ChatRunRequest {
 }
 
 export class ChatRunError extends Error {
+  /**
+   * @param fromAnswer true when this repeats an HTTP answer of our own API: that request already logged the failure under the
+   * same request id, so the OpenAI route adds no line of its own.
+   */
   constructor(
     message: string,
     public readonly status: number,
     public readonly code: string,
+    public readonly fromAnswer = false,
   ) {
     super(message);
   }
@@ -183,13 +190,14 @@ export async function runChat(req: ChatRunRequest): Promise<ChatAnswer> {
       ? `/api/v1/conversations/${encodeURIComponent(req.conversationId)}/messages/stream`
       : '/api/v1/conversations/stream';
   const { model } = req;
-  const response = await fetch(`${base}${path}`, {
+  // Through upstreamFetch: the inner request carries this request's id, and the call gets its line.
+  const response = await upstreamFetch(`${base}${path}`, {
     method: 'POST',
-    headers: {
+    headers: injectRequestHeaders({
       Authorization: req.authorization,
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
-    },
+    }),
     body: JSON.stringify({
       query: req.query,
       // The dashboard's default mode: the assistant searches the caller's knowledge and uses tools.
@@ -221,6 +229,8 @@ export async function runChat(req: ChatRunRequest): Promise<ChatAnswer> {
       status === 404 && path !== '/api/v1/conversations/stream'
         ? 'previous_response_not_found'
         : codeForStatus(status),
+      // A 2xx with no body was answered, but not as a failure: nothing else logs it.
+      !response.ok,
     );
   }
   return answerFromFrames(

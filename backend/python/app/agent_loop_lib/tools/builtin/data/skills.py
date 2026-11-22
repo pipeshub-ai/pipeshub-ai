@@ -25,6 +25,7 @@ from app.agent_loop_lib.tools.base import (
     Tool,
     ToolOutput,
     ToolParameter,
+    error_data,
 )
 
 if TYPE_CHECKING:
@@ -448,7 +449,7 @@ class LoadSkillResourceTool(Tool):
         try:
             content = await self._manager.load_resource(name, path)
         except RegistryError as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         return ToolOutput(success=True, data={"name": name, "path": path, "content": content})
 
     def summarize_args(self, args: dict[str, Any]) -> str | None:

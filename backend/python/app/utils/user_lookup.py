@@ -15,6 +15,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.core import org_context
+from app.utils import error_class
 from app.utils.jwt import mint_service_token
 from app.utils.logger import create_logger
 from app.utils.user_messages import DATABASE_UNREACHABLE
@@ -107,7 +108,7 @@ async def get_user_or_503(graph_provider: IGraphDBProvider, user_id: str | None)
     try:
         return await get_caller_user(graph_provider, user_id, raise_on_error=True)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
 async def get_org_or_503(graph_provider: IGraphDBProvider, org_id: str) -> dict[str, Any] | None:
@@ -120,7 +121,7 @@ async def get_document_or_503(graph_provider: IGraphDBProvider, key: str, collec
     try:
         return await graph_provider.get_document(key, collection, raise_on_error=True)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
 async def get_record_or_503(graph_provider: IGraphDBProvider, record_id: str) -> Record | None:
@@ -128,7 +129,7 @@ async def get_record_or_503(graph_provider: IGraphDBProvider, record_id: str) ->
     try:
         return await graph_provider.get_record_by_id(record_id, raise_on_error=True)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
 async def check_record_access_or_503(
@@ -136,15 +137,17 @@ async def check_record_access_or_503(
 ) -> dict[str, Any] | None:
     """The record's access details, or None when the user may not open it; a failed read is a 503.
 
-    Like its siblings it answers every exception with 503, a bug of ours included; the cause is kept for the request log.
+    Like its siblings it answers every exception with 503, a bug of ours included; the cause is kept, text-hidden, for the
+    request log.
     """
     try:
         return await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
-def _database_unreachable() -> HTTPException:
+def _database_unreachable(cause: BaseException) -> HTTPException:
+    error_class.mark_error(cause, hide_text=True)  # a driver's text can quote what was sent (an email, a value)
     return HTTPException(
         status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
         detail=DATABASE_UNREACHABLE,

@@ -2841,6 +2841,92 @@
           "pipeshub_code_entry_points": "Lists where control enters a repository, such as routes, command-line tools, jobs and hooks. A starting point for reading unfamiliar code.",
           "pipeshub_entities": "Finds the people, teams, topics, projects, folders, customers and document titles in the workspace's knowledge graph, lists the records connected to one of them, and the people, companies or products mentioned alongside it. Finding and listing are offered once entities have been indexed; the mentioned-alongside list also needs named-entity extraction. An OAuth app or access token also needs the semantic:read or semantic:write scope.",
           "pipeshub_find_records": "Lists records by who they belong to or what they mention rather than by their words: the records a person is assigned, created, wrote or owns, records that mention an amount, date, quantity or percentage, and passages inside the records that name given people, companies or products. Amounts and dates need named-entity extraction, and the passages are offered only where the deployment also turns on entity search. An OAuth app or access token also needs the semantic:read or semantic:write scope."
+        },
+        "count": "{{offered}} of {{total}} offered",
+        "searchPlaceholder": "Search tools, arguments or scopes",
+        "searchLabel": "Search tools",
+        "filterLabel": "Show",
+        "filters": {
+          "all": "All",
+          "read": "Read-only",
+          "writes": "Writes or changes data",
+          "off": "Off"
+        },
+        "expandAll": "Expand all",
+        "collapseAll": "Collapse all",
+        "noMatch": "No tool matches this search.",
+        "groupCount": "{{offered}} of {{total}} on",
+        "groupSwitch": "All tools in {{group}}",
+        "showDetails": "Show details of {{tool}}",
+        "hideDetails": "Hide details of {{tool}}",
+        "groups": {
+          "read": {
+            "label": "Find and read",
+            "description": "Search, read and download what the user can access."
+          },
+          "people": {
+            "label": "People and entities",
+            "description": "The workspace's users and groups, and the people, projects, topics and values in its knowledge graph."
+          },
+          "chat": {
+            "label": "Chat and agents",
+            "description": "Ask PipesHub's assistant or one of the workspace's agents."
+          },
+          "add": {
+            "label": "Add content",
+            "description": "Create collections, upload documents, add websites and link sources."
+          },
+          "viewer": {
+            "label": "Citation viewer",
+            "description": "Shows the sources behind an answer, in clients that can display it."
+          },
+          "code": {
+            "label": "Code",
+            "description": "Explore the indexed code repositories.",
+            "availability": "Only to users who can read an indexed code repository."
+          },
+          "other": {
+            "label": "Other",
+            "description": "Tools this version of the page does not know yet."
+          }
+        },
+        "kinds": {
+          "readOnly": "Read-only",
+          "changes": "Can change data",
+          "openWorld": "Reaches outside PipesHub"
+        },
+        "blocked": {
+          "writesOff": "Off while write tools are not allowed.",
+          "chatOff": "Off while Chat with PipesHub is off."
+        },
+        "details": {
+          "scopes": "OAuth scopes needed",
+          "noScopes": "None: it calls nothing in PipesHub.",
+          "availability": "When it is offered",
+          "arguments": "Arguments · {{n}}",
+          "noArguments": "Takes no arguments.",
+          "columns": {
+            "name": "Name",
+            "type": "Type",
+            "description": "Description"
+          },
+          "required": "required",
+          "oneOf": "One of: {{values}}",
+          "modelText": "What the AI sees",
+          "hideModelText": "Hide what the AI sees",
+          "modelTextHint": "The description the AI model reads before it picks this tool."
+        },
+        "availability": {
+          "default": "Whenever it is on.",
+          "pipeshub_chat": "Whenever it is on. It runs connected actions only while write tools are allowed.",
+          "pipeshub_agents": "Only while Chat with PipesHub is on.",
+          "pipeshub_create_collection": "Only while write tools are allowed.",
+          "pipeshub_upload": "Only while write tools are allowed.",
+          "pipeshub_add_web_source": "Only while write tools are allowed.",
+          "pipeshub_show_citations": "Only to clients that can display the citation viewer, such as Claude.",
+          "pipeshub_preview_record": "Only to the citation viewer, never to the AI model.",
+          "pipeshub_entities": "Finding entities and listing their records, once entities have been indexed. The mentioned-alongside list also needs named-entity extraction.",
+          "pipeshub_find_records": "A person's records, always. Amounts and dates need named-entity extraction, and passages naming people or companies also need entity search turned on for the deployment."
         }
       },
       "appliesNote": "Changes apply to new MCP requests within a few seconds.",
@@ -2849,6 +2935,45 @@
         "saveSuccess": "MCP access settings saved",
         "saveError": "Could not save MCP access settings",
         "saveErrorDescription": "Check your connection and try again."
+      },
+      "status": {
+        "on": "On · {{offered}} of {{total}} tools offered",
+        "off": "Off · no AI client can connect"
+      },
+      "connect": {
+        "title": "Connect an AI client",
+        "description": "Clients connect to this endpoint, and each user signs in with their own PipesHub account. A personal access token works too.",
+        "endpointLabel": "MCP endpoint",
+        "copy": "Copy",
+        "copied": "Copied",
+        "copyEndpoint": "Copy the MCP endpoint",
+        "copySnippet": "Copy the configuration",
+        "clientsLabel": "AI client",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "In Claude, open Customize › Connectors, select +, then Add custom connector. Paste the endpoint above, then choose Connect and sign in with PipesHub. On a Team or Enterprise plan, an owner adds the connector in the organization settings first.",
+            "tip": "Claude connects from Anthropic's cloud, not from your computer, so the endpoint must be reachable from the internet. A localhost or private-network address will not work."
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "On chatgpt.com, open Plugins, select +, then Add custom MCP server. Paste the endpoint above as the server URL, choose OAuth, accept the warning and select Create as a plugin, then sign in with PipesHub. In a Business, Enterprise or Edu workspace, an admin must allow custom MCP servers.",
+            "tip": "ChatGPT connects from OpenAI's servers, not from your computer, so the endpoint must be reachable from the internet. A localhost or private-network address will not work."
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "Add the server to ~/.cursor/mcp.json, or to .cursor/mcp.json in a project. Cursor asks you to sign in the first time it uses a tool."
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "Add the server to .vscode/mcp.json, then start it from the list of MCP servers and sign in."
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "Run this in a terminal, then run /mcp in Claude Code to sign in.",
+            "tip": "For code questions only, add ?tools=code to the endpoint: the client then gets the code tools alone."
+          }
+        }
       }
     },
     "labs": {
@@ -3818,7 +3943,6 @@
         "confirm": "Save and remove sign-ins"
       },
       "cta": {
-        "manage": "Manage",
         "delete": "Delete",
         "reauthenticate": "Reauthenticate",
         "reconnect": "Reconnect",
@@ -3840,6 +3964,18 @@
         "needsAuth": "Needs auth",
         "disabled": "Disabled"
       },
+      "filters": {
+        "label": "Filter by status",
+        "needsAction": "Needs action",
+        "unavailable": "Unavailable"
+      },
+      "catalog": {
+        "title": "Add more servers",
+        "description": "Ready-made servers. Add one, then sign in to it.",
+        "personalDescription": "Servers you add here are only visible to you.",
+        "added": "Added",
+        "addAnother": "Add another"
+      },
       "team": {
         "title": "MCP servers",
         "subtitle": "Connect Model Context Protocol servers to extend what your team's agents can do.",
@@ -3851,36 +3987,16 @@
         "subtitle": "Connect to the MCP servers your admin has made available, or add your own.",
         "emptyTitle": "No MCP servers available",
         "emptyDescription": "Add one of your own, or ask your admin to add one for everyone.",
-        "yourServersDescription": "Servers you added. Only you can see and use them, and they can't be added to agents shared with your organization.",
         "tabs": {
           "all": "All",
-          "connected": "Connected",
-          "notConnected": "Not connected"
+          "connected": "Connected"
         },
         "yours": "Yours",
         "noneInTab": "No MCP servers here."
       },
       "details": {
         "breadcrumbLabel": "MCP servers",
-        "refreshAll": "Refresh all",
-        "addInstance": "Add another instance",
-        "configuration": "CONFIGURATION",
-        "transport": "TRANSPORT",
-        "tools": "TOOLS",
-        "discoverTools": "Discover tools",
-        "discoveredTools_one": "{{count}} tool available",
-        "discoveredTools_other": "{{count}} tools available",
-        "discovering": "Discovering tools…",
-        "discoveryError": "Tool discovery failed",
-        "discoveryNeedsAuth": "Authenticate to discover tools",
-        "retry": "Retry",
-        "noInstances": "No instances configured",
-        "authBannerTitle": "Authentication required",
-        "authBannerDescription": "Authenticate this MCP server so your team's agents can use it.",
-        "authBannerAuthenticatedTitle": "Connected",
-        "reconnectBannerDescription": "The sign-in for this server expired or was rejected. Reconnect to keep using it.",
-        "authBannerAuthenticatedDescription": "You can reauthenticate or disconnect this MCP server.",
-        "createdBy": "Created by"
+        "tools": "TOOLS"
       },
       "deleteDialog": {
         "title": "Delete MCP server?",
@@ -3940,27 +4056,28 @@
         "tokenUrl": "Token URL",
         "scopes": "Scopes",
         "scopesPlaceholder": "Add a scope",
-        "useAdminAuth": "Use shared admin authentication for all users",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "Credentials (optional)",
-        "credentialsHint": "Add credentials now, or skip and connect later from the Connection & Tools tab.",
+        "credentialsHint": "Add them now, or sign in later from the server's page.",
         "multiEnvIncomplete": "Fill in every required environment variable, or leave them all blank to connect later.",
         "oauthPairRequired": "Enter both the client ID and client secret, or leave both blank.",
-        "connectAfterCreateHint": "Save this server, then reopen Manage to connect it.",
         "timeoutsHeading": "Timeouts",
         "connectTimeout": "Connect timeout (seconds)",
         "callTimeout": "Tool call timeout (seconds)",
-        "timeoutRange": "Enter a number from {{min}} to {{max}}, or leave it blank for the default."
+        "timeoutRange": "Enter a number from {{min}} to {{max}}, or leave it blank for the default.",
+        "whoSignsIn": "How people sign in",
+        "signIn": {
+          "personal": "Each person uses their own",
+          "personalHint": "People sign in with their own credentials and get only the access those have.",
+          "shared": "One shared credential for everyone",
+          "sharedHint": "You add it once, below. Everyone acts with its access."
+        },
+        "advanced": "Advanced"
       },
       "configPanel": {
         "editTitle": "Edit MCP server",
         "createTitle": "New MCP server",
-        "tabs": {
-          "configuration": "Configuration",
-          "tools": "Tools & approvals",
-          "toolList": "Tools"
-        },
         "synced": "Synced {{time}}",
         "refreshTools": "Refresh the tool list",
         "signInForTools": "Sign in to see this server's tools.",
@@ -4000,7 +4117,8 @@
           "remove": "Delete server",
           "removeHint": "Deletes it for everyone.",
           "removeHintPersonal": "Deletes it and your sign-in."
-        }
+        },
+        "addTemplateTitle": "Add {{name}}"
       },
       "oauthConfig": {
         "saved": "OAuth app saved",
@@ -4035,7 +4153,6 @@
         "noState": "No state parameter was returned.",
         "backendRejected": "The server rejected the authorization request."
       },
-      "deleteDisabledTooltip": "This server cannot be deleted",
       "stdioPolicy": {
         "disabledTitle": "Disabled on this deployment",
         "disabledDescription": "Custom STDIO servers run a command on the PipesHub server, so they stay off unless the operator sets {{flag}}=true in the deployment environment (Docker Compose .env, or config.mcpAllowCustomStdio in Helm). Agents can't use this server's tools until then. You can delete it or switch it to a remote (HTTP) server.",
@@ -4049,8 +4166,6 @@
         "customDescription": "Any remote MCP server, by URL."
       },
       "toolRules": {
-        "open": "Tool approvals",
-        "title": "Tool approvals: {{name}}",
         "description": {
           "personal": "Choose what happens when an assistant or agent wants to use one of these tools in your chats."
         },
@@ -4103,6 +4218,12 @@
         "orgRulesDescription": "Decide which tools run, ask first or never run for everyone in your organization. Here, people set their own rules from their MCP servers page.",
         "userServersTitle": "People's own MCP servers",
         "userServersDescription": "Review and remove the MCP servers people in your organization add for themselves."
+      },
+      "added": {
+        "ready": "{{name}} is added and ready to use.",
+        "signIn": "{{name}} is added. Sign in below so its tools can run.",
+        "other": "{{name}} is added, but it isn't working yet. See below for why.",
+        "dismiss": "Done"
       }
     },
     "bots": {

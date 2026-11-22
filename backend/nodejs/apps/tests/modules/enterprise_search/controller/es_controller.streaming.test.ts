@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controllerModule from '../../../../src/modules/enterprise_search/controller/es_controller'
+import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
@@ -10,11 +11,16 @@ import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './cha
 import { AGENT_KEY, Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream } from './streaming-flows'
 import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 // What agui_emitter.py sends when a sub-agent (child run) fails; the parent run carries on.
 const subAgentError = { runId: 'run-child', parentRunId: RUN, message: 'Sub-agent failed: tool timeout', code: 'agent_error' }
 
 describe('es_controller streaming answers', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })
@@ -515,6 +521,8 @@ describe('es_controller streaming answers', () => {
           toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
           now: Date.now(),
         })
+        // This test is about the heartbeat, so it runs the real one (the harness stubs it); its timer is fake.
+        sinon.stub(searchUtils, 'keepRunAlive').callThrough()
         const run = await startStream(flow)
         run.ai.send('TEXT_MESSAGE_CONTENT', delta('Still working'))
         await settle()
