@@ -1228,6 +1228,28 @@ class TestBrowseNamedAndInTheLevelThroughItsMembers:
             context=context, project_id="p-1", user_by_account_id=users)
         assert (rec.access_rule, [g.email for g in grants]) == (AccessRule.OPEN, ["in@x.com"])
 
+    def test_an_email_two_accounts_share_gets_no_grant_of_its_own_through_anyone(self) -> None:
+        """The level holds only ``anyone`` and Browse names the reporter acc-b, who shares in@x.com with acc-a. The grant reaches the
+        email, so it would admit acc-a too, whom Browse does not name: the reporter needs the project."""
+        def user(account: str) -> object:
+            return type("U", (), {"email": "in@x.com", "source_user_id": account, "is_active": True})()
+
+        anyone = {"type": "anyone"}
+        static, _ = level_group_grants([anyone], project_key="JUNI", user_by_id={}, app_roles_mapping={})
+        context = _present(members={"7": [anyone]})
+        context.browse_holders = [{"type": "reporter"}]
+        context.level_readers = {"7": level_readers(static, {}, {})}
+        users = {"acc-a": user("acc-a"), "acc-b": user("acc-b")}
+        fields = {"security": {"id": "7"}, "reporter": {"accountId": "acc-b"}}
+        rec = _record()
+        grants, skipped, settled = apply_issue_access_settled(
+            rec, fields, is_subtask=False, project_key="JUNI", context=context, project_id="p-1", user_by_account_id=users)
+        assert (rec.access_rule, grants, skipped, settled) == (AccessRule.STRICT, [], [], True)
+        del users["acc-a"]
+        grants, _, _ = apply_issue_access_settled(
+            rec, fields, is_subtask=False, project_key="JUNI", context=context, project_id="p-1", user_by_account_id=users)
+        assert (rec.access_rule, [g.email for g in grants]) == (AccessRule.OPEN, ["in@x.com"])
+
     def test_a_reader_alone_beside_a_grant_that_needs_the_project_stays_strict(self) -> None:
         """Browse names the reporter, who is in the level's group, but not the assignee, whom the level names: the assignee's grant
         needs the project, so the issue is STRICT and the reporter, who reads it alone in Jira, needs the project too (DELTA-18).

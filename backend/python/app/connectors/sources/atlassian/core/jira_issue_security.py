@@ -1002,12 +1002,13 @@ def _reads_alone(
         named |= readers
     anyone = readers is not None and _ANY_READER in readers
     # A grant goes to an email, so an email two synced accounts share cannot tell the account Browse names from the one the
-    # level names: that person needs the project, as for anyone the level does not name.
+    # level names, nor (with ``anyone``) from an account Browse does not name: that person needs the project.
     held_by: dict[str, set[int]] = {}
     for u in users.values():
         if email := (getattr(u, "email", None) or "").lower():
             held_by.setdefault(email, set()).add(id(u))
-    alone = [g for g in browse if anyone or (_grant_key(g) in named and len(held_by.get((g.email or "").lower(), ())) < 2)]
+    alone = [g for g in browse
+             if (anyone or _grant_key(g) in named) and len(held_by.get((g.email or "").lower(), ())) < 2]
     # Not read: someone Browse names may be a member, unless the level has no holder beyond its users.
     unread = tracked and readers is None and len(alone) < len(browse) and any(g.entity_type != EntityType.USER for g in static)
     return alone, unread
