@@ -709,7 +709,7 @@ class TestFillFromBeforeAChangeIsNeverWritten:
         assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
 
     @pytest.mark.parametrize("evicted", [False, True])
-    async def test_a_lost_epoch_does_not_let_an_earlier_fill_write(self, evicted: bool) -> None:  # noqa: FBT001
+    async def test_a_lost_epoch_does_not_let_an_earlier_fill_write(self, evicted: bool) -> None:
         # On an evicting cache Redis the epoch can vanish between a change's bump and the fill's write. A missing epoch
         # read as "" on both sides, so a fill that started before the change put the revoked map back.
         redis = FakeRedis()
