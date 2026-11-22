@@ -55,7 +55,9 @@ def drain() -> Iterator[AsyncMock]:
 
 
 @pytest.mark.asyncio
-async def test_each_limited_active_connector_is_queued_for_one_full_sync(drain: AsyncMock) -> None:
+async def test_each_limited_idle_connector_is_queued_for_one_full_sync_and_a_running_one_is_left_alone(
+    drain: AsyncMock,
+) -> None:
     gp = _graph([
         _app("idle"),
         _app("off", active=False),
@@ -66,16 +68,45 @@ async def test_each_limited_active_connector_is_queued_for_one_full_sync(drain: 
         _app("bucket", type_="S3"),
     ])
 
-    assert await queue_limited_full_syncs(gp, _LOG) is True
+    assert await queue_limited_full_syncs(gp, _LOG) is False, "a running or queued sync may end still limited: watched"
 
     writes = _writes(gp)
-    assert set(writes) == {"idle", "off", "running", "queued"}
+    assert set(writes) == {"idle", "off", "queued"}
     assert writes["idle"][FULL] and writes["idle"][RESYNC] and writes["idle"]["status"] == "QUEUED"
     assert writes["off"] == {FULL: True}, "not started; enabling it later runs a full sync"
-    assert writes["running"] == {FULL: True, RESYNC: True}, "its finalizer re-issues it as a full sync"
     assert writes["queued"] == {FULL: True}, "already queued: not queued twice"
     assert all(c.args[1] == CollectionNames.APPS.value for c in gp.update_node.await_args_list)
     drain.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_full_sync_already_running_is_not_flagged_for_another_on_a_later_pass(drain: AsyncMock) -> None:
+    # The first pass queued it; the retry pass finds its licensed full sync running. Flagged, it ran a second full sync after the lift.
+    tries: dict[str, int] = {}
+    assert await queue_limited_full_syncs(_graph([_app("a")]), _LOG, tries) is False
+    gp = _graph([_app("a", status="FULL_SYNCING")])
+    assert await queue_limited_full_syncs(gp, _LOG, tries) is False
+    gp.update_node.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_connector_whose_full_sync_ended_still_limited_is_queued_again_up_to_the_cap(drain: AsyncMock) -> None:
+    # The full sync failed (IDLE with pendingFullSync), or read nothing and did not lift: nothing else starts a MANUAL connector.
+    tries: dict[str, int] = {}
+    for n in range(licence_lift.MAX_QUEUED_FULL_SYNCS):
+        gp = _graph([{**_app("a"), FULL: n > 0}])
+        assert await queue_limited_full_syncs(gp, _LOG, tries) is False
+        assert _writes(gp)["a"]["status"] == "QUEUED"
+    gp = _graph([{**_app("a"), FULL: True}])
+    assert await queue_limited_full_syncs(gp, _LOG, tries) is True, "left to its schedule or a person: nothing to watch"
+    gp.update_node.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_connector_already_owing_a_full_sync_is_not_written_again(drain: AsyncMock) -> None:
+    gp = _graph([{**_app("off", active=False), FULL: True}])
+    assert await queue_limited_full_syncs(gp, _LOG) is True
+    gp.update_node.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -88,7 +119,7 @@ async def test_with_no_limited_connector_nothing_is_written_or_drained(drain: As
 
 @pytest.mark.asyncio
 async def test_a_failed_queue_write_asks_for_another_pass(drain: AsyncMock) -> None:
-    gp = _graph([_app("a"), _app("b")])
+    gp = _graph([_app("a", active=False), _app("b", active=False)])
     gp.update_node = AsyncMock(side_effect=[ConnectionError("down"), True])
     assert await queue_limited_full_syncs(gp, _LOG) is False
     assert gp.update_node.await_count == 2, "one failure does not stop the others"
@@ -111,7 +142,7 @@ async def _run_watch(licensed: list[bool], queue: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unlicensed_then_licensed_queues_once_and_a_repeat_detection_does_not_queue_again() -> None:
+async def test_once_a_pass_leaves_nothing_to_watch_later_checks_do_nothing() -> None:
     queue = AsyncMock(return_value=True)
     await _run_watch([False, False, True, True, True], queue)
     queue.assert_awaited_once()
@@ -129,6 +160,32 @@ async def test_a_failed_pass_is_run_again_on_the_next_check() -> None:
     queue = AsyncMock(side_effect=[False, RuntimeError("org list down"), True])
     await _run_watch([True, True, True, True], queue)
     assert queue.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_checks_go_on_while_a_limited_connector_is_watched_and_share_its_counts() -> None:
+    seen: list[int] = []
+
+    async def queue(_gp: object, _log: object, tries: dict[str, int]) -> bool:
+        tries["a"] = tries.get("a", 0) + 1
+        seen.append(tries["a"])
+        return len(seen) == 3
+
+    await _run_watch([True, True, True, True, True], AsyncMock(side_effect=queue))
+    assert seen == [1, 2, 3], "re-run while watched, with the counts kept; not after"
+
+
+@pytest.mark.asyncio
+async def test_a_lapse_resets_the_counts() -> None:
+    seen: list[int] = []
+
+    async def queue(_gp: object, _log: object, tries: dict[str, int]) -> bool:
+        tries["a"] = tries.get("a", 0) + 1
+        seen.append(tries["a"])
+        return True
+
+    await _run_watch([True, False, True], AsyncMock(side_effect=queue))
+    assert seen == [1, 1]
 
 
 @pytest.mark.asyncio
