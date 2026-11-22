@@ -174,7 +174,7 @@ class TestEvictionPolicy:
         (["noeviction", "volatile-lru"], False),
         (["noeviction", "noeviction"], False),
     ])
-    async def test_a_cluster_checks_every_primary(self, policies: list[str], refused: bool) -> None:  # noqa: FBT001
+    async def test_a_cluster_checks_every_primary(self, policies: list[str], refused: bool) -> None:
         # An untargeted INFO on a cluster client reads one node; a primary with allkeys-* elsewhere would pass.
         nodes = [MagicMock(name=f"primary-{i}") for i in range(len(policies))]
         cluster = MagicMock(spec=RedisCluster)

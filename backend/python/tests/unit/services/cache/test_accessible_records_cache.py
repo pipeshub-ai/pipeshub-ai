@@ -113,7 +113,7 @@ class FakeRedis:
     # The server clock `seeded_incr`'s script seeds a missing counter from; each seed reads a later time.
     clock_us = 1_700_000_000_000_000
 
-    async def eval(self, script, numkeys, key, by):
+    async def eval(self, script, numkeys, key, by) -> int:
         """`seeded_incr`'s script (the only one the cache runs): seed a missing key from the clock, then INCRBY."""
         self.calls.append(("eval", key, by))
         if key not in self.strings:
@@ -165,7 +165,7 @@ class BrokenRedis(FakeRedis):
     def pipeline(self, transaction=False):
         raise ConnectionError("redis down")
 
-    async def eval(self, script, numkeys, key, by):
+    async def eval(self, script, numkeys, key, by) -> int:
         raise ConnectionError("redis down")
 
 

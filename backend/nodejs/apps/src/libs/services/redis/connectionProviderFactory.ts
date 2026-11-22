@@ -256,8 +256,12 @@ export async function checkRedisEvictionPolicy(
   try {
     const client = provider.getClient();
     // A cluster client sends an untargeted INFO to one node; any primary can hold any key.
-    const nodes = provider.isCluster ? (client as Cluster).nodes('master') : [client];
-    const infos: string[] = await Promise.all(nodes.map((node) => node.info('memory')));
+    const nodes = provider.isCluster
+      ? (client as Cluster).nodes('master')
+      : [client];
+    const infos: string[] = await Promise.all(
+      nodes.map((node) => node.info('memory')),
+    );
     policies = infos.map(
       (info) => /^maxmemory_policy:(\S+)/m.exec(info)?.[1]?.toLowerCase() ?? '',
     );
@@ -268,7 +272,8 @@ export async function checkRedisEvictionPolicy(
     return;
   }
   const unsafe = policies.filter((p) => p && p !== 'noeviction');
-  const policy = unsafe.find((p) => p.startsWith('allkeys-')) ?? unsafe[0] ?? '';
+  const policy =
+    unsafe.find((p) => p.startsWith('allkeys-')) ?? unsafe[0] ?? '';
   if (policy.startsWith('allkeys-')) {
     throw new Error(
       `Redis maxmemory-policy is '${policy}' on the Redis that holds the ` +
