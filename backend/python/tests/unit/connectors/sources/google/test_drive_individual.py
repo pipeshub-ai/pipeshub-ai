@@ -933,6 +933,17 @@ class TestPersonalSharedDriveItemSharedWith:
 
         assert [p.email for p in result.record.shared_with] == ["bob@example.com"]
 
+    async def test_a_list_without_details_leaves_shared_with_unknown(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "p-bob", "type": "user", "role": "writer", "emailAddress": "bob@example.com"},
+        ]})
+
+        result = await connector._process_drive_item(
+            metadata=self._item(), user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        assert result.record.shared_with is None
+
     async def test_an_unreadable_list_leaves_shared_with_unknown(self, connector) -> None:
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
 

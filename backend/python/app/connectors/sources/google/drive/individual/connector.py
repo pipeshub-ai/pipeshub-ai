@@ -678,8 +678,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
         except HttpError as e:
             self.logger.debug(f"Sharing of file {file_id} not readable: {e}")
             return None
-        # A reader who cannot see sharing gets an empty list, which is not the item's list.
-        return None if walk.incomplete or not grants else grants
+        # A reader who cannot see sharing gets an empty list, and a list without details cannot tell direct grants.
+        if walk.incomplete or not any(g.get("permissionDetails") for g in grants):
+            return None
+        return grants
 
     async def _parent_grants(self, parent_id: str) -> list[dict] | None:
         if parent_id not in self._parent_grant_cache:

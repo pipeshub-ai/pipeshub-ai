@@ -1320,16 +1320,37 @@ class TestForeignSharedDrive:
         connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
         assert _drives(state) == {}
 
-    async def test_a_reached_drive_is_written_every_run_so_a_full_sync_keeps_it(self, connector) -> None:
+    async def test_a_reached_drive_is_written_once_a_run_so_a_full_sync_keeps_it(self, connector) -> None:
         self._store(connector)
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
         connector.data_entities_processor.on_new_record_groups.reset_mock()
         connector.drive_delta_sync_point.update_sync_point.reset_mock()
 
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
+
+        connector._foreign_drives_written = set()  # the next run
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
 
         assert self._last_group_write(connector)[1] == ["a@example.com"]
         connector.drive_delta_sync_point.update_sync_point.assert_not_awaited()
+
+    async def test_a_partial_delete_still_clears_the_tokens_before_a_member_rejoins(self, connector) -> None:
+        state = self._store(connector)
+        connector.synced_users = [self._user("a@example.com")]
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.delete_shared_drive_records",
+            new=AsyncMock(return_value=False),
+        ):
+            await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+        assert _drives(state)["0APG"]["tokensPending"] is True
+
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+
+        connector.drive_delta_sync_point.delete_sync_point.assert_awaited_once()
+        assert self._last_group_write(connector)[1] == ["a@example.com"]
 
     async def test_a_token_cleanup_that_fails_after_the_delete_finishes_before_a_member_rejoins(self, connector) -> None:
         state = self._store(connector)

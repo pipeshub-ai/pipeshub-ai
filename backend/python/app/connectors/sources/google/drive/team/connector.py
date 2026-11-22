@@ -652,6 +652,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._parent_grant_cache: dict[tuple[str, str], list[dict] | None] = {}
         # User syncs run concurrently and each rewrites the stored foreign-drive membership.
         self._foreign_drives_lock = asyncio.Lock()
+        # Foreign drives already written this run: one write per run keeps a full sync from unlinking them.
+        self._foreign_drives_written: set[str] = set()
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
         self._hidden_groups: dict[str, set[str]] = {}
@@ -943,6 +945,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._relist_checked = set()
             self._group_members_cache = {}
             self._deployment_emails = None
+            self._foreign_drives_written = set()
             self._external_emails = set()
             self._undecided_visited = set()
             self._undecided_file_ids = set()
@@ -6966,11 +6969,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # A drive the admin listing now has is synced, and removed, by the admin path.
                 if drive_id not in self._listed_shared_drive_ids
             }
-            # Every drive this user reaches is written each run, as the admin path writes every listed drive, so a
-            # full sync in progress sees its group and grants and does not unlink them.
-            to_write: set[str] = set(reached)
+            # A reached drive is written once each run, as the admin path writes every listed drive, so a full
+            # sync in progress sees its group and grants; after that only when its entry changes.
+            to_write = set(reached) - self._foreign_drives_written
             for drive_id, name in reached.items():
                 entry = drives.setdefault(drive_id, {"name": name, "members": []})
+                if email not in entry["members"] or entry["name"] != name:
+                    to_write.add(drive_id)
                 entry["members"] = sorted({*entry["members"], email})
                 entry["name"] = name
             for drive_id, entry in drives.items():
@@ -6983,6 +6988,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 try:
                     if await self._write_foreign_drive(drive_id, drives[drive_id]):
                         del drives[drive_id]
+                    self._foreign_drives_written.add(drive_id)
                 except Exception as e:
                     self._sync_ledger.note_incomplete()
                     self.logger.error(f"Foreign shared drive {drive_id} not updated: {e}", exc_info=True)
@@ -7019,10 +7025,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         await self.data_entities_processor.on_new_record_groups([(group, grants)])
         if grants:
             return False
+        # Set before the delete: one that removes some records and then fails must still clear the change tokens
+        # before anyone rejoins, or they would never read the removed files again.
+        entry["tokensPending"] = True
         if not await delete_shared_drive_records(self.data_entities_processor, self.connector_id, drive_id, self.logger):
             return False
-        # Set before the tokens go, so a failure in between still finishes the cleanup before anyone rejoins.
-        entry["tokensPending"] = True
         await self._forget_foreign_drive_tokens(drive_id)
         return True
 
