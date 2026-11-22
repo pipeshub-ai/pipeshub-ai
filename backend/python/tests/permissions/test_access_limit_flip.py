@@ -95,12 +95,12 @@ async def test_flipping_the_limit_is_seen_at_once_with_the_search_cache_warm(gra
             provider.accessible_records_cache = AccessibleRecordsCache(MagicMock(), redis, 300, True)
         set_limit = _set_neo4j if layer.name == "neo4j" else _set_arango
         settings = neo4j_settings if layer.name == "neo4j" else arango_settings
-        team = (lambda u, p=provider: p._get_user_accessible_team_app_keys(u)) if layer.name == "arango" \
-            else (lambda u, p=provider: p._get_user_accessible_team_app_ids(u))
         try:
             await layer.preload([base])
             ns = await layer._ns(base)
             prefix = layer._prefix[base]
+            team = (lambda u, p=provider, o=ns.org: p._get_user_accessible_team_app_keys(u, org_id=o)) if layer.name == "arango" \
+                else (lambda u, p=provider, o=ns.org: p._get_user_accessible_team_app_ids(u, org_id=o))
             found: list[str] = []
             for i, (limit, model) in enumerate(STEPS):
                 await set_limit(settings, ns.id("A"), limit, model)

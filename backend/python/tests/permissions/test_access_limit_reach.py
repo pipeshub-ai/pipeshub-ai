@@ -23,10 +23,11 @@ def generated_worlds(kind: str) -> list:
     return [w for seed in gen.seeds() for w in gen.generate(kind, seed, gen.world_count())]
 
 
-def _team(layer) -> TeamFn:
+def _team(layer, org: str) -> TeamFn:
+    """The team list's limited arm as get_filtered_connector_instances asks it: under the request's org."""
     if layer.name == "arango":
-        return lambda user: layer._provider._get_user_accessible_team_app_keys(user)
-    return lambda user: layer._provider._get_user_accessible_team_app_ids(user)
+        return lambda user: layer._provider._get_user_accessible_team_app_keys(user, org_id=org)
+    return lambda user: layer._provider._get_user_accessible_team_app_ids(user, org_id=org)
 
 
 async def _check(layer, worlds: list, tag: str) -> list[str]:
@@ -40,7 +41,7 @@ async def _check(layer, worlds: list, tag: str) -> list[str]:
             async def entity(user: str, ns=ns) -> dict | None:
                 return await layer._provider.get_entity_access_context(user, ns.org)
 
-            bad = await reach_findings(world, layer._compiled(world), ns, entity, _team(layer))
+            bad = await reach_findings(world, layer._compiled(world), ns, entity, _team(layer, ns.org))
             found += [f"{layer.name} {tag}-{start + offset}: {b}" for b in bad]
         await layer.release(chunk)
     return found

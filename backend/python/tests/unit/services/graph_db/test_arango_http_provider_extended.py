@@ -482,7 +482,7 @@ class TestGetFilteredConnectorInstances:
         assert total == 2
         assert len(docs) == 2
         connected_provider._get_user_accessible_team_app_keys.assert_awaited_once_with(
-            "user1", None
+            "user1", None, org_id="org1"       # the limited arm is read under the request's org
         )
 
     @pytest.mark.asyncio
