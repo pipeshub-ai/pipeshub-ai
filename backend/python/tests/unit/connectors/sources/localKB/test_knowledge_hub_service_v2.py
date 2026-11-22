@@ -1143,9 +1143,10 @@ async def test_counts_asked_for_on_a_later_browse_page_describe_the_whole_folder
     assert (whole["after"], whole["include_total"]) == (None, True)
 
     provider.get_knowledge_hub_connector_page_v3.reset_mock()
-    third = await service.get_nodes(**browse, cursor=second.pagination.nextCursor, include=["counts"])
-    assert provider.get_knowledge_hub_connector_page_v3.await_count == 1, "the counts now travel in the cursor"
-    assert sum(item.count for item in third.counts.items) == third.counts.total == 5
+    third = await service.get_nodes(**browse, cursor=second.pagination.nextCursor)
+    fourth = await service.get_nodes(**browse, cursor=third.pagination.nextCursor, include=["counts"])
+    assert provider.get_knowledge_hub_connector_page_v3.await_count == 2, "the counts travel in the cursor, also through a page that did not ask for them"
+    assert sum(item.count for item in fourth.counts.items) == fourth.counts.total == 5
 
 
 @pytest.mark.asyncio

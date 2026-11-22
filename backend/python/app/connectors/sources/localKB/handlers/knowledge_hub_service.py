@@ -550,7 +550,7 @@ class KnowledgeHubService:
                 mode=mode, parent_id=parent_id, parent_type=parent_type,
             )
             if want_counts and page_cursor is not None and page_cursor.total is not None and page_cursor.counts_by_type is None:
-                # Issued by a page that did not ask for counts: it carries the total alone, so the listing is counted again as if it had aged out.
+                # The listing was counted without per-type counts, so the cursor carries the total alone: counted again as if it had aged out.
                 page_cursor = replace(page_cursor, total=None, total_capped=False, counted_at_ms=0)
             # The cursor decides sort and filters, so a page cannot resume a
             # keyset from an order that no longer applies.

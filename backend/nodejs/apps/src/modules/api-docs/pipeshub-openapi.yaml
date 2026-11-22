@@ -9577,8 +9577,9 @@ components:
           nullable: true
           description: >-
             Present when `include=counts`; otherwise `null`. Counted and carried with
-            `pagination.totalItems`. A page that asks for them with a cursor from a page
-            that did not counts the whole result again, `totalItems` too.
+            `pagination.totalItems`, also through pages that do not ask for them. A later
+            page that asks for counts with a cursor that carries no per-type counts counts
+            the whole result again, `totalItems` too.
           required:
             - items
             - total
