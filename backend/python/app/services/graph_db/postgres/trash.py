@@ -176,11 +176,12 @@ class TrashMixin(PgBase):
 
         async def walk(tx: Tx) -> tuple[list[dict], int]:
             # A root's trashed parent is read by its key: probed in `tr` (a CTE, no index) it scanned every trashed record of the org per root.
+            # A batch's size is joined to its records once: as a subquery per root, `cnt` (inlined) counted every trashed record of the org again for each root.
             rows = await tx.fetch("""/* pipeshub:graph.list_trashed_records */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
             cnt AS (SELECT doc->>'deleteBatchId' AS batch, count(*) AS c FROM tr GROUP BY 1),
             roots AS (SELECT r.id, r.doc->>'deleteBatchId' AS batch, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'recordName' AS name FROM tr r
-              WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
-                AND CASE WHEN $4 AND (SELECT c FROM cnt WHERE cnt.batch = r.doc->>'deleteBatchId') > 1 THEN false
+              LEFT JOIN cnt ON cnt.batch = r.doc->>'deleteBatchId' WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
+                AND CASE WHEN $4 AND cnt.c > 1 THEN false
                          WHEN EXISTS (SELECT 1 FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'records' AND p.id = e.from_id AND coalesce((p.doc->>'isDeleted')::boolean, false) WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records'
                                       AND e.to_id = r.id AND p.doc->>'deleteBatchId' = r.doc->>'deleteBatchId') THEN false
                          ELSE NOT $4 OR EXISTS (SELECT 1 FROM graph.edges ie JOIN graph.nodes t ON t.org_id = ie.org_id AND t.coll = ie.to_coll AND t.id = ie.to_id
@@ -207,8 +208,8 @@ class TrashMixin(PgBase):
             total = await tx.fetchval("""/* pipeshub:graph.list_trashed_records_total */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
             cnt AS (SELECT doc->>'deleteBatchId' AS batch, count(*) AS c FROM tr GROUP BY 1),
             roots AS (SELECT r.id, r.doc->>'deleteBatchId' AS batch, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'recordName' AS name FROM tr r
-              WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
-                AND CASE WHEN $4 AND (SELECT c FROM cnt WHERE cnt.batch = r.doc->>'deleteBatchId') > 1 THEN false
+              LEFT JOIN cnt ON cnt.batch = r.doc->>'deleteBatchId' WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
+                AND CASE WHEN $4 AND cnt.c > 1 THEN false
                          WHEN EXISTS (SELECT 1 FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'records' AND p.id = e.from_id AND coalesce((p.doc->>'isDeleted')::boolean, false) WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records'
                                       AND e.to_id = r.id AND p.doc->>'deleteBatchId' = r.doc->>'deleteBatchId') THEN false
                          ELSE NOT $4 OR EXISTS (SELECT 1 FROM graph.edges ie JOIN graph.nodes t ON t.org_id = ie.org_id AND t.coll = ie.to_coll AND t.id = ie.to_id
