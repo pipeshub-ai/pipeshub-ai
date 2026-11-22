@@ -421,6 +421,43 @@ describe('OAuthDeviceService', () => {
     expect(create.thirdCall.args[0].scopes).to.deep.equal(['user:read', 'code:write'])
   })
 
+  it('should not mint a scope MCP_SCOPES dropped between creating a first-party code and its poll', async () => {
+    const agent = { ...app, clientId: 'pipeshub-agent', allowedScopes: ['user:read', 'code:write'] }
+    mockOAuthAppService.getAppByClientId.resolves(agent)
+    const realService = new OAuthDeviceService(
+      mockLogger as any,
+      mockOAuthAppService,
+      mockOAuthTokenService,
+      new ScopeValidatorService(),
+      mockFirstPartyDeviceAppService,
+    )
+    mockFirstPartyDeviceAppService.resolveScopes.returns(['user:read', 'code:write'])
+    const create = sinon.stub(OAuthDeviceCode, 'create').resolves({} as any)
+    await realService.createAuthorization('pipeshub-agent', 'user:read code:write', 'http://localhost:3000')
+    const stored = create.firstCall.args[0].scopes
+    expect(stored).to.deep.equal(['user:read', 'code:write'])
+
+    // The operator narrows MCP_SCOPES (and restarts) before the person approves and the agent polls.
+    mockFirstPartyDeviceAppService.resolveScopes.returns(['user:read'])
+    const approved = {
+      _id: new Types.ObjectId(),
+      status: OAuthDeviceCodeStatus.APPROVED,
+      expiresAt: new Date(Date.now() + 60_000),
+      userId: new Types.ObjectId(),
+      orgId: new Types.ObjectId(),
+      scopes: stored,
+      clientId: 'pipeshub-agent',
+    }
+    sinon.stub(OAuthDeviceCode, 'findOne').resolves(approved as any)
+    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any)
+    stubLookup(Users, { fullName: 'Ada' })
+    stubLookup(Org, { accountType: 'business' })
+
+    await realService.poll('pipeshub-agent', undefined, 'device-code')
+
+    expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal(['user:read'])
+  })
+
   it('should not ensure the first-party app for other client_ids', async () => {
     sinon.stub(OAuthDeviceCode, 'create').resolves({} as any)
     await service.createAuthorization(
