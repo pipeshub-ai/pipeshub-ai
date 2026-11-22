@@ -491,6 +491,18 @@ class TestServiceAccountKnowledge:
         knowledge = [{"connectorId": i, "type": "UNKNOWN"} for i in ("drive-team", "drive-mine", "kb-2", "gone")]
         assert await self._kept(graph, bound=bound, knowledge=knowledge) == ["drive-team"]
 
+    @pytest.mark.parametrize("bound", [False, True])
+    async def test_a_connector_limited_to_less_than_the_whole_org_is_not_searched(self, bound: bool) -> None:
+        """A team connector limited to its creator (or to a value nobody passes) is no longer shared with the org. The agent
+        runs as its creator, whom the limit admits, so keeping it would hand the creator's reach to every caller."""
+        limited = [{"_key": "creator-only", "scope": "team", "accessLimit": "CREATOR"},
+                   {"_key": "org-wide", "scope": "team", "accessLimit": "ORG"},
+                   {"_key": "cleared", "scope": "team", "accessLimit": None},
+                   {"_key": "unknown", "scope": "team", "accessLimit": "UNKNOWN"},
+                   {"_key": "empty", "scope": "team", "accessLimit": ""}]
+        knowledge = [{"connectorId": k["_key"], "type": "DRIVE"} for k in limited]
+        assert await self._kept(self._graph(limited), bound=bound, knowledge=knowledge) == ["org-wide", "cleared"]
+
     async def test_collections_alone_need_no_lookup(self) -> None:
         graph = self._graph(self.INSTANCES)
         assert await self._kept(graph, bound=True, knowledge=[{"connectorId": "kb-1", "type": "KB"}]) == ["kb-1"]
