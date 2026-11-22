@@ -1819,6 +1819,19 @@ class DataSourceEntitiesProcessor:
         self.__dict__.setdefault("_permissions_skipped", set()).add(connector_id)
         return True
 
+    async def limit_after_skipped_writes(self, connector_id: str) -> None:
+        """At the end of a run that skipped a permission write of this connector while it was not limited: the
+        licence lapsed after the run began licensed, so ``apply_licence_gate`` did not limit it, and whatever the
+        source took away from then on was not written. The limit is set now, as at the next start, so no one keeps
+        reading what the source no longer lets them read. Raises like ``set_access_limit``."""
+        if connector_id not in self.__dict__.get("_permissions_skipped", ()):
+            return
+        app = await self.data_store_provider.graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True,
+        )
+        if _gated(app) and app.get("accessLimit") is None:
+            await self.limit_unlicensed(connector_id, app)
+
     async def keep_skipped_groups(self, connector_id: str) -> None:
         """Before the unlink after a full sync that skipped permission writes: every stored user group and role of the
         connector counts as seen, so their members and grants stay as they were. A failed read raises."""

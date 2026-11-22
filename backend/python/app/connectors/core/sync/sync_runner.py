@@ -955,6 +955,13 @@ async def run_sync_task(
         error = exc
         raise
     finally:
+        # Whatever the run's end: one whose licence lapsed partway skipped writes on a connector nobody limited.
+        gate = getattr(connector, "data_entities_processor", None)
+        if isinstance(gate, DataSourceEntitiesProcessor):
+            try:
+                await gate.limit_after_skipped_writes(connector_id)
+            except Exception as e:
+                error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="limit_after_skips")
         if seen is not None:
             try:
                 processor.end_full_sync_run(connector_id, seen)
