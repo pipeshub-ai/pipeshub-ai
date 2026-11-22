@@ -4800,6 +4800,7 @@ class JiraConnector(JiraCloudPermissionsMixin, BaseConnector):
         parent_obj = fields.get("parent")
         parent_external_id = parent_obj.get("id") if parent_obj else None
         parent_unread = None
+        parent_retry = False
         is_subtask = bool(issue_type_obj.get("subtask")) or issue_type_obj.get("hierarchyLevel") == -1
         subtask_unplaced = False
         if parent_external_id:
@@ -4814,6 +4815,10 @@ class JiraConnector(JiraCloudPermissionsMixin, BaseConnector):
                 subtask_unplaced = True
             elif filed is None:
                 parent_unread = str(parent_external_id)
+                # Unlicensed, the Browse holders are not read by design: kept where it was filed, retried only when
+                # the epic itself could not be read.
+                parent_retry = (security is None or not security.unlicensed
+                                or parent_unread in self._parent_level_failures)
             if filed is False or (filed is None and not is_subtask):
                 parent_external_id = None
         if parent_external_id and self._parent_outside_synced_projects(fields):
@@ -4853,6 +4858,7 @@ class JiraConnector(JiraCloudPermissionsMixin, BaseConnector):
             "issue_type": issue_type,
             "parent_external_id": parent_external_id,
             "parent_unread": parent_unread,
+            "parent_retry": parent_retry,
             "subtask_unplaced": subtask_unplaced,
             "is_subtask": is_subtask,
             "status": status,
@@ -5031,7 +5037,8 @@ class JiraConnector(JiraCloudPermissionsMixin, BaseConnector):
 
         if issue_data["parent_unread"]:
             # Kept where the last sync filed it until its epic is read again.
-            self._parents_to_retry.add(issue_data["parent_unread"])
+            if issue_data["parent_retry"]:
+                self._parents_to_retry.add(issue_data["parent_unread"])
             if existing_record is not None and existing_record.parent_external_record_id == issue_data["parent_unread"]:
                 parent_external_id = issue_data["parent_unread"]
         if issue_data["subtask_unplaced"] and existing_record is not None:

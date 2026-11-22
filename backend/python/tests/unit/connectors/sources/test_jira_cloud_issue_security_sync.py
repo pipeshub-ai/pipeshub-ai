@@ -1382,6 +1382,30 @@ class TestStoriesUnderTheirEpic:
         assert c._parents_to_retry == {"2001"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("filed_under", ["2001", None])
+    async def test_unlicensed_a_story_stays_where_it_was_filed_and_its_epic_is_not_retried(self, filed_under) -> None:
+        """Unlicensed, the Browse holders are not read by design (``browse_holders`` None): that is not a failed epic
+        read. Queued for retry, the epic would make every later unlicensed sync re-read all its children."""
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock()
+        unlicensed = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False, unlicensed=True,
+                                          browse_holders=None)
+        stored = MagicMock(id="rid", version=1, source_updated_at=0, is_placeholder=False,
+                           parent_external_record_id=filed_under)
+        story = await _story_record(c, [_epic(), _story()], context=unlicensed, existing=stored)
+        assert story.parent_external_record_id == filed_under
+        assert c._parents_to_retry == set()
+
+    @pytest.mark.asyncio
+    async def test_unlicensed_a_failed_epic_read_is_still_retried(self) -> None:
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock(return_value=_bulk_fetch(_resp(500)))
+        unlicensed = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False, unlicensed=True,
+                                          browse_holders=None)
+        await _story_record(c, [_story()], context=unlicensed)
+        assert c._parents_to_retry == {"2001"}
+
+    @pytest.mark.asyncio
     async def test_an_epic_read_later_in_the_sync_replaces_a_failed_read(self) -> None:
         c = _connector()
         c._get_fresh_datasource = AsyncMock(return_value=_bulk_fetch(_resp(500)))
