@@ -11,20 +11,23 @@ class _Connector(SharePointPermissionsMixin):
     def __init__(self, gated: bool) -> None:
         self.connector_id = "connector-1"
         self.data_entities_processor = MagicMock()
-        self.data_entities_processor.permission_sync_gated = AsyncMock(return_value=gated)
+        self.data_entities_processor.skips_permission_writes = AsyncMock(return_value=gated)
         self.client = MagicMock()
         self._sharepoint_rest_pages = MagicMock()
         self._sharepoint_rest_get = AsyncMock()
+        self._inheritance_when_unreadable = AsyncMock(return_value=False)
+        self.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
 
 
-# Every method the free connector calls, and what it gets back when the gate holds: no grants, inherit.
+# Every method the free connector calls, and what it gets back when the gate holds: no grants (the processor keeps the
+# stored ones), never None (which would count the part as unreadable and fail the run).
 ENTRY_POINTS = [
     ("_get_site_permissions", ("site",), []),
     ("_get_list_permissions", ("site", "list"), []),
     ("_get_list_item_permissions", ("site", "list", "item"), []),
     ("_get_page_permissions", ("site", "page"), []),
     ("_get_site_pages_scope", ("site",), None),
-    ("_get_library_access", ("site", MagicMock(id="drive")), (True, [])),
+    ("_get_library_access", ("site", MagicMock(id="drive")), (False, [])),
     ("_get_page_access", ("site", "page", MagicMock()), (True, [])),
     ("_drive_item_access", (MagicMock(id="item"), "drive", "site"), (True, [])),
     ("_sync_user_groups", ([MagicMock()],), None),
@@ -38,7 +41,7 @@ async def test_gated_connector_reads_nothing_from_the_source(name: str, args: tu
 
     assert await getattr(connector, name)(*args) == expected
 
-    connector.data_entities_processor.permission_sync_gated.assert_awaited_with("connector-1")
+    connector.data_entities_processor.skips_permission_writes.assert_awaited_with("connector-1")
     assert connector.client.mock_calls == []
     connector._sharepoint_rest_pages.assert_not_called()
     connector._sharepoint_rest_get.assert_not_awaited()
@@ -69,3 +72,18 @@ async def test_licensed_connector_still_syncs_groups() -> None:
     await connector._sync_user_groups([])
 
     connector._sync_azure_ad_groups.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored_inherits", [True, False])
+async def test_gated_library_keeps_its_stored_inheritance(stored_inherits: bool) -> None:
+    """The processor writes a library's inherit edge from this answer even while it skips grants, so a gated run
+    hands back the edge that is stored, not "inherits"."""
+    connector = _Connector(gated=True)
+    connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="rg-1"))
+    connector._inheritance_when_unreadable = AsyncMock(return_value=stored_inherits)
+
+    assert await connector._get_library_access("site", MagicMock(id="drive")) == (stored_inherits, [])
+
+    connector._inheritance_when_unreadable.assert_awaited_once_with("recordGroups", "rg-1")
+    assert connector.client.mock_calls == []

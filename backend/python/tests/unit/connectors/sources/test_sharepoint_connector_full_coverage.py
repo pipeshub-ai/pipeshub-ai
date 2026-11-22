@@ -37,7 +37,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 def _make_mock_deps():
     logger = logging.getLogger("test.sharepoint.full")
     data_entities_processor = MagicMock()
-    data_entities_processor.permission_sync_gated = AsyncMock(return_value=False)
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.org_id = "org-sp-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
@@ -1906,7 +1906,7 @@ class TestCreateConnector:
         cs = MagicMock()
 
         processor = MagicMock()
-        processor.permission_sync_gated = AsyncMock(return_value=False)
+        processor.skips_permission_writes = AsyncMock(return_value=False)
         processor.org_id = "org-1"
 
         connector = await SharePointConnector.create_connector(

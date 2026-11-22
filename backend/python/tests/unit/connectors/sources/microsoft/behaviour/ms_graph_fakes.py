@@ -311,7 +311,7 @@ class FakeRecordsDb:
         assert len(matches) == 1, f"expected one record named {name!r}, found {len(matches)}"
         return matches[0]
 
-    async def permission_sync_gated(self, connector_id: str | None) -> bool:
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
         return False  # licensed: the licence gate has its own tests
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:

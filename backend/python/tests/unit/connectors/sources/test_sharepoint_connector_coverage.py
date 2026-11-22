@@ -35,7 +35,7 @@ MODULE = "app.connectors.sources.microsoft.sharepoint_online.connector"
 def _make_connector(*, return_dep: bool = False):
     logger = logging.getLogger("test.sharepoint")
     dep = MagicMock()
-    dep.permission_sync_gated = AsyncMock(return_value=False)
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.org_id = "org-sp-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
@@ -377,7 +377,7 @@ class TestSharePointCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
         processor = MagicMock()
-        processor.permission_sync_gated = AsyncMock(return_value=False)
+        processor.skips_permission_writes = AsyncMock(return_value=False)
         processor.org_id = "org-1"
         connector = await SharePointConnector.create_connector(
             logger=logging.getLogger("test"),

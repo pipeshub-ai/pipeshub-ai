@@ -118,8 +118,11 @@ class SharePointPermissionsMixin:
     """The permission-reading half of ``SharePointConnector``."""
 
     async def _copies_no_source_access(self) -> bool:
-        """Without a licence key a company-wide connector reads no access from SharePoint."""
-        return await self.data_entities_processor.permission_sync_gated(self.connector_id)
+        """Without a licence key a company-wide connector reads no access from SharePoint. The processor then keeps
+        every stored grant and source group, and a record's inherit edge, whatever is handed to it
+        (``skips_permission_writes``), so the empty answers below only keep the run whole: None would count each
+        site, library and page as unreadable, fail the run and drop new files, though nothing was wrong with them."""
+        return await self.data_entities_processor.skips_permission_writes(self.connector_id)
 
     async def _get_site_permissions(self, site_id: str) -> list[Permission] | None:
         """The site's (web's) role assignments as grants, or None when they can't be read.
@@ -637,16 +640,16 @@ class SharePointPermissionsMixin:
 
     async def _get_library_access(self, site_id: str, drive: object) -> tuple[bool, list[Permission] | None]:
         """``(inherit_permissions, grants)`` for a library; the grants are None when they can't be read."""
-        if await self._copies_no_source_access():
-            return True, []
         drive_id = getattr(drive, 'id', None)
-        scope = await self._get_library_scope(drive_id, drive)
+        gated = await self._copies_no_source_access()
+        scope = None if gated else await self._get_library_scope(drive_id, drive)
         if scope is None:
+            # A library's inherit edge is written from this answer even while grants are skipped, so it is the stored one.
             stored = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id)
             inherits = await self._inheritance_when_unreadable(
                 CollectionNames.RECORD_GROUPS.value, stored.id if stored else None
             )
-            return inherits, None
+            return inherits, [] if gated else None
         if not scope.has_unique_role_assignments:
             return True, []
         return False, await self._get_role_assignment_grants(

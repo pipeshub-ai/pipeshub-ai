@@ -51,7 +51,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 def _make_mock_deps():
     logger = logging.getLogger("test.sharepoint")
     data_entities_processor = MagicMock()
-    data_entities_processor.permission_sync_gated = AsyncMock(return_value=False)
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.org_id = "org-sp-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
@@ -366,7 +366,7 @@ def _make_sync_site(site_id, display_name, name) -> MagicMock:
 def _make_connector_cov():
     logger = logging.getLogger("test.sharepoint")
     dep = MagicMock()
-    dep.permission_sync_gated = AsyncMock(return_value=False)
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.org_id = "org-sp-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
@@ -625,7 +625,7 @@ class TestSharePointCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
         processor = MagicMock()
-        processor.permission_sync_gated = AsyncMock(return_value=False)
+        processor.skips_permission_writes = AsyncMock(return_value=False)
         processor.org_id = "org-1"
         connector = await SharePointConnector.create_connector(
             logger=logging.getLogger("test"),
@@ -645,7 +645,7 @@ class TestSharePointCreateConnector:
 def _make_mock_deps_fullcov():
     logger = logging.getLogger("test.sharepoint.full")
     data_entities_processor = MagicMock()
-    data_entities_processor.permission_sync_gated = AsyncMock(return_value=False)
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.org_id = "org-sp-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
@@ -2498,7 +2498,7 @@ class TestCreateConnector:
         cs = MagicMock()
 
         processor = MagicMock()
-        processor.permission_sync_gated = AsyncMock(return_value=False)
+        processor.skips_permission_writes = AsyncMock(return_value=False)
         processor.org_id = "org-1"
 
         connector = await SharePointConnector.create_connector(
