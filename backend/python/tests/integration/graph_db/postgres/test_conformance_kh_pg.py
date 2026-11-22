@@ -50,8 +50,8 @@ from tests.permissions.kh_worlds import (
     UNPLACED,
     WIDE,
 )
+from tests.permissions.scenario import load_all
 
-from .pg_support import corpus
 from .test_conformance import PgLayer
 from .test_kg_read import KgLayer, _admin, _hex, flip
 
@@ -187,7 +187,7 @@ def _bad(found: list[KhFinding]) -> list[KhFinding]:
 
 @pytest.mark.parametrize("kh_layer", ["current", "not_current", "copied"], indirect=True)
 async def test_golden_and_adversarial_worlds_list_what_the_viewer_may_read(kh_layer) -> None:
-    worlds = [*dict.fromkeys(s.final_world() for s in corpus()), *KH_WORLDS]
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
     bad: list[KhFinding] = []
     for start in range(0, len(worlds), CHUNK):
         chunk = worlds[start:start + CHUNK]
@@ -204,7 +204,7 @@ async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_vi
     """With the counters read (PG_KG_COUNTERS=1) an unfiltered total of a connector kg serves comes from kg.counts: every total, count and facet is still the oracle's."""
     monkeypatch.setenv("PG_KG_COUNTERS", "1")
     layer = KhPgLayer(pg_provider, pg_db, not_current=False)
-    worlds = [*dict.fromkeys(s.final_world() for s in corpus()), *KH_WORLDS]
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
     bad: list[KhFinding] = []
     seeded = 0
     try:
@@ -267,7 +267,7 @@ async def test_the_root_listing_is_the_flat_listing_of_every_app_but_the_hidden_
     """The root listing (All Records) against the provider's flat listing of the same Apps, every viewer of the golden and KH worlds, with each world's first App hidden:
     the same rows in the same order, and none of the hidden App's."""
     kh_layer.hide_first_app = True
-    worlds = [*dict.fromkeys(s.final_world() for s in corpus()), *KH_WORLDS]
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
     bad: list[str] = []
     for start in range(0, len(worlds), CHUNK):
         chunk = worlds[start:start + CHUNK]
@@ -439,7 +439,7 @@ async def test_a_flatten_below_a_node_or_with_a_depth_lists_what_browsing_down_r
     """A flatten from a record group or a folder lists the rows browsing down from it reaches within the depth, each a hierarchy child the viewer may open (Neo4j's and
     ArangoDB's walk from the start), and refuses a start the browse refuses. From the App, a depth keeps the flatten's rows within that many hops (and the records the hierarchy
     does not place, one below their group). The same from kg and from the walk."""
-    worlds = [*KH_WORLDS, *dict.fromkeys(s.final_world() for s in corpus())][:40]
+    worlds = [*KH_WORLDS, *dict.fromkeys(s.final_world() for s in load_all())][:40]
     bad: list[str] = []
     asked = opened = 0
     for start in range(0, len(worlds), CHUNK):

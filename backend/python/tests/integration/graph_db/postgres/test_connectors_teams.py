@@ -71,6 +71,27 @@ async def test_filtered_instances_page_count_and_narrow_as_the_listing_does(w: W
     assert await p.get_filtered_connector_instances("apps", "orgAppRelation", "", "uid-me") == ([], 0)
 
 
+async def test_a_limited_team_connector_is_listed_for_whom_its_limit_admits_whatever_edges_exist(w: World) -> None:
+    """accessLimit CREATOR lists a team connector for its creator alone, linked or not; ORG for every member of its own org; a limit stored null is
+    no limit. A link to a limited connector lists nothing."""
+    await w.nodes("users", {"_key": "me", "userId": "uid-me"}, {"_key": "you", "userId": "uid-you"})
+    await w.nodes("organizations", {"_key": "elsewhere"})
+    await w.edge("belongsTo", ("users", "you"), ("organizations", w.org), entityType="ORGANIZATION")
+    await w.edge("belongsTo", ("users", "me"), ("organizations", "elsewhere"), entityType="ORGANIZATION")      # a member of another org only
+    await app(w, "mineLimited", ts=4, accessLimit="CREATOR")                     # created by uid-me, nobody linked
+    await app(w, "theirsLimited", ts=3, accessLimit="CREATOR", created_by="uid-you")
+    await app(w, "orgWide", ts=2, accessLimit="ORG")
+    await app(w, "cleared", ts=1, accessLimit=None)
+    for key in ("theirsLimited", "cleared"):
+        await w.edge("userAppRelation", ("users", "me"), ("apps", key))
+
+    async def keys(user_id: str) -> list[str]:
+        rows, _ = await w.p.get_filtered_connector_instances("apps", "orgAppRelation", w.org, user_id, scope="team")
+        return [r["_key"] for r in rows]
+    assert await keys("uid-me") == ["mineLimited", "cleared"]                    # not the creator's link to theirsLimited; me belongs to another org only
+    assert await keys("uid-you") == ["theirsLimited", "orgWide"]
+
+
 async def test_a_connector_name_clashes_by_scope_ignoring_case_and_surrounding_whitespace(w: World) -> None:
     await app(w, "t1", name="  Sales Slack \t")
     await app(w, "p1", scope="personal", name="Mine", created_by="uid-me")

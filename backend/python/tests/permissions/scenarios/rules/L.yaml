@@ -1,6 +1,5 @@
 # The connector's access limit (App.accessLimit). While it is set the connector is written APP_LEVEL, so whoever passes
 # the gate reads every record of it; the limit alone decides who passes, whatever edges, links or grants exist.
-# Tagged access-limit: PostgreSQL does not have the rule yet, and its suites leave these worlds out until it does.
 - id: RULE-L01
   title: 'Limited to the creator: the creator passes with no edge and reads everything'
   source: licence gate design B (accessLimit)

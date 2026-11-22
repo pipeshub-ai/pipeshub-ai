@@ -387,6 +387,29 @@ async def test_the_apps_a_user_reaches(w: World) -> None:
     assert "nolink" not in {a["id"] for a in (await w.p.get_entity_access_context("uid-c1", w.org))["apps"]}
 
 
+async def test_a_limited_connector_is_reached_by_whom_its_limit_admits_whatever_edges_exist(w: World) -> None:
+    """accessLimit CREATOR: the creator alone (by userId), linked or not; ORG: every member of the app's own org; a limit stored null is no limit. A
+    user-app link, a team's link and a source account link to a limited connector reach nothing."""
+    await context_world(w)                                                       # c1 is linked to conn and appl, through a team to nothing, as acct to src
+    await user(w, "c2")
+    await user(w, "c3")
+    await w.nodes("organizations", {"_key": w.org}, {"_key": "elsewhere"})
+    await w.edge("belongsTo", ("users", "c2"), ("organizations", w.org), entityType="ORGANIZATION")
+    await w.edge("belongsTo", ("users", "c3"), ("organizations", "elsewhere"), entityType="ORGANIZATION")      # a member of another org only
+    await w.nodes("apps", {"_key": "conn", "type": "JIRA", "name": "Jira", "permissionModel": "APP_LEVEL", "accessLimit": "CREATOR", "createdBy": "uid-c2"},
+                  {"_key": "appl", "type": "SLACK", "name": "Slack", "permissionModel": "APP_LEVEL", "accessLimit": None},
+                  {"_key": "src", "type": "DRIVE", "permissionModel": "APP_LEVEL", "accessLimit": "CREATOR", "createdBy": "uid-c2"},
+                  {"_key": "mine", "type": "DRIVE", "permissionModel": "APP_LEVEL", "accessLimit": "CREATOR", "createdBy": "uid-c1"},
+                  {"_key": "orgWide", "type": "DRIVE", "permissionModel": "APP_LEVEL", "accessLimit": "ORG", "createdBy": "uid-c1"})
+    await w.edge("userAppRelation", ("teams", "tm"), ("apps", "orgWide"))
+
+    async def apps(user_id: str) -> set[str]:
+        return {a["id"] for a in (await w.p.get_entity_access_context(user_id, w.org))["apps"]}
+    assert await apps("uid-c1") == {"appl", "kb", "mine"}                       # not conn or src, though linked; not orgWide, though its team is: c1 belongs to no organization
+    assert await apps("uid-c2") == {"conn", "src", "orgWide"}                    # no link at all
+    assert await apps("uid-c3") == set()                                         # ORG is the app's own org, not any
+
+
 async def test_a_collection_shared_with_the_users_team_is_reached(w: World) -> None:
     await context_world(w)
     await w.nodes("apps", {"_key": "kbteam", "type": "KB", "name": "KB3"}, {"_key": "kbteam_other", "type": "KB", "name": "KB4", "orgId": "other-org"})

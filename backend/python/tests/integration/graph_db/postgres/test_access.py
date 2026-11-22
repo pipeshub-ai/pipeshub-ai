@@ -68,6 +68,22 @@ def rec(key: str, **kw: object) -> dict:
     return {"_key": key, "connectorId": APP, "recordName": key, **kw}
 
 
+async def test_an_org_limit_opens_a_connector_to_the_members_of_its_own_org_only(w: World) -> None:
+    """accessLimit ORG: a member of the connector's org passes the gate with no link; a member of another org only does not, nor does a user whose
+    link is all they have. Its records open to the member through APP_LEVEL."""
+    await w.nodes("users", {"_key": "m", "userId": "uid-m"}, {"_key": "x", "userId": "uid-x"})
+    await w.nodes("organizations", {"_key": w.org}, {"_key": "elsewhere"})
+    await w.edge("belongsTo", ("users", "m"), ("organizations", w.org), entityType="ORGANIZATION")
+    await w.edge("belongsTo", ("users", "x"), ("organizations", "elsewhere"), entityType="ORGANIZATION")
+    await w.nodes("apps", {"_key": "lim", "type": "DRIVE", "permissionModel": "APP_LEVEL", "accessLimit": "ORG", "createdBy": "uid-x"})
+    await w.edge("userAppRelation", ("users", "x"), ("apps", "lim"))
+    await w.nodes("records", rec("r", connectorId="lim", accessRule="RESTRICTED"))
+    await w.child(("apps", "lim"), ("records", "r"), inherits=False)
+    assert await w.allowed("m", "lim", "r") == {"lim", "r"}
+    assert await w.allowed("x", "lim", "r") == set()
+    assert await w.allowed("u", "lim", "r") == set()                     # u belongs to no org
+
+
 async def test_a_user_with_no_gate_or_no_grant_opens_nothing(w: World) -> None:
     await w.nodes("records", rec("r"))
     await w.child(("apps", APP), ("records", "r"))

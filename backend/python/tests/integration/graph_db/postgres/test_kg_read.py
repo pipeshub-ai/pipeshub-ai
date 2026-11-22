@@ -27,9 +27,9 @@ from app.services.graph_db.postgres.kg.drainer import drain_org
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.runner import ConformanceRunner, targets
+from tests.permissions.scenario import load_all
 from tests.support import plan_gate
 
-from .pg_support import corpus
 from .test_conformance import CHUNK, PgLayer, _describe
 
 if TYPE_CHECKING:
@@ -183,7 +183,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
 
 @pytest.mark.parametrize("tier", ["rules", "golden"])
 async def test_the_corpus_answered_from_kg_equals_the_walk_and_the_oracle(layer, pg_provider, decided, tier) -> None:
-    worlds = [s.final_world() for s in corpus() if ("rules" in s.tags) == (tier == "rules")]
+    worlds = [s.final_world() for s in load_all() if ("rules" in s.tags) == (tier == "rules")]
     for start in range(0, len(worlds), CHUNK):
         chunk = worlds[start:start + CHUNK]
         await _gate(layer, pg_provider, chunk, f"{tier}{start}x", decided)
