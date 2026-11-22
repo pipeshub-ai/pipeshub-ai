@@ -231,7 +231,6 @@ function isDuplicateEmailKeyError(error: unknown): boolean {
   );
 }
 
-
 /**
  * Refuses an email change to an address the organisation cannot give this account. An account
  * removed from the organisation still holds its address (the unique index covers removed rows),
