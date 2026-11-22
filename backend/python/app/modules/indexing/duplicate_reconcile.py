@@ -276,7 +276,7 @@ async def rearm_failed_reconcile(
     backoff, and only when the record itself says it is not pending: a flag that
     is set (by the promotion, or by an earlier re-arm) already has its own due
     time and attempt count, which the sweep owns. The write is fenced on the
-    flag and due time that were read, so a promotion made meanwhile keeps its
+    flag, due time and indexing status that were read, so a promotion made meanwhile keeps its
     own flag. A record the sweep gave up on (attempt count at the limit) is not
     re-armed, so the retries stay bounded. Returns whether the flag was set.
     """
@@ -303,6 +303,7 @@ async def rearm_failed_reconcile(
                 {
                     DUPLICATE_RECONCILE_PENDING_FIELD: record.get(DUPLICATE_RECONCILE_PENDING_FIELD),
                     DUPLICATE_RECONCILE_DUE_AT_FIELD: record.get(DUPLICATE_RECONCILE_DUE_AT_FIELD),
+                    "indexingStatus": record.get("indexingStatus"),
                 },
             )
         )

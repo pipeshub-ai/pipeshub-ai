@@ -4979,6 +4979,23 @@ class TestReconcilePendingFlag:
         assert gp.update_node_fields_if_match.await_args.args[2][DUPLICATE_RECONCILE_PENDING_FIELD] is True
 
     @pytest.mark.asyncio
+    async def test_a_successful_reconcile_is_not_rearmed(self) -> None:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_node = AsyncMock()
+        gp.get_document = AsyncMock(return_value={
+            "indexingStatus": "COMPLETED", DUPLICATE_RECONCILE_PENDING_FIELD: False,
+            "duplicateReconcileAttempts": 0, "duplicateReconcileDueAt": None,
+        })
+        gp.update_node_fields_if_match = AsyncMock(return_value=True)
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=True)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        gp.update_node_fields_if_match.assert_not_awaited()
+        assert self._flag_writes(gp) == [False]
+
+    @pytest.mark.asyncio
     async def test_a_transient_failure_is_retried(self, monkeypatch):
         monkeypatch.setattr(record_module, "RECONCILE_RETRY_DELAY_SECONDS", 0)
         handler = _make_handler()

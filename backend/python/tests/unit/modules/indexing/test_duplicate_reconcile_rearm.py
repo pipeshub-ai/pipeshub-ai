@@ -150,3 +150,70 @@ async def test_an_unreadable_record_does_not_raise() -> None:
     graph = FakeGraph(_swept_clear_doc())
     graph.get_document = AsyncMock(side_effect=ConnectionError("down"))  # type: ignore[method-assign]
     assert not await rearm_failed_reconcile(graph, LOGGER, "p1", lambda: NOW)  # type: ignore[arg-type]
+
+
+def _change_after_read(graph: FakeGraph, **changes: object) -> None:
+    real_get = graph.get_document
+
+    async def get_then_change(key: str, collection: str, **kw: object) -> dict | None:
+        seen = await real_get(key, collection, **kw)
+        graph.doc.update(changes)
+        return seen
+
+    graph.get_document = get_then_change  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_a_record_reindexed_between_the_read_and_the_write_is_not_rearmed() -> None:
+    graph = FakeGraph(_swept_clear_doc())
+    _change_after_read(graph, indexingStatus="IN_PROGRESS")
+    await rearm_failed_reconcile(graph, LOGGER, "p1", lambda: NOW)  # type: ignore[arg-type]
+    assert graph.doc[PENDING] is False
+    assert graph.fenced_writes == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("moved", [{DUE_AT: NOW + 5}, {PENDING: True}], ids=["due_time_moved", "flag_set"])
+async def test_the_write_is_fenced_on_both_the_flag_and_the_due_time(moved: dict[str, Any]) -> None:
+    graph = FakeGraph(_swept_clear_doc())
+    _change_after_read(graph, **moved)
+    assert not await rearm_failed_reconcile(graph, LOGGER, "p1", lambda: NOW)  # type: ignore[arg-type]
+    assert graph.fenced_writes == 0
+    assert graph.doc[ATTEMPTS] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "rearmed"),
+    [("COMPLETED", True), ("EMPTY", True), ("FAILED", False), ("QUEUED", False), ("IN_PROGRESS", False), (None, False)],
+)
+async def test_only_a_record_that_finished_indexing_is_rearmed(status: str | None, rearmed: bool) -> None:
+    graph = FakeGraph(_swept_clear_doc(indexingStatus=status))
+    assert await rearm_failed_reconcile(graph, LOGGER, "p1", lambda: NOW) is rearmed  # type: ignore[arg-type]
+    assert graph.doc[PENDING] is rearmed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("previous", "rearmed"),
+    [(0, True), (2, True), (MAX_RECONCILE_ATTEMPTS - 2, True), (MAX_RECONCILE_ATTEMPTS - 1, False), (MAX_RECONCILE_ATTEMPTS, False)],
+)
+async def test_the_attempt_limit_is_exact_and_the_count_continues(previous: int, rearmed: bool) -> None:
+    graph = FakeGraph(_swept_clear_doc(**{ATTEMPTS: previous}))
+    assert await rearm_failed_reconcile(graph, LOGGER, "p1", lambda: NOW) is rearmed  # type: ignore[arg-type]
+    if rearmed:
+        assert graph.doc[ATTEMPTS] == previous + 1
+        assert graph.doc[DUE_AT] == NOW + DUPLICATE_RECONCILE_GRACE_MS * 2 ** (previous + 1)
+    else:
+        assert graph.doc[PENDING] is False
+        assert graph.doc[ATTEMPTS] == previous
+
+
+@pytest.mark.asyncio
+async def test_a_successful_reconcile_leaves_the_marker_cleared_and_writes_nothing_more(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph = FakeGraph(_swept_clear_doc())
+    monkeypatch.setattr(DuplicateReconciler, "reconcile", AsyncMock(return_value=True))
+    await QueuedCopies(graph, None, LOGGER)._reconcile("p1", "vr1")  # type: ignore[arg-type]
+    assert graph.doc[PENDING] is False
+    assert graph.fenced_writes == 0
+    assert graph.doc[ATTEMPTS] == 0
