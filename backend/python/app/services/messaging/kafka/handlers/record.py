@@ -115,6 +115,7 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -2667,11 +2668,19 @@ class RecordEventHandler(BaseEventService):
                 for field in ("recordName", "origin", "version", "filePath"):
                     if payload.get(field) is None and record.get(field) is not None:
                         payload[field] = record[field]
-                if extension in (None, "", "unknown") and record.get("extension"):
-                    extension = payload["extension"] = record["extension"]
                 begin_run(ParseNowRun(store_only=store_only, content_rev=record.get("contentRev")))
                 # A marker left by an earlier attempt must not read as this one's outcome.
                 await self._mark_parse_now(record_id, record, ParseNowStatus.IN_PROGRESS)
+
+            # Parse-now, recovery and republish build their event from the RECORDS document, which has no extension:
+            # a file's is on its FILES document. Read before anything is purged and before the budget and the gate use
+            # it. An outage raises (retried) rather than reading as "no extension", which would refuse or misjudge it.
+            if extension in (None, "", "unknown") and record.get("recordType") == RecordTypes.FILE.value:
+                file_doc = await self.event_processor.graph_provider.get_document(
+                    record_id, CollectionNames.FILES.value, raise_on_error=True
+                )
+                if file_doc and file_doc.get("extension"):
+                    extension = payload["extension"] = file_doc["extension"]
 
             # After the parse-now refusal above, which writes nothing: a refused event never purges.
             if paid_cache_run.refresh_requested(payload):
@@ -2707,7 +2716,10 @@ class RecordEventHandler(BaseEventService):
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
-                mime_type = record.get("mimeType") or "unknown"
+                # The dispatch reads the payload's mime: it must be the one judged here.
+                mime_type = payload["mimeType"] = record.get("mimeType") or "unknown"
+            # The consumer sized the budget from the event's labels; the parsing client sizes it from these.
+            record_budget.resize_to(extension, mime_type)
 
             # CODE_FILE records always carry text/plain as their mime type, so the
             # mime-based extension fallback below would resolve to "txt" for every

@@ -6,8 +6,12 @@ import {
   ConfigurationManagerCommandOptions,
 } from '../../../../src/libs/commands/configuration_manager/cm.service.command'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 describe('ConfigurationManagerServiceCommand', () => {
+  beforeEach(() => registerUpstreams({ nodejs: ['http://cm.local'] }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {

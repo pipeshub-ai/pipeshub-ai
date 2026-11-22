@@ -916,6 +916,33 @@ class TestCodingSandboxArtifactBridge:
         ]
         assert "artifact_errors_note" in ctx.tool_response.data
 
+    async def test_a_failed_registrations_error_reaches_the_model_without_its_secret(self, monkeypatch) -> None:
+        """`artifact_errors` rides on a successful run result, which the executor does not mask: a storage driver's
+        error that quotes a signed URL or a key reaches the model with the secret masked and the words kept."""
+        context = _make_context(blob_store=AsyncMock())
+        registry = _make_mock_registry()
+        registry.register_output = AsyncMock(
+            side_effect=RuntimeError("upload refused: https://acct.blob.core.windows.net/c/r.pdf?sig=FAKE-SIG-FOR-TEST"),
+        )
+        monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
+        manager = SandboxManager()
+        manager.register_backend_factory(
+            SandboxType.CODING, lambda: _FakeBackend({"output/report.pdf": b"pdf-bytes"}),
+        )
+        sandbox_id, _ = await manager.get_or_create(SandboxType.CODING)
+        ctx = ToolResultContext(
+            tool_path="/toolsets/coding_sandbox/run_code",
+            tool_use_id=__import__("uuid").uuid4(),
+            tool_response=ToolOutput(success=True, data={"artifacts": ["output/report.pdf"], "sandbox_id": sandbox_id}),
+        )
+
+        with patch("app.agents.agent_loop.sandbox_bridge.register_task"):
+            await coding_sandbox_artifact_bridge(context, manager)(ctx, _noop_next)
+
+        (failure,) = ctx.tool_response.data["artifact_errors"]
+        assert failure["error"].startswith("RuntimeError: upload refused:")
+        assert "FAKE-SIG-FOR-TEST" not in failure["error"]
+
     async def test_emits_live_sse_artifact_event_when_event_sink_present(self, monkeypatch) -> None:
         blob_store = AsyncMock()
         event_sink = AsyncMock()

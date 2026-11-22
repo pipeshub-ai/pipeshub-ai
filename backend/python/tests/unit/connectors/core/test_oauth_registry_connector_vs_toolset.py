@@ -77,7 +77,9 @@ class _MemoryConfigService:
     def __init__(self) -> None:
         self.store: dict = {}
 
-    async def get_config(self, path: str, default: list | dict | None = None, use_cache: bool = True) -> list | dict | None:
+    async def get_config(
+        self, path: str, default: list | dict | None = None, use_cache: bool = True, *, raise_on_error: bool = False,
+    ) -> list | dict | None:
         return self.store.get(path, default)
 
     async def set_config(self, path: str, value: list | dict) -> bool:

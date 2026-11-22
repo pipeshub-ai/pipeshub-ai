@@ -17,7 +17,7 @@ import time
 import uuid
 from collections import defaultdict
 from contextlib import AbstractContextManager, asynccontextmanager
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.agents.constants.mcp_server_constants import (
     get_mcp_credentials_path,
@@ -29,7 +29,6 @@ from app.agents.constants.mcp_server_constants import (
 )
 from app.agents.mcp import cimd
 from app.agents.mcp import oauth_client as oauth_client_module
-from app.agents.mcp.models import OAuthTokens
 from app.agents.mcp.url_guard import MCPUrlPolicy
 from app.config.configuration_service import ConfigurationService
 from app.utils.credential_refresh_log import (
@@ -46,6 +45,9 @@ from app.utils.credential_refresh_log import (
 )
 from app.utils.logging_fields import log_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.agents.mcp.models import OAuthTokens
 
 logger = logging.getLogger(__name__)
 
@@ -311,7 +313,7 @@ async def _refresh_credential_record_locked(
     stored_access_token = tokens_dict.get("accessToken") or tokens_dict.get("access_token")
     if stale_access_token and stored_access_token and stored_access_token != stale_access_token:
         attempt.reason = "adopted"
-        return OAuthTokens.model_validate(tokens_dict)
+        return oauth_client_module.parse_tokens(tokens_dict)
 
     refresh_token = _stored_refresh_token(tokens_dict)
     if not refresh_token:
@@ -365,7 +367,7 @@ async def _refresh_credential_record_locked(
     current_tokens = _tokens_of(current)
     if _stored_refresh_token(current_tokens) != refresh_token:
         attempt.reason = "superseded"
-        return OAuthTokens.model_validate(current_tokens)
+        return oauth_client_module.parse_tokens(current_tokens)
 
     # A success ends the run of strikes. A new dict: the config cache holds the one get_config returned, and a failed
     # write must not change it.

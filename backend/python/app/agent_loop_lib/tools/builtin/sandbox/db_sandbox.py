@@ -9,6 +9,7 @@ from app.agent_loop_lib.tools.base import (
     Tool,
     ToolOutput,
     ToolParameter,
+    error_data,
 )
 
 """`db_query` — the DB sandbox's tool. Risk tracks the sandbox's own mode:
@@ -57,5 +58,5 @@ class DBQueryTool(Tool):
         try:
             rows = await self._sandbox.query(sql, params)
         except DBSandboxError as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         return ToolOutput(success=True, data={"rows": rows})

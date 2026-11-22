@@ -2,7 +2,7 @@ import { RedisConfig } from '../../../libs/types/messaging.types';
 import { ConfigService } from '../services/cm.service';
 import { passwordResetLinkLifetime } from '../../../libs/utils/createJwt';
 import { ParsedTrustProxy, parseTrustProxy } from '../../../libs/utils/trust-proxy';
-import { registerUpstreams } from '../../../libs/http/upstream-call';
+import { addUpstreams } from '../../../libs/http/upstream-call';
 
 export interface AppConfig {
   jwtSecret: string;
@@ -163,7 +163,34 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     deployment: await configService.getDeploymentConfig() as AppConfig['deployment'],
   };
   // Here rather than at boot: a reload (connectors.routes.ts) re-registers the URLs it read.
-  registerUpstreams({
+  registerAppUpstreams(appConfig);
+  return appConfig;
+};
+
+/**
+ * Registers the config's PipesHub services: the only bases `upstreamFetch` sends to, and the names its lines use.
+ * Every base an earlier load registered stays registered: a container built before a reload keeps the URLs it
+ * read then, and must still reach its service. Bases only ever come from config, never from a request.
+ */
+export function registerAppUpstreams(
+  appConfig: Partial<
+    Pick<
+      AppConfig,
+      | 'aiBackend'
+      | 'connectorBackend'
+      | 'indexingBackend'
+      | 'iamBackend'
+      | 'authBackend'
+      | 'cmBackend'
+      | 'kbBackend'
+      | 'esBackend'
+      | 'storageBackend'
+      | 'tokenBackend'
+      | 'communicationBackend'
+    >
+  >,
+): void {
+  addUpstreams({
     query: [appConfig.aiBackend],
     connector: [appConfig.connectorBackend],
     indexing: [appConfig.indexingBackend],
@@ -178,5 +205,4 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
       appConfig.communicationBackend,
     ],
   });
-  return appConfig;
-};
+}

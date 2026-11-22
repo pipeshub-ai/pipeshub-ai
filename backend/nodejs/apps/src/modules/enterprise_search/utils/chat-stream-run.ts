@@ -49,7 +49,7 @@ interface Ending {
 }
 
 /** A code from the AI service is logged only when it is a snake_case token: free text never reaches the line. */
-const safeCode = (code: unknown): string =>
+export const safeCode = (code: unknown): string =>
   typeof code === 'string' && SNAKE_TOKEN.test(code.trim())
     ? code.trim()
     : 'unknown_error';

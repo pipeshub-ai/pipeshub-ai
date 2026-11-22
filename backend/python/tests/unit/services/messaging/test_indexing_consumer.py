@@ -25,6 +25,7 @@ import pytest
 from aiokafka import TopicPartition
 
 from app.services.messaging import consumer_concurrency as concurrency
+from app.services.messaging.backpressure import BACKPRESSURE_CLEAR_SETTLE_SECONDS
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -33,8 +34,8 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.services.messaging.kafka.consumer import indexing_consumer as kafka_ic
 from app.services.messaging.kafka.consumer.indexing_consumer import (
-    _BACKPRESSURE_CLEAR_SETTLE_SECONDS,
     IndexingKafkaConsumer,
     _compute_retry_backoff_seconds,
 )
@@ -54,6 +55,13 @@ def _fill_gate_waiters(consumer, count: int, tier: ParseTier = ParseTier.HEAVY) 
     """Stand in for `count` spawned tasks still queued for an index gate."""
     for _ in range(count):
         consumer.gate_waiters.add(tier)
+
+
+def apply_backpressure_after_settle(consumer: IndexingKafkaConsumer) -> None:
+    """One backpressure turn, the settle time after now: a clear turn then ends the episode."""
+    later = time.monotonic() + BACKPRESSURE_CLEAR_SETTLE_SECONDS
+    with patch.object(kafka_ic, "time", SimpleNamespace(monotonic=lambda: later)):
+        consumer._IndexingKafkaConsumer__apply_backpressure()
 
 
 @pytest.fixture
@@ -189,28 +197,27 @@ class TestApplyBackpressure:
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called_once()
-        assert consumer._backpressure_logged is True
+        assert consumer._backpressure_episode.open is True
 
     def test_clears_when_below_capacity(self, consumer):
         """Resumes partitions when below capacity."""
         consumer.consumer = MagicMock()
         paused = {MagicMock()}
         consumer.consumer.paused.return_value = paused
-        consumer._backpressure_logged = True
+        consumer._backpressure_episode.engaged()
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called_once()
-        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
-        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
-        consumer._IndexingKafkaConsumer__apply_backpressure()
-        assert consumer._backpressure_logged is False
+        assert consumer._backpressure_episode.open is True  # one clear turn does not end the episode
+        apply_backpressure_after_settle(consumer)
+        assert consumer._backpressure_episode.open is False
         assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
     def test_no_action_when_no_paused_and_below_capacity(self, consumer):
         """No resume needed when nothing is paused."""
         consumer.consumer = MagicMock()
         consumer.consumer.paused.return_value = set()
-        consumer._backpressure_logged = False
+        consumer._backpressure_episode.reset()
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_not_called()
@@ -221,7 +228,7 @@ class TestApplyBackpressure:
         tp = MagicMock()
         consumer.consumer.assignment.return_value = {tp}
         consumer.consumer.paused.return_value = {tp}  # Already paused
-        consumer._backpressure_logged = True
+        consumer._backpressure_episode.engaged()
 
         with consumer._futures_lock:
             for _ in range(messaging_env.max_pending_indexing_tasks):
@@ -243,7 +250,6 @@ class TestApplyBackpressureDownstreamCoordinator:
         consumer.consumer.paused.return_value = set()
 
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = True
         coordinator.paused_services = frozenset({"ParsingService"})
         coordinator.pause_remaining.return_value = 4.0
         consumer.backpressure_coordinator = coordinator
@@ -251,7 +257,7 @@ class TestApplyBackpressureDownstreamCoordinator:
         consumer._IndexingKafkaConsumer__apply_backpressure()
 
         consumer.consumer.pause.assert_called_once()
-        assert consumer._backpressure_logged is True
+        assert consumer._backpressure_episode.open is True
 
     def test_stays_paused_while_downstream_signalled_even_if_capacity_frees_up(self, consumer):
         """A partition that's only paused, not in-flight, must not be
@@ -261,36 +267,34 @@ class TestApplyBackpressureDownstreamCoordinator:
         paused = {MagicMock()}
         consumer.consumer.paused.return_value = paused
         consumer.consumer.assignment.return_value = set()
-        consumer._backpressure_logged = True
+        consumer._backpressure_episode.engaged()
 
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = True
-        coordinator.paused_services = frozenset({"DoclingService"})
+        coordinator.paused_services = frozenset({"ParsingService"})
         coordinator.pause_remaining.return_value = 2.0
         consumer.backpressure_coordinator = coordinator
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
 
         consumer.consumer.resume.assert_not_called()
-        assert consumer._backpressure_logged is True
+        assert consumer._backpressure_episode.open is True
 
     def test_resumes_once_downstream_backpressure_clears(self, consumer):
         consumer.consumer = MagicMock()
         paused = {MagicMock()}
         consumer.consumer.paused.return_value = paused
-        consumer._backpressure_logged = True
+        consumer._backpressure_episode.engaged()
 
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = False
+        coordinator.pause_remaining.return_value = 0.0
         consumer.backpressure_coordinator = coordinator
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
 
         consumer.consumer.resume.assert_called_once()
-        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
-        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
-        consumer._IndexingKafkaConsumer__apply_backpressure()
-        assert consumer._backpressure_logged is False
+        assert consumer._backpressure_episode.open is True  # one clear turn does not end the episode
+        apply_backpressure_after_settle(consumer)
+        assert consumer._backpressure_episode.open is False
         assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
     def test_no_coordinator_behaves_as_before(self, consumer):
@@ -301,7 +305,7 @@ class TestApplyBackpressureDownstreamCoordinator:
         consumer._IndexingKafkaConsumer__apply_backpressure()
 
         consumer.consumer.resume.assert_not_called()
-        assert consumer._backpressure_logged is False
+        assert consumer._backpressure_episode.open is False
 
 
 # ===================================================================
@@ -2358,18 +2362,17 @@ class TestApplyBackpressureFullCoverage:
         _fill_gate_waiters(consumer, messaging_env.max_pending_indexing_tasks + 1)
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called()
-        assert consumer._backpressure_logged is True
+        assert consumer._backpressure_episode.open is True
 
     def test_clear_backpressure(self, consumer):
         consumer.consumer = MagicMock()
         consumer.consumer.paused.return_value = {MagicMock()}
-        consumer._backpressure_logged = True
+        consumer._backpressure_episode.engaged()
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called()
-        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
-        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
-        consumer._IndexingKafkaConsumer__apply_backpressure()
-        assert consumer._backpressure_logged is False
+        assert consumer._backpressure_episode.open is True  # one clear turn does not end the episode
+        apply_backpressure_after_settle(consumer)
+        assert consumer._backpressure_episode.open is False
         assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
 

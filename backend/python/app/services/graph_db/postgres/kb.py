@@ -29,6 +29,7 @@ from app.services.graph_db.common.utils import (
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.records import _vis
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
 
@@ -122,7 +123,8 @@ class KbMixin(PgBase):
         except SchemaValidationError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Create KB permissions failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="create_kb_permissions")
             return {"success": False, "reason": str(e)}
 
     async def update_kb_permission(self, kb_id: str, requester_id: str, user_ids: list[str], team_ids: list[str], new_role: str,
@@ -150,7 +152,7 @@ class KbMixin(PgBase):
             return {"success": True, "kb_id": kb_id, "new_role": new_role, "updated_permissions": len(rows), "updated_users": len(rows), "updated_teams": 0,
                     "updates_detail": {"users": {r["from_id"]: {"old_role": r["old_role"], "new_role": new_role} for r in rows}, "teams": {}}}
         except Exception as e:
-            self.logger.error(f"❌ Failed to update KB permission: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_kb_permission")
             return {"success": False, "reason": str(e), "code": "500"}
 
     async def remove_kb_permission(self, kb_id: str, user_ids: list[str], team_ids: list[str], transaction: str | None = None) -> dict:
@@ -162,7 +164,7 @@ class KbMixin(PgBase):
                                                     org, kb_id, list(user_ids), list(team_ids), _KB), transaction, write=True)
             return {"success": True}
         except Exception as e:
-            self.logger.error(f"❌ Remove KB permission failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="remove_kb_permission")
             return {"success": False, "reason": str(e)}
 
     async def list_kb_permissions(self, kb_id: str, transaction: str | None = None) -> list[dict]:
@@ -175,7 +177,7 @@ class KbMixin(PgBase):
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_coll = 'apps' AND e.to_id = $2 AND (e.from_coll <> 'users' OR n.doc->>'isActive' = 'true')
                 ORDER BY e.from_coll, e.from_id, e.ekey""", org, kb_id, _KB), transaction)
         except Exception as e:
-            self.logger.error(f"❌ List KB permissions failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="list_kb_permissions")
             return []
         out = []
         for r in rows:
@@ -217,7 +219,7 @@ class KbMixin(PgBase):
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.to_coll = 'apps' AND e.to_id = $2 AND e.doc->>'role' = 'OWNER'""",
                                                       org, kb_id, _KB), transaction)
         except Exception as e:
-            self.logger.error(f"❌ Count KB owners failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="count_kb_owners")
             return 0
 
     # ---- folders of a knowledge base -----------------------------------------------------------------------------
@@ -237,7 +239,8 @@ class KbMixin(PgBase):
                   AND ($6::int = 0 OR coalesce((f.doc->>'isDeleted')::boolean, false) = ($6::int = 2)))""",
                                                       org, folder_id, kb_id, FOLDER_MIME_TYPES, _KB, _vis(visibility)), transaction))
         except Exception as e:
-            self.logger.error(f"❌ Failed to validate folder exists: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="validate_folder_in_kb")
             return False
 
     async def get_and_validate_folder_in_kb(self, kb_id: str, folder_id: str, transaction: str | None = None) -> dict | None:
@@ -250,7 +253,8 @@ class KbMixin(PgBase):
                 WHERE f.org_id = $1 AND f.coll = 'records' AND f.id = $2 AND f.doc->>'mimeType' = ANY($4::text[]) LIMIT 1""",
                                 org, folder_id, kb_id, FOLDER_MIME_TYPES, _KB, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Failed to get and validate folder in KB: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_and_validate_folder_in_kb")
             return None
         return {**_arango(d, "records"), "name": d.get("recordName"), "recordGroupId": d.get("connectorId")} if d else None
 
@@ -281,9 +285,10 @@ class KbMixin(PgBase):
                       AND coalesce((f.doc->>'isDeleted')::boolean, false) = false AND ($4::text IS NULL OR f.id <> $4)
                     ORDER BY f.id LIMIT 1""", org, FOLDER_MIME_TYPES, folder_name, exclude_folder_id, parent_folder_id, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Failed to find folder by name: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_folder_by_name_in_parent")
             return None
         return _arango(d, "records") if d else None
 
@@ -330,7 +335,7 @@ class KbMixin(PgBase):
                 JOIN graph.nodes f ON f.org_id = r.org_id AND f.coll = 'files' AND f.id = t.to_id AND f.doc->>'isFile' = 'false'
                 WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2)""", org, record_id), transaction))
         except Exception as e:
-            self.logger.error(f"❌ Is record folder check failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="is_record_folder")
             return False
 
     # ---- uploads ---------------------------------------------------------------------------------------------------
@@ -397,7 +402,8 @@ class KbMixin(PgBase):
         try:
             return await self._kb_writer(kb_id, user_id)
         except Exception as e:
-            self.logger.error(f"❌ Unexpected error in folder creation validation for KB {kb_id}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_validate_folder_creation", kb_id=kb_id)
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
 
     async def _validate_upload_context(self, kb_id: str, user_id: str, org_id: str, parent_folder_id: str | None = None) -> dict:
@@ -420,7 +426,8 @@ class KbMixin(PgBase):
                 return {"valid": False, "success": False, "code": 409, "reason": folder_in_trash(parent.get("recordName"), "upload files to it")}
             return {**ok, "upload_target": "folder", "parent_folder": parent}
         except Exception as e:
-            self.logger.error(f"❌ Upload validation failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_validate_upload_context")
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
 
     async def validate_folder_for_upload(self, kb_id: str, folder_id: str, user_id: str, org_id: str) -> dict:

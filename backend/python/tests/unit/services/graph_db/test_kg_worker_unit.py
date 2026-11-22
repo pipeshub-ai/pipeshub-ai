@@ -258,3 +258,28 @@ async def test_each_pass_folds_the_counters_of_every_org_and_a_failing_fold_hold
     w = KgWorker(_NoUow(), orgs, dsn=None, poll_s=0.05)  # type: ignore[arg-type]
     assert await w.run_once() == 3                                                               # what the fold took counts as work done: the loop looks again at once
     assert seen == [(step, org) for org in ("org-a", "org-b") for step in ("counts", "bootstrap", "gauges")]
+
+
+async def test_the_verify_task_works_at_most_its_share_of_the_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.graph_db.postgres.kg import net
+    monkeypatch.setattr(net, "VERIFY_TICK_S", 0.01)
+    starts: list[float] = []
+
+    async def one_org() -> list[str]:
+        return ["o"]
+
+    async def busy(db, org, states, stop=None) -> int:
+        starts.append(asyncio.get_running_loop().time())
+        await asyncio.sleep(0.1)                       # a pass that works 0.1 s
+        return 0
+    monkeypatch.setattr(net, "verify_due", busy)
+    w = KgWorker(None, one_org, dsn=None, poll_s=60)  # type: ignore[arg-type]
+    w._verify_task = asyncio.get_running_loop().create_task(w._verify_loop())
+    try:
+        assert await until(lambda: len(starts) >= 3, 10)
+    finally:
+        w._stop.set()
+        await w._verify_task
+    gaps = [b - a for a, b in zip(starts, starts[1:], strict=False)]
+    assert min(gaps) >= 0.1 / net.VERIFY_SHARE * 0.9, gaps      # 0.1 s of work, then a rest of 0.4 s: a gap of 0.5 s, not the 0.11 s of the bare tick
+    assert net.verify_rest(0.0) == net.VERIFY_TICK_S

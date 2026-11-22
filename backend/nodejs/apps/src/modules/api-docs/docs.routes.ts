@@ -5,6 +5,7 @@
 import { Router, Request, Response } from 'express';
 import { Container } from 'inversify';
 import { ApiDocsService } from './docs.service';
+import { Logger } from '../../libs/services/logger.service';
 
 export function createApiDocsRouter(container: Container): Router {
   const router = Router();
@@ -25,7 +26,9 @@ export function createApiDocsRouter(container: Container): Router {
       const unifiedDocs = apiDocsService.getUnifiedDocs();
       res.json(unifiedDocs);
     } catch (error) {
-      console.error('Error in /json:', error);
+      Logger.getInstance({ service: 'ApiDocs' }).error('api_docs.load_failed', {
+        error,
+      });
       res.status(500).json({
         error: 'Failed to load API documentation',
         message: error instanceof Error ? error.message : 'Unknown error',

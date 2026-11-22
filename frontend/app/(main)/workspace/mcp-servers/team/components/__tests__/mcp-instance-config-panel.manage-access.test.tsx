@@ -102,11 +102,6 @@ function panel(scope: 'org' | 'personal', onSaved = vi.fn(), onOpenChange = vi.f
         customStdioAllowed={false}
         onOpenChange={onOpenChange}
         onSaved={onSaved}
-        onRequestDelete={vi.fn()}
-        busyInstanceId={null}
-        onAuthenticate={vi.fn()}
-        onReauthenticate={vi.fn()}
-        onDisconnect={vi.fn()}
         scope={scope}
       />
     </Theme>

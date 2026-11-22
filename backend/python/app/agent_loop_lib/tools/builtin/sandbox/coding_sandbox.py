@@ -19,6 +19,7 @@ from app.agent_loop_lib.tools.base import (
     Tool,
     ToolOutput,
     ToolParameter,
+    error_data,
 )
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     PARENT_RESULTS_INPUT_PATH,
@@ -697,9 +698,9 @@ class ReadSandboxFileTool(Tool):
             content = await backend.download_file(path)
         except ValueError as e:
             # Path traversal — a rejected request, not an infra failure.
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         except (FileNotFoundError, IsADirectoryError) as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
 
         truncated = len(content) > max_bytes
         content = content[:max_bytes]
