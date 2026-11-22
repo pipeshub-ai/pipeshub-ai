@@ -86,7 +86,7 @@ concurrency:
 jobs:
   python:
     runs-on: ubuntu-latest
-    # shard 1 is one test case of ~22-26 min serial (the not-current adversarial worlds), which no split can shorten
+    # shard 1 is the not-current adversarial worlds, ~22-26 min serial in six cases of two worlds each (one case alone ran past its timeout locally)
     timeout-minutes: ${{ matrix.shard == 1 && 60 || 45 }}
     strategy:
       fail-fast: false
@@ -101,14 +101,14 @@ jobs:
           # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own
           - shard: 1
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: '[not_current-adversarial]'
+            graph_k: '[not_current-adversarial-'
           # also runs tests/integration/db and tests/integration/pg_runtime
           - shard: 2
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and [current-adversarial]
+            graph_k: not [not_current-adversarial- and [current-adversarial-
           - shard: 3
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and not [current-adversarial]
+            graph_k: not [not_current-adversarial- and not [current-adversarial-
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4

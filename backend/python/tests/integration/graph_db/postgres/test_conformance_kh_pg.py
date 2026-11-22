@@ -62,6 +62,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(3600)]
 
 CHUNK = 25
 GENERATED_WORLDS = 12      # per generator and state on a pull request (the not-current state asks the walk about every row); a nightly run sets PERM_GEN_WORLDS
+# The generated worlds of a generator and state are checked in this many cases of consecutive worlds. One adversarial world opens some 2,900 pages
+# (11 viewers, up to 300 opens each), minutes of work on the walk, so twelve of them in one case ran past the case's timeout and checked nothing.
+GENERATED_PARTS = 6
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 
@@ -222,24 +225,29 @@ async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_vi
     assert not bad, f"{layer.name} with counters\n{_describe(bad)}"
 
 
-@pytest.mark.parametrize("kind", sorted(gen.GENERATORS))
-async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: str, monkeypatch) -> None:
+@pytest.mark.parametrize(("kind", "part"), [(kind, part) for kind in sorted(gen.GENERATORS) for part in range(GENERATED_PARTS)],
+                         ids=[f"{kind}-{part + 1}of{GENERATED_PARTS}" for kind in sorted(gen.GENERATORS) for part in range(GENERATED_PARTS)])
+async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: str, part: int, monkeypatch) -> None:
     # The typed graph takes the four access rules a connector writes; the adversarial generator also writes INHERITED, which no connector does and which the projection refuses (the connector is then never
     # copied and the listing refuses it). The worlds are generated without it, so that every adversarial shape is listed.
     from tests.permissions.gen import adversarial
     monkeypatch.setattr(adversarial, "RULES", [r for r in adversarial.RULES if r != "INHERITED"])
     for seed in gen.seeds():
-        worlds = gen.generate(kind, seed, int(os.environ.get("PERM_GEN_WORLDS", GENERATED_WORLDS)))
+        every = gen.generate(kind, seed, int(os.environ.get("PERM_GEN_WORLDS", GENERATED_WORLDS)))
+        first = part * len(every) // GENERATED_PARTS      # this case's consecutive worlds; the parts hold each world once
+        worlds = every[first:(part + 1) * len(every) // GENERATED_PARTS]
+        refused = kh_layer.not_ready
         bad: list[KhFinding] = []
         for start in range(0, len(worlds), CHUNK):
             chunk = worlds[start:start + CHUNK]
             await kh_layer.preload(chunk)
             for offset, world in enumerate(chunk):
-                bad += _bad(await check(kh_layer, world, f"{kind}-{seed}-{start + offset}"))
+                bad += _bad(await check(kh_layer, world, f"{kind}-{seed}-{first + start + offset}"))
             await kh_layer.release(chunk)
-        print(f"{kh_layer.name} {kind} seed {seed}: {len(worlds)} worlds, {kh_layer.not_ready} refused as not copied so far")
+        refused = kh_layer.not_ready - refused
+        print(f"{kh_layer.name} {kind} seed {seed}: worlds {first}-{first + len(worlds) - 1}, {refused} refused as not copied")
         assert not bad, f"{kh_layer.name} {kind} seed {seed}\n{_describe(bad)}"
-        assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} {kind} worlds were refused as not copied"
+        assert refused * 10 <= len(worlds), f"{refused} of {len(worlds)} {kind} worlds were refused as not copied"
 
 
 async def _root_rows(layer: KhPgLayer, world, viewer: str) -> list[str] | None:
