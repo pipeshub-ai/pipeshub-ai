@@ -21038,6 +21038,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
         if self._kh_time_left(None) == 0:
             raise KnowledgeHubListingBusy(timed_out=True)
+        await self._kh_server_restarted()
         planning, planned = self._kh_plans()
         # Neo4j keys a cached plan on the text and on the type of each parameter (a null sort key is another plan).
         types = sorted((k, type(v).__name__) for k, v in parameters.items())
@@ -21045,8 +21046,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self._kh_seen(key, query, parameters)
         # One wait budget per request, even when a failed planner hands the planning on.
         deadline = time.monotonic() + self._KH_PLAN_WAIT_S
-        # shortcut: a text is trusted as planned for the life of the process; a plan Neo4j evicts later is planned again
-        # by every request at once (bounded by the query timeout). Track evictions if that shows up again.
+        # shortcut: a text is trusted as planned until the server restarts (`_kh_server_restarted`); a plan Neo4j evicts
+        # from a running server is planned again by every request at once (bounded by the query timeout).
         text = self._kh_text(query)
         while key not in planned:
             task = planning.get(key)
@@ -21082,6 +21083,46 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     @classmethod
     def _kh_text(cls, query: str) -> str:
         return "CYPHER replan=skip " + query.lstrip() if cls._KH_KEEP_PLANS else query
+
+    # A restarted Neo4j has no plan cached, while this process still trusts every text it planned: each request would plan
+    # its statements at once, every copy competing for the same CPUs. So a request on its way in reads the server's start
+    # time, at most once per interval (one read shared by the requests that arrive meanwhile); a new one forgets the
+    # planned texts, and one request per text plans again while the others wait. 0 turns it off.
+    _KH_SERVER_CHECK_S = env_seconds("NEO4J_KH_SERVER_CHECK", 30.0)
+    # An unreadable start time (a server on its way up, or one that refuses the procedure) is asked for again this soon.
+    _KH_SERVER_RETRY_S = 5.0
+    # The longest a request waits for the read (never past its deadline); past it the request goes on, and the read
+    # still lands for the ones after it.
+    _KH_SERVER_WAIT_S = 1.0
+
+    async def _kh_server_restarted(self) -> None:
+        if self._KH_SERVER_CHECK_S <= 0:
+            return
+        state = vars(self).setdefault("_kh_server", {"next": 0.0, "started": None, "check": None})
+        if time.monotonic() < state["next"]:
+            return
+        if state["check"] is None or state["check"].done():
+            state["check"] = asyncio.ensure_future(self._kh_read_server_start(state))
+        try:
+            await asyncio.wait_for(asyncio.shield(state["check"]), self._kh_time_left(self._KH_SERVER_WAIT_S))
+        except asyncio.TimeoutError:
+            pass
+
+    async def _kh_read_server_start(self, state: dict[str, Any]) -> None:
+        try:
+            rows = await self.client.execute_query(
+                "CALL dbms.queryJmx('java.lang:type=Runtime') YIELD attributes RETURN attributes.StartTime.value AS started",
+                plain=True, timeout=5.0)
+            started = (rows or [{}])[0].get("started")
+        except Exception:
+            state["next"] = time.monotonic() + self._KH_SERVER_RETRY_S
+            return
+        state["next"] = time.monotonic() + self._KH_SERVER_CHECK_S
+        if started is not None and state["started"] is not None and started != state["started"]:
+            self._kh_plans()[1].clear()
+            log_event(self.logger, "kh.listing.server_restarted", level=logging.INFO)
+        if started is not None:
+            state["started"] = started
 
     @staticmethod
     def _kh_time_left(limit: float | None) -> float | None:
