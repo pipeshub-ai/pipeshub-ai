@@ -12,9 +12,11 @@ import {
 } from '../../../../src/libs/services/redis/connectionProvider.interface';
 import {
   RedisConnectionProviderFactory,
+  checkRedisEvictionPolicy,
   getRedisProvider,
   resetRedisProviderRegistry,
 } from '../../../../src/libs/services/redis/connectionProviderFactory';
+import { NoRedisProvider } from '../../../../src/libs/services/redis/noRedisProvider';
 
 // Intentionally not a static `import` of `fakeRedisProviderModule` -- this
 // suite tests that `ensureProviderModuleLoaded()` itself is what triggers
@@ -309,5 +311,45 @@ describe('credentials over unverified TLS', () => {
         'standalone',
       ),
     ).to.not.throw();
+  });
+});
+
+describe('checkRedisEvictionPolicy', () => {
+  function providerWithInfo(info: () => Promise<string>): IRedisConnectionProvider {
+    const provider = new FakeProvider(config());
+    provider.getClient = () => ({ info } as unknown as RedisClient);
+    return provider;
+  }
+  const memory = (policy: string) => async () =>
+    `# Memory\r\nused_memory:1\r\nmaxmemory_policy:${policy}\r\n`;
+
+  for (const policy of ['allkeys-lru', 'allkeys-lfu', 'allkeys-random', 'ALLKEYS-LRU']) {
+    it(`refuses ${policy}: the key-value store and streams have no TTL`, async () => {
+      let thrown: Error | undefined;
+      try {
+        await checkRedisEvictionPolicy(providerWithInfo(memory(policy)));
+      } catch (error) {
+        thrown = error as Error;
+      }
+      expect(thrown?.message).to.match(/REDIS_CACHE_URL/);
+    });
+  }
+
+  for (const policy of ['noeviction', 'volatile-lru', 'volatile-ttl']) {
+    it(`starts with ${policy}`, async () => {
+      await checkRedisEvictionPolicy(providerWithInfo(memory(policy)));
+    });
+  }
+
+  it('starts when INFO cannot be read (managed Redis, Redis down)', async () => {
+    await checkRedisEvictionPolicy(
+      providerWithInfo(async () => {
+        throw new Error('NOPERM');
+      }),
+    );
+  });
+
+  it('skips a deployment with no Redis server', async () => {
+    await checkRedisEvictionPolicy(new NoRedisProvider(config(), 'postgres'));
   });
 });

@@ -97,8 +97,7 @@ class ViewerScopeCache:
 
         async def connect() -> Callable[[], RedisLike]:
             conf = await config_service.get_redis_config()
-            provider = get_redis_provider(RedisConnectionConfig.from_host_port(
-                host=conf.host, port=conf.port, password=conf.password, db=conf.db, tls=conf.tls))
+            provider = get_redis_provider(RedisConnectionConfig.for_cache(conf))
             await provider.get_client().ping()  # pyright: ignore[reportUnknownMemberType]
             cache._prefix = f"{provider.key_namespace}:{cls.KEY_PREFIX}" if provider.key_namespace else cls.KEY_PREFIX
             return cast("Callable[[], RedisLike]", provider.get_client)

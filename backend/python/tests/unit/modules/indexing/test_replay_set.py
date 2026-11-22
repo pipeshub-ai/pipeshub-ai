@@ -153,15 +153,21 @@ class TestEvictionPolicy:
         yield
         replay_set._eviction_warning = None
 
-    @pytest.mark.parametrize("policy", ["volatile-lru", "allkeys-lru", "volatile-ttl", "allkeys-random"])
-    async def test_a_policy_that_evicts_is_reported(self, policy: str) -> None:
+    @pytest.mark.parametrize("policy", ["volatile-lru", "volatile-ttl", "volatile-random", "volatile-lfu"])
+    async def test_a_policy_that_evicts_expiring_keys_is_reported(self, policy: str) -> None:
         warning = await replay_set.check_eviction_policy(_Info(policy))
 
         assert warning is not None and policy in warning
         assert replay_set.eviction_policy_warning() == warning
 
+    @pytest.mark.parametrize("policy", ["allkeys-lru", "allkeys-lfu", "allkeys-random", "ALLKEYS-LRU"])
+    async def test_a_policy_that_evicts_any_key_is_refused(self, policy: str) -> None:
+        # The key-value store and broker streams have no TTL: allkeys-* can drop them.
+        with pytest.raises(replay_set.UnsafeEvictionPolicyError, match="REDIS_CACHE_URL"):
+            await replay_set.check_eviction_policy(_Info(policy))
+
     async def test_noeviction_is_safe_and_clears_an_earlier_warning(self) -> None:
-        await replay_set.check_eviction_policy(_Info("allkeys-lru"))
+        await replay_set.check_eviction_policy(_Info("volatile-lru"))
         assert await replay_set.check_eviction_policy(_Info("noeviction")) is None
         assert replay_set.eviction_policy_warning() is None
 

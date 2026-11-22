@@ -161,15 +161,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         clients: LoopBoundClients[RedisClient] | None = None
         try:
             redis_config = await config_service.get_redis_config()
-            provider = get_redis_provider(
-                RedisConnectionConfig.from_host_port(
-                    host=redis_config.host,
-                    port=redis_config.port,
-                    password=redis_config.password,
-                    db=redis_config.db,
-                    tls=redis_config.tls,
-                )
-            )
+            provider = get_redis_provider(RedisConnectionConfig.for_cache(redis_config))
             options = ClientOptions(
                 decode_responses=True,
                 socket_timeout_seconds=cls.OP_TIMEOUT_SECONDS,

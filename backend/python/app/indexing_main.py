@@ -2608,15 +2608,17 @@ async def _check_redis_eviction_policy(app_container: Any, logger: logging.Logge
 
     Reads the Redis the replay set is written to (the configuration service's Redis config, which is also what the
     record handler uses under the PostgreSQL broker). Best effort: a Redis that cannot be read leaves the warning
-    unset and indexing starts anyway.
+    unset and indexing starts anyway. An ``allkeys-*`` policy stops the start.
     """
-    from app.modules.indexing.replay_set import check_eviction_policy
+    from app.modules.indexing.replay_set import UnsafeEvictionPolicyError, check_eviction_policy
     from app.services.vector_db.rebuild_state import redis_from_config_service
 
     redis = None
     try:
         redis = await redis_from_config_service(app_container.config_service())
         await check_eviction_policy(redis, logger)
+    except UnsafeEvictionPolicyError:
+        raise
     except Exception as exc:
         logger.warning("Redis eviction policy not checked: %s", type(exc).__name__)
     finally:

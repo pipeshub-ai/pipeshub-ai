@@ -207,6 +207,57 @@ export function redisConnectionConfigFromEnv(
 }
 
 /**
+ * The Redis that holds caches: `REDIS_CACHE_URL` when set, else the main Redis
+ * (`redisConnectionConfigFromHostPort(params)`), so a single-Redis install is
+ * unchanged. Same rules as Python's `RedisConnectionConfig.for_cache`.
+ *
+ * Only rebuildable entries go here (a lost key is a miss), so the cache
+ * instance may run an evicting `maxmemory-policy` while the main one, which
+ * holds the key-value store, broker streams, leases and counters, stays on
+ * `noeviction`. TLS comes from the scheme (`rediss://`); the CA path,
+ * verification, timeout and key namespace from `REDIS_*`. The mode is
+ * `REDIS_MODE`: on cluster the URL's host is the seed node.
+ */
+export function redisCacheConnectionConfig(
+  params: Parameters<typeof redisConnectionConfigFromHostPort>[0],
+): RedisConnectionConfig {
+  const raw = process.env.REDIS_CACHE_URL?.trim();
+  if (!raw) {
+    return redisConnectionConfigFromHostPort(params);
+  }
+  const err = new Error(
+    'REDIS_CACHE_URL must look like redis://[user:password@]host[:port][/db] ' +
+      '(rediss:// for TLS)',
+  );
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw err;
+  }
+  const path = url.pathname.replace(/^\/+|\/+$/g, '');
+  if (
+    (url.protocol !== 'redis:' && url.protocol !== 'rediss:') ||
+    !url.hostname ||
+    !/^\d*$/.test(path)
+  ) {
+    throw err;
+  }
+  return {
+    ...redisConnectionConfigFromEnv(),
+    // WHATWG URL keeps IPv6 brackets; the clients want the bare address.
+    host: url.hostname.replace(/^\[(.*)\]$/, '$1'),
+    port: url.port ? parseInt(url.port, 10) : 6379,
+    // The cache is another server: credentials come from the URL only, never REDIS_USERNAME/PASSWORD.
+    username: url.username ? decodeURIComponent(url.username) : undefined,
+    password: url.password ? decodeURIComponent(url.password) : undefined,
+    db: parseInt(path || '0', 10),
+    tls: url.protocol === 'rediss:',
+    clusterEndpoints: [],
+  };
+}
+
+/**
  * Adapt the legacy `host`/`port`/`password`/`db` shape used throughout the
  * KV store, messaging, and cache modules (`RedisConfig`,
  * `RedisBrokerConfig`) into a full connection config. Process-wide settings

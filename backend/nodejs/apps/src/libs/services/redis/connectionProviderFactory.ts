@@ -236,6 +236,48 @@ export async function closeAllRedisProviders(): Promise<void> {
   );
 }
 
+/**
+ * Start-up check of the main Redis, which holds the key-value store, broker
+ * streams, leases and counters (caches may move to `REDIS_CACHE_URL`). Same
+ * rules as Python's `replay_set.check_eviction_policy`: `allkeys-*` can drop
+ * stored configuration and queued events (their keys have no TTL), so it
+ * throws; `volatile-*` only evicts expiring keys and is a warning. Reads
+ * `INFO memory` because managed Redis often blocks `CONFIG GET`; a Redis that
+ * cannot be read is not a reason to stop.
+ */
+export async function checkRedisEvictionPolicy(
+  provider: IRedisConnectionProvider,
+): Promise<void> {
+  if (provider instanceof NoRedisProvider) {
+    return;
+  }
+  let policy: string;
+  try {
+    const info: string = await provider.getClient().info('memory');
+    policy = /^maxmemory_policy:(\S+)/m.exec(info)?.[1]?.toLowerCase() ?? '';
+  } catch (error) {
+    logger.warn('Redis eviction policy not read', {
+      error: (error as Error)?.name,
+    });
+    return;
+  }
+  if (policy.startsWith('allkeys-')) {
+    throw new Error(
+      `Redis maxmemory-policy is '${policy}' on the Redis that holds the ` +
+        'key-value store, broker streams, leases and counters: it can drop ' +
+        "stored configuration and queued events. Set it to 'noeviction' (or a " +
+        'volatile-* policy), and put caches on their own Redis with ' +
+        'REDIS_CACHE_URL if they need an evicting policy.',
+    );
+  }
+  if (policy && policy !== 'noeviction') {
+    logger.warn(
+      `Redis maxmemory-policy is '${policy}': Redis may evict leases and ` +
+        "other expiring keys under memory pressure. Use 'noeviction'.",
+    );
+  }
+}
+
 /** Test-only: drop cached singleton providers between test cases. */
 export function resetRedisProviderRegistry(): void {
   providerCache.clear();

@@ -8,7 +8,7 @@ import {
   defaultRedisMode,
   getRedisProvider,
 } from './redis/connectionProviderFactory';
-import { redisConnectionConfigFromHostPort } from './redis/connectionConfig';
+import { redisCacheConnectionConfig } from './redis/connectionConfig';
 import { IRedisConnectionProvider } from './redis/connectionProvider.interface';
 import { ICacheService } from './cache/cacheService.interface';
 import { PostgresCacheService } from './cache/postgresCache.service';
@@ -26,7 +26,7 @@ export class RedisService implements ICacheService {
     this.config = config;
     this.logger = logger;
     const provider = getRedisProvider(
-      redisConnectionConfigFromHostPort({
+      redisCacheConnectionConfig({
         host: this.config.host,
         port: this.config.port,
         username: this.config.username,

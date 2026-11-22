@@ -435,7 +435,9 @@ decoded in each query worker, so it uses up to `PIPESHUB_RECORD_CACHE_BYTES` per
 in the process; it is a little slower because each hit is decoded again. The bundled Redis
 also holds the configuration and the event queue and has no memory limit, so before choosing
 `redis` give Redis a `maxmemory` with the `volatile-ttl` (or `volatile-lru`) policy, which
-evicts only keys that expire, such as these cache entries. Records written with
+evicts only keys that expire, such as these cache entries. Or set `REDIS_CACHE_URL` to a
+second Redis: the caches go there and it may use `allkeys-lru`, while the main Redis stays on
+`noeviction` (services refuse to start when the main Redis uses an `allkeys-*` policy). Records written with
 append-only persistence on also go to its file on disk. Only records the storage service
 returns inline (local storage) are cached by either backend; reads through signed URLs (S3,
 Azure Blob) are not. If Redis cannot be reached when a worker first needs it, that worker

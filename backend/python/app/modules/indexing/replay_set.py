@@ -276,6 +276,11 @@ async def note_record_completed(record_id: str, completed_at_ms: int, logger: Lo
 #: Eviction policies that cannot silently drop a ``messaging:`` or ``sg:`` key.
 SAFE_EVICTION_POLICIES = frozenset({"noeviction"})
 
+
+class UnsafeEvictionPolicyError(RuntimeError):
+    """An ``allkeys-*`` policy on the Redis that holds the key-value store and broker streams, whose keys have no TTL:
+    it can drop stored configuration and queued events. ``volatile-*`` only evicts keys that expire, so it is a warning."""
+
 EVICTION_POLICY_UNSAFE = METRICS_BACKEND.gauge(
     "pipeshub_redis_eviction_policy_unsafe",
     "1 when the Redis maxmemory-policy can evict the replay set, pause counters and budgets silently",
@@ -292,7 +297,8 @@ def eviction_policy_warning() -> str | None:
 
 async def check_eviction_policy(redis: Redis, logger: Logger | None = None) -> str | None:
     """Read ``maxmemory-policy`` from ``INFO memory`` (``CONFIG GET`` is often disabled on managed Redis) and
-    report a policy that can evict keys silently. Indexing keeps running either way; the admin is told."""
+    report a policy that can evict keys silently; the admin is told. An ``allkeys-*`` policy raises
+    ``UnsafeEvictionPolicyError`` instead. A Redis that cannot be read is not a reason to stop."""
     global _eviction_warning  # noqa: PLW0603 - module state read by /health
     try:
         info = await redis.info("memory")  # type: ignore[misc]
@@ -301,6 +307,12 @@ async def check_eviction_policy(redis: Redis, logger: Logger | None = None) -> s
         if logger is not None:
             logger.warning("Redis eviction policy not read: %s", type(exc).__name__)
         return _eviction_warning
+    if policy.startswith("allkeys-"):
+        raise UnsafeEvictionPolicyError(
+            f"Redis maxmemory-policy is '{policy}' on the Redis that holds the key-value store, broker streams, leases "
+            "and counters: it can drop stored configuration and queued events. Set it to 'noeviction' (or a volatile-* "
+            "policy), and put caches on their own Redis with REDIS_CACHE_URL if they need an evicting policy."
+        )
     unsafe = bool(policy) and policy not in SAFE_EVICTION_POLICIES
     EVICTION_POLICY_UNSAFE.set("indexing", value=1.0 if unsafe else 0.0)
     _eviction_warning = (
