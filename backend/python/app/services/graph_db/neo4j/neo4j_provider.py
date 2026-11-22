@@ -23189,7 +23189,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # Only the page is projected, so this expand is one hop per
                 # returned row. Collection items often belong to the folder
                 # instead of hanging off it by NODE_RELATION.
-                "hasChildren": has_children(row_from_app, row=True),
+                # A flat page's arrows are read apart (`arrows_query`).
+                "hasChildren": "false" if flatten else has_children(row_from_app, row=True),
             },
             include_comparator=False,
         )
@@ -23428,13 +23429,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  CASE WHEN sentinel OR node IS NULL THEN false ELSE {held_by_row() if not flatten else "false"} END AS khHeld,
                  {"true" if flatten else opened_row()} AS khFromApp,
                  CASE WHEN item IS NULL THEN null ELSE item.sortKey END AS sortKey,
-                 CASE WHEN item IS NULL THEN null ELSE item.nullRank END AS nullRank,
+                 CASE WHEN item IS NULL THEN null ELSE item.nullRank END AS nullRank,{"""
+                 CASE WHEN item IS NULL THEN false ELSE coalesce(item.fa, false) END AS khFa,""" if flatten else ""}
                  total, nRecord, nFolder, nGroup, parentOptions, node, kh_row_from_app, khUndecided, khProbes
-            WITH khUndecided, khProbes, built, khHeld, khFromApp, sortKey, nullRank, total, nRecord, nFolder, nGroup, parentOptions,
+            WITH khUndecided, khProbes, built, khHeld, khFromApp, sortKey, nullRank, total, nRecord, nFolder, nGroup, parentOptions,{" khFa," if flatten else ""}
                  {"false" if flatten else f"CASE WHEN built IS NULL OR built.hasChildren THEN false ELSE {has_child('node')} END"} AS khAsk
             RETURN [x IN collect(CASE WHEN built IS NULL THEN null
                     ELSE built{{.*, sortKey: sortKey, nullRank: nullRank,
-                                parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp, khAsk: khAsk}} END)
+                                parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp, khAsk: khAsk{", khFa: khFa" if flatten else ""}}} END)
                     WHERE x IS NOT NULL] AS rows,
                    head(collect(total)) AS total,
                    head(collect(nRecord)) AS nRecord,
@@ -23494,9 +23496,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         })
         if probe:
             params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
+        arrows_query = None
+        if flatten:
+            # A flat page's arrows, for its rows alone: inside the page statement the planner weighs them against every node the walk
+            # reaches (about half its planning), and apart they are one text for every sort and filter. A row's expansion starts from
+            # the App as the start's does (`$kh_fa`, false from the App itself).
+            arrows_query = f"""
+        MATCH (app:App {{id: $app_id}})
+        UNWIND $kh_ids AS kh_id
+        MATCH (node:Record|RecordGroup {{id: kh_id}})
+        RETURN node.id AS id, {has_children("$kh_fa", row=True)} AS has
+            """
         if probe and listing_by_probe:
             del params["grantedIds"]
             query = self._kh_grants_by_probe(query)
+            if arrows_query is not None:
+                arrows_query = self._kh_grants_by_probe(arrows_query)
         # The global listing from the App can be read from precomputed scopes (kh_scope) instead of walking the whole
         # tree, behind the ENABLE_KH_SCOPE_LISTING flag. Only where it gives exactly this query's answer: a sort
         # kh_scope keeps an index for, filters that keep a connector all or none (origin, connector), listing state
@@ -23669,6 +23684,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 r["khKids"] = kids.get(r["id"], [])
                 if r["id"] in leads:      # a stub group below it lists a chain-top
                     r["hasChildren"] = True
+        if arrows_query is not None:
+            rows_ = payload.get("rows") or []
+            from_app = [r.pop("khFa", False) for r in rows_]
+            if rows_:
+                got = await self._kh_query(arrows_query, parameters={
+                    **params, "kh_ids": [r["id"] for r in rows_], "kh_fa": bool(from_app[0])}, txn_id=transaction)
+                lit = {g["id"] for g in got or [] if g.get("has")}
+                for r in rows_:
+                    r["hasChildren"] = r["id"] in lit
         if scope_query is not None and scope_mode == "verify":
             await self._kh_scope_verify(app_id, payload, scope_query, scope_params, scope_info, transaction)
         elif use_scope:
