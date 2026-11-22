@@ -1845,6 +1845,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         content_ids_set: set[str] = set()
         batch_size = 100
         page_cursor: Optional[str] = None
+        followed_cursors: set[str] = set()
 
         # Convert millisecond timestamps to ISO-8601 UTC format
         # To the millisecond: a "to" cut to the second left a change made in the window's last second (a sync that
@@ -1868,11 +1869,16 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 self.logger.warning(f"⚠️ Failed to fetch audit events: {response.status if response else 'No response'}")
                 return None
 
+            # Documented as {"entities": [...], "pagingInfo": {"lastPage": true, "nextPageCursor": {"cursor": ...}}}
+            # (https://confluence.atlassian.com/jiracore/audit-log-improvements-for-developers-1019401815.html).
+            # Anything else, an empty page included, says nothing about whether this is the last: unread.
             response_data = response.json()
-            audit_records = response_data.get("entities", [])
-
-            if not audit_records:
-                break
+            audit_records = response_data.get("entities") if isinstance(response_data, dict) else None
+            paging_info = response_data.get("pagingInfo") if isinstance(response_data, dict) else None
+            if not isinstance(audit_records, list) or not all(isinstance(r, dict) for r in audit_records) \
+                    or not isinstance(paging_info, dict) or not isinstance(paging_info.get("lastPage"), bool):
+                self.logger.warning("An audit log page came back in an unknown shape; this window is read again next sync")
+                return None
 
             # Process each audit record
             for record in audit_records:
@@ -1880,9 +1886,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 if content_id:
                     content_ids_set.add(content_id)
 
-            # Check for next page using pageCursor
-            paging_info = response_data.get("pagingInfo", {})
-            if paging_info.get("lastPage", True):
+            if paging_info["lastPage"]:
                 break
             
             # Documented as an object, "nextPageCursor": {"cursor": "string"}
@@ -1890,10 +1894,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             page_cursor = paging_info.get("nextPageCursor")
             if isinstance(page_cursor, dict):
                 page_cursor = page_cursor.get("cursor")
-            if not page_cursor:
-                # A page that is not the last but names no next one: the rest can't be read.
-                self.logger.warning("The audit log page names no next page; this window is read again next sync")
+            if not page_cursor or page_cursor in followed_cursors:
+                # A page that is not the last but names no next one, or one already read: the rest can't be read.
+                self.logger.warning("The audit log page names no new next page; this window is read again next sync")
                 return None
+            followed_cursors.add(page_cursor)
 
         return list(content_ids_set)
 

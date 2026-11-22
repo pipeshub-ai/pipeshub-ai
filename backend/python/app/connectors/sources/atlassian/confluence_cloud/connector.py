@@ -2396,9 +2396,11 @@ class ConfluenceConnector(BaseConnector):
                         parent_node_id = webpage_record.id
 
                         # Process attachments - skip embedded images
-                        children = item_data.get("children", {})
-                        attachment_data = children.get("attachment", {})
-                        attachments = attachment_data.get("results", []) if isinstance(attachment_data, dict) else None
+                        # An omitted expansion, or omitted results, is not an empty inventory: only an explicit
+                        # "results" list can say the page has no attachments.
+                        children = item_data.get("children")
+                        attachment_data = children.get("attachment") if isinstance(children, dict) else None
+                        attachments = attachment_data.get("results") if isinstance(attachment_data, dict) else None
                         if not isinstance(attachments, list) or not all(isinstance(a, dict) for a in attachments):
                             attachments = []  # unread, not empty: attachments_complete stays False below
                             attachment_data = {"size": 1}

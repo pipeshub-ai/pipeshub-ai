@@ -2386,6 +2386,24 @@ class TestAttachmentsGoneFromAPage:
 
         assert "att1" not in db.records and "10" in db.records
 
+    @pytest.mark.parametrize("omitted", ["expansion", "results"])
+    async def test_an_omitted_attachment_expansion_removes_nothing(self, api, db, checkpoints, search, omitted) -> None:
+        self._page_with(api, search, "att1")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert "att1" in db.records
+
+        page = v1_page("10", version=2)
+        if omitted == "expansion":
+            del page["children"]
+        else:
+            page["children"]["attachment"] = {"size": 0}
+        search.by_cursor = {None: search_page([page])}
+        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "busy"}, status=503))
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" in db.records, "not an empty inventory: the stored file stays"
+
     async def test_an_attachment_list_read_in_part_removes_nothing(self, api, db, checkpoints, search) -> None:
         self._page_with(api, search, "att1", "att2")
         connector, _ = await ready_connector(db, checkpoints)

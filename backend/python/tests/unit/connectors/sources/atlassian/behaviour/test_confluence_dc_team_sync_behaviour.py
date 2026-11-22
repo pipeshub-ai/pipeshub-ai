@@ -2249,7 +2249,7 @@ class TestSpaceListingEdges:
             "0": {"results": [space("ENG", 10), {"id": 11, "key": "NONAME"}], "_links": {"base": BASE, "next": f"{API}/space?start=2"}},
             "2": {"results": [space("OPS", 20)], "_links": {"base": BASE, "next": f"{API}/space?cursor=opaque"}},
             # Data Center documents only start/limit here: the next page starts after the spaces read.
-            "3": {"results": [], "_links": {"base": BASE}},
+            "3": {"results": [space("SEC", 30)], "_links": {"base": BASE}},
         }
 
         def spaces(request: httpx.Request) -> httpx.Response:
@@ -2262,7 +2262,7 @@ class TestSpaceListingEdges:
 
         await connector.run_sync()
 
-        assert set(db.record_groups) == {"10", "20"}
+        assert set(db.record_groups) == {"10", "20", "30"}, "the page after the opaque cursor is read"
         assert db.record_groups["10"].web_url == f"{BASE}/display/ENG"
 
     async def test_space_listing_error_syncs_no_spaces_and_writes_no_checkpoints(self, atlassian_api, db, store, search) -> None:

@@ -738,6 +738,25 @@ class TestFetchPermissionAuditContentIds:
         assert "131103" in content_ids
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("pages", [
+        pytest.param([{"entities": [], "pagingInfo": {"lastPage": False, "nextPageCursor": None}}],
+                     id="an-empty-page-that-is-not-the-last"),
+        pytest.param([{"entities": [{"affectedObjects": [{"type": "Page", "id": "101"}]}]}], id="no-paging-info"),
+        pytest.param([{"pagingInfo": {"lastPage": True}}], id="no-entities"),
+        pytest.param([{"entities": [{"affectedObjects": [{"type": "Page", "id": "101"}]}],
+                       "pagingInfo": {"lastPage": False, "nextPageCursor": {"cursor": "C1"}}}] * 3,
+                     id="a-cursor-that-repeats"),
+    ])
+    async def test_an_audit_page_it_cannot_place_keeps_the_window(self, pages) -> None:
+        """Unread, not the end: the caller keeps the audit checkpoint and reads the window again."""
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_auditing_events_v1 = AsyncMock(side_effect=[_resp(200, p) for p in pages])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        assert await connector._fetch_permission_audit_content_ids(1700000000000, 1700001000000) is None
+
+    @pytest.mark.asyncio
     async def test_pagination_with_page_cursor(self):
         """Test pageCursor-based pagination through multiple pages."""
         connector = _make_connector()
