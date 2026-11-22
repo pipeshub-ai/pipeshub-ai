@@ -620,17 +620,20 @@ async def _roster(request: Request, graph_provider: IGraphDBProvider, connector_
         if user_id:
             seen.add(user_id)
 
-    # A member's account may be connected by a user with another email: that user is theirs.
+    # The connected account decides who a member is: a user connected to one member is never matched
+    # to another by email (their PipesHub email may be another member's address).
     by_source = {c.source_user_id: c.user_id for c in connections.values() if c.source_user_id}
+    connected_users = set(by_source.values())
     for member in members:
         email = str(member["email"])
         user = users.get(email.lower())
         owner_id = by_source.get(str(member.get("sourceUserId") or ""))
-        if owner_id and (user is None or user["userId"] != owner_id):
-            if owner_id in seen or owner_id == me:
-                continue
-            found_user = await get_user_or_503(graph_provider, owner_id)
-            user = found_user if _is_member(found_user, org_id) else user
+        if owner_id:
+            if user is None or user["userId"] != owner_id:
+                found_user = await get_user_or_503(graph_provider, owner_id)
+                user = found_user if _is_member(found_user, org_id) else None
+        elif user is not None and member.get("sourceUserId") and user["userId"] in connected_users:
+            user = None
         add(member.get("name"), email, member.get("sourceUserId"), user)
     # Connected or invited people the member list does not show (yet).
     for user_id in dict.fromkeys([*connections, *invites]):

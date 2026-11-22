@@ -1419,3 +1419,37 @@ class TestOrgScopedStore:
         store.list_keys_in_directory.side_effect = keys
         store.get_config.return_value = stale
         assert await list_connections(store, "c1") == []
+
+
+class TestUnverifiedSignInAndStaleness:
+    async def test_no_pass_reads_with_the_connectors_token_while_its_owner_is_unknown(self) -> None:
+        users = {"admin": SimpleNamespace(id="k-admin", email="a@acme.com", full_name="A"),
+                 "u1": SimpleNamespace(id="n1", email="ann@acme.com", full_name="Ann")}
+        via = _connection("admin", token="", method="connector")
+        connector, p1, p2, p3 = _run_setup([via, _connection("u1")], users, {"admin": True, "u1": True})
+        connector._connect_through_connector_sign_in = AsyncMock(return_value=False)
+        with p1, p2, p3:
+            await connector._run_per_user_sync()
+        assert [c.user_id for c, _ in (a.args for a in connector._run_user_pass.await_args_list)] == ["u1"]
+        assert connector._sync_incomplete is True
+        connector._delete_records_nobody_sees.assert_not_awaited()
+
+    async def test_a_sync_that_stops_before_any_pass_still_withdraws_stale_views(self) -> None:
+        connector = _connector()
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        connector._assert_required_capabilities = AsyncMock(side_effect=RuntimeError("HTTP 401"))
+        connector._withdraw_stale_connections = AsyncMock()
+        with pytest.raises(RuntimeError):
+            await connector._run_per_user_sync()
+        connector._withdraw_stale_connections.assert_awaited_once()
+
+    async def test_only_active_stale_connections_are_withdrawn(self) -> None:
+        connector = _connector()
+        old = _connection("u1", connected_at=1)
+        fresh = _connection("u2", connected_at=1, last_complete_listing_at=10**13)
+        revoked = _connection("u3", connected_at=1, status=STATUS_REVOKED)
+        connector.data_entities_processor.get_user_by_user_id.side_effect = lambda uid, **kw: SimpleNamespace(id=f"k-{uid}")
+        with patch(f"{_MOD}.list_connections", new=AsyncMock(return_value=[old, fresh, revoked])), \
+                patch(f"{_MOD}.get_epoch_timestamp_in_ms", return_value=10**13 + 1):
+            await connector._withdraw_stale_connections()
+        connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "k-u1")

@@ -452,6 +452,17 @@ class TestRoster:
         assert [(p["userId"], p["status"], p["email"]) for p in result["people"]] == [
             ("ann", "connected", "ann.work@acme.com")]
 
+    async def test_the_connected_account_wins_over_an_email_match_in_either_order(self) -> None:
+        # Ann's PipesHub email is member A's address, but she connected member B's account.
+        connection = _connection("ann")
+        connection.source_user_id = "n-b"
+        a = {"sourceUserId": "n-a", "name": "A", "email": "ann@acme.com"}
+        b = {"sourceUserId": "n-b", "name": "B", "email": "ann.work@acme.com"}
+        for members in ([a, b], [b, a]):
+            result = await self._roster(members=members, connections=[connection], users=[_user("ann")])
+            rows = {p["sourceUserId"]: (p["userId"], p["status"]) for p in result["people"]}
+            assert rows == {"n-b": ("ann", "connected"), "n-a": (None, "no_account")}
+
     async def test_the_admin_viewing_it_is_left_out_they_connect_themselves(self) -> None:
         members = [{"email": "admin@acme.com"}, {"email": "u1@acme.com"}]
         result = await self._roster(members=members, connections=[_connection("admin")],
