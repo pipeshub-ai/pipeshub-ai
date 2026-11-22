@@ -105,6 +105,18 @@ def _known(value: object) -> str | None:
     return value if isinstance(value, str) and value not in ("", "unknown") else None
 
 
+def dispatch_name(dispatch: file_types.Dispatch) -> str:
+    """The route of a dispatch, with every further input its conversion depends on.
+
+    The in-process handlers read only the bytes and the route, except the LibreOffice one, which converts from the input
+    format of the file type (an .odt and an .rtf share the route and are converted differently).
+    """
+    name = dispatch.route.value
+    if dispatch.route is Route.LIBREOFFICE_DOCX and dispatch.file_type is not None and dispatch.file_type.libreoffice_from:
+        name = f"{name}.{dispatch.file_type.libreoffice_from}"
+    return name
+
+
 def service_pipeline_configured() -> bool:
     """Whether this process parses through the parsing service (``USE_PARSING_SERVICE``), as the store-side comparisons assume."""
     return os.environ.get("USE_PARSING_SERVICE", "false").lower() == "true"
@@ -146,7 +158,7 @@ def parser_key(
         sent_ext, sent_mime = prepared_labels(dispatch.file_type, extension, mime)  # the raw extension: "unknown" is sent as it is
         fmt = file_types.parse_format(sent_mime, file_types.service_extension(sent_mime, sent_ext, name))
         return None if not fmt or fmt == "code" else f"{fmt}@{PARSER_ROUTE_REV.get(fmt, 1)}"
-    return f"{dispatch.route.value}@{PARSER_ROUTE_REV.get(dispatch.route, 1)}"
+    return f"{dispatch_name(dispatch)}@{PARSER_ROUTE_REV.get(dispatch.route, 1)}"
 
 
 def parser_identity(
