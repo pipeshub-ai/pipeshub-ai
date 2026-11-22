@@ -6950,8 +6950,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             if drive.get("id") and drive["id"] not in self._listed_shared_drive_ids
             and self._pass_drive_ids_filter(drive["id"])
         }
-        # A member who is no longer an active synced user never lists the drive again to leave it.
-        active = {u.email.lower() for u in self.synced_users if u.is_active and u.email}
+        # A member who is no longer an active synced user never lists the drive again to leave it. A cut user
+        # listing leaves people out who are still there, so nobody is pruned on it.
+        active = (
+            set() if self._listing_cut
+            else {u.email.lower() for u in self.synced_users if u.is_active and u.email}
+        )
         async with self._foreign_drives_lock:
             stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}
             # Kept as one JSON string: a sync point on Neo4j cannot hold a nested map.
@@ -6985,6 +6989,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                 except Exception as e:
                     self._sync_ledger.note_incomplete()
                     self.logger.error(f"Foreign shared drive {drive_id} not updated: {e}", exc_info=True)
+                    # Saved as it was, so the next run finds the same change and writes the grants again.
+                    if drive_id in known:
+                        drives[drive_id] = {"name": known[drive_id].get("name") or drive_id,
+                                            "members": list(known[drive_id].get("members") or [])}
+                    else:
+                        drives.pop(drive_id, None)
             if drives != known:
                 await self.drive_delta_sync_point.update_sync_point(
                     FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": json.dumps(drives, sort_keys=True)}

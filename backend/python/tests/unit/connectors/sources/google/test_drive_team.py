@@ -1199,7 +1199,7 @@ class TestForeignSharedDrive:
 
         assert self._last_group_write(connector)[1] == ["b@example.com"]
 
-    async def test_a_bookkeeping_failure_does_not_stop_the_users_sync_of_other_drives(self, connector) -> None:
+    async def test_a_failed_group_write_is_retried_on_the_next_run(self, connector) -> None:
         state = self._store(connector)
         connector._sync_ledger = MagicMock()
         connector.data_entities_processor.on_new_record_groups = AsyncMock(side_effect=RuntimeError("store down"))
@@ -1207,7 +1207,34 @@ class TestForeignSharedDrive:
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
 
         connector._sync_ledger.note_incomplete.assert_called_once()
-        assert _drives(state)["0APG"]["members"] == ["a@example.com"]
+        assert _drives(state) == {}
+        connector.data_entities_processor.on_new_record_groups = AsyncMock()
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        assert self._last_group_write(connector)[1] == ["a@example.com"]
+
+    async def test_a_leave_whose_group_write_fails_keeps_it_pending(self, connector) -> None:
+        state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        await connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN])
+        connector._sync_ledger = MagicMock()
+        connector.data_entities_processor.on_new_record_groups = AsyncMock(side_effect=RuntimeError("store down"))
+
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+
+        assert _drives(state)["0APG"]["members"] == ["a@example.com", "b@example.com"]
+        connector.data_entities_processor.on_new_record_groups = AsyncMock()
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+        assert self._last_group_write(connector)[1] == ["b@example.com"]
+
+    async def test_a_cut_user_listing_prunes_nobody(self, connector) -> None:
+        self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("z@example.com"), [self.FOREIGN])
+        connector.synced_users = [self._user("b@example.com")]
+        connector._listing_cut = True
+
+        await connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN])
+
+        assert self._last_group_write(connector)[1] == ["b@example.com", "z@example.com"]
 
     async def test_concurrent_user_syncs_keep_both_members(self, connector) -> None:
         state = self._store(connector)
