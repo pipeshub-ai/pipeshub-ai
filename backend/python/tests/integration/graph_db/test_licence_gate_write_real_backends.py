@@ -831,3 +831,64 @@ async def test_a_gated_connectors_empty_grants_keep_the_stored_ones_and_the_limi
     await _run(sync, _source({"m1": (sync.alice,), "m2": (sync.alice, sync.bob), "m3": (sync.alice,)}))
     assert await _limit(sync) is None
     assert await _readable(sync, sync.bob) == {"m2"}
+
+
+# --- 14. an old run's end of run limits over a licensed new owner: the watcher heals it ---------------------------
+
+async def test_an_old_runs_finalizer_that_limits_over_a_licensed_new_owner_is_lifted_by_the_full_sync_the_watcher_queues(
+    sync: _Sync,
+) -> None:
+    """Fail closed, then heal. The old run's licence lapsed, its first-skip limit failed and it lost its lease; a
+    licensed new owner, which found no limit at its start, finished; the old run's finalizer then stores CREATOR.
+    The watcher, already settled, looks again and queues a full sync, and that sync lifts the limit. From the
+    moment the limit is stored until the lift, bob reads nothing."""
+    from app.connectors.core.sync.sync_coordinator import SyncLease
+    from app.connectors.core.sync.sync_runner import _finalize
+
+    await _synced_before_the_upgrade(sync)
+    source = _source({"m1": (sync.alice,), "m2": (sync.alice, sync.bob), "m3": (sync.alice,)})
+
+    async def status() -> object:
+        return (await _app_doc(sync)).get("status")
+
+    drain = AsyncMock(return_value=[])
+    try:
+        with await _only_this_org(sync), patch.object(licence_lift, "drain_queued_syncs", drain):
+            watcher = asyncio.create_task(licence_lift.watch_licence(
+                MagicMock(get_config=AsyncMock(return_value=LICENSED)), sync.graph, logger, 0.05,
+            ))
+            try:
+                await asyncio.sleep(0.5)
+                drain.assert_not_awaited()                       # settled: nothing limited
+
+                old = sync.processor
+                _licence(old, LICENSED)
+                assert await old.apply_licence_gate(sync.connector_id, full_sync=False) is False
+                _licence(old, UNLICENSED)
+                with patch.object(old, "limit_unlicensed", AsyncMock(side_effect=ConnectionError("refused"))), \
+                        pytest.raises(ConnectionError):
+                    await old.on_new_records([sync.message("m1", readers=(sync.alice,), inherit=False)])
+                lease = SyncLease(sync.connector_id, "old", 1)
+                lease.lost.set()
+
+                _restart(sync, LICENSED)                         # the new owner
+                await _run(sync, source)
+                assert await _limit(sync) is None and await _readable(sync, sync.bob) == {"m2"}
+
+                await _finalize(sync.graph, logger, sync.connector_id, lease, AsyncMock(), access_gate=old)
+                assert await _limit(sync) == "CREATOR", "fail closed"
+                assert await _readable(sync, sync.bob) == set()
+
+                await _until(status, AppStatus.QUEUED.value)
+                assert (await _app_doc(sync)).get(ConnectorStateKeys.PENDING_FULL_SYNC) is True
+                assert await _readable(sync, sync.bob) == set(), "still nothing while queued"
+            finally:
+                watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watcher
+        await sync.graph.update_node(sync.connector_id, CollectionNames.APPS.value, {"status": AppStatus.IDLE.value})
+        await _run(sync, source)                                 # the queued full sync, licensed
+        assert await _limit(sync) is None, "healed"
+        assert await _readable(sync, sync.bob) == {"m2"}
+    finally:
+        await sync.graph.delete_nodes_and_edges([sync.org_id], CollectionNames.ORGS.value)

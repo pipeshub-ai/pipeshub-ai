@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -306,3 +306,74 @@ async def test_a_cancel_while_the_end_of_run_limit_is_written_still_writes_idle_
     await asyncio.wait_for(released.wait(), 5)
     assert limited == ["conn-1"]
     assert any(c.args[2].get("status") == AppStatus.IDLE.value for c in gp.update_node.await_args_list)
+
+
+async def _watch_until(predicate, timeout: float = 5) -> None:
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    while not predicate():
+        assert loop.time() < end, "the watcher did not get there"
+        await asyncio.sleep(0.01)
+
+
+def _watched_graph(apps: list[dict]) -> AsyncMock:
+    gp = AsyncMock()
+    gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}])
+    gp.get_org_apps = AsyncMock(side_effect=lambda *_a, **_k: list(apps))
+    gp.update_node = AsyncMock(return_value=True)
+    return gp
+
+
+def _queued(gp: AsyncMock) -> int:
+    return sum(1 for c in gp.update_node.await_args_list if c.args[2].get("status") == AppStatus.QUEUED.value)
+
+
+@pytest.mark.asyncio
+async def test_a_connector_limited_again_after_the_watcher_settled_is_queued_for_the_full_sync_that_lifts_it() -> None:
+    """Licensed and settled (nothing limited, so the watcher stopped scanning), a sync's end of run limits a
+    connector again: its first-skip limit had failed, and its lease went to a licensed run meanwhile. The watcher
+    must look again and queue the full sync that lifts it."""
+    from app.connectors.core.sync import licence_lift
+
+    apps: list[dict] = []
+    gp = _watched_graph(apps)
+    with patch.object(licence_lift, "drain_queued_syncs", AsyncMock(return_value=[])):
+        task = asyncio.create_task(licence_lift.watch_licence(_config(LICENSED), gp, logging.getLogger("t"), 0.01))
+        try:
+            await _watch_until(lambda: gp.get_org_apps.await_count >= 1)
+            await asyncio.sleep(0.05)
+            scans = gp.get_org_apps.await_count
+            assert scans == 1, "settled: nothing limited, no more scans"
+
+            proc, _ = _gate_processor(UNLICENSED, _app())
+            await proc.limit_unlicensed("conn-1", _app())          # what the finalizer's backstop does
+            apps.append({**_app(limit=AccessLimit.CREATOR.value), "status": AppStatus.IDLE.value,
+                         "isActive": True, "isAuthenticated": True, "scope": "team"})
+            await _watch_until(lambda: _queued(gp) == 1)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+@pytest.mark.asyncio
+async def test_a_connector_limited_again_gets_its_retries_back() -> None:
+    """Its earlier full syncs used up the watcher's three tries; limited again, it is queued again."""
+    from app.connectors.core.sync import licence_lift
+
+    apps = [{**_app(limit=AccessLimit.CREATOR.value), "status": AppStatus.IDLE.value, "isActive": True,
+             "isAuthenticated": True}]
+    gp = _watched_graph(apps)           # the queue write is not applied, so it stays IDLE and limited
+    with patch.object(licence_lift, "drain_queued_syncs", AsyncMock(return_value=[])):
+        task = asyncio.create_task(licence_lift.watch_licence(_config(LICENSED), gp, logging.getLogger("t"), 0.01))
+        try:
+            await _watch_until(lambda: _queued(gp) == licence_lift.MAX_QUEUED_FULL_SYNCS)
+            await asyncio.sleep(0.05)
+            assert _queued(gp) == licence_lift.MAX_QUEUED_FULL_SYNCS, "the cap holds"
+            proc, _ = _gate_processor(UNLICENSED, _app())
+            await proc.limit_unlicensed("conn-1", _app())
+            await _watch_until(lambda: _queued(gp) == licence_lift.MAX_QUEUED_FULL_SYNCS + 1)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
