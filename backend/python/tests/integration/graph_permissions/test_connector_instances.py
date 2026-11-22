@@ -182,3 +182,64 @@ async def test_every_gate_entry_point_admits_the_same_apps(provider, neo4j_setti
     assert set(types) == {"DRIVE", "SLACK", "JIRA", "KB"}
     assert set(v3["grantee_ids"]) == {ids["u"], ids["t"], ids["g"], org}
     assert await provider.get_gated_apps(user_key, "") == []
+
+
+async def test_the_connectors_page_lists_a_limited_connector_for_whom_its_limit_admits(provider, neo4j_settings, arango_settings) -> None:
+    """``GET /connectors/active``, ``/inactive`` (``get_user_connector_instances``) and ``/``, ``/configured``, ``/agents/active``,
+    ``/user-access/mine`` (``get_filtered_connector_instances``) for a member: a limited connector only when it is of the request's org
+    and its limit admits them (CREATOR its creator, ORG a member by the edge to that org, any other value nobody), as the team list
+    weighs it; an unlimited one as before. With the limit not applied (an admin) every one is listed. ``eve``'s own orgId is this org
+    but her membership edge is to another; ``uone`` is the reverse (RULE-L23/L24)."""
+    suffix = uuid.uuid4().hex[:8]
+    org, other = f"org-n-{suffix}", f"org-o-{suffix}"
+    arango = provider.__class__.__name__.startswith("Arango")
+    uid = {name: f"m-{name}-{suffix}" for name in ("ann", "bob", "eve", "uone")}
+    key = {name: f"{name}-{suffix}" for name in ("open", "byAnn", "orgWide", "cleared", "foreign", "junk", "annPersonal")}
+
+    def _app(name: str, limit: object = None, *, app_org: str = org, scope: str = "team", created_by: str = uid["bob"]) -> dict:
+        props = {"orgId": app_org, "createdBy": created_by, "accessLimit": limit}
+        return app(key[name], name, connector="DRIVE", app_group="Test", scope=scope, **props)
+
+    apps = [_app("open"), _app("byAnn", "CREATOR", created_by=uid["ann"]), _app("orgWide", "ORG"), _app("cleared"),
+            _app("foreign", "ORG", app_org=other), _app("annPersonal", "CREATOR", scope="personal", created_by=uid["ann"])]
+    if not arango:  # Arango's app schema refuses any other value
+        apps.append(_app("junk", "SOMEONE"))
+    nodes = [
+        _node("Organization", org, with_org=False, name="Org", accountType="enterprise", isActive=True),
+        _node("Organization", other, with_org=False, name="Other", accountType="enterprise", isActive=True),
+        *(_node("User", f"k-{n}-{suffix}", orgId=(other if n == "uone" else org), userId=uid[n], email=f"{n}-{suffix}@example.com",
+                fullName=n) for n in uid),
+        *apps,
+    ]
+    edges = [
+        *(bt(f"k-{n}-{suffix}", other if n == "eve" else org, entity_type="ORGANIZATION") for n in uid),
+        *({"type": "ORG_APP_RELATION", "from": org, "to": a["id"], "props": {"createdAtTimestamp": TS}} for a in apps),
+    ]
+    if arango:
+        await load_into_arango(arango_settings, nodes, edges)
+    else:
+        await load_into_neo4j(neo4j_settings, nodes, edges)
+    local = {v: k for k, v in key.items()}
+
+    async def listed(user: str, *, limited: bool) -> tuple[set[str], set[str]]:
+        mine = await provider.get_user_connector_instances(
+            collection=CollectionNames.APPS.value, user_id=uid[user], org_id=org, team_scope="team", personal_scope="personal",
+            apply_access_limit=limited)
+        page, total = await provider.get_filtered_connector_instances(
+            collection=CollectionNames.APPS.value, edge_collection=CollectionNames.ORG_APP_RELATION.value, org_id=org,
+            user_id=uid[user], limit=100, apply_access_limit=limited)
+        assert total == len(page)
+        return ({local[a.get("_key") or a.get("id")] for a in mine}, {local[a.get("_key") or a.get("id")] for a in page})
+
+    team = {"open", "byAnn", "orgWide", "cleared", "foreign"} | (set() if arango else {"junk"})
+    expected = {
+        "ann": {"open", "byAnn", "orgWide", "cleared", "annPersonal"},
+        "bob": {"open", "orgWide", "cleared"},
+        "eve": {"open", "cleared"},
+        "uone": {"open", "orgWide", "cleared"},
+    }
+    for user, names in expected.items():
+        assert await listed(user, limited=True) == (names, names), user
+        everything = team | ({"annPersonal"} if user == "ann" else set())
+        # ArangoDB's filtered list also keeps out an app stamped with another org (the orgId filter before the limit)
+        assert await listed(user, limited=False) == (everything, everything - ({"foreign"} if arango else set())), user

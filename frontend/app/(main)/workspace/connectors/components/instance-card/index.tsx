@@ -18,6 +18,7 @@ import {
 import { InlineEditableName } from '../inline-editable-name';
 import {
   InstanceActionNeededBadge,
+  InstanceLimitedBadge,
   InstanceSyncOperationIndicator,
   InstanceSetupStatusRow,
 } from './instance-status-badges';
@@ -174,6 +175,7 @@ export function InstanceCard({
             style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
           />
 
+          <InstanceLimitedBadge instance={instance} />
           <InstanceActionNeededBadge instance={instance} onOpen={onChevronClick} />
 
           {onRefresh ? (

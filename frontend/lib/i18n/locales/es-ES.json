@@ -3191,7 +3191,9 @@
           "queuedTooltip": "Esperando un hueco libre de sincronización. Empezará automáticamente cuando haya uno disponible.",
           "removing": "Eliminando",
           "removingTooltip": "Esta instancia se está eliminando."
-        }
+        },
+        "limited": "Limitado",
+        "limitedTooltip": "El acceso a este conector está limitado. Solo las personas que su límite admite pueden verlo o abrir su contenido. Como administrador, lo ves aquí para poder gestionarlo."
       },
       "localFsDesktop": {
         "offlineToast": "Abre la aplicación de escritorio de PipesHub en el equipo que gestiona esta carpeta para sincronizar.",

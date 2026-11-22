@@ -460,6 +460,13 @@ def _cypher_limit_admits(app: str, user: str) -> str:
             f" AND EXISTS {{ MATCH ({user})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(kh_o:Organization) WHERE kh_o.id = {app}.orgId }}))")
 
 
+def _cypher_access_limit_keeps(app: str) -> str:
+    """Keep ``app`` unless it is limited and the limit does not admit the requesting user (``$user_id``, a userId) under the
+    request's org (``$org_id``), as the team list's limited arm (``_get_user_accessible_team_app_ids``) weighs it."""
+    return (f"({app}.accessLimit IS NULL OR ({app}.orgId = $org_id"
+            f" AND EXISTS {{ MATCH (kh_lu:User {{userId: $user_id}}) WHERE {_cypher_limit_admits(app, 'kh_lu')} }}))")
+
+
 def _cypher_read_by_app(v: str) -> str:
     """Whether ``v`` is read by this App's rules; ``app`` must be in scope. A record or group of another
     connector that a group edge, a hierarchy edge or an app-level filing joins to this App is read by its
@@ -19501,6 +19508,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         is_agent_active: bool | None = None,
         allowed_connector_types: list[str] | None = None,
         transaction: str | None = None,
+        apply_access_limit: bool = False,
     ) -> tuple[list[dict], int]:
         """Get filtered connector instances with pagination."""
         # No org, no listing: every query below is scoped by it.
@@ -19525,6 +19533,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "(doc.scope = $team_scope OR doc.createdBy = $user_id)",
             ]
             params = {"org_id": org_id, "team_scope": "team", "user_id": user_id}
+            if apply_access_limit:
+                conditions.append(_cypher_access_limit_keeps("doc"))
 
             # Exclude KB if requested
             if exclude_kb and kb_connector_type:
@@ -19934,7 +19944,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         team_scope: str,
         personal_scope: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        apply_access_limit: bool = False,
     ) -> list[dict]:
         """Get all connector instances accessible to a user (personal + team)."""
         try:
@@ -19952,6 +19964,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 n.scope = $team_scope OR
                 (n.scope = $personal_scope AND n.createdBy = $user_id)
               )
+              {"AND " + _cypher_access_limit_keeps("n") if apply_access_limit else ""}
             RETURN n
             """
             results = await self.client.execute_query(
@@ -27552,6 +27565,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 item["name"] = app_doc.get("name", "")
                 item["type"] = app_doc.get("type", "APP")
                 item["displayName"] = app_doc.get("name", "")
+                item["accessLimit"] = app_doc.get("accessLimit")  # who may read its name: hide_names_the_viewer_cannot_open
             else:
                 item["name"] = connector_id
                 item["type"] = "UNKNOWN"

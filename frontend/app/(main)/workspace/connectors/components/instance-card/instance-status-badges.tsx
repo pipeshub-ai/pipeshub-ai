@@ -13,6 +13,7 @@ import {
 } from './instance-status';
 import type { ConnectorConfig, ConnectorInstance } from '../../types';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 
 const SYNC_VALUE_COLOR: Record<
   NonNullable<ReturnType<typeof deriveInstanceSyncOperation>>['badgeColor'],
@@ -195,6 +196,22 @@ export function InstanceActionNeededBadge({
           <MaterialIcon name="priority_high" size={14} />
           {label}
         </button>
+      </Badge>
+    </Tooltip>
+  );
+}
+
+/** Header badge of a limited instance (accessLimit set), for an admin: members never see one they cannot open. */
+export function InstanceLimitedBadge({ instance }: { instance: ConnectorInstance }) {
+  const { t } = useTranslation();
+  const isAdmin = useUserStore(selectIsAdmin);
+  if (isAdmin !== true || instance.accessLimit == null) return null;
+
+  return (
+    <Tooltip content={t('workspace.connectors.instanceStatus.limitedTooltip')}>
+      <Badge color="gray" variant="soft" size="1" style={{ flexShrink: 0, minHeight: 24 }}>
+        <MaterialIcon name="lock" size={14} />
+        {t('workspace.connectors.instanceStatus.limited')}
       </Badge>
     </Tooltip>
   );

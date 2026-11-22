@@ -357,6 +357,32 @@ async def service_account_knowledge(
     return kept
 
 
+async def hide_names_the_viewer_cannot_open(
+    graph_provider: IGraphDBProvider,
+    knowledge_lists: Iterable[Sequence[object]],
+    user_id: str,
+    org_id: str,
+) -> None:
+    """Show, in place, the id instead of the name of every knowledge source whose connector is limited (``accessLimit``, which
+    ``get_agent`` and ``get_all_agents`` carry on each source) and does not admit the viewer, as a source that cannot be resolved
+    reads. The limit is weighed by the connector list a member gets (``apply_access_limit``), asked only when a source is limited.
+    A failed lookup admits nothing, so it hides the name."""
+    limited = [k for ks in knowledge_lists for k in ks or [] if isinstance(k, dict) and k.get("accessLimit") is not None]
+    if not limited:
+        return
+    try:
+        listed = await graph_provider.get_user_connector_instances(
+            collection=CollectionNames.APPS.value, user_id=user_id, org_id=org_id, team_scope=ConnectorScope.TEAM.value,
+            personal_scope=ConnectorScope.PERSONAL.value, apply_access_limit=True,
+        ) or []
+    except Exception:  # a failed lookup admits nothing
+        listed = []
+    opens = {str(d.get("_key") or d.get("id")) for d in listed if isinstance(d, dict)}
+    for k in limited:
+        if str(k.get("connectorId") or "") not in opens:
+            k["name"] = k["displayName"] = k.get("connectorId")
+
+
 __all__ = [
     "MAX_CALLER_COLLECTIONS",
     "MAX_COLLECTION_CANDIDATES",
@@ -365,6 +391,7 @@ __all__ = [
     "AgentScope",
     "UnreadableSourceLimitError",
     "admit_caller_project_collections",
+    "hide_names_the_viewer_cannot_open",
     "project_files_knowledge",
     "read_source_limit",
     "resolve_agent_filters",

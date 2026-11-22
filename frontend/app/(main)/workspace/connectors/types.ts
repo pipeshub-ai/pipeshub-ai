@@ -52,6 +52,8 @@ export interface Connector {
   actionItems?: ConnectorActionItem[];
   createdBy?: string;
   updatedBy?: string;
+  /** Set when only some people may open this connector (CREATOR or ORG); a member never gets one they cannot open. */
+  accessLimit?: string | null;
   authType?: string;
   connectorInfo?: string | Record<string, unknown> | null;
   /**

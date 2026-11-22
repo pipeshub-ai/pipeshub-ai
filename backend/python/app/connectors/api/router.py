@@ -4108,7 +4108,8 @@ async def get_active_connector_instances(request: Request) -> dict[str, Any]:
             )
         connectors = await connector_registry.get_active_connector_instances(
             user_id=user_id,
-            org_id=org_id
+            org_id=org_id,
+            is_admin=is_request_admin(request),
         )
         return {
             "success": True,
@@ -4150,7 +4151,8 @@ async def get_inactive_connector_instances(request: Request) -> dict[str, Any]:
             )
         connectors = await connector_registry.get_inactive_connector_instances(
             user_id=user_id,
-            org_id=org_id
+            org_id=org_id,
+            is_admin=is_request_admin(request),
         )
         return {
             "success": True,

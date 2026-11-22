@@ -116,6 +116,43 @@ async def test_a_limited_team_connector_follows_the_membership_edge_not_the_user
     assert await keys("uid-u2") == ["byU2"]
 
 
+async def test_the_connectors_page_lists_a_limited_connector_for_whom_its_limit_admits(w: World) -> None:
+    """``GET /connectors/active``, ``/inactive`` (``get_user_connector_instances``) and ``/``, ``/configured``, ``/agents/active``,
+    ``/user-access/mine`` (``get_filtered_connector_instances``) for a member: a limited connector only when it is of the request's org and its
+    limit admits them (CREATOR its creator, ORG a member by the edge to that org, any other value nobody), as the team list weighs it; an
+    unlimited one as before. With the limit not applied (an admin) every one is listed. ``eve``'s own orgId is this org but her membership edge
+    is to another; ``uone`` is the reverse (RULE-L23/L24)."""
+    await w.nodes("organizations", {"_key": "elsewhere"})
+    users = {"ann": w.org, "bob": w.org, "eve": w.org, "uone": "elsewhere"}
+    await w.nodes("users", *({"_key": n, "userId": f"uid-{n}", "orgId": org} for n, org in users.items()))
+    for n in users:
+        await w.edge("belongsTo", ("users", n), ("organizations", "elsewhere" if n == "eve" else w.org), entityType="ORGANIZATION")
+    await app(w, "open", ts=7)
+    await app(w, "byAnn", ts=6, accessLimit="CREATOR", created_by="uid-ann")
+    await app(w, "orgWide", ts=5, accessLimit="ORG")
+    await app(w, "cleared", ts=4, accessLimit=None)
+    await app(w, "junk", ts=3, accessLimit="SOMEONE")
+    await app(w, "foreign", ts=2, accessLimit="ORG", orgId="elsewhere")                # linked to this org, stamped another
+    await app(w, "annPersonal", ts=1, scope="personal", accessLimit="CREATOR", created_by="uid-ann")
+
+    async def listed(user: str, *, limited: bool) -> tuple[set[str], set[str]]:
+        mine = await w.p.get_user_connector_instances("apps", f"uid-{user}", w.org, "team", "personal", apply_access_limit=limited)
+        page, total = await w.p.get_filtered_connector_instances("apps", "orgAppRelation", w.org, f"uid-{user}", limit=100, apply_access_limit=limited)
+        assert total == len(page)
+        return {a["_key"] for a in mine}, {a["_key"] for a in page}
+
+    team = {"open", "byAnn", "orgWide", "cleared", "junk", "foreign"}
+    expected = {"ann": {"open", "byAnn", "orgWide", "cleared", "annPersonal"}, "bob": {"open", "orgWide", "cleared"},
+                "eve": {"open", "cleared"}, "uone": {"open", "orgWide", "cleared"}}
+    for user, names in expected.items():
+        assert await listed(user, limited=True) == (names, names), user
+        everything = team | ({"annPersonal"} if user == "ann" else set())
+        assert await listed(user, limited=False) == (everything, everything), user
+    # the team list with the limit applied too, as /user-access/mine asks it for a member: still only what the limit admits
+    rows, _ = await w.p.get_filtered_connector_instances("apps", "orgAppRelation", w.org, "uid-bob", scope="team", is_admin=True, apply_access_limit=True)
+    assert {r["_key"] for r in rows} == {"open", "orgWide", "cleared"}
+
+
 async def test_a_connector_name_clashes_by_scope_ignoring_case_and_surrounding_whitespace(w: World) -> None:
     await app(w, "t1", name="  Sales Slack \t")
     await app(w, "p1", scope="personal", name="Mine", created_by="uid-me")

@@ -194,10 +194,12 @@ async def list_my_per_user_connectors(
     request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> dict[str, Any]:
     """The organisation's per-user connectors, each with whether the caller has connected. Only names and ids:
-    any member may see that the connector exists, since connecting to it is how they get its content."""
+    any member may see that the connector exists, since connecting to it is how they get its content, unless its
+    access limit keeps them out of it. An admin sees every one, with its ``accessLimit``."""
     org_id = current_org_id()
     user = await _caller(request, graph_provider)
     user_id = str(user.get("userId"))
+    is_admin = is_request_admin(request)
     if not org_id:
         return {"connectors": []}
     config_service = _config_service(request)
@@ -207,6 +209,8 @@ async def list_my_per_user_connectors(
             collection=CollectionNames.APPS.value, edge_collection=CollectionNames.ORG_APP_RELATION.value,
             org_id=org_id, user_id=user_id, scope=ConnectorScope.TEAM.value, limit=200,
             is_admin=True, is_active=True, connector_type_filter=connector_type,
+            # every per-user connector, linked or not; a limited one only to whom its limit admits, all of them to an admin
+            apply_access_limit=not is_admin,
         )
         for app in documents:
             connector_id = str(app.get("_key") or app.get("id") or "")
@@ -218,7 +222,7 @@ async def list_my_per_user_connectors(
             status = _status(await get_connection(config_service, connector_id, user_id), config)
             invite = await get_invite(config_service, connector_id, user_id)
             out.append({
-                "connectorId": connector_id, "name": app.get("name"), "type": connector_type, **status,
+                "connectorId": connector_id, "name": app.get("name"), "type": connector_type, "accessLimit": app.get("accessLimit"), **status,
                 "invited": invite is not None and invite.send_count > 0,
                 "optedOut": invite is not None and invite.opted_out,
             })

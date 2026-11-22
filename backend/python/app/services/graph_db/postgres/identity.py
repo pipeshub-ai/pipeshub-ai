@@ -90,6 +90,13 @@ def _stub_app(connector_id: str, app_type: Any = None) -> dict:  # noqa: ANN401
             "createdAtTimestamp": now, "updatedAtTimestamp": now}
 
 
+def _limit_keeps(user_id: str) -> str:
+    """Whether app ``n`` is kept for the user whose userId is ``user_id``: it is not limited, or it is of the request's org and its limit
+    admits the user, as the team list's limited arm in ``get_filtered_connector_instances`` weighs it."""
+    user_key = f"(SELECT u.id FROM graph.nodes u WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = {user_id} LIMIT 1)"
+    return f"(n.doc->>'accessLimit' IS NULL OR (n.doc->>'orgId' = n.org_id AND {access_sql.limit_admits('n', 'n.org_id', user_id, user_key)}))"
+
+
 def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
     """Neo4j swallows a failed read of these methods and answers a default (``flag``: unless ``raise_on_error``). A missing org never is."""
     def deco(fn: Any) -> Any:  # noqa: ANN401
@@ -676,13 +683,15 @@ class IdentityMixin(PgBase):
 
     # ---- connector instances -------------------------------------------------------------------------------------
     @_soft(list)
-    async def get_user_connector_instances(self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, transaction: str | None = None) -> list[dict]:
+    async def get_user_connector_instances(self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, transaction: str | None = None,
+                                           *, apply_access_limit: bool = False) -> list[dict]:
         if not self._mine(org_id):
             return []
         rows = await self._id_rows("""/* pipeshub:graph.get_user_connector_instances */ SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
             AND EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = n.org_id AND o.coll = 'orgAppRelation' AND o.from_coll = 'organizations' AND o.from_id = n.org_id AND o.to_id = n.id)
-            AND (n.doc->>'scope' = $3 OR (n.doc->>'scope' = $4 AND n.doc->>'createdBy' = $5))""",
-                                [current_org_id(), collection, team_scope, personal_scope, user_id], transaction)
+            AND (n.doc->>'scope' = $3 OR (n.doc->>'scope' = $4 AND n.doc->>'createdBy' = $5))
+            AND (NOT $6::boolean OR __LIMIT_KEEPS__)""".replace("__LIMIT_KEEPS__", _limit_keeps("$5")),
+                                [current_org_id(), collection, team_scope, personal_scope, user_id, apply_access_limit], transaction)
         return [_arango(_doc(r["doc"]), collection) for r in rows]
 
     @_soft(lambda: ([], 0))
@@ -691,7 +700,7 @@ class IdentityMixin(PgBase):
                                                kb_connector_type: str | None = None, is_admin: bool = False, is_authenticated: bool | None = None,
                                                is_active: bool | None = None, connector_type_filter: str | None = None, is_configured: bool | None = None,
                                                is_agent_active: bool | None = None, allowed_connector_types: list[str] | None = None,
-                                               transaction: str | None = None) -> tuple[list[dict], int]:
+                                               transaction: str | None = None, apply_access_limit: bool = False) -> tuple[list[dict], int]:
         if not org_id or not self._mine(org_id):
             return [], 0
         # The org edge is the tenant boundary of an instance; only the creator sees a personal one, admins included. Every filter is a bound
@@ -715,14 +724,16 @@ class IdentityMixin(PgBase):
               AND ($12::text IS NULL OR n.doc->>'type' = $12)
               AND ($13::boolean IS NULL OR coalesce((n.doc->>'isConfigured')::boolean, false) = $13)
               AND ($14::boolean IS NULL OR coalesce((n.doc->>'isAgentActive')::boolean, false) = $14)
-              AND ($15::text[] IS NULL OR n.doc->>'type' = ANY($15))), cnt AS (SELECT count(*) AS total FROM f)
+              AND ($15::text[] IS NULL OR n.doc->>'type' = ANY($15))
+              AND (NOT $18::boolean OR __LIMIT_KEEPS__)), cnt AS (SELECT count(*) AS total FROM f)
             SELECT cnt.total, p.doc FROM cnt LEFT JOIN LATERAL (SELECT doc FROM f ORDER BY doc->'createdAtTimestamp' DESC, id OFFSET $16 LIMIT $17) p ON true""".replace(
                 # a limited team connector is listed for whom its limit admits, whatever edges exist (the gate, PermissionsMixin._gate)
-                "__LIMIT_ADMITS__", access_sql.limit_admits("n", "n.org_id", "$4", "(SELECT u.id FROM graph.nodes u WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4 LIMIT 1)")),
+                "__LIMIT_ADMITS__", access_sql.limit_admits("n", "n.org_id", "$4", "(SELECT u.id FROM graph.nodes u WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4 LIMIT 1)")
+            ).replace("__LIMIT_KEEPS__", _limit_keeps("$4")),
                                   [current_org_id(), collection, edge_collection, user_id, kb_connector_type if exclude_kb and kb_connector_type else None,
                                    scope == "personal", scope == "team", is_admin, search or None, is_authenticated, is_active, connector_type_filter or None,
                                    is_configured, is_agent_active, list(allowed_connector_types) if allowed_connector_types is not None else None,
-                                   max(skip, 0), max(limit, 0)], transaction)
+                                   max(skip, 0), max(limit, 0), apply_access_limit], transaction)
         return [_arango(_doc(r["doc"]), collection) for r in rows if r["doc"] is not None], (rows[0]["total"] if rows else 0)
 
     @_soft(False)
@@ -1136,7 +1147,8 @@ class IdentityMixin(PgBase):
                         parsed = {}
                 app = apps.get(cid)
                 out[aid]["knowledge"].append({"_key": k["id"], "connectorId": cid, "filters": raw, "filtersParsed": parsed, "name": app.get("name", "") if app else cid,
-                                              "type": app.get("type", "APP") if app else "UNKNOWN", "displayName": app.get("name", "") if app else cid})
+                                              "type": app.get("type", "APP") if app else "UNKNOWN", "displayName": app.get("name", "") if app else cid,
+                                              "accessLimit": app.get("accessLimit") if app else None})
         return out
 
     async def _project_agents_mcp_servers(self, agent_ids: list[str], transaction: str | None = None) -> dict[str, list[dict]]:

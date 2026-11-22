@@ -60,6 +60,7 @@ from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    hide_names_the_viewer_cannot_open,
     project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
@@ -3342,6 +3343,9 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
+        await hide_names_the_viewer_cannot_open(
+            services["graph_provider"], [agent.get("knowledge") or []], user_context["userId"], org_key
+        )
 
         _mark_deprecated_tools(agent, services["logger"])
 
@@ -3411,6 +3415,13 @@ async def get_agents(
         else:
             agents = result.get("agents", [])
             total_items = int(result.get("totalItems", len(agents)))
+
+        await hide_names_the_viewer_cannot_open(
+            services["graph_provider"],
+            [agent.get("knowledge") or [] for agent in agents if isinstance(agent, dict)],
+            user_context["userId"],
+            org_key,
+        )
 
         creator_keys = {
             str(agent["createdBy"])
@@ -4795,6 +4806,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
+                # The names reach the prompt and the answer: a limited connector the caller cannot open is named by its id.
+                await hide_names_the_viewer_cannot_open(
+                    graph_provider, [agent_knowledge], user_context.get("userId", ""), org_key
+                )
                 # An unbound service agent would read a collection as its creator, so it reads none,
                 # the caller's project collection included (project_files_knowledge reads it from filters).
                 collections_allowed = not is_service_account or bool(agent.get("serviceAccountUserId"))

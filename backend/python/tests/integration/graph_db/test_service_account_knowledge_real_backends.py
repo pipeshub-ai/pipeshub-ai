@@ -64,7 +64,7 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
     }
     key = {name: spec[0] for name, spec in apps.items()}
     agent_key = f"agent-{run}"
-    linked = ("pg_team", "other_org")
+    linked = ("pg_team", "drive_limited", "other_org")
     try:
         for app_key, app_type, scope, app_org, created_by, *limit in apps.values():
             with for_org(app_org, job="test"):
@@ -107,8 +107,13 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
                 projected = {k["connectorId"]: (k["type"], k["name"]) for k in read["knowledge"]}
                 assert projected == {
                     key["pg_team"]: (pg, f"Name {key['pg_team']}"),
+                    key["drive_limited"]: (drive, f"Name {key['drive_limited']}"),
                     # Another org's app is unresolved: neither its type nor its name crosses over.
                     key["other_org"]: ("UNKNOWN", key["other_org"]),
+                }
+                # Each source carries its connector's limit, so a viewer it refuses is not given the name.
+                assert {k["connectorId"]: k.get("accessLimit") for k in read["knowledge"]} == {
+                    key["pg_team"]: None, key["drive_limited"]: "CREATOR", key["other_org"]: None,
                 }
             # The id filter reads only the org's apps among the ids asked.
             by_id = await graph.get_org_apps(
