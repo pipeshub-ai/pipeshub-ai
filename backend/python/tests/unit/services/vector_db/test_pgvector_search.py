@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,6 +14,9 @@ from app.services.vector_db.pgvector.errors import PgVectorError
 from app.services.vector_db.pgvector.tuning import Tuning
 from app.services.vector_db.pgvector.visibility import Scope
 from tests.support.eventually import done_without_waiting
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 T = Tuning()
 N = T.n_e0
@@ -761,3 +765,60 @@ async def test_a_lexical_leg_for_a_filter_that_trusts_nothing_asks_nothing_and_i
     tx = _LexTx(5000, lambda i: False)
     rows, degraded = await lexical.search(_LexDb(tx), ORG, 7, SparseVector([4], [1.0]), Scope(scope_filter=live), 20, T)
     assert tx.calls and degraded == "partial"
+
+
+# ---- leg latency by tier ------------------------------------------------------------------------------------------------------------------
+class _AnswersDb:
+    """``run`` answers the scripted values in order (an exception is raised): the sizing read, then the leg's read."""
+
+    def __init__(self, *answers: object) -> None:
+        self.answers = list(answers)
+
+    async def run(self, fn: object, **_: object) -> object:
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+@pytest.fixture
+def leg_seconds(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], float]:
+    from app.telemetry.backend import PrometheusBackend
+    from app.telemetry.modules import pgvector_search_metrics
+
+    backend = PrometheusBackend()
+    monkeypatch.setattr(pgvector_search_metrics, "LEG_SECONDS", backend.histogram("t_leg_seconds", "t", ["tier", "leg_band"], (0.1, 1.0)))
+
+    def count(tier: str) -> float:
+        line = f't_leg_seconds_count{{leg_band="40",tier="{tier}"}} '
+        return next((float(x.split()[-1]) for x in backend.serialize().splitlines() if x.startswith(line)), 0.0)
+
+    return count
+
+
+async def test_a_dense_leg_is_timed_under_the_tier_that_answered_it(leg_seconds) -> None:
+    db = _AnswersDb((None, 10, False, 0), [(1, "p1")])          # ten candidates: the exact tier
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
+    assert leg.plan.tier is dense.Tier.E0 and leg.rows == [(1, "p1")]
+    assert (leg_seconds("e0"), leg_seconds("degraded")) == (1, 0)
+
+
+@pytest.mark.parametrize("answers", [
+    pytest.param((DbError("sizing"), []), id="sizing-failed"),
+    pytest.param(((None, 10, False, 0), DbTimeout("busy"), []), id="tier-timed-out"),
+    pytest.param(((None, 10, False, 0), DbTimeout("busy"), DbError("no slot")), id="overload"),
+])
+async def test_a_degraded_dense_leg_is_timed_as_degraded_not_under_its_tier(leg_seconds, answers) -> None:
+    db = _AnswersDb(*answers)
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
+    assert leg.degraded in ("sizing", "timeout", "overload")
+    assert (leg_seconds("degraded"), leg_seconds("e0")) == (1, 0)
+
+
+async def test_a_lexical_leg_is_timed_whether_it_answers_or_runs_out_of_time(leg_seconds) -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    await lexical.search(_LexDb(_LexTx(5, lambda i: True)), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    await lexical.search(_LexDb(raises=DbTimeout("busy")), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    assert leg_seconds("lexical") == 2

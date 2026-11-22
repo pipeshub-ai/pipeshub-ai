@@ -21,6 +21,7 @@
 #   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
 #   postgres      — PostgreSQL + PgBouncer (opt-in; the app uses it only with docker-compose.postgres-docstore.yml, see ./postgres/README.md)
 #   postgres-migrate — the schema migration job (needs the `postgres` profile too)
+#   postgres-metrics — Prometheus exporters for PostgreSQL and PgBouncer (needs `postgres` and PG_MONITOR_PASSWORD, see ./postgres/README.md)
 #   search-searxng — SearXNG metasearch (then add SearXNG at http://searxng:8080 under
 #                    Workspace → Web search)
 #   fetch-crawl4ai — Crawl4AI page reader for JavaScript-heavy sites (then add Crawl4AI at
@@ -749,6 +750,56 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    networks:
+      - pipeshub
+
+  # PostgreSQL and PgBouncer metrics for Prometheus — profile: postgres-metrics (opt-in, together with `postgres`). Both exporters log in
+  # as pipeshub_monitor, a member of pg_monitor and nothing else (no privilege on any table of ours), which the postgres service creates
+  # when PG_MONITOR_PASSWORD is set; with it empty they cannot log in. Scrape http://<host>:9187/metrics (server: connections, locks,
+  # long transactions, replication and WAL, dead rows, autovacuum, wraparound) and :9127/metrics (pooler: client waits, pool use).
+  # The ports are published on 127.0.0.1 unless PG_METRICS_BIND says otherwise. sslmode=disable: the server and the pooler of this
+  # file serve no TLS, and the traffic stays on the compose network.
+  postgres-exporter:
+    profiles: ["postgres-metrics"]
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
+    command:
+      - --collector.long_running_transactions
+      - --collector.database_wraparound
+      - --collector.stat_activity_autovacuum
+    environment:
+      - DATA_SOURCE_URI=postgres:5432/pipeshub?sslmode=disable
+      - DATA_SOURCE_USER=pipeshub_monitor
+      - DATA_SOURCE_PASS=${PG_MONITOR_PASSWORD:-}
+      - PG_EXPORTER_COLLECTION_TIMEOUT=10s
+    ports:
+      - "${PG_METRICS_BIND:-127.0.0.1}:${PG_EXPORTER_PORT:-9187}:9187"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeshub
+
+  pgbouncer-exporter:
+    profiles: ["postgres-metrics"]
+    image: quay.io/prometheuscommunity/pgbouncer-exporter:v0.12.1@sha256:30f31b6c2efdad3647f8182cc7c1a3a19e42bae5d17387694989f969371c230d
+    environment:
+      # the console database of PgBouncer; pipeshub_monitor is its only stats user (postgres/pgbouncer.ini)
+      - PGBOUNCER_EXPORTER_CONNECTION_STRING=postgres://pipeshub_monitor:${PG_MONITOR_PASSWORD:-}@pgbouncer:6432/pgbouncer?sslmode=disable
+    ports:
+      - "${PG_METRICS_BIND:-127.0.0.1}:${PGBOUNCER_EXPORTER_PORT:-9127}:9127"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
     networks:
       - pipeshub
 

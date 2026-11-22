@@ -1,3 +1,5 @@
+? member pipeshub_monitor -> pg_monitor inherit=true set=false admin=false
+? role pipeshub_monitor login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 cast double precision[] -> ext.halfvec function=ext.array_to_halfvec context=a
 cast double precision[] -> ext.sparsevec function=ext.array_to_sparsevec context=a
 cast double precision[] -> ext.vector function=ext.array_to_vector context=a
@@ -2329,7 +2331,7 @@ rel kernel.policy_template kind=r owner=pipeshub_owner rls=false force=false opt
 rel kernel.restore_window kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.rls_exemptions kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.rls_registry kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
-rel kernel.rls_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=92122f9bcb9b57c0d902dbc86f972b5b
+rel kernel.rls_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=267eb1faa45f61621dae5c6f14a97aef
 rel kernel.rls_violations_core kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=e232e39bc8fc37a16c579397aa6379a6
 rel kernel.rls_warnings kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=82f66d8e056dc84e6344cb21d9064d00
 rel kernel.schema_epoch kind=r owner=pipeshub_owner rls=false force=false options=- ext=-

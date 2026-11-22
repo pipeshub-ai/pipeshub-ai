@@ -1,0 +1,92 @@
+{{- if .Values.postgresExporter.enabled }}
+{{- /*
+Prometheus exporter for the PostgreSQL server the application uses (the chart does not run that server).
+Its own application name, so nothing that selects the main pods selects these.
+*/ -}}
+{{- $v := .Values.postgresExporter }}
+{{- $name := printf "%s-postgres-exporter" (include "pipeshub-ai.fullname" . | trunc 45 | trimSuffix "-") }}
+{{- $selector := dict "app.kubernetes.io/name" (printf "%s-postgres-exporter" (include "pipeshub-ai.name" . | trunc 45 | trimSuffix "-")) "app.kubernetes.io/instance" .Release.Name }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+    app.kubernetes.io/component: postgres-exporter
+    helm.sh/chart: {{ include "pipeshub-ai.chart" . }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- toYaml $selector | nindent 8 }}
+        app.kubernetes.io/component: postgres-exporter
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres-exporter
+          image: {{ include "pipeshub-ai.image" (dict "image" $v.image "global" .Values.global) | quote }}
+          args:
+            {{- toYaml $v.args | nindent 12 }}
+          env:
+            - name: DATA_SOURCE_URI
+              value: {{ required "postgresExporter.dataSource is required: host:port/database?sslmode=..." $v.dataSource | quote }}
+            - name: DATA_SOURCE_USER
+              value: {{ $v.user | quote }}
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "postgresExporter.passwordSecret.name is required: the Secret that holds the monitoring login's password" $v.passwordSecret.name | quote }}
+                  key: {{ $v.passwordSecret.key | quote }}
+            - name: PG_EXPORTER_COLLECTION_TIMEOUT
+              value: "10s"
+          ports:
+            - name: metrics
+              containerPort: 9187
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /                       # the landing page; /metrics would query the server on every probe
+              port: metrics
+            periodSeconds: 30
+            timeoutSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+    app.kubernetes.io/component: postgres-exporter
+spec:
+  type: ClusterIP
+  selector:
+    {{- toYaml $selector | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

@@ -270,11 +270,13 @@ optional_env_line() {
 }
 
 # The opt-in PostgreSQL profiles are not derived from a selector: keep the ones already set (in the shell or in the saved .env), and
-# both of them whenever the document-store override is in use, since it depends on services of both.
+# postgres and postgres-migrate whenever the document-store override is in use, since it depends on services of both.
 opt_in_profiles() {
   local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)"
-  for o in postgres postgres-migrate; do
-    if [[ ",${have}," == *",${o},"* || "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ]]; then echo "$o"; fi
+  for o in postgres postgres-migrate postgres-metrics; do
+    if [[ ",${have}," == *",${o},"* || ( "$o" != postgres-metrics && "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ) ]]; then
+      echo "$o"
+    fi
   done
 }
 
@@ -679,7 +681,7 @@ if $FLAG_STOP; then
   # profile stays attached to the network and blocks its removal
   # ("Resource is still in use"). --remove-orphans clears containers left by a
   # previously-active profile too.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,postgres-metrics"
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
@@ -702,7 +704,7 @@ if $FLAG_UNINSTALL; then
   # profile was active for this deployment.  Without this, volumes from a
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,postgres-metrics"
   # `down -v` with the postgres profile would delete the database with everything else: keep it unless asked.
   _keep_pg=false
   _pg_vol=""

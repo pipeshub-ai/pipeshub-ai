@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import TYPE_CHECKING
 
 from app.core.db import ConnectionLost, DbError, DbTimeout
@@ -89,11 +90,13 @@ async def search(
     terms_of(sparse)             # validated before any statement
     if scope.matches_nothing:    # every row fails the filter: an empty, complete answer, not a search that is repeated up to MAX_LEG and reported partial
         return [], None
+    started = time.monotonic()
     try:
         rows, partial = await db.run(
             lambda tx: _run(tx, org, collection_id, sparse, scope, leg, t), timeout_ms=t.h_timeout_ms(leg), custom_plan=True)
         if partial:
             telemetry.DEGRADED.inc("partial", "lexical", telemetry.leg_band(leg))
+        telemetry.observe_leg("lexical", leg, started)
         return rows, "partial" if partial else None
     except DbTimeout:
         telemetry.TIMEOUT.inc("lexical", "lexical")
@@ -105,4 +108,5 @@ async def search(
         logger.error("lexical leg failed; answering from the dense leg alone", exc_info=True)
         reason = "error"
     telemetry.DEGRADED.inc(reason, "lexical", telemetry.leg_band(leg))
+    telemetry.observe_leg("lexical", leg, started)
     return [], reason

@@ -281,8 +281,11 @@ def expected_lines(files: Iterable[Path]) -> set[str]:
 
 def diff(live: Iterable[str], expected: set[str]) -> list[tuple[str, str]]:
     """``expected`` holds the lines of one major. Its ``sysfuncs@`` lines are alternatives (one per reviewed minor release): matching
-    any of them is enough. No other line is relaxed, so a ``sysfunc`` line (SECURITY DEFINER or settings) must still be listed."""
+    any of them is enough. A line written ``? <line>`` is optional: it may be live or not (an opt-in role), and is never missing. No other
+    line is relaxed, so a ``sysfunc`` line (SECURITY DEFINER or settings) must still be listed."""
     live = set(live)
+    optional = {x for x in expected if x.startswith("? ")}
+    expected = (expected - optional) | ({x[2:] for x in optional} & live)
     reviewed = {x for x in expected if x.startswith("sysfuncs@")}
     if reviewed & live:
         expected = (expected - reviewed) | (reviewed & live)
