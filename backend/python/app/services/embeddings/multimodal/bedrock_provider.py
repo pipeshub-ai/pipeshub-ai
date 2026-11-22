@@ -12,10 +12,19 @@ from collections.abc import Callable
 from typing import Any
 
 from app.exceptions.indexing_exceptions import EmbeddingError
+from app.services.embeddings.multimodal._concurrent import (
+    gather_or_cancel,
+    to_thread_settled,
+)
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.services.llm_gateway.embedding_gateway import (
+    EmbeddingRateLimited,
+    get_embedding_gateway,
+)
+from app.services.llm_gateway.wire import refused_by_allowance
 
 _CONCURRENCY_LIMIT = 10
 _DEFAULT_OUTPUT_EMBEDDING_LENGTH = 1024
@@ -35,7 +44,9 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
         embedding_size: int | None = None,
         normalize_fn: Callable[[str], Any] | None = None,
         logger: logging.Logger | None = None,
+        sdk_retries: int | None = None,
     ) -> None:
+        self.sdk_retries = sdk_retries
         self.model_name = model_name
         self.region_name = region_name
         self.aws_access_key_id = aws_access_key_id
@@ -80,11 +91,20 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
                     "region_name": self.region_name,
                 }
             )
+        if self.sdk_retries is not None:
+            from botocore.config import Config
+
+            # botocore repeats a throttled or failed request by default; the gateway is the one retry layer.
+            client_kwargs["config"] = Config(retries={"mode": "standard", "total_max_attempts": self.sdk_retries + 1})
         try:
             bedrock = boto3.client(**client_kwargs)
         except NoCredentialsError as e:
             raise EmbeddingError("AWS credentials not found for Bedrock image embeddings.") from e
 
+        # This client does not come from a model factory: count its requests in the wire scope of a gateway attempt.
+        from app.services.llm_gateway.wire import install_boto_hooks
+
+        install_boto_hooks(bedrock)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
         async def embed_single(i: int, image_ref: str) -> ImageEmbeddingResult:
@@ -93,20 +113,20 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
                 return ImageEmbeddingResult(index=i, error="invalid image data")
             async with semaphore:
                 try:
-                    loop = asyncio.get_running_loop()
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: bedrock.invoke_model(
-                            modelId=self.model_name,
-                            body=json.dumps({
-                                "inputImage": normalized,
-                                "embeddingConfig": {
-                                    "outputEmbeddingLength": self.output_embedding_length
-                                },
-                            }),
-                            contentType="application/json",
-                            accept="application/json",
-                        ),
+                    response = await get_embedding_gateway().call(
+                        lambda: to_thread_settled(
+                            lambda: bedrock.invoke_model(
+                                modelId=self.model_name,
+                                body=json.dumps({
+                                    "inputImage": normalized,
+                                    "embeddingConfig": {
+                                        "outputEmbeddingLength": self.output_embedding_length
+                                    },
+                                }),
+                                contentType="application/json",
+                                accept="application/json",
+                            ),
+                        )
                     )
                     body = json.loads(response["body"].read())
                     # Titan reports per-image generation failures in `message`
@@ -130,20 +150,18 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
                         self.logger.warning(f"Bedrock embed failed for index {i}: {e}")
                     return ImageEmbeddingResult(index=i, error=str(e))
 
-        # return_exceptions=True: an unexpected (non-Client/NoCredentials) error from
-        # one image must not abort the whole batch — every other image should still
-        # get a result. Bare exceptions are normalised into ImageEmbeddingResult below
-        # so callers only ever see the interface's result type.
-        raw_results = await asyncio.gather(
-            *[embed_single(i, ref) for i, ref in enumerate(image_base64s)],
-            return_exceptions=True,
-        )
-        results: list[ImageEmbeddingResult] = []
-        for i, r in enumerate(raw_results):
-            if isinstance(r, ImageEmbeddingResult):
-                results.append(r)
-            else:
+        async def guarded(i: int, image_ref: str) -> ImageEmbeddingResult:
+            # One image's unexpected failure must not abort the batch (every other image still gets a result), but a provider's
+            # wait past the call's allowance is the whole record's: it propagates, and the other images are cancelled.
+            try:
+                return await embed_single(i, image_ref)
+            except EmbeddingRateLimited:
+                raise
+            except Exception as exc:
+                if refused_by_allowance(exc):
+                    raise  # the job's send allowance is spent: not one image's failure
                 if self.logger:
-                    self.logger.warning(f"Bedrock embed failed for index {i}: {r}")
-                results.append(ImageEmbeddingResult(index=i, error=str(r)))
-        return results
+                    self.logger.warning(f"Bedrock embed failed for index {i}: {exc}")
+                return ImageEmbeddingResult(index=i, error=str(exc))
+
+        return await gather_or_cancel([guarded(i, ref) for i, ref in enumerate(image_base64s)])

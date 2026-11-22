@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Dict, List, Optional, Union
 
+from app.services.vector_db.errors import VectorsNotFetchable
 from app.services.vector_db.models import (
     CollectionConfig,
     FilterExpression,
@@ -182,6 +183,12 @@ class IVectorDBService(ABC):
         """The orgs holding points of each virtual record (absent: none), or None when the provider cannot say without being told an org."""
         return None
 
+    async def other_orgs_hold_virtual_record(self, virtual_record_id: str, org_id: str) -> bool | None:
+        """Whether an org other than ``org_id`` holds a point of this virtual record, in any collection. None when the provider
+        answers it with a scroll that excludes ``org_id`` (``must_not``), which the caller then runs; a provider whose reads must
+        name one org answers here."""
+        return None
+
     @abstractmethod
     async def collection_exists(self, collection_name: str) -> bool:
         raise NotImplementedError
@@ -245,6 +252,20 @@ class IVectorDBService(ABC):
         """
         raise NotImplementedError
 
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: Optional[str] = None,
+    ) -> ScrollResult:
+        """``scroll`` returning each point whole: its full payload and its stored dense (and, where the store keeps one, sparse) vector, so
+        the point can be written again under another id with ``upsert_points`` and no new embedding.
+
+        A store that cannot hand its vectors back keeps this default and raises ``VectorsNotFetchable``; the caller then embeds again.
+        """
+        raise VectorsNotFetchable(f"{self.get_service_name()} cannot return stored vectors")
+
     def scroll_offset_after_delete(
         self, next_offset: Optional[str], deleted: int,
     ) -> Optional[str]:
@@ -282,11 +303,16 @@ class IVectorDBService(ABC):
     async def make_searchable(self, collection_name: str) -> None:
         """Make every write acknowledged so far visible to search (not only to a get by id). A store that searches what it has applied
         (Qdrant, pgvector, Redis) has nothing to do; OpenSearch refreshes its index, which otherwise happens at the index's refresh interval
-        (30 s here). The scope rewrite calls it before it lifts the hide over the points it wrote."""
+        (30 s here). The scope rewrite calls it before each read of the points it rewrites."""
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        """Exact number of points the filter matches (it must pin ``metadata.orgId``); ``PartialResult`` if the store cannot answer completely.
+        The scope rewrite checks its scroll against it, so a store without it cannot be rewritten."""
+        raise NotImplementedError
 
     #: The store makes ``update_payloads_by_ids(..., fence=n)`` conditional, atomically per point: a point whose ``scopeFence`` is above ``n``
     #: is left as it is (no error), any other takes the payload and ``scopeFence = n``. A store without it is written to unconditionally; the
-    #: caller then relies on checking its lease and the connector's generation just before each request (pgvector has its own fence,
+    #: caller then relies on checking the connector's generation just before each request (pgvector has its own fence,
     #: ``computed_at``).
     generation_fence: bool = False
 
@@ -316,6 +342,14 @@ class IVectorDBService(ABC):
         be missed: the caller verifies what it wrote. With ``fence`` (a store with ``generation_fence``) a point whose ``scopeFence`` is
         above it is left alone, and a point changed takes it."""
         return None
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """Which of ``ids`` have a point, reading no payload and no vector.
+
+        Like ``retrieve_points`` this sees writes that are not yet searchable. A provider that can
+        answer without transferring payloads overrides it; this default asks for the points.
+        """
+        return {p.id for p in await self.retrieve_points(collection_name, ids)}
 
     @abstractmethod
     async def update_payload_by_ids(

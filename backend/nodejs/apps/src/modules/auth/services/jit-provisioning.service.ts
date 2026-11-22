@@ -1,6 +1,8 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
+import { audit } from '../../../libs/services/audit';
+import { authRefusal } from '../utils/sign-in-audit';
 // From the schema module, not the config barrel: the barrel re-exports the auth
 // routers, whose controllers import this service, so importing it here made the
 // two depend on each other. The schema module returns whatever `users` model is
@@ -30,8 +32,9 @@ export type JitProvider = 'google' | 'microsoft';
 export class JitProvisioningService {
   constructor(
     @inject('Logger') private logger: Logger,
-    @inject('EntitiesEventProducer') private eventService: EntitiesEventProducer,
-  ) { }
+    @inject('EntitiesEventProducer')
+    private eventService: EntitiesEventProducer,
+  ) {}
 
   /**
    * Provision a new user via JIT from a Google or Microsoft sign-in.
@@ -43,13 +46,14 @@ export class JitProvisioningService {
     orgId: string,
     provider: JitProvider,
   ) {
-    this.logger.info(`Auto-provisioning user from ${provider}`, { email, orgId });
-
-
     // Check if user was previously deleted
     if (await getUserRepository().hasRemovedAccount(orgId, email)) {
-      throw new BadRequestError(
-        'User account deleted by admin. Please contact your admin to restore your account.',
+      // The sign-in line carries this refusal; provisioning audits only what it created.
+      throw authRefusal(
+        new BadRequestError(
+          'User account deleted by admin. Please contact your admin to restore your account.',
+        ),
+        'account_removed',
       );
     }
 
@@ -88,9 +92,11 @@ export class JitProvisioningService {
       await this.eventService.stop();
     }
 
-    this.logger.info(`User auto-provisioned successfully via ${provider}`, {
-      userId: newUser._id,
-      email,
+    audit('auth.jit_provision', {
+      actor: newUser._id,
+      org: orgId,
+      outcome: 'success',
+      authMethod: provider,
     });
 
     return newUser;
@@ -119,7 +125,10 @@ export class JitProvisioningService {
   /**
    * Extract user details from a Microsoft decoded token
    */
-  extractMicrosoftUserDetails(decodedToken: any, email: string): JitUserDetails {
+  extractMicrosoftUserDetails(
+    decodedToken: any,
+    email: string,
+  ): JitUserDetails {
     const firstName = decodedToken?.given_name;
     const lastName = decodedToken?.family_name;
     const displayName = decodedToken?.name;

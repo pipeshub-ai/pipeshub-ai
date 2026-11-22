@@ -184,7 +184,7 @@ async def test_malformed_provider_result_is_500_not_a_reported_success(delete_re
 
 
 @pytest.mark.asyncio
-async def test_access_check_error_is_500_without_leaking_and_without_deleting() -> None:
+async def test_access_check_error_is_503_without_leaking_and_without_deleting() -> None:
     provider, kafka = _provider(KB_ACCESS), AsyncMock()
     provider.check_record_access_with_details = AsyncMock(
         side_effect=RuntimeError("bolt://neo4j:7687 connection refused")
@@ -193,7 +193,7 @@ async def test_access_check_error_is_500_without_leaking_and_without_deleting() 
     with pytest.raises(HTTPException) as exc:
         await _call(provider, kafka)
 
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 503      # the graph could not answer: retry, not "server bug"
     assert "bolt" not in str(exc.value.detail)
     _assert_no_delete(provider, kafka)
 

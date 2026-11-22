@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import copy
 import json
 import logging
 from datetime import datetime, timedelta
@@ -27,95 +26,24 @@ from app.core import org_context as oc
 from app.utils import credential_refresh_log as CR
 from app.utils import logging_fields
 from app.utils import request_context as rc
-from app.utils.logger import TextFormatter, log_record_fields
+from app.utils.logger import JsonFormatter, TextFormatter
 from app.utils.structured_logging import DefaultLoggingProvider
+from tests.support.refresh_log_fakes import (
+    INVALID_GRANT,
+    SEEDED_RT,
+    SEEDED_SECRET,
+    FakeConfigStore,
+    FakeTokenEndpoint,
+)
+from tests.support.refresh_log_fakes import assert_no_secrets as _assert_no_secrets
+from tests.support.refresh_log_fakes import events as _events
+from tests.support.refresh_log_fakes import fields as _fields
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 LOGGER = "connector_service.refresh"
 TYPE = "testapp"
-SEEDED_RT = "rt-SEEDED-0123456789abcdef"
-SEEDED_SECRET = "cs-SEEDED-fedcba9876543210"
-# Providers echo the refresh token in prose (the review's F1 body): no redactor pattern matches it.
-INVALID_GRANT = (400, f'{{"error": "invalid_grant", "error_description": "refresh token {SEEDED_RT} is not active"}}')
-
-
-class FakeTokenEndpoint:
-    """Answers each token request with the next scripted answer: "ok", (status, body) or an exception."""
-
-    def __init__(self, *answers: object) -> None:
-        self.answers = list(answers)
-        self.sent: list[dict[str, str]] = []
-        self.issued = 0
-
-    def client_session(self, *_: object, **__: object) -> _Session:
-        return _Session(self)
-
-    def answer(self, form: dict[str, str]) -> tuple[int, str]:
-        self.sent.append(form)
-        answer = self.answers.pop(0)
-        if isinstance(answer, BaseException):
-            raise answer
-        if answer == "ok":
-            self.issued += 1
-            return 200, json.dumps({"access_token": f"at-new-{self.issued}", "refresh_token": f"rt-new-{self.issued}",
-                                    "expires_in": 3600})
-        return answer  # type: ignore[return-value]
-
-
-class _Session:
-    closed = False
-
-    def __init__(self, endpoint: FakeTokenEndpoint) -> None:
-        self._endpoint = endpoint
-
-    def post(self, _url: str, *, data: dict | None = None, json: dict | None = None, **_: object) -> _Response:
-        return _Response(self._endpoint, {k: str(v) for k, v in (data or json or {}).items()})
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-class _Response:
-    headers = {"Content-Type": "application/json"}
-
-    def __init__(self, endpoint: FakeTokenEndpoint, form: dict[str, str]) -> None:
-        self._endpoint, self._form = endpoint, form
-        self.status, self._text = 0, ""
-
-    async def __aenter__(self) -> _Response:
-        self.status, self._text = self._endpoint.answer(self._form)
-        return self
-
-    async def __aexit__(self, *_: object) -> bool:
-        return False
-
-    def raise_for_status(self) -> None:
-        return None
-
-    async def text(self) -> str:
-        return self._text
-
-    async def json(self) -> dict:
-        return json.loads(self._text)
-
-
-class FakeConfigStore:
-    def __init__(self) -> None:
-        self.store: dict[str, dict] = {}
-        self.save_result: bool | None = True
-        self.read_error: BaseException | None = None
-
-    async def get_config(self, key: str, *_: object, **__: object) -> dict | None:
-        if self.read_error is not None:
-            raise self.read_error
-        return copy.deepcopy(self.store.get(key))
-
-    async def set_config(self, key: str, value: dict) -> bool | None:
-        if self.save_result is not False:
-            self.store[key] = copy.deepcopy(value)
-        return self.save_result
 
 
 def _key(connector_id: str) -> str:
@@ -145,6 +73,8 @@ def _raw_identity_and_fresh_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.utils.logger.get_provider", lambda: DefaultLoggingProvider())
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
     monkeypatch.setattr(trs, "CREDENTIAL_SAVE_RETRY_DELAY_SECONDS", 0)
+    # Importing any *_main module sets a process-wide suffix on request_id (not on scheduled_by, a bare root).
+    monkeypatch.setattr(rc, "_service_suffix", "")
 
 
 @pytest.fixture
@@ -184,21 +114,6 @@ def _connectors(graph: MagicMock, *docs: dict) -> None:
     graph.get_all_orgs = AsyncMock(return_value=[{"_key": org} for org in dict.fromkeys(d["orgId"] for d in docs)])
     graph.get_nodes_by_filters = AsyncMock(side_effect=lambda _c, f: [
         d for d in docs if d["orgId"] == f["orgId"]] if f["authType"] == "OAUTH" else [])
-
-
-def _events(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if r.name == LOGGER and r.getMessage() == event]
-
-
-def _fields(record: logging.LogRecord) -> dict[str, object]:
-    return log_record_fields(record)
-
-
-def _assert_no_secrets(caplog: pytest.LogCaptureFixture) -> None:
-    for record in caplog.records:
-        text = TextFormatter().format(record) + repr(log_record_fields(record))
-        for seeded in (SEEDED_RT, SEEDED_SECRET, "idp.example", "localhost/cb", "is not active"):
-            assert seeded not in text
 
 
 class TestScheduledRefresh:
@@ -636,3 +551,105 @@ class TestDeauthentication:
         )
         if failure_level is None:
             assert send.await_args.kwargs["message"]["payload"]["orgId"] == "o1"
+
+
+MARKER = "FIELD-MARKER-31"
+
+
+def _answer(**fields: object) -> tuple[int, str]:
+    return 200, json.dumps({"access_token": "at-new", "refresh_token": "rt-new", "expires_in": 3600, **fields})
+
+
+def _assert_no_marker(caplog: pytest.LogCaptureFixture) -> None:
+    for record in caplog.records:
+        rendered = TextFormatter().format(record) + JsonFormatter().format(record) + repr(_fields(record)) + (record.exc_text or "")
+        assert MARKER not in rendered, record.getMessage()
+
+
+class TestMalformedTokenField:
+    """F26c: a token field that cannot be parsed is named, never quoted, and is never saved over the connector's token."""
+
+    @pytest.mark.parametrize("answer", [_answer(created_at=MARKER), _answer(expires_in=MARKER), _answer(expires_in=float("nan"))],
+                             ids=["created_at", "expires_in", "expires_in_nan"])
+    async def test_a_malformed_answer_is_misconfigured_once_and_keeps_the_saved_token(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture, answer: tuple[int, str],
+    ) -> None:
+        endpoint.answers = [answer, answer]
+        config.store[_key("c1")] = _expired()
+        saved = config.store[_key("c1")]["credentials"]
+        _connectors(graph, _doc("c1", "o1"))
+
+        await service._refresh_all_tokens()
+        await service._refresh_all_tokens()
+
+        ends = _events(caplog, CR.EVENT_END)
+        assert [(_fields(r)["error_class"], _fields(r)["reason"], _fields(r)["error_type"]) for r in ends] == [
+            ("misconfigured", "malformed_token", "MalformedTokenError")] * 2
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == [ends[0]]
+        assert config.store[_key("c1")]["credentials"] == saved
+        _assert_no_marker(caplog)
+        _assert_no_secrets(caplog)
+
+    async def test_a_numeric_text_lifetime_is_saved_as_a_number_and_scheduled(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        endpoint.answers = [_answer(expires_in="3599")]
+        config.store[_key("c1")] = _expired()
+        _connectors(graph, _doc("c1", "o1"))
+
+        await service._refresh_all_tokens()
+        await service._refresh_all_tokens()  # main: TypeError on the saved string, every scan
+
+        assert config.store[_key("c1")]["credentials"]["expires_in"] == 3599
+        assert [_fields(r)["outcome"] for r in _events(caplog, CR.EVENT_END)] == ["success"]
+        assert _events(caplog, CR.EVENT_CHECK_FAILED) == []
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    async def test_a_saved_numeric_text_lifetime_schedules_a_refresh(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        config.store[_key("c1")] = _config()
+        config.store[_key("c1")]["credentials"]["expires_in"] = "3599"  # written before F26c
+        _connectors(graph, _doc("c1", "o1"))
+
+        await service._refresh_all_tokens()
+
+        [line] = _events(caplog, CR.EVENT_SCHEDULED)
+        assert (line.levelno, _fields(line)["connector_id"]) == (logging.INFO, "c1")
+        assert _events(caplog, CR.EVENT_CHECK_FAILED) == []
+
+    async def test_a_saved_malformed_lifetime_is_misconfigured_without_its_value_and_the_scan_goes_on(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        config.store[_key("c1")] = _config()
+        config.store[_key("c1")]["credentials"]["expires_in"] = MARKER  # written before F26c
+        config.store[_key("c2")] = _config()
+        _connectors(graph, _doc("c1", "o1"), _doc("c2", "o1"))
+
+        await service._refresh_all_tokens()
+
+        [failed] = _events(caplog, CR.EVENT_CHECK_FAILED)
+        assert (failed.levelno, _fields(failed)["error_class"], _fields(failed)["reason"], _fields(failed)["connector_id"]) == (
+            logging.ERROR, "misconfigured", "malformed_token", "c1")
+        assert [_fields(r)["connector_id"] for r in _events(caplog, CR.EVENT_SCHEDULED)] == ["c2"]
+        _assert_no_marker(caplog)
+
+    async def test_a_bad_refresh_token_lifetime_is_dropped_and_the_refresh_succeeds(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        endpoint.answers = [_answer(refresh_token_expires_in=MARKER)]
+        config.store[_key("c1")] = _expired()
+        _connectors(graph, _doc("c1", "o1"))
+
+        await service._refresh_all_tokens()
+
+        assert [_fields(r)["outcome"] for r in _events(caplog, CR.EVENT_END)] == ["success"]
+        saved = config.store[_key("c1")]["credentials"]
+        assert (saved["access_token"], saved["refresh_token_expires_in"]) == ("at-new", None)
+        _assert_no_marker(caplog)

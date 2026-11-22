@@ -753,6 +753,8 @@ function ChatContent() {
           remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
           sharedWith: detail.conversation.sharedWith ?? null,
+          forkedFrom: detail.conversation.forkedFrom ?? null,
+          forks: detail.conversation.forks ?? [],
           messagePagination: {
             currentPage: apiPagination.page,
             hasOlderMessages: apiPagination.hasNextPage,
@@ -1469,6 +1471,7 @@ function ChatContent() {
     highlightBox: previewFile.highlightBox,
     citations: previewFile.citations,
     initialCitationId: previewFile.initialCitationId,
+    jumpSeq: previewFile.jumpSeq,
     hideFileDetails: previewFile.hideFileDetails,
     showDownload: previewFile.showDownload,
     latestVersion: previewFile.latestVersion,
@@ -1575,6 +1578,7 @@ function ChatContent() {
                   highlightBox={previewFile.highlightBox}
                   citations={previewFile.citations}
                   initialCitationId={previewFile.initialCitationId}
+                  jumpSeq={previewFile.jumpSeq}
                   hideFileDetails={previewFile.hideFileDetails}
                   showDownload={previewFile.showDownload}
                   latestVersion={previewFile.latestVersion}

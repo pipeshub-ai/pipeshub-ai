@@ -55,3 +55,21 @@ describe('Retry-After parsing', () => {
     expect(processed.message).toMatch(/^PipesHub is busy right now\. Please try again in [45] seconds\.$/);
   });
 });
+
+describe('access notice codes on a search that found nothing or could not check', () => {
+  const notices = [{ code: 'connector_syncing', connectorName: 'Jira' }];
+
+  it('a 404 carries them without a body status, and reads as the empty search', async () => {
+    const { isSearchNoAccessibleDocumentsNotFound } = await import('../api-error');
+    const processed = processError(httpError(404, { error: { message: 'none' }, accessNotices: notices }));
+    expect(processed.details).toEqual({ accessNotices: notices });
+    expect(isSearchNoAccessibleDocumentsNotFound(processed)).toBe(true);
+    expect(isSearchNoAccessibleDocumentsNotFound(processError(httpError(404, { error: { message: 'gone' } })))).toBe(false);
+  });
+
+  it('a 503 keeps them beside its own message', () => {
+    const processed = processError(httpError(503, { error: { message: 'try later' }, accessNotices: [{ code: 'check_unavailable' }] }));
+    expect(processed.details).toEqual({ accessNotices: [{ code: 'check_unavailable' }] });
+    expect(processed.message).toBe('try later');
+  });
+});

@@ -210,8 +210,11 @@ class TestSearchStaysInsideTheAgentsSources:
 
 
 class TestPagination:
-    async def test_a_page_number_reaches_that_page(self, graph: MagicMock) -> None:
+    @pytest.mark.parametrize(("skip_rows", "limits", "afters"), [(0, [10, 10, 10], [None, "rec-09", "rec-19"]), (1000, [20, 10], [None, "rec-19"])],
+                             ids=["page_reads", "large_reads"])
+    async def test_a_page_number_reaches_that_page(self, graph: MagicMock, skip_rows: int, limits: list[int], afters: list[str | None]) -> None:
         stub_listing(graph, USER_KEY, {"app-drive": _docs(45)})
+        graph.kh_skip_rows = skip_rows
         ok, payload = await KnowledgeHub(_state(graph)).list_files(
             query="doc", page=3, limit=10, sort_by="name", sort_order="asc",
         )
@@ -219,10 +222,11 @@ class TestPagination:
         assert ok is True
         body = json.loads(payload)
         assert [i["name"] for i in body["items"]] == [f"doc {i:02d}" for i in range(20, 30)]
-        # Each page resumes after the one before it; none is re-read from the top.
+        # The rows before the page are read as many at a time as the backend takes, each read resuming after the one before it; nothing is re-read
+        # from the top.
         pages = connector_pages(graph)
-        assert [p["limit"] for p in pages] == [10, 10, 10]
-        assert [(p["after"] or {}).get("id") for p in pages] == [None, "rec-09", "rec-19"]
+        assert [p["limit"] for p in pages] == limits
+        assert [(p["after"] or {}).get("id") for p in pages] == afters
         shown = {key: body["pagination"][key] for key in (
             "page", "limit", "totalItems", "totalPages", "hasNext", "hasPrev",
         )}

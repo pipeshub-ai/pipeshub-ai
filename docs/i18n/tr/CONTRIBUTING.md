@@ -34,7 +34,6 @@ Açık kaynak projemize hoş geldiniz! Katkıda bulunmakla ilgilendiğiniz için
 sudo apt update
 sudo apt install python3.12-venv
 sudo apt-get install libreoffice
-sudo apt install libmariadb-dev
 ```
 
 #### Mac

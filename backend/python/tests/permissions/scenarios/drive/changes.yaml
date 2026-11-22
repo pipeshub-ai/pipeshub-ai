@@ -126,15 +126,20 @@
   tags: [drive, "cell:drive/move", narrowing]
 - id: DRIVE-C-08
   title: Link sharing changed; the roadmap made discoverable to the domain is findable by everyone in the org
-  source: permission model doc, google-drive section (a discoverable domain share becomes an org grant)
+  source: >
+    Drive API, manage sharing: allowFileDiscovery "Setting this to true allows the item to appear in search results
+    for the specified audience" (https://developers.google.com/workspace/drive/api/guides/manage-sharing)
   rule: union
   comment: >
-    The processor drops DOMAIN and ANYONE grants (data_source_entities_processor.py:2317-2331), so the graph is
-    unchanged and org members outside the folder's audience cannot find the file. Safe, but incomplete.
+    The team connector stores a discoverable domain share as a grant to the domain's audience group
+    (google/drive/team/connector.py:1388-1401, used at 1881-1889), whose members are the domain's enabled people.
   world: golden/drive_q4
+  mutation: {kind: grant_added, node: roadmap, ref: g:domain-members}
   expect:
+    before: {mo: {roadmap: deny}}
     verdicts:
       mo: {roadmap: admit}
       lee: {roadmap: admit}
-    source_delta: DELTA-02
+      fay: {roadmap: admit}
+    index_writes: 0
   tags: [drive, "cell:drive/link-discoverability"]

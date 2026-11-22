@@ -81,6 +81,26 @@ describe('envelope v2', () => {
     expect(await reason(open(msg(), { keys: [], required: true }))).to.equal('no_key')
   })
 
+  // Every message leaves with an event id (a UUID at publish), signed or not: signing adds integrity, not identity.
+  const expectUnsignedWithEventId = (sent: any, original: Record<string, unknown>) => {
+    const { eventId, ...rest } = sent
+    expect(rest).to.deep.equal(original)
+    expect(eventId).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    expect(sent.ctx).to.equal(undefined)
+  }
+
+  it('every message gets its own event id, signing on or off, and a stamped one is kept', async () => {
+    const flat = { eventType: 'T', payload: { orgId: 'org_b' } }
+    await withEnv({ ENVELOPE_SIGN: undefined }, async () => {
+      const a: any = signMessage(T, flat)
+      const b: any = signMessage(T, flat)
+      expect(a.eventId).to.be.a('string')
+      expect(a.eventId).to.not.equal(b.eventId)
+      expect(flat).to.not.have.property('eventId') // the caller's object is not mutated
+      expect((signMessage(T, { ...flat, eventId: 'evt-fixed' }) as any).eventId).to.equal('evt-fixed')
+    })
+  })
+
   it('producer signs only when the flag, a key and a bound org are present', async () => {
     const flat = { eventType: 'T', payload: { orgId: 'org_b', n: 1 }, requestId: 'r' }
     const prev = process.env.ENVELOPE_SIGN
@@ -88,16 +108,16 @@ describe('envelope v2', () => {
       configureEnvelope(async () => [KEY], null, KEY)
       runWithOrgContext(CTX_B, () => {
         delete process.env.ENVELOPE_SIGN
-        expect(signMessage(T, flat)).to.equal(flat) // flag off: v1
+        expectUnsignedWithEventId(signMessage(T, flat), flat) // flag off: v1 plus an event id
         process.env.ENVELOPE_SIGN = 'true'
         const signed: any = signMessage(T, flat)
         expect(signed.payload).to.be.a('string')
         expect([signed.eventType, signed.ctx.v]).to.deep.equal(['T', 2])
         const other = { ...flat, payload: { orgId: 'org_x' } }
-        expect(signMessage(T, other)).to.equal(other) // never sign a payload for another org
+        expectUnsignedWithEventId(signMessage(T, other), other) // never sign a payload for another org
       })
       process.env.ENVELOPE_SIGN = 'true'
-      expect(signMessage(T, flat)).to.equal(flat) // no org bound: v1
+      expectUnsignedWithEventId(signMessage(T, flat), flat) // no org bound: v1 plus an event id
       const signed: any = runWithOrgContext(CTX_B, () => signMessage(T, flat))
       expect((await open(signed)).message.payload).to.deep.equal(flat.payload) // round trip
     } finally {
@@ -261,12 +281,12 @@ describe('envelope v2', () => {
       configureEnvelope(null)
       runWithOrgContext(CTX_B, () => {
         const before = envelopeUnsigned.get(`${T}:no_key`) ?? 0
-        expect(signMessage(T, flat)).to.equal(flat)
+        expectUnsignedWithEventId(signMessage(T, flat), flat)
         expect(envelopeUnsigned.get(`${T}:no_key`)).to.equal(before + 1)
         process.env.ORG_CONTEXT_MODE = 'enforce'
         expect(() => signMessage(T, flat)).to.throw(/no key/)
       })
-      expect(signMessage(T, flat)).to.equal(flat) // no org bound
+      expectUnsignedWithEventId(signMessage(T, flat), flat) // no org bound
       expect(envelopeUnsigned.get(`${T}:no_org`)).to.be.greaterThan(0)
     })
   })

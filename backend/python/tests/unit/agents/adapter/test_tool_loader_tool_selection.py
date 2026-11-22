@@ -11,6 +11,7 @@ factories (the OAuth/network boundary) are replaced with fakes.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
@@ -120,11 +121,13 @@ async def _load(toolsets: list[dict]) -> tuple["ToolRegistry", AgentContext]:
     return registry, context
 
 
-def _stale_warnings(context: AgentContext) -> list[tuple]:
-    """(toolset, missing picks) of each "picked tools no longer exist" warning."""
+def _stale_warnings(caplog: pytest.LogCaptureFixture) -> list[tuple]:
+    """(toolset, how many picks) of each "picked tools no longer exist" warning (a count: no tool names)."""
+    from app.utils.logger import log_record_fields
+
     return [
-        call.args[1:] for call in context.logger.warning.call_args_list
-        if "no longer exist" in call.args[0]
+        (log_record_fields(r)["toolset"], log_record_fields(r)["missing"]) for r in caplog.records
+        if r.getMessage() == "toolset.tools_missing" and r.levelno == logging.WARNING
     ]
 
 
@@ -177,7 +180,7 @@ class TestOnlyPickedToolsLoad:
 
         assert sorted(registry.tools_in_toolset("jira")) == ["jira__create_issue", "jira__search_issues"]
 
-    async def test_picks_that_no_longer_exist_drop_only_that_toolset(self) -> None:
+    async def test_picks_that_no_longer_exist_drop_only_that_toolset(self, caplog: pytest.LogCaptureFixture) -> None:
         registry, context = await _load([
             {"name": "jira", "instanceId": "jira-1", "tools": _picked("renamed_tool")},
             {"name": "onedrive", "instanceId": "od-1"},
@@ -186,15 +189,15 @@ class TestOnlyPickedToolsLoad:
         assert "jira" not in {g.name for g in registry.toolsets()}
         assert not any(name.startswith("jira__") for name in registry.names())
         assert registry.tools_in_toolset("onedrive") == ["onedrive__list_items"]
-        assert ("jira", ["renamed_tool"]) in _stale_warnings(context)
+        assert ("jira", 1) in _stale_warnings(caplog)
 
-    async def test_a_pick_renamed_since_the_agent_was_saved_is_reported(self) -> None:
+    async def test_a_pick_renamed_since_the_agent_was_saved_is_reported(self, caplog: pytest.LogCaptureFixture) -> None:
         registry, context = await _load([
             {"name": "jira", "instanceId": "jira-1", "tools": _picked("search_issues", "get_issue_comments")},
         ])
 
         assert registry.tools_in_toolset("jira") == ["jira__search_issues"]
-        assert _stale_warnings(context) == [("jira", ["get_issue_comments"])]
+        assert _stale_warnings(caplog) == [("jira", 1)]
 
     async def test_internal_toolset_ignores_picks(self) -> None:
         registry, _ = await _load([{"name": "calculator", "tools": [{"name": "add"}]}])

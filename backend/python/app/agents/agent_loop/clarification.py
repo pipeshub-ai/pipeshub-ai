@@ -38,6 +38,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.utils.logging_fields import log_event
+
 if TYPE_CHECKING:
     from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
     from app.agents.agent_loop.context import AgentContext
@@ -81,10 +83,7 @@ async def emit_pre_run_clarification(
     clarifying_text = questions[0].question if questions else user_intent
     completion_data = await _emit_text_answer(context, clarifying_text, "Clarification Needed", event_sink=event_sink)
     context.tool_state["ask_user_question_emitted"] = True
-    logger.info(
-        "Pre-run clarification: asked %d question(s) instead of running the agent (org_id=%s conversation_id=%s)",
-        len(questions), context.org_id, context.conversation_id,
-    )
+    log_event(logger, "clarification.asked", questions=len(questions))
     return completion_data
 
 
@@ -97,10 +96,7 @@ _ALREADY_ANSWERED = (
 async def emit_already_answered(context: "AgentContext", *, event_sink: "EventSink") -> dict[str, Any]:
     """Ends a turn whose answers are for a card that already got its reply, without running the
     agent: running it again would repeat that reply's work (a second ticket, a second message)."""
-    logger.info(
-        "Question card already answered; not running it again (org_id=%s conversation_id=%s)",
-        context.org_id, context.conversation_id,
-    )
+    log_event(logger, "clarification.already_answered")
     return await _emit_text_answer(context, _ALREADY_ANSWERED, "Already Answered", event_sink=event_sink)
 
 

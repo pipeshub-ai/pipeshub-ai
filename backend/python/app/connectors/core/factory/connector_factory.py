@@ -31,6 +31,7 @@ from app.connectors.core.sync.sync_runner import record_failed_start, run_sync_t
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.utils import error_class
 from app.utils.logging_fields import log_fields
+from app.connectors.sources.local_repo.connector import LocalRepoConnector
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -145,6 +146,7 @@ class ConnectorFactory:
         "demo": DemoConnector,
         "bookstack": BookStackConnector,
         "drupalwiki": DrupalWikiConnector,
+        "localrepository": LocalRepoConnector,
         "github": GithubConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,
@@ -387,7 +389,7 @@ class ConnectorFactory:
         sync_trigger: str | None = None,
         **kwargs,
     ) -> BaseConnector | None:
-        """Create and initialize a connector.
+        """Create and initialize a connector: None when init() returns False; what init() raised, re-raised.
 
         ``sync_trigger`` is set when the connector is being built to run a sync;
         an init failure is then recorded as that sync failing, with its reason.
@@ -420,17 +422,13 @@ class ConnectorFactory:
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:
-                logger.error(
-                    f"Failed to initialize {name} {connector_id} connector: {str(e)}",
-                    exc_info=True,
-                )
                 await connector.on_background_init_failed(e)
                 if sync_trigger is not None:
                     await record_failed_start(
                         data_store_provider.graph_provider, logger, connector_id, e, trigger=sync_trigger
                     )
                 await cls._dispose_failed(connector, name, connector_id, logger)
-                return None
+                raise
 
         return None
 

@@ -279,8 +279,17 @@ async def _create_kb(provider: Neo4jProvider) -> None:
         raise RuntimeError(result.get("reason"))
 
 
+def _no_claim_yet(provider: Neo4jProvider) -> None:
+    """The user's claim on their default is its own statements on the user node, before and after the create; they
+    are outside what these tests count (the create's transaction). This server answers every statement with no rows,
+    which a claim that took would not."""
+    provider.get_document = AsyncMock(return_value={"id": "uk1"})
+    provider.update_node_fields_if_match = AsyncMock(return_value=True)
+
+
 async def _create_default_kb(provider: Neo4jProvider) -> None:
     provider.get_nodes_by_filters = AsyncMock(return_value=[])
+    _no_claim_yet(provider)
     service = EntityEventService(MagicMock(), provider, MagicMock())
     with patch(
         "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
@@ -291,6 +300,7 @@ async def _create_default_kb(provider: Neo4jProvider) -> None:
 
 async def _repair_default_kb(provider: Neo4jProvider) -> None:
     provider.get_nodes_by_filters = AsyncMock(return_value=[{"id": "kb-1", "isDeleted": False}])
+    _no_claim_yet(provider)
     await EntityEventService(MagicMock(), provider, MagicMock())._get_or_create_knowledge_base(
         "uk1", "user-1", "org-1",
     )

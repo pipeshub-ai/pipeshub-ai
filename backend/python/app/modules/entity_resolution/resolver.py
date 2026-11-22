@@ -54,6 +54,7 @@ from app.modules.entity_resolution.organizations import usable_organization_name
 from app.modules.entity_resolution.prompt import build_prompt, candidate_handles
 from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS, MERGED_INTO_FIELD
 from app.telemetry.modules import entity_resolution_metrics as metrics
+from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -646,7 +647,7 @@ class EntityResolver:
 
     async def _load_llm(self, org_id: str) -> BaseChatModel:
         llm, _ = await get_llm_for_role(
-            self.config_service, LLM_ROLE, reasoning_effort="low",
+            self.config_service, LLM_ROLE, reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
         )
         return llm
 

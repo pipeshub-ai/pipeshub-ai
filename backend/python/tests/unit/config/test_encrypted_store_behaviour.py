@@ -10,6 +10,7 @@ import asyncio
 import fnmatch
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator, Iterator
 from unittest.mock import patch
 
@@ -228,6 +229,7 @@ class FakeEtcdClient:
         return [(b"" if keys_only else value, _Meta(key)) for key, value in self.data.items() if key.startswith(prefix)]
 
     def add_watch_callback(self, key: str, callback) -> int:
+        self.check()
         self._next_watch_id += 1
         self.watches[self._next_watch_id] = (key, callback)
         return self._next_watch_id
@@ -689,3 +691,102 @@ class TestEtcdLogin:
         kwargs = client_factory.call_args.kwargs
         assert kwargs["user"] == "pipeshub"
         assert kwargs["password"] == "etcd-throwaway-test-password"
+
+
+class TestAFailureIsLoggedOnce:
+    """etcd down: the backend store and this wrapper raise a failure they do not
+    handle, and the layer that handles it logs it once. Over etcd only: the Redis
+    store's own lines are F39's (#5649)."""
+
+    @pytest.fixture(params=["down at start", "down after connecting"])
+    async def down(self, request, etcd_harness) -> Harness:
+        if request.param == "down after connecting":
+            await etcd_harness.store.get_key("/any")
+        etcd_harness.set_down(True)
+        return etcd_harness
+
+    @staticmethod
+    def _warnings_or_worse(caplog) -> list[logging.LogRecord]:
+        # This thread's only: a watch thread another test on this worker left behind may log late.
+        return [r for r in caplog.records if r.levelno >= logging.WARNING and r.thread == threading.get_ident()]
+
+    def _logged(self, caplog) -> list[str]:
+        return [f"{r.levelname} {r.getMessage()}" for r in self._warnings_or_worse(caplog)]
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda s: s.create_key("/k", {"v": 1}),
+            lambda s: s.create_key("/k", {"v": 1}, overwrite=False),
+            lambda s: s.update_value("/k", {"v": 1}),
+            lambda s: s.get_key("/k", raise_on_error=True),
+            lambda s: s.list_keys_in_directory("/services/"),
+            lambda s: s.list_keys_in_directory("/services"),
+            lambda s: s.get_all_keys(),
+            lambda s: s.watch_key("/k", lambda _value: None),
+        ],
+        ids=["create", "create-if-absent", "update", "get-raise", "list-dir", "list-prefix", "all-keys", "watch"],
+    )
+    async def test_a_failure_the_wrapper_raises_is_not_logged(self, down, caplog, call) -> None:
+        with pytest.raises(ConnectionError, match="etcd down") as raised:
+            await call(down.store)
+
+        assert raised.value.__cause__ is not None
+        assert self._logged(caplog) == []
+
+    async def test_a_failed_read_the_wrapper_swallows_is_logged_once(self, down, caplog) -> None:
+        assert await down.store.get_key("/k") is None
+
+        assert self._logged(caplog) == ["ERROR Failed to get config /k: ConnectionError"]
+
+    # Decryption is patched: EncryptionService logs its own failure, which is not this wrapper's line.
+    async def test_an_unreadable_value_raised_on_request_is_not_logged(self, etcd_harness, caplog) -> None:
+        await etcd_harness.store.create_key("/k", {"v": 1})
+
+        with patch.object(etcd_harness.store.encryption_service, "decrypt", side_effect=DecryptionError("bad")):
+            with pytest.raises(DecryptionError):
+                await etcd_harness.store.get_key("/k", raise_on_error=True)
+
+        assert self._logged(caplog) == []
+
+    async def test_an_unreadable_value_swallowed_is_logged_once(self, etcd_harness, caplog) -> None:
+        await etcd_harness.store.create_key("/k", {"v": 1})
+
+        with patch.object(etcd_harness.store.encryption_service, "decrypt", side_effect=DecryptionError("bad")):
+            assert await etcd_harness.store.get_key("/k") is None
+
+        assert self._logged(caplog) == ["ERROR Failed to process value for key /k: DecryptionError"]
+
+    @staticmethod
+    def _service(store: EncryptedKeyValueStore) -> ConfigurationService:
+        from tests.unit.config.test_configuration_service import _build_service
+
+        return _build_service(store=store)
+
+    async def test_get_config_logs_one_error(self, down, caplog) -> None:
+        assert await self._service(down.store).get_config("/k", default="d") == "d"
+
+        assert self._logged(caplog) == ["ERROR Failed to get config /k: ConnectionError"]
+
+    async def test_get_config_raising_on_request_logs_one_error(self, down, caplog) -> None:
+        with pytest.raises(ConnectionError):
+            await self._service(down.store).get_config("/k", raise_on_error=True)
+
+        assert len(self._logged(caplog)) == 1
+
+    async def test_set_config_logs_one_classified_error_with_its_stack(self, down, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await self._service(down.store).set_config("/k", {"v": 1}) is False
+
+        errors = self._warnings_or_worse(caplog)
+        assert [r.getMessage() for r in errors] == ["config.set.failed"]
+        assert errors[0].config_path == "/k"
+        assert errors[0].error_class == "unavailable"
+        assert errors[0].exc_info is not None
+
+    async def test_create_config_if_absent_raises_for_its_caller_to_log(self, down, caplog) -> None:
+        with pytest.raises(ConnectionError):
+            await self._service(down.store).create_config_if_absent("/k", {"v": 1})
+
+        assert self._logged(caplog) == []

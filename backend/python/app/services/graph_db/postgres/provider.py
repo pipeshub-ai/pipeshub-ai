@@ -27,6 +27,8 @@ from app.services.graph_db.postgres.identity import IdentityMixin
 from app.services.graph_db.postgres.kb import KbMixin
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
 from app.services.graph_db.postgres.kg.guard import instrument_writers
+from app.services.graph_db.postgres.kh_browse import KhBrowseMixin
+from app.services.graph_db.postgres.kh_listing import KhListingMixin
 from app.services.graph_db.postgres.legacy_migrations import LegacyMigrationMixin
 from app.services.graph_db.postgres.lookups import LookupsMixin
 from app.services.graph_db.postgres.organizations import OrganizationsMixin
@@ -42,14 +44,15 @@ if TYPE_CHECKING:
 
 __all__ = ["NotImplementedInPostgres", "PostgresGraphProvider", "unimplemented"]
 
-_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, PeopleMixin, OrganizationsMixin, IdentityMixin, PermissionsMixin, KbMixin, KbListingsMixin, SyncStateMixin, EntityMixin, EntityReadsMixin, EntityAccessMixin, TaxonomyMixin, LegacyMigrationMixin, CoreMixin)
+_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, PeopleMixin, OrganizationsMixin, IdentityMixin, PermissionsMixin, KbMixin, KbListingsMixin, KhBrowseMixin, KhListingMixin, SyncStateMixin, EntityMixin, EntityReadsMixin, EntityAccessMixin, TaxonomyMixin, LegacyMigrationMixin, CoreMixin)
 for _m in _MIXINS:
     instrument_org_methods(_m)  # the interface does it for methods a subclass defines itself, not for inherited ones
     instrument_writers(_m)  # the kg registry's guard names the provider method that writes the graph
 
 
 class PostgresGraphProvider(*_MIXINS, PgBase, IGraphDBProvider):
-    pass
+    ENTITY_INDEX_PAGE_ORDER = "c"      # records page in byte order (the vetted connector page), not the database's default collation
+    kh_skip_rows = 1000      # a connector page's cost is its fixed part (state, access classes) more than its rows: read the rows before a numbered page in few reads
 
 
 _STUBBED: set[str] = set()

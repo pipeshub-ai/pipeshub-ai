@@ -121,7 +121,7 @@ async def _visible(provider) -> set[str]:
         app_id=APP, org_id=ORG,
         grantee_ids=access["grantee_ids"],
         gated_app_ids=access["gated_app_ids"],
-        granted_ids=access["by_connector"].get(APP) or [],
+        grants_by_connector=access["by_connector"],
         limit=500, flatten=True, sort_field="name", sort_dir="ASC",
         include_total=True,
     )

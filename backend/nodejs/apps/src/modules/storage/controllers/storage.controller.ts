@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Mutex } from 'async-mutex';
 import { inject, injectable } from 'inversify';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
@@ -15,6 +16,9 @@ import {
   ARTIFACT_URL_TTL_SECONDS,
   ARTIFACT_RETIRING_STALE_MS,
   ARTIFACT_RETIRING_HEARTBEAT_MS,
+  PAID_RESULT_URL_TTL_SECONDS,
+  PAID_RESULT_LIST_PAGE,
+  PAID_RESULT_PURGE_BATCH_MAX,
 } from '../constants/constants';
 import {
   AzureBlobStorageConfig,
@@ -22,6 +26,7 @@ import {
   S3StorageConfig,
 } from '../config/storage.config';
 import { Logger } from '../../../libs/services/logger.service';
+import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
 import { ConfigurationManagerServiceCommand } from '../../../libs/commands/configuration_manager/cm.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -70,6 +75,13 @@ import {
   serveFileFromLocalStorage,
   writeToStorage,
 } from '../utils/utils';
+import {
+  paidResultsOrgRoot,
+  RECORD_ID,
+  isPaidResultManifestPath,
+  isPaidResultObjectPath,
+  paidResultsRecordRoot,
+} from '../utils/paid-results';
 import { UploadDocumentService } from './storage.upload.service';
 import { withWriteWindow } from './storage.write-window';
 import { readDocumentWithFingerprint } from './storage.fingerprint';
@@ -172,8 +184,10 @@ function tagOf(doc: ScopedDocument, key: string): unknown {
 const flatRecordPath = (orgId: string, virtualRecordId: string): string =>
   getFullDocumentPath(orgId, `records/${virtualRecordId}`);
 
-// Rebuilt from the revision's ids rather than read from the stored root, so a
-// damaged row can never point a tree delete anywhere else.
+// Rebuilt from the set's ids rather than read from the stored root, so a
+// damaged row can never point a tree delete anywhere else. `rev` is the set's
+// key, so a stored write's own set rebuilds to its own root here and in code
+// built before writes had their own sets.
 function artifactSetRootOf(document: {
   orgId: unknown;
   artifactSet?: { virtualRecordId: string; rev: string };
@@ -183,6 +197,10 @@ function artifactSetRootOf(document: {
     ? getArtifactSetRoot(String(document.orgId), set.virtualRecordId, set.rev)
     : null;
 }
+
+/** A set's key (`artifactSet.rev`): the revision, or `{rev}-{writeId}` for a stored write's own set. */
+const artifactSetKey = (rev: string, writeId: string | undefined): string =>
+  writeId === undefined ? rev : `${rev}-${writeId}`;
 
 function virtualRecordIdOf(
   orgId: string,
@@ -204,6 +222,18 @@ function virtualRecordIdOf(
 // TODO: Remove these globals
 let storageConfig:
   AzureBlobStorageConfig | LocalStorageConfig | S3StorageConfig | null = null;
+
+/**
+ * How far past this service's clock a purge cutoff may lie before it is refused. The cutoff is the object store's clock,
+ * which may differ from this host's, so the bound is one only a bug would exceed; a cutoff past the warning mark is
+ * accepted and logged.
+ */
+const PURGE_CUTOFF_FUTURE_LIMIT_MS = 15 * 60_000;
+const PURGE_CUTOFF_FUTURE_WARN_MS = 60_000;
+/** The record folder's sentinel area: listings leave it out and the purge that follows it removes it with the folder. */
+const PURGE_CUTOFF_FOLDER = 'purge-cutoff';
+/** Folder deletes in flight at once within one batch purge. */
+const PAID_RESULT_PURGE_BATCH_CONCURRENCY = 8;
 
 @injectable()
 export class StorageController {
@@ -845,9 +875,10 @@ export class StorageController {
     try {
       const orgId = extractOrgId(req);
       this.assertBodyOrgMatchesToken(req, orgId);
-      const { virtualRecordId, rev, files } = req.body as {
+      const { virtualRecordId, rev, writeId, files } = req.body as {
         virtualRecordId: string;
         rev: string;
+        writeId?: string;
         files: ArtifactFileRequest[];
       };
       const storageType = await this.getConfiguredStorageType(req);
@@ -862,6 +893,7 @@ export class StorageController {
         orgId,
         virtualRecordId,
         rev,
+        writeId,
         getStorageVendor(storageType),
       );
       if (document.isDeleted) {
@@ -881,6 +913,7 @@ export class StorageController {
         documentId: String(document._id),
         virtualRecordId,
         rev,
+        ...(writeId !== undefined && { writeId }),
         root: artifactSetRootOf(document),
         expiresInSeconds: ARTIFACT_URL_TTL_SECONDS,
         files: urls,
@@ -1031,6 +1064,7 @@ export class StorageController {
       }
     });
     stream.pipe(res);
+    releaseOnClientClose(res, stream);
   }
 
   /**
@@ -1143,7 +1177,11 @@ export class StorageController {
         revisions: documents.map((d) => ({
           documentId: d._id,
           virtualRecordId,
-          rev: d.artifactSet?.rev,
+          // The content revision, never a write's key: retention groups sets by it.
+          rev: d.artifactSet?.contentRev ?? d.artifactSet?.rev,
+          ...(d.artifactSet?.writeId !== undefined && {
+            writeId: d.artifactSet.writeId,
+          }),
           storageVendor: d.storageVendor,
           createdAt: d.createdAt,
           updatedAt: d.updatedAt,
@@ -1155,6 +1193,467 @@ export class StorageController {
           }),
         })),
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Paid-result cache. Every key is built from the storage token's org and a
+  // validated record id; no request field names another org's folder.
+
+  async presignPaidResults(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      this.assertBodyOrgMatchesToken(req, orgId);
+      const { recordId, files } = req.body as {
+        recordId: string;
+        files: {
+          path: string;
+          mode: 'put' | 'get' | 'replace' | 'refresh';
+        }[];
+      };
+      const root = paidResultsRecordRoot(orgId, recordId);
+      const storageType = await this.getConfiguredStorageType(req);
+      if (!isValidStorageVendor(storageType)) {
+        throw new BadRequestError(`Invalid storage type: ${storageType}`);
+      }
+      const adapter = await this.remoteArtifactAdapter(req, storageType);
+      const signed = await Promise.all(
+        files.map(async ({ path: filePath, mode }) => {
+          const method = mode === 'get' ? 'GET' : 'PUT';
+          if (adapter === null) {
+            const storageEndpoint = await storedServiceEndpoint(
+              this.keyValueStoreService,
+              'storage',
+              this.config.endpoint,
+            );
+            return {
+              path: filePath,
+              mode,
+              method,
+              url: `${storageEndpoint}/api/v1/document/internal/paid-results/${recordId}/files/${filePath}${mode === 'replace' ? '?replace=1' : mode === 'refresh' ? '?refresh=1' : ''}`,
+              headers: {
+                Authorization:
+                  req.verifiedToken !== undefined
+                    ? `Bearer ${req.verifiedToken}`
+                    : (req.headers.authorization ?? ''),
+                ...(mode !== 'get' && {
+                  'Content-Type': 'application/octet-stream',
+                }),
+              },
+            };
+          }
+          return {
+            path: filePath,
+            mode,
+            method,
+            ...(await adapter.signObjectUrl(`${root}/${filePath}`, {
+              method,
+              contentType: mode === 'get' ? undefined : 'application/json',
+              expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
+              ifAbsent: mode === 'put',
+            })),
+          };
+        }),
+      );
+      res.status(HTTP_STATUS.OK).json({
+        recordId,
+        expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
+        files: signed,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Local storage's stand-in for a signed conditional PUT: the first writer wins. */
+  async putPaidResultFile(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const body: unknown = req.body;
+      if (!Buffer.isBuffer(body)) {
+        throw new BadRequestError(
+          'Send the file as the request body with Content-Type application/octet-stream',
+        );
+      }
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const pathParam: unknown = req.params[0];
+      if (typeof pathParam !== 'string' || pathParam === '') {
+        throw new BadRequestError('path must be a single value');
+      }
+      const adapter = await this.localArtifactAdapter(req);
+      const filePath = pathParam;
+      const storageKey = `${paidResultsRecordRoot(orgId, recordParam)}/${filePath}`;
+      let written = true;
+      const replace = req.query.replace === '1';
+      const refresh = req.query.refresh === '1';
+      // The same rule the signed modes have: `replace` rewrites a manifest, `refresh` one result object.
+      if (
+        (replace && refresh) ||
+        (replace && !isPaidResultManifestPath(filePath)) ||
+        (refresh && !isPaidResultObjectPath(filePath))
+      ) {
+        throw new BadRequestError('This mode does not apply to this path');
+      }
+      try {
+        if (replace || refresh) {
+          await adapter.writeObject(storageKey, body);
+        } else {
+          written = await adapter.writeObjectIfAbsent(storageKey, body);
+        }
+      } catch (error) {
+        this.logger.error('Could not write a paid result', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+      }
+      if (!written) {
+        // Answered here, not thrown: losing the race is the normal outcome, not a request error to log.
+        res.status(412).json({ error: 'A result is already stored here' });
+        return;
+      }
+      res
+        .status(HTTP_STATUS.OK)
+        .json({ path: filePath, size: body.byteLength });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Local storage's stand-in for a signed GET. */
+  async getPaidResultFile(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const pathParam: unknown = req.params[0];
+      if (typeof pathParam !== 'string' || pathParam === '') {
+        throw new BadRequestError('path must be a single value');
+      }
+      const adapter = await this.localArtifactAdapter(req);
+      const filePath = pathParam;
+      const opened = await adapter.openObject(
+        `${paidResultsRecordRoot(orgId, recordParam)}/${filePath}`,
+      );
+      if (opened === null) {
+        // A miss is the cache's normal path: answered here, not thrown, so it is not logged as a failed request.
+        res.status(HTTP_STATUS.NOT_FOUND).json({ error: 'File not found' });
+        return;
+      }
+      this.sendOpenedFile(req, res, next, opened, filePath);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async listPaidResults(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const claimed = (req.query as { orgId?: unknown }).orgId;
+      if (claimed !== undefined && claimed !== orgId) {
+        throw new ForbiddenError(
+          'The organization in the request does not match the storage token',
+        );
+      }
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const prefixQuery: unknown = req.query.prefix;
+      const afterQuery: unknown = req.query.after;
+      if (
+        (prefixQuery !== undefined && typeof prefixQuery !== 'string') ||
+        (afterQuery !== undefined && typeof afterQuery !== 'string')
+      ) {
+        throw new BadRequestError('prefix and after must be single values');
+      }
+      const prefix = prefixQuery;
+      const after = afterQuery;
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      const adapter = await this.initializeStorageAdapter(req);
+      const page = await adapter.listObjects(`${root}/${prefix ?? ''}`, {
+        after,
+        limit: PAID_RESULT_LIST_PAGE,
+      });
+      res.status(HTTP_STATUS.OK).json({
+        objects: page.objects
+          // A purge-cutoff sentinel is the store's clock reading, never a result.
+          .filter(
+            (o) =>
+              o.key.startsWith(`${root}/`) &&
+              !o.key.startsWith(`${root}/${PURGE_CUTOFF_FOLDER}/`),
+          )
+          .map((o) => ({
+            path: o.key.slice(root.length + 1),
+            size: o.size,
+            lastModifiedMs: o.lastModifiedMs,
+          })),
+        ...(page.next !== undefined && { next: page.next }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async deletePaidResults(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      this.assertBodyOrgMatchesToken(req, orgId);
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const { paths } = req.body as { paths: string[] };
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      const adapter = await this.initializeStorageAdapter(req);
+      await adapter.deleteObjects(paths.map((p) => `${root}/${p}`));
+      res.status(HTTP_STATUS.OK).json({ deleted: paths.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Removes everything the cache holds for the record. Safe to repeat: nothing there is a success. */
+  async purgePaidResultsOfRecord(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      // The validator has coerced it to a positive integer; anything else (an array, a non-number) is refused here too.
+      const beforeQuery: unknown = req.query.before;
+      if (
+        beforeQuery !== undefined &&
+        typeof beforeQuery !== 'string' &&
+        typeof beforeQuery !== 'number'
+      ) {
+        throw new BadRequestError('before must be a single value');
+      }
+      const adapter = await this.initializeStorageAdapter(req);
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      // The cutoff is an instant the store's own clock returned (`purge-cutoff`): one in the future is not one.
+      if (beforeQuery !== undefined) {
+        const aheadMs = Number(beforeQuery) - Date.now();
+        if (aheadMs > PURGE_CUTOFF_FUTURE_LIMIT_MS) {
+          throw new BadRequestError('before is in the future');
+        }
+        if (aheadMs > PURGE_CUTOFF_FUTURE_WARN_MS) {
+          this.logger.warn(
+            'Paid-result purge cutoff is ahead of this service clock',
+            { aheadMs },
+          );
+        }
+      }
+      if (beforeQuery === undefined) {
+        await adapter.deleteTree(root);
+      } else {
+        // A purge that started at this instant removes only what existed then: a late DELETE (its caller lost its
+        // lease and a newer one has stored results since) leaves the newer objects alone.
+        await this.deletePaidResultsOlderThan(
+          adapter,
+          root,
+          Number(beforeQuery),
+        );
+      }
+      res.status(HTTP_STATUS.OK).json({ purged: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Removes the folders of up to `PAID_RESULT_PURGE_BATCH_MAX` records in one request (the same removal as the
+   * per-record DELETE without `before`, which is what a re-purge hop does). Each id gets its own result: one folder
+   * that cannot be removed never hides the others, and the caller repeats just the failed ones. Safe to repeat.
+   */
+  async purgePaidResultsBatch(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const body = req.body as { recordIds?: unknown };
+      const ids = body.recordIds;
+      // The validator has run; this refuses anything it did not (fail closed, and the bound holds on its own).
+      if (
+        !Array.isArray(ids) ||
+        ids.length === 0 ||
+        ids.length > PAID_RESULT_PURGE_BATCH_MAX ||
+        !ids.every(
+          (id) => typeof id === 'string' && RECORD_ID.test(id) && id !== 'org',
+        )
+      ) {
+        throw new BadRequestError('recordIds must be 1 to 100 record ids');
+      }
+      const recordIds = ids as string[];
+      const adapter = await this.initializeStorageAdapter(req);
+      const results: Array<{
+        recordId: string;
+        purged: boolean;
+        error?: string;
+      }> = [];
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const i = cursor++;
+          if (i >= recordIds.length) return;
+          const recordId = recordIds[i] as string;
+          try {
+            await adapter.deleteTree(paidResultsRecordRoot(orgId, recordId));
+            results[i] = { recordId, purged: true };
+          } catch (error) {
+            // The detail stays in the log: a store error can carry a path or a credential hint.
+            this.logger.error('Could not purge a paid-result folder', {
+              recordId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            results[i] = { recordId, purged: false, error: 'purge failed' };
+          }
+        }
+      };
+      await Promise.all(
+        Array.from(
+          {
+            length: Math.min(
+              PAID_RESULT_PURGE_BATCH_CONCURRENCY,
+              recordIds.length,
+            ),
+          },
+          worker,
+        ),
+      );
+      res.status(HTTP_STATUS.OK).json({ results });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Removes the objects under `root` last written before `before` (ms). Object versions are not read: a store's
+   * write time is its own clock (whole seconds on S3 and Azure), so the caller passes an instant a margin earlier
+   * than its purge started. An object overwritten between the listing and the delete is the one gap (a conditional
+   * delete on the listed etag would close it, which the storage adapters do not offer yet).
+   */
+  private async deletePaidResultsOlderThan(
+    adapter: StorageServiceAdapter,
+    root: string,
+    before: number,
+  ): Promise<void> {
+    let after: string | undefined;
+    for (;;) {
+      const page = await adapter.listObjects(`${root}/`, {
+        after,
+        limit: PAID_RESULT_LIST_PAGE,
+      });
+      const doomed = page.objects
+        .filter(
+          (o) => o.key.startsWith(`${root}/`) && o.lastModifiedMs < before,
+        )
+        .map((o) => o.key);
+      if (doomed.length > 0) {
+        await adapter.deleteObjects(doomed);
+      }
+      if (page.next === undefined) return;
+      after = page.next;
+    }
+  }
+
+  /**
+   * The store's current time, as a cutoff for a purge that follows: a sentinel object is written to the record's folder
+   * and its last-modified stamp (the object store's own clock, the one every stored result carries) is read back, so no
+   * clock of the caller or of this service decides which objects a purge may remove. The sentinel is deleted again.
+   */
+  async paidResultsPurgeCutoff(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const adapter = await this.initializeStorageAdapter(req);
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      // A folder of its own, so the lookup never depends on how many other sentinels a crash left beside it.
+      const folder = `${root}/${PURGE_CUTOFF_FOLDER}/${randomUUID()}/`;
+      const key = `${folder}stamp.json`;
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from('{}'),
+        documentPath: key,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
+      let cutoff: number;
+      try {
+        const page = await adapter.listObjects(folder, {
+          limit: PAID_RESULT_LIST_PAGE,
+        });
+        const written = page.objects.find((o) => o.key === key);
+        // A stamp that is not a positive number (an S3 object listed without LastModified reads as 0) is no stamp.
+        if (written === undefined || !(written.lastModifiedMs > 0)) {
+          throw new ServiceUnavailableError(
+            'The store did not stamp the cutoff',
+          );
+        }
+        cutoff = written.lastModifiedMs;
+      } finally {
+        await adapter.deleteObjects([key]).catch(() => undefined);
+      }
+      res.status(HTTP_STATUS.OK).json({ cutoff });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Removes everything the cache holds for the token's org. */
+  async purgePaidResultsOfOrg(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const adapter = await this.initializeStorageAdapter(req);
+      await adapter.deleteTree(paidResultsOrgRoot(orgId));
+      res.status(HTTP_STATUS.OK).json({ purged: true });
     } catch (error) {
       next(error);
     }
@@ -1216,15 +1715,20 @@ export class StorageController {
     orgId: string,
     virtualRecordId: string,
     rev: string,
+    writeId: string | undefined,
     storageVendor: StorageVendor,
   ): Promise<Document> {
     const userId = extractUserId(req);
-    // A rev is a hash of the source bytes, so a record whose source went back to earlier bytes
-    // writes an old revision again; the write stamp the repository moves is how a delete that
-    // listed the revision earlier sees that write.
+    // One set per stored write of the revision (`writeId`), so no write can overwrite another's
+    // files; without one, the revision's one shared set. A write's set is keyed `{rev}-{writeId}` in
+    // the existing unique index on (org, vrid, rev): a rev is hex only, so code that keys a set by
+    // revision alone never matches a write's set, and the index needs no change. A sidecar written
+    // later for the same write lands in the same set, and the write stamp the repository moves is
+    // how a delete that listed the set earlier sees that write.
+    const key = artifactSetKey(rev, writeId);
     return getDocumentRepository().createArtifactSetOnce(
       {
-        documentName: `revision_${rev}`,
+        documentName: `revision_${key}`,
         documentPath: getArtifactSetFolder(orgId, virtualRecordId),
         orgId: requireId(orgId, 'organization'),
         isVersionedFile: false,
@@ -1233,8 +1737,9 @@ export class StorageController {
         extension: '',
         artifactSet: {
           virtualRecordId,
-          rev,
-          root: getArtifactSetRoot(orgId, virtualRecordId, rev),
+          rev: key,
+          ...(writeId !== undefined && { contentRev: rev, writeId }),
+          root: getArtifactSetRoot(orgId, virtualRecordId, key),
         },
       },
       { now: Date.now(), staleMs: ARTIFACT_RETIRING_STALE_MS },
@@ -2154,7 +2659,14 @@ export class StorageController {
         // Local files are bound to the identity the caller verified (`ifMatch`): S3 and Azure callers send `If-Match` themselves.
         const ifMatch =
           typeof req.query.ifMatch === 'string' ? req.query.ifMatch : undefined;
-        serveFileFromLocalStorage(document, res, resolvedVersion, ifMatch);
+        const range = req.headers.range;
+        serveFileFromLocalStorage(
+          document,
+          res,
+          resolvedVersion,
+          ifMatch,
+          typeof range === 'string' ? range : undefined,
+        );
       } else {
         res.status(200).json({ signedUrl: signedUrlResult.data });
       }

@@ -1,15 +1,15 @@
 """Unit tests for app.modules.transformers.sink_orchestrator.SinkOrchestrator."""
 
 import logging
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
 from app.exceptions.indexing_exceptions import RecordDeletedError
+from app.models.entities import EntityRecord, EntityType
 from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.models.entities import EntityRecord, EntityType
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -223,6 +223,58 @@ class TestSkipBlob:
 
         orch.blob_storage.apply.assert_not_awaited()
         orch.vector_store.apply.assert_awaited_once_with(ctx)
+
+    @pytest.mark.asyncio
+    async def test_a_vector_only_reindex_saves_the_stored_metadata_the_vector_store_updated(self) -> None:
+        """No diff and no blob write, but the points are all written again: the stored reconciliation metadata goes through the apply
+        (which records which blocks got a point) and is saved, so the recorded set follows an embedding-model change."""
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"}, vector_result=True)
+        ctx = _make_ctx()
+        ctx.settings = {"skip_blob": True}
+        ctx.reconciliation_context = None
+        ctx.record.virtual_record_id, ctx.record.org_id = "vr-1", "org-1"
+        orch.blob_storage.get_reconciliation_metadata = AsyncMock(return_value={"hashes": {"b": "h"}, "pointedBlocks": ["old"]})
+
+        async def apply(c: object) -> bool:
+            c.reconciliation_context.new_metadata["pointedBlocks"] = ["new"]
+            return True
+
+        orch.vector_store.apply = AsyncMock(side_effect=apply)
+        await orch.index(ctx)
+        saved = orch.blob_storage.save_reconciliation_metadata.await_args.args[3]
+        assert saved == {"hashes": {"b": "h"}, "pointedBlocks": ["new"]}
+
+    @pytest.mark.asyncio
+    async def test_a_vector_only_reindex_whose_stored_metadata_cannot_be_read_fails_the_record(self) -> None:
+        """An unreadable document is not an absent one: the old recorded set could name a block the reindex gives no point, so the
+        record fails and is retried (and nothing is embedded or saved)."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.modules.transformers.blob_storage import (
+            ReconciliationMetadataUnavailable,
+        )
+
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"}, vector_result=True)
+        ctx = _make_ctx()
+        ctx.settings = {"skip_blob": True}
+        ctx.reconciliation_context = None
+        ctx.record.virtual_record_id, ctx.record.org_id = "vr-1", "org-1"
+        orch.blob_storage.get_reconciliation_metadata = AsyncMock(side_effect=ReconciliationMetadataUnavailable("down"))
+        with pytest.raises(IndexingError):
+            await orch.index(ctx)
+        orch.vector_store.apply.assert_not_awaited()
+        orch.blob_storage.save_reconciliation_metadata.assert_not_awaited()
+        assert orch.blob_storage.get_reconciliation_metadata.await_args.kwargs == {"raise_on_error": True}
+
+    @pytest.mark.asyncio
+    async def test_a_vector_only_reindex_never_creates_the_metadata_document(self) -> None:
+        """It has no storage path: the save updates the document in place and creates none at a guessed path."""
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"}, vector_result=True)
+        ctx = _make_ctx()
+        ctx.settings = {"skip_blob": True}
+        ctx.reconciliation_context = MagicMock(new_metadata={"hashes": {}})
+        ctx.record.virtual_record_id, ctx.record.org_id = "vr-1", "org-1"
+        await orch.index(ctx)
+        assert orch.blob_storage.save_reconciliation_metadata.await_args.kwargs["create_if_missing"] is False
 
 
 # =========================================================================
@@ -794,6 +846,112 @@ class TestIndexedWriteWhenEnrichmentFollows:
 
         (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
         assert row["isVLMOcrProcessed"] is True
+
+
+class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
+    """The delivery that completes the record is remembered once every write of the run is done, as a call of
+    its own and best effort, with the lastIndexTimestamp the COMPLETED write gave the record."""
+
+    @pytest.fixture(autouse=True)
+    def _no_delivery_left_bound(self) -> Iterator[None]:
+        from app.modules.indexing import replay_set
+
+        replay_set.end_delivery()
+        yield
+        replay_set.end_delivery()
+
+    @staticmethod
+    def _bind(remember) -> None:
+        from app.modules.indexing import replay_set
+
+        replay_set.begin_delivery(
+            replay_set.DeliveryRef(event_id="evt-1", delivery_id="t-0-1", flags="", remember=remember)
+        )
+
+    @staticmethod
+    def _orchestrator(order: list[str]) -> SinkOrchestrator:
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "IN_PROGRESS"}, vector_result=True)
+        orch.graph_provider.batch_update_nodes = AsyncMock(side_effect=lambda *a, **k: order.append("completed") or True)
+        orch._save_reconciliation_metadata = AsyncMock(side_effect=lambda *a, **k: order.append("metadata"))
+        orch._sync_record_identity_entities = AsyncMock(side_effect=lambda *a, **k: order.append("identity"))
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_the_entry_is_written_after_every_write_of_the_run(self) -> None:
+        order: list[str] = []
+        remembered: list[tuple[str, int]] = []
+        orch = self._orchestrator(order)
+
+        async def remember(record_id: str, completed_at_ms: int) -> None:
+            order.append("remember")
+            remembered.append((record_id, completed_at_ms))
+
+        self._bind(remember)
+        await orch.index(_make_ctx("rec-7"))
+
+        # The record's own entity points go first (a handed-back write leaves the record retryable); the entry is last.
+        assert order == ["identity", "completed", "metadata", "remember"]
+        written = orch.graph_provider.batch_update_nodes.await_args.args[0][0]
+        assert remembered == [("rec-7", written["lastIndexTimestamp"])]
+        assert "lastDelivery" not in str(orch.graph_provider.batch_update_nodes.await_args)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_metadata_save_leaves_no_entry(self) -> None:
+        # The redelivery must run again and redo the save, not be acknowledged as a replay.
+        order: list[str] = []
+        orch = self._orchestrator(order)
+        orch._save_reconciliation_metadata = AsyncMock(side_effect=RuntimeError("blob store down"))
+        remembered: list[str] = []
+
+        async def remember(record_id: str, completed_at_ms: int) -> None:
+            remembered.append(record_id)
+
+        self._bind(remember)
+        with pytest.raises(RuntimeError):
+            await orch.index(_make_ctx("rec-7"))
+
+        assert order == ["identity", "completed"]
+        assert remembered == []
+
+    @pytest.mark.asyncio
+    async def test_a_failing_write_does_not_fail_the_run(self) -> None:
+        orch = self._orchestrator([])
+
+        async def broken(record_id: str, completed_at_ms: int) -> None:
+            raise ConnectionError("redis down")
+
+        self._bind(broken)
+        await orch.index(_make_ctx("rec-8"))
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_no_longer_exists_is_not_remembered(self) -> None:
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "IN_PROGRESS"}, vector_result=True)
+        orch.graph_provider.batch_update_nodes = AsyncMock(return_value=False)
+        remembered: list[str] = []
+
+        async def remember(record_id: str, completed_at_ms: int) -> None:
+            remembered.append(record_id)
+
+        self._bind(remember)
+        with pytest.raises(RecordDeletedError):
+            await orch.index(_make_ctx())
+        assert remembered == []
+
+    @pytest.mark.asyncio
+    async def test_no_delivery_bound_writes_nothing(self) -> None:
+        await self._orchestrator([]).index(_make_ctx())
+
+    @pytest.mark.asyncio
+    async def test_the_switch_turns_the_write_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("REPLAY_SET", "off")
+        remembered: list[str] = []
+
+        async def remember(record_id: str, completed_at_ms: int) -> None:
+            remembered.append(record_id)
+
+        self._bind(remember)
+        await self._orchestrator([]).index(_make_ctx())
+        assert remembered == []
 
 
 class TestStageEnrichment:

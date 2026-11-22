@@ -42,3 +42,11 @@ def test_personal_changes_and_drives_masks() -> None:
 def test_stream_metadata_mask_covers_extension_and_shortcut_resolution() -> None:
     for name in ("id", "name", "mimeType", "fileExtension", "shortcutDetails/targetId"):
         assert name in DRIVE_STREAM_FILE_GET_FIELDS
+
+
+def test_workspace_mask_asks_whether_the_user_can_list_a_folder() -> None:
+    assert "capabilities/canListChildren" in DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS
+
+
+def test_workspace_mask_asks_whether_the_user_can_share_an_item() -> None:
+    assert "capabilities/canShare" in DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS

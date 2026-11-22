@@ -1088,3 +1088,21 @@ class TestDeletesAndUpdatesNeedAnOrg:
 
         flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
         await connected_service.overwrite_payload("col", {"page_content": "t", "metadata": {"orgId": "o1", "virtualRecordId": "vr-1"}}, flt)
+
+
+class TestExistingPointIds:
+    @pytest.mark.asyncio
+    async def test_asks_for_neither_payload_nor_vector(self, connected_service) -> None:
+        connected_service.client.retrieve.return_value = [MagicMock(id="p1"), MagicMock(id="p3")]
+
+        found = await connected_service.existing_point_ids("records", ["p1", "p2", "p3"])
+
+        assert found == {"p1", "p3"}
+        connected_service.client.retrieve.assert_awaited_once_with(
+            collection_name="records", ids=["p1", "p2", "p3"], with_payload=False, with_vectors=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, connected_service) -> None:
+        assert await connected_service.existing_point_ids("records", []) == set()
+        connected_service.client.retrieve.assert_not_called()

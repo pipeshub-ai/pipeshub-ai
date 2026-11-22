@@ -211,11 +211,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # CJK fallback fonts used by LibreOffice when documents reference fonts
     # that are unavailable in the Linux runtime (e.g. Microsoft JhengHei).
     fonts-noto-cjk \
+    # ripgrep: storage search runs grep stages through it (multi-threaded).
+    ripgrep \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install Node.js runtime only (not full dev environment)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 

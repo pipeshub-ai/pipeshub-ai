@@ -238,6 +238,11 @@ class ReposSync:
     # Checkpoints
     # ------------------------------------------------------------------
 
+    async def synced_project_path(self, project_id: int) -> str | None:
+        """The ``path_with_namespace`` this project's code-file ids were last built on (its checkpoint), or None
+        when its code was never synced -- then it has no code-file records to link to."""
+        return (await self._get_code_repo_checkpoint(project_id))[1]
+
     async def _get_code_repo_checkpoint(self, project_id: int) -> tuple[str | None, str | None, str | None]:
         """Return the last synced head commit SHA, and the project path and branch it was synced under."""
         from app.config.constants.arangodb import Connectors

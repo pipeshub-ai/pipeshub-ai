@@ -422,3 +422,264 @@ class TestLogFailure:
         assert "secret-arg" not in record.exc_text
         assert "RuntimeError: <message omitted>" in record.exc_text and "KeyError: <message omitted>" in record.exc_text
         assert "direct cause" in record.exc_text and "test_error_class.py" in record.exc_text
+
+
+class TestMarkError:
+    """A database client stamps its class and "text can quote sent values" on the exception (docs/logging.md, Database queries)."""
+
+    SECRET = "alice@example.com"
+
+    def test_stamp_beats_the_status_and_unstamped_is_unchanged(self) -> None:
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        killed = ArangoQueryError("Query failed", 410, '{"errorNum":1500}')
+        assert EC.classify_error(killed) == "not_found"  # positive control: status table as before
+        EC.mark_error(killed, "timeout")
+        assert EC.classify_error(killed) == "timeout"
+        assert EC.classify_error(Exception("plain")) == "internal"
+
+    def test_class_attribute_counts_and_is_not_an_instance_stamp(self) -> None:
+        class Declared(Exception):
+            log_error_class = "timeout"
+
+        exc = Declared("x")
+        assert EC.classify_error(exc) == "timeout" and not EC.is_stamped(exc)
+        EC.mark_error(exc, "conflict")
+        assert EC.classify_error(exc) == "conflict" and EC.is_stamped(exc)
+
+    def test_first_stamp_wins(self) -> None:
+        exc = Exception("x")
+        EC.mark_error(exc, "conflict", hide_text=True)
+        EC.mark_error(exc, "internal")
+        assert EC.classify_error(exc) == "conflict" and exc.log_hide_text is True
+
+    def test_hide_text_alone_keeps_the_normal_class(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(_http_status_error(429))
+        EC.mark_error(exc, hide_text=True)
+        assert set(vars(exc)) >= {"log_hide_text"} and "log_error_class" not in vars(exc) and not EC.is_stamped(exc)
+        assert EC.classify_error(exc) == "rate_limited"  # classified as it would be unstamped
+        EC.log_failure(logger, "x.end", exc)
+        (record,) = records
+        assert getattr(record, "error_message", None) is None and record.error_class == "rate_limited"
+
+    def test_a_class_given_later_still_wins_over_classification(self) -> None:
+        exc = Exception("plain")
+        EC.mark_error(exc, hide_text=True)
+        EC.mark_error(exc, "conflict")
+        assert EC.classify_error(exc) == "conflict" and exc.log_hide_text is True
+
+    def test_first_class_wins_and_a_later_hide_is_added(self) -> None:
+        exc = Exception("x")
+        EC.mark_error(exc, "conflict")
+        EC.mark_error(exc, "internal", hide_text=True)
+        assert EC.classify_error(exc) == "conflict" and exc.log_hide_text is True
+
+    def test_sets_exactly_the_two_attributes(self) -> None:
+        exc = Exception("x")
+        EC.mark_error(exc, "conflict", hide_text=True)
+        assert set(vars(exc)) == {"log_error_class", "log_hide_text"}
+        plain = Exception("y")
+        EC.mark_error(plain, "conflict")
+        assert set(vars(plain)) == {"log_error_class"}
+
+    def test_unstampable_exception_keeps_todays_behaviour(self) -> None:
+        class Frozen(Exception):
+            def __setattr__(self, name: str, value: object) -> None:
+                raise AttributeError(name)
+
+        exc = Frozen("x")
+        EC.mark_error(exc, "timeout", hide_text=True)  # never raises
+        assert EC.classify_error(exc) == "internal" and not EC.is_stamped(exc)
+
+    def test_stamped_cause_behind_an_unstamped_wrapper(self) -> None:
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        inner = Exception("driver")
+        EC.mark_error(inner, "conflict")
+        assert EC.classify_error(_chained(GraphQueryError("lookup failed"), inner)) == "conflict"
+
+    def test_hidden_text_anywhere_in_the_chain(self, capture) -> None:
+        logger, records = capture
+        inner = _raised(KeyError(f"value {self.SECRET}"))
+        EC.mark_error(inner, "internal", hide_text=True)
+        outer = _raised(_chained(RuntimeError(f"wrapped: {inner}"), inner))
+        EC.log_failure(logger, "x.end", outer)
+        (record,) = records
+        assert getattr(record, "error_message", None) is None
+        assert "<message omitted>" in record.exc_text and self.SECRET not in record.exc_text and record.exc_info is None
+
+    def test_positive_control_unstamped_chain_keeps_its_text(self, capture) -> None:
+        logger, records = capture
+        EC.log_failure(logger, "x.end", _raised(KeyError(f"value {self.SECRET}")))
+        (record,) = records
+        assert self.SECRET in record.error_message
+
+    def test_group_member_stamped_hides_text(self, capture) -> None:
+        logger, records = capture
+        leak = _raised(ValueError(f"value {self.SECRET}"))
+        EC.mark_error(leak, "bad_request", hide_text=True)
+        group = _raised(ExceptionGroup("reads", [ValueError("first, clean"), _chained(RuntimeError(f"outer {leak}"), leak)]))
+        EC.log_failure(logger, "x.end", group, level=logging.ERROR)
+        (record,) = records
+        assert getattr(record, "error_message", None) is None and self.SECRET not in (record.exc_text or "")
+
+    def test_group_without_a_stamp_keeps_its_text(self, capture) -> None:
+        logger, records = capture
+        EC.log_failure(logger, "x.end", _raised(ExceptionGroup("reads", [ValueError("v1")])))
+        (record,) = records
+        assert "reads" in record.error_message
+
+    def test_stamping_does_not_change_the_push_retry_decision(self) -> None:
+        from app.connectors.sources.localKB.push.retry import is_attempt_lost
+
+        mixed = Exception("Batch insert failed with 2 error(s): Item 0: [1210] dup; Item 1: [1200] timeout waiting to lock key")
+        assert is_attempt_lost(mixed)
+        EC.mark_error(mixed, "conflict", hide_text=True)
+        assert is_attempt_lost(mixed)
+
+
+def test_on_chain_follows_cause_and_unsuppressed_context_like_the_text() -> None:
+    target = ValueError("marked")
+    try:
+        raise target
+    except ValueError:
+        try:
+            raise RuntimeError("implicit")
+        except RuntimeError as implicit:
+            caught = implicit
+    explicit = RuntimeError("explicit")
+    explicit.__cause__ = target
+    suppressed = RuntimeError("from None")
+    suppressed.__context__, suppressed.__suppress_context__ = target, True
+
+    assert EC.on_chain(target, target)
+    assert EC.on_chain(caught, target)
+    assert EC.on_chain(explicit, target)
+    assert not EC.on_chain(suppressed, target)
+    assert not EC.on_chain(RuntimeError("unrelated"), target)
+
+
+class TestAlreadyLogged:
+    def test_never_logged(self) -> None:
+        assert EC.already_logged(_raised(KeyError("k")), logging.DEBUG) is False
+
+    def test_at_or_below_the_level_it_was_logged_at(self, capture) -> None:
+        logger, _ = capture
+        exc = _raised(_http_status_error(429))
+        EC.log_failure(logger, "x.end", exc)  # WARNING
+        assert (EC.already_logged(exc, logging.INFO), EC.already_logged(exc, logging.WARNING)) == (True, True)
+        assert EC.already_logged(exc, logging.ERROR) is False
+
+    def test_through_the_cause(self, capture) -> None:
+        logger, _ = capture
+        inner = _raised(_http_status_error(429))
+        EC.log_failure(logger, "inner.end", inner)
+        assert EC.already_logged(_chained(RuntimeError("outer"), inner), logging.WARNING) is True
+
+
+class TestChainHas:
+    def test_a_type_anywhere_in_the_chain(self) -> None:
+        outer = _chained(RuntimeError("outer"), _chained(ValueError("middle"), OSError("inner")))
+        assert EC.chain_has(outer, OSError) is True
+        assert EC.chain_has(outer, KeyError, ValueError) is True
+        assert EC.chain_has(outer, KeyError) is False
+
+    def test_chain_link_is_the_first_match(self) -> None:
+        inner = OSError("inner")
+        middle = _chained(ValueError("middle"), inner)
+        outer = _chained(RuntimeError("outer"), middle)
+        assert EC.chain_link(outer, OSError) is inner
+        assert EC.chain_link(outer, OSError, ValueError) is middle
+        assert EC.chain_link(outer, KeyError) is None
+
+
+class TestChainHelpers:
+    def test_has_chain(self) -> None:
+        assert EC.has_chain(_chained(RuntimeError("outer"), KeyError("k")))
+        assert EC.has_chain(_chained(RuntimeError("outer"), KeyError("k"), explicit=False))
+        assert not EC.has_chain(_raised(RuntimeError("alone")))
+        suppressed = RuntimeError("from None")
+        suppressed.__context__, suppressed.__suppress_context__ = KeyError("k"), True
+        assert not EC.has_chain(suppressed)
+
+    def test_quotes_content_reads_every_link(self) -> None:
+        deep = _chained(RuntimeError("outer"), _chained(DocumentProcessingError("Failed: report.docx"), KeyError("k")))
+        assert EC.quotes_content(deep)
+        assert EC.quotes_content(DocumentProcessingError("x"))
+        assert not EC.quotes_content(_chained(RuntimeError("outer"), ConnectionError("down")))
+
+    def test_a_group_whose_member_points_back_at_it_is_walked_once(self) -> None:
+        member = ConnectionError("down")
+        group = ExceptionGroup("batch", [member])
+        member.__cause__ = group  # a cycle through the member edge
+        assert EC.quotes_content(group) is False
+        assert EC._hides_text(group) is False
+        member.log_hide_text = True
+        assert EC._hides_text(member) is True
+        content = DocumentProcessingError("a.docx")
+        content.__cause__ = ExceptionGroup("g", [content])
+        assert EC.quotes_content(content) is True
+
+    def test_a_parsing_service_error_quotes_content(self) -> None:
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        assert EC.quotes_content(ParsingClientError(ParseErrorCode.PARSE_FAILED, "Docling service failed to parse 'a.pdf'"))
+
+    def test_quotes_content_reads_exception_group_members(self) -> None:
+        group = ExceptionGroup("pages", [ConnectionError("down"), DocumentProcessingError("Failed: report.docx")])
+        assert EC.quotes_content(_chained(RuntimeError("outer"), group))
+        assert not EC.quotes_content(ExceptionGroup("pages", [ConnectionError("down")]))
+
+    def test_a_validation_error_quotes_the_message(self) -> None:
+        from pydantic import BaseModel, ValidationError
+
+        class _M(BaseModel):
+            payload: dict
+
+        with pytest.raises(ValidationError) as caught:
+            _M(payload="Quarterly-Secret-Plan.docx")
+        assert EC.quotes_content(_chained(RuntimeError("outer"), caught.value))
+
+
+class TestLogUnitEnd:
+    def test_no_exception_writes_the_event_at_the_level(self, capture) -> None:
+        logger, records = capture
+        EC.log_unit_end(logger, "unit.end", None, level=logging.INFO, outcome="success", n=3)
+        (record,) = records
+        assert (record.levelno, record.getMessage(), record.outcome, record.n) == (logging.INFO, "unit.end", "success", 3)
+        assert not hasattr(record, "error_class")
+
+    def test_no_exception_with_a_class_writes_the_class(self, capture) -> None:
+        logger, records = capture
+        EC.log_unit_end(logger, "unit.end", None, level=logging.WARNING, error_class="timeout", outcome="failure")
+        (record,) = records
+        assert (record.levelno, record.error_class, record.outcome) == (logging.WARNING, "timeout", "failure")
+        assert record.exc_info is None and not hasattr(record, "error_type")
+
+    def test_a_fresh_exception_is_one_failure_line_with_the_stack_once(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(KeyError("k"))
+        EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, include_error_text=False, outcome="failure")
+        (record,) = records
+        assert (record.levelno, record.error_class, record.error_type) == (logging.ERROR, "internal", "KeyError")
+        assert not hasattr(record, "error_message") and "KeyError: <message omitted>" in record.exc_text
+        assert EC.logged_level(exc) == logging.ERROR
+
+    def test_an_exception_already_logged_as_high_adds_no_text_and_no_stack(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(KeyError("secret-arg"))
+        EC.log_failure(logger, "inner.failed", exc)  # ERROR, with the stack
+        EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, outcome="failure")
+        end = records[-1]
+        assert (end.levelno, end.getMessage(), end.error_class, end.error_type) == (logging.ERROR, "unit.end", "internal", "KeyError")
+        assert end.exc_info is None and getattr(end, "exc_text", None) is None and not hasattr(end, "error_message")
+
+    def test_an_exception_logged_lower_is_written_again_at_the_higher_level(self, capture) -> None:
+        logger, records = capture
+        exc = _raised(KeyError("k"))
+        EC.log_failure(logger, "inner.failed", exc, level=logging.WARNING)
+        EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, outcome="failure")
+        end = records[-1]
+        assert end.levelno == logging.ERROR and "KeyError" in end.exc_text and hasattr(end, "error_message")

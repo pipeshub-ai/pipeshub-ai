@@ -50,6 +50,7 @@ import { appendResumeParts } from './utils/tool-display';
 import { isToolApprovalResumeQuery } from './tool-approval';
 import { applyCompareToRequest, onPrimarySettled, settleBeforeSend } from './compare/compare-controller';
 import { compareModelForSlot } from './compare/compare-store';
+import { ANSWER_FAILED } from './stream-error';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
@@ -660,6 +661,9 @@ export function loadHistoricalMessages(
         metadata: {
           custom: {
             citationMaps: buildCitationMapsFromApi([]),
+            ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
+            // Shown as an error, not as an answer (the saved row says why the reply failed).
+            streamError: { code: ANSWER_FAILED },
           },
         },
       });
@@ -776,6 +780,7 @@ export function loadHistoricalMessages(
             modelInfo: msg.modelInfo,
             ...(feedbackInfo ? { feedbackInfo } : {}),
             ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
+            ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
             ...(capturedPayload
               ? { persistedAskUserQuestion: capturedPayload }
               : {}),

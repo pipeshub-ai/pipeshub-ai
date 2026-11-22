@@ -11,6 +11,7 @@ import json
 from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg.model import HIERARCHY, flag
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.permissions.ports import StampApp, StampNode
 
 if TYPE_CHECKING:
@@ -22,6 +23,28 @@ MAX_LEVELS = 51
 KIND = {"apps": "app", "recordGroups": "group", "records": "record"}
 PRINCIPAL_COLLS = ("users", "groups", "roles", "teams", "organizations")
 _NODE_COLLS = list(KIND)
+
+
+# The facts of the nodes asked, read per asked id and per edge by key: each id's edges are a range of one value in the index ordered by that end (the edge
+# table's primary key leads with from_id, edges_by_target with to_id), so no other index of the org returns them in the order asked; each edge's other end
+# is a probe of its own (OFFSET 0 keeps it per row). They run under reader.seeks (as dependents.children_of): no sort, so only that index answers, and no JIT,
+# which the per-key estimates of an analysed org would otherwise turn on for every call. Joined, on an org the statistics did not know yet (put at a row), the planner read every node of the
+# org's collections once per edge (2.2 s for 500 records of an org of 20,000), and every belongsTo edge of the org for each batch.
+PARENTS = """/* pipeshub:kg.stamp_parents */ SELECT e.to_coll AS child_coll, e.to_id AS child, e.from_coll AS parent_coll, e.from_id AS parent FROM unnest($2::text[]) AS k(i)
+    CROSS JOIN LATERAL (SELECT e.to_coll, e.to_id, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id >= k.i AND e.to_id <= k.i
+      AND e.doc->>'relationshipType' = ANY($3::text[]) ORDER BY e.to_id OFFSET 0) e
+    WHERE EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = $1 AND p.coll = e.from_coll AND p.id = e.from_id AND p.coll = ANY($4::text[]) OFFSET 0)"""
+INHERITS = """/* pipeshub:kg.stamp_inherits */ SELECT e.from_coll AS child_coll, e.from_id AS child, e.to_coll AS parent_coll, e.to_id AS parent FROM unnest($2::text[]) AS k(i)
+    CROSS JOIN LATERAL (SELECT e.from_coll, e.from_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'inheritPermissions'
+      AND e.from_id >= k.i AND e.from_id <= k.i ORDER BY e.from_id OFFSET 0) e"""
+BELONGS = """/* pipeshub:kg.stamp_belongs */ SELECT e.from_coll AS member_coll, e.from_id AS member, e.to_id AS target, t.coll AS coll FROM unnest($2::text[]) AS k(i)
+    CROSS JOIN LATERAL (SELECT e.from_coll, e.from_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+      AND e.from_id >= k.i AND e.from_id <= k.i ORDER BY e.from_id OFFSET 0) e
+    CROSS JOIN LATERAL (SELECT t.coll FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = e.to_coll AND t.id = e.to_id AND t.coll = ANY($3::text[]) OFFSET 0) t"""
+GRANTED = """/* pipeshub:kg.stamp_granted */ SELECT DISTINCT e.to_coll AS coll, e.to_id AS node FROM unnest($2::text[]) AS k(i)
+    CROSS JOIN LATERAL (SELECT e.to_coll, e.to_id, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission'
+      AND e.to_id >= k.i AND e.to_id <= k.i ORDER BY e.to_id OFFSET 0) e
+    WHERE EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = $1 AND p.coll = e.from_coll AND p.id = e.from_id AND p.coll = ANY($3::text[]) OFFSET 0)"""
 
 
 def _json(raw: str | None) -> object:
@@ -66,26 +89,24 @@ async def nodes(tx: Tx, org: str, keys: Iterable[str]) -> dict[str, StampNode]:
     want = sorted({i for _, i in pairs})
     docs = await tx.fetch("""/* pipeshub:kg.stamp_nodes */ SELECT n.coll, n.id, n.doc->>'connectorId' AS connector, n.doc->>'accessRule' AS rule,
             n.doc->'isDeleted' AS deleted, n.doc->'isPlaceholder' AS placeholder,
-            n.doc->>'permissionModel' AS model, n.doc->>'virtualRecordId' AS vrid
+            n.doc->>'permissionModel' AS model, n.doc->>'virtualRecordId' AS vrid, n.doc->>'origin' AS origin
         FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[]) AND n.id = ANY($3::text[])""", org, _NODE_COLLS, want)
     found = {nk(r["coll"], r["id"]): r for r in docs if (r["coll"], r["id"]) in pairs}
     ids_found = sorted({split(k)[1] for k in found})
+    async with seeks(tx):
+        rows = [await tx.fetch(PARENTS, org, ids_found, list(HIERARCHY), _NODE_COLLS), await tx.fetch(INHERITS, org, ids_found),
+                await tx.fetch(BELONGS, org, ids_found, ["recordGroups", "apps"]), await tx.fetch(GRANTED, org, ids_found, list(PRINCIPAL_COLLS))]
     parents: dict[str, list[str]] = {}
-    for r in await tx.fetch("""/* pipeshub:kg.stamp_parents */ SELECT e.to_coll AS child_coll, e.to_id AS child, e.from_coll AS parent_coll, e.from_id AS parent FROM graph.edges e
-            WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
-              AND EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = e.org_id AND p.coll = e.from_coll AND p.id = e.from_id AND p.coll = ANY($4::text[]))""", org, ids_found, list(HIERARCHY), _NODE_COLLS):
+    for r in rows[0]:
         if nk(r["child_coll"], r["child"]) in found:
             parents.setdefault(nk(r["child_coll"], r["child"]), []).append(nk(r["parent_coll"], r["parent"]))
     inherits: dict[str, set[str]] = {}
-    for r in await tx.fetch("""/* pipeshub:kg.stamp_inherits */ SELECT e.from_coll AS child_coll, e.from_id AS child, e.to_coll AS parent_coll, e.to_id AS parent FROM graph.edges e
-            WHERE e.org_id = $1 AND e.coll = 'inheritPermissions' AND e.from_id = ANY($2::text[])""", org, ids_found):
+    for r in rows[1]:
         if nk(r["child_coll"], r["child"]) in found:
             inherits.setdefault(nk(r["child_coll"], r["child"]), set()).add(nk(r["parent_coll"], r["parent"]))
     groups: dict[str, list[str]] = {}
     belongs_app: set[str] = set()
-    for r in await tx.fetch("""/* pipeshub:kg.stamp_belongs */ SELECT e.from_coll AS member_coll, e.from_id AS member, e.to_id AS target, t.coll AS coll FROM graph.edges e
-            JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id AND t.coll = ANY($3::text[])
-            WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_id = ANY($2::text[])""", org, ids_found, ["recordGroups", "apps"]):
+    for r in rows[2]:
         member = nk(r["member_coll"], r["member"])
         if member not in found:
             continue
@@ -94,9 +115,7 @@ async def nodes(tx: Tx, org: str, keys: Iterable[str]) -> dict[str, StampNode]:
                 belongs_app.add(member)                    # membership of the record's own connector only (R12), not of any app
         else:
             groups.setdefault(member, []).append(nk("recordGroups", r["target"]))
-    granted = {nk(r["coll"], r["node"]) for r in await tx.fetch("""/* pipeshub:kg.stamp_granted */ SELECT DISTINCT e.to_coll AS coll, e.to_id AS node FROM graph.edges e
-            WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_id = ANY($2::text[])
-              AND EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = e.org_id AND p.coll = e.from_coll AND p.id = e.from_id AND p.coll = ANY($3::text[]))""", org, ids_found, list(PRINCIPAL_COLLS))}
+    granted = {nk(r["coll"], r["node"]) for r in rows[3]}
     out: dict[str, StampNode] = {}
     for key, r in found.items():
         kind = KIND[r["coll"]]
@@ -105,7 +124,7 @@ async def nodes(tx: Tx, org: str, keys: Iterable[str]) -> dict[str, StampNode]:
             continue
         out[key] = StampNode(key, kind, _app_nk(r["connector"]), tuple(sorted(parents.get(key, ()))), frozenset(inherits.get(key, ())), r["rule"], flag(_json(r["deleted"])),
                              flag(_json(r["placeholder"])), key in granted, kind == "group" and r["model"] == "RECORD_GROUP_LEVEL", tuple(sorted(groups.get(key, ()))), r["vrid"],
-                             key in belongs_app)
+                             key in belongs_app, r["origin"])
     return out
 
 

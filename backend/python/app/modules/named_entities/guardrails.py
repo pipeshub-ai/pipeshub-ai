@@ -8,6 +8,7 @@ import re
 from app.modules.named_entities.domain.config import NamedEntityBudgets
 from app.modules.named_entities.domain.kinds import EntityKind, EntitySource, spec_for
 from app.modules.named_entities.domain.models import NamedEntity
+from app.modules.named_entities.normalizers.contacts import is_email_shaped
 
 
 def _cap_rank(entity: NamedEntity) -> tuple[int, int, int]:
@@ -77,7 +78,6 @@ _MAX_NAME_TOKENS = 8
 # A postal address runs longer than a name.
 _MAX_ADDRESS_TOKENS = 24
 _URL = re.compile(r"^(?:[a-z][a-z0-9+.-]*://|www\.)", re.IGNORECASE)
-_EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 # Two path separators, or one plus a lower-case file name: "backend/python/pyproject.toml",
 # "src/app.py"; "React/Node.js" is two names, not a path.
@@ -114,7 +114,7 @@ def name_rejection(kind: EntityKind, surface: str) -> str | None:
     tokens = text.split(" ")
     if len(tokens) > (_MAX_ADDRESS_TOKENS if kind is EntityKind.ADDRESS else _MAX_NAME_TOKENS):
         return "too_long"
-    if _URL.match(text) or _EMAIL.match(text) or _UUID.match(text) or _PATH.match(text) or _is_file_name(text):
+    if _URL.match(text) or is_email_shaped(text) or _UUID.match(text) or _PATH.match(text) or _is_file_name(text):
         return "identifier"
     if kind not in _PROPER_NAME_KINDS:
         return None

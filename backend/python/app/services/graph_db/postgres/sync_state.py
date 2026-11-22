@@ -7,7 +7,13 @@ literal with bound parameters. A sweep over every org (the flag backfill) runs u
 from __future__ import annotations
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
-from app.core.org_context import current_org_id
+from app.core.org_context import MissingOrgContext, current_org_id
+from app.modules.indexing.record_diagnostics import (
+    WriteKind,
+    reference,
+    sql_patch,
+    with_run_patch,
+)
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -22,6 +28,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.records import _vis
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
@@ -36,8 +43,12 @@ def _relation(doc: object, from_id: str, to_id: str) -> dict:
 
 class SyncStateMixin(PgBase):
     # ---- a user's sync state on an app (the relation edge of the user to the app of that name) ----------------------
-    async def get_user_sync_state(self, user_email: str, service_type: str, transaction: str | None = None) -> dict | None:
+    async def get_user_sync_state(self, user_email: str, service_type: str, transaction: str | None = None, *, org_id: str) -> dict | None:
         org = current_org_id()
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
+        if org_id != org:
+            return None
         try:
             r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_user_sync_state */ SELECT e.doc, e.from_id, e.to_id FROM graph.edges e
                 JOIN graph.nodes u ON u.org_id = e.org_id AND u.coll = 'users' AND u.id = e.from_id AND u.doc->>'email' = $2
@@ -45,12 +56,16 @@ class SyncStateMixin(PgBase):
                 WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.to_coll = 'apps' ORDER BY e.from_id, e.to_id LIMIT 1""",
                                                       org, user_email, service_type), transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get user sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_user_sync_state")
             return None
         return _relation(r["doc"], r["from_id"], r["to_id"]) if r else None
 
-    async def update_user_sync_state(self, user_email: str, state: str, service_type: str, transaction: str | None = None) -> dict | None:
+    async def update_user_sync_state(self, user_email: str, state: str, service_type: str, transaction: str | None = None, *, org_id: str) -> dict | None:
         org = current_org_id()
+        if not org_id:
+            raise MissingOrgContext("the org argument is required")
+        if org_id != org:
+            return None
         change = {"syncState": state, "lastSyncUpdate": get_epoch_timestamp_in_ms()}
         _VALIDATOR.validate_edge_update(CollectionNames.USER_APP_RELATION.value, change)
         try:
@@ -61,7 +76,8 @@ class SyncStateMixin(PgBase):
                 RETURNING e.doc, e.from_id, e.to_id""",
                                                      org, user_email, service_type, _j(change)), transaction, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Update user sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_user_sync_state")
             return None
         if not rows:
             return None
@@ -74,7 +90,7 @@ class SyncStateMixin(PgBase):
         try:
             d = await self._one("/* pipeshub:graph.get_drive_sync_state */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'drives' AND id = $2", org, drive_id, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get drive sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_drive_sync_state")
             return None
         return _arango(d, _DRIVES) if d else None
 
@@ -85,7 +101,8 @@ class SyncStateMixin(PgBase):
                 WHERE org_id = $1 AND coll = 'drives' AND id = $2 RETURNING doc""",
                                                       org, drive_id, _j({"sync_state": state, "last_sync_update": get_epoch_timestamp_in_ms()})), transaction, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Update drive sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_drive_sync_state")
             return None
         return _arango(_doc(r["doc"]), _DRIVES) if r else None
 
@@ -100,7 +117,7 @@ class SyncStateMixin(PgBase):
                                             "createdAtTimestamp": get_epoch_timestamp_in_ms(), "expiration": expiration}], _TOKENS, transaction=transaction)
             return await self.get_document(key, _TOKENS, transaction=transaction, raise_on_error=True)
         except Exception as e:
-            self.logger.error(f"❌ Store page token failed: {type(e).__name__}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="store_page_token")
             return None
 
     async def get_page_token_db(self, channel_id: str | None = None, resource_id: str | None = None, user_email: str | None = None,
@@ -112,7 +129,7 @@ class SyncStateMixin(PgBase):
                 AND ($2::text IS NULL OR doc->>'channelId' = $2) AND ($3::text IS NULL OR doc->>'resourceId' = $3) AND ($4::text IS NULL OR doc->>'userEmail' = $4)
                 ORDER BY doc->'createdAtTimestamp' DESC, id LIMIT 1""", org, channel_id or None, resource_id or None, user_email or None, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get page token failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_page_token_db")
             return None
         return _arango(d, _TOKENS) if d else None
 
@@ -150,15 +167,15 @@ class SyncStateMixin(PgBase):
             return
         _VALIDATOR.validate_node_update(CollectionNames.RECORDS.value, {"indexingStatus": status, **({"reason": reason} if reason is not None else {})})
         try:
-            await self._q(lambda tx: tx.execute("""/* pipeshub:graph.reset_indexing_status_for_connector */ UPDATE graph.nodes n
-                SET doc = n.doc || jsonb_build_object('indexingStatus', $3::text) || CASE WHEN $7::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('reason', $7::text) END
+            run = sql_patch("n.doc", WriteKind.STATUS_VAR, now="$8::bigint", status="$3::text")
+            await self._q(lambda tx: tx.execute(with_run_patch("""/* pipeshub:graph.reset_indexing_status_for_connector */ UPDATE graph.nodes n
+                SET doc = n.doc || jsonb_build_object('indexingStatus', $3::text) || CASE WHEN $7::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('reason', $7::text) END || {RUN_PATCH}
                 WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'connectorId' = $2
                   AND (cardinality($4::text[]) = 0 OR NOT coalesce(n.doc->>'indexingStatus', '') = ANY($4::text[]))
                   AND ($5::text[] IS NULL OR n.doc->>'indexingStatus' = ANY($5::text[]))
-                  AND ($6::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($6::int = 2))""",
-                                                 org, connector_id, status, excluded, included or None, _vis(visibility), reason), transaction, write=True)
+                  AND ($6::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($6::int = 2))""", run),
+                                                 org, connector_id, status, excluded, included or None, _vis(visibility), reason, get_epoch_timestamp_in_ms()), transaction, write=True)
         except Exception:
-            self.logger.error("❌ Failed to reset indexing status for connector %s", connector_id)
             raise
 
     async def update_queued_duplicates_status(self, record_id: str, new_indexing_status: str, virtual_record_id: str | None = None,
@@ -183,7 +200,8 @@ class SyncStateMixin(PgBase):
                 return 0
             now = get_epoch_timestamp_in_ms()
             updates = [{"id": r["id"], "indexingStatus": new_indexing_status, **indexed_copy_fields(new_indexing_status), "lastIndexTimestamp": now,
-                        "isDirty": False, "virtualRecordId": virtual_record_id, "extractionStatus": extraction_status, **({"reason": reason} if reason else {})}
+                        "isDirty": False, "virtualRecordId": virtual_record_id, "extractionStatus": extraction_status, **({"reason": reason} if reason else {}),
+                        **reference({}, WriteKind.STATUS_VAR, now, status=new_indexing_status)}
                        for r in rows]
             if new_indexing_status in _RECONCILED_STATUSES:     # in the same batch as the promotion, so a crash cannot leave copies with nothing to trigger their taxonomy
                 updates.append({"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
@@ -191,5 +209,6 @@ class SyncStateMixin(PgBase):
             await self.batch_update_nodes(updates, "records", transaction)
             return len(rows)
         except Exception as e:
-            self.logger.error(f"❌ Failed to update queued duplicates status: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_queued_duplicates_status")
             return -1

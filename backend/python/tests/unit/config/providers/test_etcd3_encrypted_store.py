@@ -546,3 +546,42 @@ class TestDirectoryBoundary:
         listed = await store.list_keys_in_directory("/services/mcp/credentials/i1/")
 
         assert listed == ["/services/mcp/credentials/i1/u1"]
+
+
+class TestAFailureIsLoggedOnce:
+    """What this wrapper raises is logged by the caller that handles it; what it
+    swallows into None it logs itself, once."""
+
+    @staticmethod
+    def _logged(caplog) -> list[str]:
+        return [f"{r.levelname} {r.getMessage()}" for r in caplog.records if r.levelno >= logging.WARNING]
+
+    async def test_an_etcd_outage_while_listing_is_raised_not_logged(self, store, fake, caplog) -> None:
+        with patch.object(fake, "get_all", side_effect=ConnectionError("etcd down")):
+            with pytest.raises(ConnectionError, match="etcd down"):
+                await store.list_keys_in_directory("/services/")
+
+        assert self._logged(caplog) == []
+
+    async def test_an_etcd_outage_raised_on_request_is_not_logged(self, store, fake, caplog) -> None:
+        with patch.object(fake, "get", side_effect=ConnectionError("etcd down")):
+            with pytest.raises(ConnectionError, match="etcd down"):
+                await store.get_key("/k", raise_on_error=True)
+
+        assert self._logged(caplog) == []
+
+    async def test_an_unreadable_value_raised_on_request_is_not_logged(self, store, caplog) -> None:
+        await store.create_key("/k", {"v": 1})
+
+        # Patched: EncryptionService logs its own failure, which is not this wrapper's line.
+        with patch.object(store.encryption_service, "decrypt", side_effect=DecryptionError("bad")):
+            with pytest.raises(DecryptionError):
+                await store.get_key("/k", raise_on_error=True)
+
+        assert self._logged(caplog) == []
+
+    async def test_an_etcd_outage_swallowed_is_logged_once(self, store, fake, caplog) -> None:
+        with patch.object(fake, "get", side_effect=ConnectionError("etcd down")):
+            assert await store.get_key("/k") is None
+
+        assert self._logged(caplog) == ["ERROR Failed to get config /k: ConnectionError"]

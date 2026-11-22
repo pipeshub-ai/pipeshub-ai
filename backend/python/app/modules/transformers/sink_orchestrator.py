@@ -20,11 +20,14 @@ from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.indexing import keep_old_copy
+from app.modules.indexing.embed_resume import cleared_fields, current_attempt
 from app.modules.indexing.parse_now_marker import (
     ParseNowStatus,
     current_run,
     marker_fields,
 )
+from app.modules.indexing.replay_set import note_record_completed
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.record_metadata.projection import (
     NOT_PROVIDED,
@@ -54,6 +57,7 @@ from app.modules.transformers.stored_write import (
     is_none_run,
     mint_stored_write,
 )
+from app.modules.transformers.swap_commit import SwapCommitter
 from app.modules.transformers.transformer import (
     ENRICHMENT_DEFERRED,
     ENRICHMENT_FOLLOWS,
@@ -61,10 +65,12 @@ from app.modules.transformers.transformer import (
     IMAGE_DESCRIPTION_BUDGET_S,
     PARSE_NOW,
     STORE_ONLY,
+    ReconciliationContext,
     TransformContext,
     Transformer,
 )
-from app.modules.transformers.vectorstore import VectorStore
+from app.modules.transformers.vectorstore import WRITTEN_UNDER, VectorStore
+from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.featureflag.platform_settings import (
     artifact_settings,
@@ -76,13 +82,15 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.telemetry.modules.record_storage_metrics import (
     record_artifact_write,
     record_property_projection,
 )
 from app.utils.image_utils import INDEX_RECORD_IMAGE_BYTES, fit_image_for_index
-from app.utils.indexing_timing import stage
+from app.utils.indexing_timing import note, stage
+from app.utils.llm import LLMUnavailableError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -116,6 +124,19 @@ def _fit_images(images: "list[Block]") -> int:
     return dropped
 
 
+
+def sink_only_end_fields(record_id: str, virtual_record_id: str | None) -> dict[str, object]:
+    """What a sink-only run writes when it ends: NOT_STARTED is the outcome, so the run is over and ``firstQueuedAt`` goes (a
+    later re-save or forced reindex starts a new run)."""
+    return {
+        "id": record_id,
+        "virtualRecordId": virtual_record_id,
+        "indexingStatus": ProgressStatus.NOT_STARTED.value,
+        "processingStartedAt": None,
+        "isDirty": False,
+        "firstQueuedAt": None,
+    }
+
 class SinkOrchestrator(Transformer):
     def __init__(
         self,
@@ -133,6 +154,7 @@ class SinkOrchestrator(Transformer):
         self.logger = logging.getLogger(__name__)
         self.blob_storage = blob_storage
         self.vector_store = vector_store
+        self.swap = SwapCommitter(self)
         self.graph_provider = graph_provider
         self.entity_vector_store = entity_vector_store
         # Canonicalises taxonomy names between classification and the graph
@@ -157,7 +179,7 @@ class SinkOrchestrator(Transformer):
         row_blocks = [b for b in original_blocks if b.type == BlockType.TABLE_ROW]
 
         if len(row_blocks) <= limit:
-            return block_containers 
+            return block_containers
         limited_blocks =  row_blocks[:limit]
 
         kept_indices = {b.index for b in limited_blocks}
@@ -182,7 +204,7 @@ class SinkOrchestrator(Transformer):
             limited_block_groups.append(bg_copy)
 
         self.logger.info(
-            "📦 SQL blob-storage limit applied: %d / %d row blocks kept",
+            "SQL blob-storage limit applied: %d / %d row blocks kept",
             len(limited_blocks),
             len(row_blocks),
         )
@@ -254,6 +276,8 @@ class SinkOrchestrator(Transformer):
         embeds every block) and no entity points.
         """
         record = ctx.record
+        if record.block_containers is not None:
+            note(blocks=len(record.block_containers.blocks))
         store_only = bool(ctx.settings.get(STORE_ONLY))
         skip_blob = bool(ctx.settings.get("skip_blob"))
         skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
@@ -272,8 +296,11 @@ class SinkOrchestrator(Transformer):
             ctx.settings[STORED_REV] = record_doc.get("contentRev") or None
             # One read of the settings picks the layout and mints the run; nothing below reads it again.
             ctx.settings[STORED_WRITE] = mint_stored_write(await artifact_settings(self.config_service))
-            with stage("images.describe"):
-                await self._describe_images(ctx)
+            attempt = current_attempt()
+            # The loaded blocks were described before the interrupted run stored them.
+            if attempt is None or not attempt.resume:
+                with stage("images.describe"):
+                    await self._describe_images(ctx)
             with stage("blob.write"):
                 await self.write_blob(ctx)
 
@@ -293,26 +320,23 @@ class SinkOrchestrator(Transformer):
 
         if skip_vector_store:
             await self._project_properties(ctx, record_doc)
-            success = await self.graph_provider.batch_update_nodes(
-                [
-                    {
-                        "id": record_id,
-                        "virtualRecordId": record.virtual_record_id,
-                        "indexingStatus": ProgressStatus.NOT_STARTED.value,
-                        "processingStartedAt": None,
-                        "isDirty": False,
-                    }
-                ],
-                CollectionNames.RECORDS.value,
-            )
+            end_fields = sink_only_end_fields(record_id, record.virtual_record_id)
+            swap_run = keep_old_copy.current_swap(record_id, record.virtual_record_id)
+            if swap_run is not None:
+                # No vectors are written, but the stored content is the new copy's: the record moves to it through the commit.
+                success = await self.swap.commit(ctx, swap_run, {k: v for k, v in end_fields.items() if k != "id"})
+                if success:
+                    await self.swap.finish(ctx, swap_run)
+            else:
+                success = await self.graph_provider.batch_update_nodes([end_fields], CollectionNames.RECORDS.value)
             if not success:
                 self.logger.warning(
-                    "⚠️ Failed to update record %s status - record may not exist in database",
+                    "Failed to update record %s status - record may not exist in database",
                     record_id,
                 )
                 return
             self.logger.info(
-                "✅ Sink-only mode completed for record %s (vector indexing skipped)",
+                "Sink-only mode completed for record %s (vector indexing skipped)",
                 record_id,
             )
             return
@@ -320,6 +344,8 @@ class SinkOrchestrator(Transformer):
         indexing_status = record_doc.get("indexingStatus")
         if skip_blob or indexing_status != ProgressStatus.COMPLETED.value:
             connector, org, kb = self._activity_labels(record)
+            if skip_blob:
+                await self._rewrite_recorded_points(ctx)
             result = await self.vector_store.apply(ctx)
             if result is False:
                 record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type or "none")
@@ -328,22 +354,50 @@ class SinkOrchestrator(Transformer):
                     record_id=record_id,
                 )
 
-            self.logger.debug(f"✅ Vector store indexing succeeded for record {record_id}")
+            self.logger.debug(f"Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
+            # The record's own entity points are written before it is marked indexed: a write that is handed
+            # back because the index holds another weight precision (``PrecisionFlip``) must leave the record
+            # unfinished, so that the event is run again, and not "already indexed" and acknowledged without them.
+            with stage("entities.identity"):
+                await self._sync_record_identity_entities(ctx)
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
             with stage("graph.status"):
+                # A cleanup that moved the epoch after the last batch was confirmed drops these points: not marked indexed then.
+                written_under = ctx.settings.get(WRITTEN_UNDER) if isinstance(ctx.settings, dict) else None
+                if written_under:
+                    await self.vector_store.require_epochs_current(written_under)
                 if not await self._update_indexing_status(ctx):
                     # Deleted while its vectors were written: nothing more is saved for it
                     # (a reconciliation save would bring back a mapping the delete removed),
                     # and the event ends as an expected outcome, without enrichment.
+                    await self._remove_identity_entities(ctx)
                     raise RecordDeletedError(record_id)
+            swap_run = keep_old_copy.current_swap(record_id, record.virtual_record_id)
+            if swap_run is not None:
+                with stage("swap.finish"):
+                    await self.swap.finish(ctx, swap_run)
             with stage("blob.metadata"):
                 await self._save_reconciliation_metadata(ctx)
-            with stage("entities.identity"):
-                await self._sync_record_identity_entities(ctx)
+            # Every write of the run is done, so the delivery may be remembered, with the lastIndexTimestamp
+            # its COMPLETED write stored: a run that failed after that write leaves no entry, and its
+            # redelivery runs again. A call of its own; a failure only weakens the replay guard.
+            if ctx.indexed_at_ms is not None:
+                await note_record_completed(record_id, ctx.indexed_at_ms, self.logger)
         # Also reached when the record was already COMPLETED and nothing was re-indexed.
         await self._project_properties(ctx, record_doc)
+
+    async def _remove_identity_entities(self, ctx: TransformContext) -> None:
+        """The record's own entity point, taken out again when the record turned out to be deleted while it was indexed."""
+        if not self.entity_vector_store or not ctx.record.org_id:
+            return
+        from app.models.entities import EntityType
+
+        try:
+            await self.entity_vector_store.delete_entity(ctx.record.org_id, EntityType.RECORD.value, ctx.record.id)
+        except Exception as exc:
+            self.logger.warning("Entity point of deleted record %s not removed (the sweep removes it): %s", ctx.record.id, type(exc).__name__)
 
     async def _project_properties(self, ctx: TransformContext, record_doc: dict[str, Any]) -> None:
         """Write the record's filterable property values onto the record (``RECORD_PROPERTY_PROJECTION``).
@@ -407,7 +461,8 @@ class SinkOrchestrator(Transformer):
         """Write the record's own entity points, its title and its record group
         (a Jira project, a Drive folder), in one batch.
 
-        Runs after the record is searchable, for every connector, since
+        Runs once the record's vectors are written and before it is marked indexed (a handed-back write
+        must leave it retryable), for every connector, since
         ``record_group_id`` is generic. Membership is replaced, not merged:
         a record has exactly one connector and one group (a union kept a
         moved record matching its old group's users), and a group point lists
@@ -444,6 +499,8 @@ class SinkOrchestrator(Transformer):
                     self.logger.warning(
                         "Entity points for record %s not written (%d of %d)", record.id, outcome.failed, len(entities),
                     )
+            except PrecisionFlip:
+                raise
             except Exception as exc:
                 self.logger.warning("Record entity sync failed for record %s (non-fatal): %s", record.id, exc)
         await self._sync_record_linked_entities(
@@ -503,6 +560,8 @@ class SinkOrchestrator(Transformer):
                 continue
             try:
                 outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=True)
+            except PrecisionFlip:
+                raise
             except Exception as exc:
                 self.logger.warning("%s entity sync failed for record %s (non-fatal): %s", entity_type.value, record_id, exc)
                 failed += len(entities)
@@ -657,6 +716,9 @@ class SinkOrchestrator(Transformer):
                     record_key, failed,
                 )
             return not failed
+        except PrecisionFlip:
+            # Not a sync that failed: the index holds the other precision. The caller hands the event back.
+            raise
         except Exception as exc:
             self.logger.warning(
                 "Entity vector sync failed for deduplicated record %s (non-fatal): %s",
@@ -760,6 +822,7 @@ class SinkOrchestrator(Transformer):
                 stored_record_fields=ctx.settings.get(STORED_RECORD_FIELDS),
                 properties=properties,
                 stored_run=stored_write.run,
+                still_current=lambda: self._stored_run_is(record.virtual_record_id, stored_write.run),
             )
         except Exception as exc:
             # Only the type and our own messages: an aiohttp error can carry a signed URL.
@@ -772,6 +835,11 @@ class SinkOrchestrator(Transformer):
             return None
         record_artifact_write("written" if written is not None else "unavailable")
         return written
+
+    async def _stored_run_is(self, vrid: str, run: str) -> bool:
+        """Whether the mapping still names *run* as the stored write: a later write of the same record has not taken over."""
+        node = await self.graph_provider.get_document(vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        return node is not None and node.get("storedRun") == run
 
     async def _provided_properties(
         self, record: Record, record_doc: dict[str, Any]
@@ -870,6 +938,8 @@ class SinkOrchestrator(Transformer):
             "processingStartedAt": None,
             "isDirty": False,
         }
+        if current_attempt() is not None:
+            status.update(cleared_fields())
         if ctx.settings.get(ENRICHMENT_FOLLOWS):
             if await is_classify_on_first_use_enabled(self.config_service):
                 # Decided here, once, so the status and the dispatch agree.
@@ -882,13 +952,19 @@ class SinkOrchestrator(Transformer):
             status["isVLMOcrProcessed"] = True
         # Update, never upsert: a record deleted mid-indexing would come back as
         # a bare node that keeps its vectors from the orphan sweep.
-        updated = await self.graph_provider.batch_update_nodes(
-            [status],
-            CollectionNames.RECORDS.value,
-        )
+        swap = keep_old_copy.current_swap(record.id, record.virtual_record_id)
+        if swap is not None:
+            # A replacement copy: the record moves to it in this write, only while it still names the old one.
+            fields = {k: v for k, v in status.items() if k != "id"}
+            updated = await self.swap.commit(ctx, swap, fields)
+        else:
+            updated = await self.graph_provider.batch_update_nodes(
+                [status],
+                CollectionNames.RECORDS.value,
+            )
         if not updated:
             self.logger.warning(
-                "⚠️ Record %s no longer exists; indexingStatus=COMPLETED not recorded",
+                "Record %s no longer exists; indexingStatus=COMPLETED not recorded",
                 record.id,
             )
             return False
@@ -896,8 +972,9 @@ class SinkOrchestrator(Transformer):
         record.indexing_status = ProgressStatus.COMPLETED.value
         record.parsing_status = ProgressStatus.COMPLETED.value
         self.logger.debug(
-            "✅ indexingStatus=COMPLETED recorded for %s", record.id
+            "indexingStatus=COMPLETED recorded for %s", record.id
         )
+        ctx.indexed_at_ms = timestamp
         # The record is only searchable now, so the accessible-record map that
         # gates search is stale. Connector records arrive in bursts, so their
         # deletes are coalesced (see `on_record_indexed`).
@@ -1008,7 +1085,7 @@ class SinkOrchestrator(Transformer):
         with stage("graph.enrich"):
             touched_entities = await self.graphdb.apply(ctx)
         self.logger.debug(
-            "✅ Graph enrichment completed for record %s", ctx.record.id
+            "Graph enrichment completed for record %s", ctx.record.id
         )
         await self._upsert_touched_entities(ctx, touched_entities)
 
@@ -1019,6 +1096,8 @@ class SinkOrchestrator(Transformer):
             try:
                 with stage("entities.upsert", detail=f"{len(touched_entities)} entities"):
                     await self.entity_vector_store.upsert_entities_batch(touched_entities)
+            except PrecisionFlip:
+                raise
             except Exception as exc:
                 # Entity sync is best-effort; do not fail the record pipeline
                 self.logger.warning(
@@ -1048,6 +1127,21 @@ class SinkOrchestrator(Transformer):
             )
             strategy = extraction.strategy
             return extraction
+        except (LLMUnavailableError, ServiceUnavailableError) as exc:
+            # The model provider behind the Extraction service could not serve the request, or the service itself was
+            # unreachable or lost the reply (the client has charged what it may have spent): the stage pauses on it
+            # (every window unavailable), as classify does and as an in-process extraction does. The error rides on the
+            # result, so the pause keeps the provider's retry-after and counts a send only when one may have been made.
+            from app.modules.named_entities.domain.models import ExtractionStats
+
+            cause = exc
+            if isinstance(exc, ServiceUnavailableError):
+                # An open circuit or a refused connection sent nothing; any other failure may have reached the service.
+                cause = LLMUnavailableError(str(exc), sent=bool(getattr(exc, "delivered", True)))
+            return NamedEntityExtraction(
+                status="FAILED", termination_reason="llm_error", strategy="deterministic",
+                stats=ExtractionStats(windows_failed=1, windows_unavailable=1), pause_cause=cause,
+            )
         except Exception as exc:
             # Tracebacks from the model or extraction client can echo document text.
             self.logger.warning(
@@ -1162,6 +1256,28 @@ class SinkOrchestrator(Transformer):
                 "Named-entity persist retry for record %s could not be recorded: %s", record.id, type(exc).__name__
             )
 
+    async def _rewrite_recorded_points(self, ctx: TransformContext) -> None:
+        """A vector-only reindex (no blob write, no diff) writes every point of the record again, so the set of blocks that have a point
+        is whatever it wrote: the stored reconciliation metadata goes through the same path as any other index (the vector store
+        records ``pointedBlocks`` in it and ``_save_reconciliation_metadata`` saves it), with every block to be embedded. A record with
+        no stored metadata has nothing to update; one that cannot be read fails the record."""
+        record = ctx.record
+        if ctx.reconciliation_context is not None or not record.org_id or not record.virtual_record_id:
+            return
+        try:
+            stored = await self.blob_storage.get_reconciliation_metadata(
+                record.virtual_record_id, record.org_id, raise_on_error=True
+            )
+        except Exception as e:
+            # Not an absent document: leaving the recorded set as it was could keep naming a block this run gives no point (an image
+            # on a model that does not embed it), and every later run would carry it. The record fails and is retried; its
+            # index.end writes the failure once.
+            raise IndexingError(
+                message=f"The stored reconciliation metadata of record {record.id} could not be read", record_id=record.id
+            ) from e
+        if isinstance(stored, dict) and stored:
+            ctx.reconciliation_context = ReconciliationContext(new_metadata=dict(stored))
+
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:
             record = ctx.record
@@ -1171,6 +1287,8 @@ class SinkOrchestrator(Transformer):
                 record.virtual_record_id,
                 ctx.reconciliation_context.new_metadata,
                 document_path=ctx.settings.get("storage_path"),
+                # A vector-only reindex has no storage path: it updates the document in place and never creates one at a guessed path.
+                **({"create_if_missing": False} if ctx.settings.get("skip_blob") else {}),
                 connector_id=getattr(record, "connector_id", None),
                 record_group_id=getattr(record, "record_group_id", None),
             )

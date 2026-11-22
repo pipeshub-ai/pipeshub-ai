@@ -7,12 +7,15 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jsonschema import Draft7Validator
 
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.schema import node_validator
 from app.schema.node_validator import SchemaValidationError
+from app.utils.logger import log_record_fields
 
 
 def _rejection() -> SchemaValidationError:
@@ -45,8 +48,40 @@ def test_a_schema_rejection_must_propagate_and_is_logged_at_error_and_counted(ca
         assert proc._must_propagate(_rejection(), MagicMock(explicit=False)) is True
 
     counted.assert_called_once_with("records")
-    assert [r.levelno for r in caplog.records] == [logging.ERROR]
-    assert "records" in caplog.text and "unknown key" in caplog.text
+    [record] = caplog.records
+    assert record.levelno == logging.ERROR
+    assert "records" in record.getMessage() and "unknown key" not in record.getMessage()
+    # Raised by a provider, not by jsonschema: no rule to point at, and nothing breaks.
+    assert (log_record_fields(record)["schema_path"], log_record_fields(record)["validator"]) == (None, None)
+
+
+@pytest.mark.parametrize(("field", "value", "rule", "validator"), [
+    ("name", "Ada Seeded-Lovelace", {"type": "integer"}, "type"),
+    ("email", "ada.seeded@example.com", {"type": "string", "pattern": "^nobody$"}, "pattern"),
+])
+def test_a_quarantined_record_logs_where_and_which_rule_never_the_value(
+    caplog: pytest.LogCaptureFixture, field: str, value: str, rule: dict, validator: str,
+) -> None:
+    error = next(Draft7Validator({"type": "object", "properties": {field: rule}}).iter_errors({field: value}))
+    with pytest.raises(SchemaValidationError) as raised:
+        node_validator._raise("users", error)
+    assert value in raised.value.original_error.message  # control: the validator quotes the value
+    proc = _processor(MagicMock(explicit=False))
+    proc.logger = logging.getLogger("schema-rejection-test")
+    record = MagicMock()
+    record.id = "rec-1"
+    with (
+        caplog.at_level(logging.ERROR, logger="schema-rejection-test"),
+        patch("app.connectors.core.base.data_processor.data_source_entities_processor.record_schema_rejection"),
+    ):
+        proc._quarantine_record(record, raised.value)
+
+    report, quarantine = caplog.records
+    fields = log_record_fields(report)
+    assert (fields["schema_path"], fields["validator"]) == (f"$.{field}", validator)
+    assert "users" in report.getMessage() and "rec-1" in quarantine.getMessage()
+    for r in caplog.records:
+        assert value not in r.getMessage() + str(log_record_fields(r)), r.getMessage()
 
 
 def test_an_ordinary_error_outside_an_explicit_transaction_is_still_swallowed() -> None:

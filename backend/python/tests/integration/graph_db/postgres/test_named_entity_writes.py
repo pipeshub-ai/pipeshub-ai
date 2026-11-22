@@ -312,6 +312,11 @@ class FailOn:
             raise RuntimeError("store down")
         return await self._tx.execute(sql, *a)
 
+    async def fetchval(self, sql: str, *a: object) -> object:
+        if "replace_named_entity_values_stale" in sql:
+            raise RuntimeError("store down")
+        return await self._tx.fetchval(sql, *a)
+
 
 async def test_a_failed_copy_changes_nothing_and_a_retry_completes(w: Org, monkeypatch: pytest.MonkeyPatch) -> None:
     await w.p.create_named_entities_if_absent([w.ne("A")])
@@ -629,3 +634,23 @@ async def test_no_org_is_an_error_not_an_empty_answer(pg_provider) -> None:
                 await call
     finally:
         org_context.pop(token)
+
+
+async def test_the_stale_values_are_found_and_deleted_in_one_statement(w: Org, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A value row committed between a separate read and a delete by id would survive; the plain delete never missed one."""
+    from app.core.db import Tx
+
+    await w.record("src")
+    await w.p.replace_named_entity_values("src", [w.vm("src", "a"), w.vm("src", "b")])
+    sent: list[str] = []
+    for name in ("execute", "fetch", "fetchval"):
+        real = getattr(Tx, name)
+
+        async def wrap(self, sql, *args, _real=real) -> object:
+            if "pipeshub:graph." in sql:
+                sent.append(sql.split("pipeshub:graph.")[1].split(" ")[0])
+            return await _real(self, sql, *args)
+        monkeypatch.setattr(Tx, name, wrap)
+    await w.p.replace_named_entity_values("src", [w.vm("src", "a")])
+    assert "replace_named_entity_values_stale_vetted" in sent and "value_mentions_by_records" not in sent, sent
+    assert await w.values("src") == {w.vm("src", "a")["id"]}

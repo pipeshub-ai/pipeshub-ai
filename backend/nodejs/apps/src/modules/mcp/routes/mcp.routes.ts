@@ -15,6 +15,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { Logger } from '../../../libs/services/logger.service';
 import { OAuthTokenService } from '../../oauth_provider/services/oauth_token.service';
 import { handleMCPRequest } from '../controller/mcp.controller';
+import { mcpAccessGuard } from '../access-policy';
 import {
   mcpOriginGuard,
   mcpRateLimiters,
@@ -44,6 +45,7 @@ export function createMCPRouter(container: Container): Router {
       () => container.get<OAuthTokenService>('OAuthTokenService').mcpResource,
     ),
     limits.perAccount,
+    mcpAccessGuard,
   ];
 
   /**

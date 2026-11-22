@@ -173,7 +173,7 @@ class TestCreateKnowledgeBase:
 
     @pytest.mark.asyncio
     async def test_hidden_kb_is_owned_by_owner_user_id_not_the_caller(self, service) -> None:
-        async def lookup(*, user_id: str, **_kwargs: object) -> dict | None:
+        async def lookup(user_id: str, **_kwargs: object) -> dict | None:
             users = {
                 "editor-1": {"id": "ek1", "_key": "ek1", "fullName": "Ed", "orgId": "org1"},
                 "owner-1": {"id": "ok1", "_key": "ok1", "fullName": "Ow", "orgId": "org1"},
@@ -224,7 +224,7 @@ class TestCreateKnowledgeBase:
 
     @pytest.mark.asyncio
     async def test_owner_in_another_org_is_not_found(self, service) -> None:
-        async def lookup(*, user_id: str, **_kwargs: object) -> dict | None:
+        async def lookup(user_id: str, **_kwargs: object) -> dict | None:
             if user_id == "editor-1":
                 return {"id": "ek1", "orgId": "org1"}
             return {"id": "ok1", "orgId": "org-other"}
@@ -285,7 +285,7 @@ class TestCreateKnowledgeBase:
     async def test_hidden_create_does_not_demote_the_requester_via_reader_grants(
         self, service,
     ) -> None:
-        async def lookup(*, user_id: str, **_kwargs: object) -> dict | None:
+        async def lookup(user_id: str, **_kwargs: object) -> dict | None:
             users = {
                 "editor-1": {"id": "ek1", "_key": "ek1", "fullName": "Ed", "orgId": "org1"},
                 "owner-1": {"id": "ok1", "_key": "ok1", "fullName": "Ow", "orgId": "org1"},
@@ -870,11 +870,32 @@ class TestDeleteKnowledgeBase:
 
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
-        assert calls[:3] == [
+        assert calls[:4] == [
             "intent:/services/entityCleanup/pending/kb1",
             "intent:/services/storageRelease/pending/kb1",
+            "intent:/services/lateWriteSweep/pending/kb1",
             "graph-delete",
         ]
+
+    @pytest.mark.asyncio
+    async def test_the_late_write_intent_keeps_the_kbs_record_group(self, service, mock_config_service) -> None:
+        """A KB file's code links carry the KB's record group and no connectorId, and the group goes with the delete."""
+        written: dict[str, dict] = {}
+
+        async def record(key, value) -> bool:
+            written[key] = value
+            return True
+
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "kb1"}])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
+        mock_config_service.get_config = AsyncMock(return_value=None)
+        mock_config_service.set_config = AsyncMock(side_effect=record)
+
+        assert (await service.delete_knowledge_base("kb1", "user1", "org1"))["success"] is True
+        assert written["/services/lateWriteSweep/pending/kb1"]["recordGroupIds"] == ["kb1"]
+        assert service.graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {"connectorId": "kb1"}
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service, mock_config_service) -> None:
@@ -1028,7 +1049,8 @@ class TestDeleteKBStorageCleanup:
             mock_asyncio.create_task.call_args[0][0].close()
 
         assert calls == [
-            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1", "delete",
+            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1",
+            "/services/lateWriteSweep/pending/kb1", "delete",
         ]
 
     @pytest.mark.asyncio
@@ -3239,9 +3261,8 @@ class TestMoveRecord:
 
 
 # ===========================================================================
-# list_kb_records
+# get_folder_children
 # ===========================================================================
-
 
 
 class TestGetFolderChildren:
@@ -3354,43 +3375,6 @@ class TestGetKbChildrenExtended:
         result = await service.get_kb_children("kb1", "user1")
         assert result["success"] is False
         assert result["code"] == 500
-
-
-class TestListKbRecordsExtended:
-    @pytest.mark.asyncio
-    async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(side_effect=RuntimeError("db"))
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert "error" in result
-        assert result["pagination"]["totalCount"] == 0
-
-
-class TestListKbRecords:
-    @pytest.mark.asyncio
-    async def test_a_failed_user_read_is_an_error_not_a_missing_user(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        service.graph_provider.get_user_by_user_id.assert_awaited_once_with(user_id="user1", raise_on_error=True)
-        assert result.get("code") != 404
-        assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await service.list_kb_records("kb1", "ghost", "org1")
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_pagination(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(
-            return_value=([{"id": "r1"}], 25, {"recordTypes": ["FILE"]})
-        )
-        result = await service.list_kb_records("kb1", "user1", "org1", page=2, limit=10)
-        assert result["pagination"]["page"] == 2
-        assert result["pagination"]["totalPages"] == 3
 
 
 # ===========================================================================

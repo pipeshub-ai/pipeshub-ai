@@ -297,8 +297,6 @@ class BoxConnector(BaseConnector):
         # One sync at a time per connector: runs share the As-User context, the read flag and the cursor.
         self._sync_lock = asyncio.Lock()
         self._sync_owner: asyncio.Task | None = None
-        self._webhook_run_pending = False
-        self._webhook_tasks: set[asyncio.Task] = set()
 
     @asynccontextmanager
     async def _one_sync_at_a_time(self) -> AsyncGenerator[None, None]:
@@ -2569,23 +2567,9 @@ class BoxConnector(BaseConnector):
             return False
 
     def handle_webhook_notification(self, notification: Dict) -> None:
-        """Queue one incremental sync; notifications that arrive while it waits are covered by it."""
-        if self._webhook_run_pending:
-            self.logger.info("Box webhook received; an incremental sync is already queued and will include it.")
-            return
-        self.logger.info("Box webhook received. Queuing an incremental sync.")
-        self._webhook_run_pending = True
-        task = asyncio.create_task(self._run_queued_sync())
-        self._webhook_tasks.add(task)
-        task.add_done_callback(self._webhook_tasks.discard)
-
-    async def _run_queued_sync(self) -> None:
-        async with self._one_sync_at_a_time():
-            # Cleared as the run starts, so a change that lands during it queues the next one.
-            self._webhook_run_pending = False
-            # run_sync, not run_incremental_sync: after an incomplete full sync it must be a full sync
-            # again, and an incremental run here would store or refresh the cursor over the gap.
-            await self.run_sync()
+        """Ask for a sync; one asked for while another runs is re-issued after it."""
+        self.logger.info("Box webhook received. Requesting a sync.")
+        self.request_sync()
 
     @classmethod
     async def create_connector(

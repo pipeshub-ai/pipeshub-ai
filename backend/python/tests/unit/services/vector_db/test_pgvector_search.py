@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 
 import pytest
 
+from app.core.db import ConnectionLost, DbError, DbTimeout, TooManyConnections
 from app.services.vector_db.pgvector import dense, fusion, validate
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.services.vector_db.pgvector.tuning import Tuning
 from app.services.vector_db.pgvector.visibility import Scope
+from tests.support.eventually import done_without_waiting
 
 T = Tuning()
 N = T.n_e0
@@ -384,9 +387,9 @@ def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None
         for fn, count in _built_statements(path.read_text()).items():
             found[(path.name, fn)] = count
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
-    # conditions and the scope filter's one condition: fixed text, every value a ``$n``)
+    # conditions and the scope filter's condition in its two forms, admitting and deferring: fixed text, every value a ``$n``)
     assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,
-                     ("lexical.py", "lexical_sql"): 1, ("scope_filter.py", "predicate"): 1, ("sql_filters.py", "_match"): 2,
+                     ("lexical.py", "lexical_sql"): 1, ("scope_filter.py", "predicate"): 2, ("sql_filters.py", "_match"): 2,
                      ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
 
 
@@ -469,9 +472,80 @@ async def test_connector_checks_that_miss_together_share_one_read() -> None:
     sizer = dense.Sizer(Db(), T)
     with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
         got = await asyncio.gather(*[sizer.connectors(ORG, 1) for _ in range(8)])
-        assert all(g == frozenset({"c1"}) for g in got) and len(reads_made) == 1
-        await sizer.connectors(ORG, 1)
+        assert got == [None] * 8 and len(reads_made) == 1                             # the arms apply while the one check runs
+        await asyncio.sleep(0.1)
+        assert await sizer.connectors(ORG, 1) == frozenset({"c1"})
         assert len(reads_made) == 1                                                   # and the answer is reused for its ttl
+
+
+class _SlowPoolDb:
+    """A unit of work like the kernel's: it first waits ``wait_s`` for a pooled connection, and a caller's ``timeout_ms`` covers that wait
+    and the statements together (a wait longer than it is a timeout). The checked org has one connector and no unconnected point."""
+
+    def __init__(self, wait_s: float, *, fail: Exception | None = None) -> None:
+        self.wait_s, self.fail, self.runs, self.budgets = wait_s, fail, 0, []
+
+    async def run(self, fn, **opts: object) -> object:
+        import asyncio
+
+        from app.core.db import DbTimeout
+
+        self.runs += 1
+        await asyncio.sleep(self.wait_s)
+        timeout_ms = opts.get("timeout_ms")
+        if timeout_ms is not None and self.wait_s * 1000 >= timeout_ms:
+            raise DbTimeout("the statement ran out of the budget the pool wait used up")
+        if self.fail is not None:
+            raise self.fail
+        budgets = self.budgets
+
+        class Tx:
+            async def fetch(self, sql: str, *a: object) -> list:
+                return [{"member_id": "c1"}]
+
+            async def fetchval(self, sql: str, *a: object) -> object:
+                if "statement_timeout" in sql:
+                    budgets.append(a)
+                    return None
+                return False
+
+        return await fn(Tx())
+
+
+@pytest.mark.asyncio
+async def test_a_search_never_waits_for_the_connector_check_and_a_slow_pool_does_not_make_it_fail() -> None:
+    """Under load the wait for a pooled connection used up the check's whole budget, so it failed and the arms stayed on for
+    ``connector_fail_ttl_s``. The check now runs beside the searches, and its budget is the statements' own."""
+    import asyncio
+
+    from app.core import org_context
+
+    db = _SlowPoolDb(0.3)                                                             # longer than connector_check_ms (150 ms by default)
+    sizer = dense.Sizer(db, dataclasses.replace(T, connector_check_ms=150))
+    with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
+        assert done_without_waiting(sizer.connectors(ORG, 1)) is None                 # the search goes on with the arms
+        await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)
+        assert await sizer.connectors(ORG, 1) == frozenset({"c1"})                     # the check finished despite the wait
+        assert db.runs == 1 and db.budgets == [(150,)]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_connector_check_keeps_the_arms_and_only_a_statement_timeout_waits_the_long_back_off() -> None:
+    import asyncio
+
+    from app.core import org_context
+    from app.core.db import DbTimeout, PoolTimeout
+
+    t = dataclasses.replace(T, connector_ttl_s=0.0, connector_fail_ttl_s=300.0)
+    for fail, again in ((PoolTimeout("no pooled connection"), True), (DbTimeout("canceling statement due to statement timeout"), False)):
+        db = _SlowPoolDb(0.0, fail=fail)
+        sizer = dense.Sizer(db, t)
+        with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
+            assert await sizer.connectors(ORG, 1) is None
+            await asyncio.sleep(0.05)
+            assert await sizer.connectors(ORG, 1) is None                              # fails closed: the arms stay on
+            await asyncio.sleep(0.05)
+            assert db.runs == (2 if again else 1), fail                                # a busy pool is asked again soon; a big org is not
 
 
 # ---- the lexical leg -------------------------------------------------------------------------------------------------------------------
@@ -563,7 +637,7 @@ async def test_a_selective_condition_pages_further_into_the_function_rows_and_sa
     assert len(rows) == 10 and len(tx.calls) == 1
 
 
-@pytest.mark.parametrize(("error", "reason"), [("DbTimeout", "timeout"), ("PoolTimeout", "timeout"), ("ConnectionLost", "error"), ("DbError", "error")])
+@pytest.mark.parametrize(("error", "reason"), [("DbTimeout", "timeout"), ("PoolTimeout", "timeout"), ("DbError", "error")])
 async def test_a_lexical_leg_that_fails_answers_nothing_and_says_why(error: str, reason: str, caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
@@ -571,11 +645,97 @@ async def test_a_lexical_leg_that_fails_answers_nothing_and_says_why(error: str,
     from app.services.vector_db.models import SparseVector
     from app.services.vector_db.pgvector import lexical
 
-    exc = errors.ConnectionLost("down", retry_safe=True) if error == "ConnectionLost" else getattr(errors, error)("down")
+    exc = getattr(errors, error)("down")
     caplog.set_level(logging.WARNING)
     rows, degraded = await lexical.search(_LexDb(raises=exc), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
     assert rows == [] and degraded == reason
     assert any(r.levelno >= (logging.ERROR if reason == "error" else logging.WARNING) for r in caplog.records)
+
+
+async def test_a_lexical_leg_that_cannot_reach_the_database_fails_the_search_without_an_error_line(caplog: pytest.LogCaptureFixture) -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    lost = ConnectionLost("cannot connect", retry_safe=True)
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(ConnectionLost) as raised:
+        await lexical.search(_LexDb(raises=lost), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    assert raised.value is lost and not caplog.records      # the search retry answers it as unavailable; no traceback here
+
+
+class _ScriptedDb:
+    """``run`` raises the next scripted error: the sizing read first, then the bounded degraded read."""
+
+    def __init__(self, *errors: Exception) -> None:
+        self.errors = list(errors)
+
+    async def run(self, fn: object, **_: object) -> object:
+        raise self.errors.pop(0)
+
+
+def _lost() -> ConnectionLost:
+    return ConnectionLost("cannot connect", retry_safe=True)
+
+
+@pytest.mark.parametrize("first", [None, DbTimeout("busy")], ids=["sizing-read", "degraded-read"])
+async def test_a_dense_leg_that_cannot_reach_the_database_fails_instead_of_answering_an_empty_degraded_leg(first) -> None:
+    db = _ScriptedDb(*([first] if first else []), _lost())
+    with pytest.raises(ConnectionLost):
+        await dense.search(db, dense.Sizer(db, T), query(), T)
+
+
+async def test_a_dense_leg_that_hits_another_database_failure_still_answers_an_empty_overload_leg() -> None:
+    db = _ScriptedDb(DbTimeout("busy"), DbError("no slot"))
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
+    assert leg.rows == [] and leg.degraded == "overload"
+
+
+async def test_a_pgvector_search_that_cannot_reach_the_database_ends_unavailable_after_one_retry() -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.vector_db.models import SearchFailureKind
+    from app.services.vector_db.pgvector.errors import classify_pg_search_error
+    from app.services.vector_db.search_retry import (
+        VectorSearchUnavailableError,
+        query_nearest_points_with_retry,
+    )
+
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(side_effect=[_lost(), _lost()])
+    service.transient_search_error = classify_pg_search_error
+    service.get_service_name = MagicMock(return_value="pgvector-f58f")
+    with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock), pytest.raises(VectorSearchUnavailableError) as raised:
+        await query_nearest_points_with_retry(service, "records", ["req"], logger=logging.getLogger("t"))
+    assert raised.value.kind is SearchFailureKind.UNAVAILABLE and service.query_nearest_points.await_count == 2
+
+
+@pytest.mark.parametrize(("lost", "attempts", "recovers"), [
+    pytest.param(TooManyConnections(), 1, False, id="53300-full-server"),
+    pytest.param(ConnectionLost("connection lost", retry_safe=False), 2, True, id="loss-after-a-statement"),
+])
+async def test_a_full_server_gets_one_search_attempt_and_any_other_connection_loss_two(lost, attempts, recovers) -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.vector_db.models import SearchFailureKind
+    from app.services.vector_db.pgvector.errors import classify_pg_search_error
+    from app.services.vector_db.search_retry import (
+        VectorSearchUnavailableError,
+        query_nearest_points_with_retry,
+    )
+
+    results = [[MagicMock()]]
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(side_effect=[lost, results])
+    service.transient_search_error = classify_pg_search_error
+    service.get_service_name = MagicMock(return_value="pgvector-f58f-full")
+    with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+        if recovers:      # a read search is safe to run again, whatever retry_safe said about the unit
+            assert await query_nearest_points_with_retry(service, "records", ["req"], logger=logging.getLogger("t")) is results
+        else:             # unavailable, as the plan says, but no second attempt on a server with no slot left
+            with pytest.raises(VectorSearchUnavailableError) as raised:
+                await query_nearest_points_with_retry(service, "records", ["req"], logger=logging.getLogger("t"))
+            assert raised.value.kind is SearchFailureKind.UNAVAILABLE and raised.value.__cause__ is lost
+    assert service.query_nearest_points.await_count == attempts
 
 
 def test_a_weight_that_does_not_fit_a_32_bit_float_is_refused() -> None:

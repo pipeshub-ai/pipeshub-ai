@@ -24,7 +24,6 @@ HUB = 4 * LIMIT        # more hidden rows than any page or limit below
 @pytest.fixture(autouse=True)
 def small_caps(monkeypatch) -> None:
     monkeypatch.setattr(nb, "_ROWS_PER_ANCHOR", LIMIT)
-    monkeypatch.setattr(query, "_ENTRY_CALLER_PAGE", LIMIT)
     monkeypatch.setattr(path_mod, "_FRONTIER_LIMIT", LIMIT)
     monkeypatch.setattr(path_mod, "_CALLER_PROBE", LIMIT)
     monkeypatch.setattr(ops, "_DEGREE_PAGE", 1)
@@ -194,7 +193,7 @@ class Unpaged(FakeGraphProvider):
 @pytest.mark.parametrize("cursor", [{}, {"cursor": "same"}])
 async def test_a_provider_that_ignores_after_is_an_error_not_a_loop_or_a_keyerror(cursor) -> None:
     g = Unpaged(cursor)
-    with pytest.raises(RuntimeError, match="Failed to walk"):
+    with pytest.raises(RuntimeError, match="did not advance its cursor"):
         await _readable_neighbour_rows(g, ORG, RecordAccess(g, ORG, USER), ["k_caller"], ["CALLS"], "outbound",
                                        page=2, budget=100)
 

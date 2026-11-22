@@ -21,6 +21,7 @@ from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.qdrant import QdrantService
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.redis_vector import RedisVectorService
+from tests.support.redis_schema import with_schema
 
 ORG = "a" * 24
 DENSE = [0.1, 0.2, 0.3, 0.4]
@@ -67,7 +68,7 @@ def _opensearch() -> tuple[Any, AsyncMock]:
 
 
 def _redis(tagvals: list[bytes], info: list | None = None) -> tuple[Any, AsyncMock]:
-    svc = RedisVectorService(RedisVectorConfig(host="localhost", port=6379))
+    svc = with_schema(RedisVectorService(RedisVectorConfig(host="localhost", port=6379)))
     client = AsyncMock()
 
     async def execute(*cmd: Any) -> Any:  # noqa: ANN401

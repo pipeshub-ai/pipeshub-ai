@@ -19,7 +19,11 @@ from app.modules.parsers.code_parser.models import DECLARATION, EXPLICIT
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-__all__ = ["BlockRow", "SymbolIndex", "build_symbol_index"]
+__all__ = ["OVERRIDING_KINDS", "BlockRow", "SymbolIndex", "build_symbol_index"]
+
+# The kinds the method index holds, so the only ones OVERRIDES edges are drawn between (edge_builder) and the
+# only ones whose override lookup the code-graph tools make.
+OVERRIDING_KINDS = frozenset({"method", "constructor"})
 
 _REPEAT = re.compile(r"#\d+(?=\.|$)")
 
@@ -192,7 +196,7 @@ class SymbolIndex:
         if row.name:
             self.by_name[row.name].append(row.key)
             self.names_by_record[row.record_id].add(row.name)
-            if row.parent_block_id and row.kind in ("method", "constructor"):
+            if row.parent_block_id and row.kind in OVERRIDING_KINDS:
                 explicit = next((m[len(EXPLICIT):] for m in row.modifiers if m.startswith(EXPLICIT)), None)
                 if explicit:
                     # `Task IHandler.Handle(..)` is IHandler.Handle's implementation, never `Handle` of its type.

@@ -49,33 +49,57 @@ def test_a_hostile_svg_is_refused_quickly_by_the_static_checks(name: str) -> Non
     assert time.process_time() - start < 5.0
 
 
-def test_refusing_too_many_elements_costs_the_same_however_many_there_are() -> None:
+def test_refusing_too_many_elements_costs_the_same_however_many_there_are(monkeypatch: pytest.MonkeyPatch) -> None:
     """Counting stops at the limit, so twenty times the elements is not twenty
-    times the work."""
+    times the work: counted as the elements the parser built, not timed (a CPU-time
+    ratio against the smaller document failed at 3.03x on a loaded runner)."""
+    from app.modules.parsers.image_parser import svg_core
 
-    def refuse(n: int) -> float:
-        svg = _b64('<svg xmlns="http://www.w3.org/2000/svg">' + "<g/>" * n + "</svg>")
-        best = float("inf")
-        for _ in range(3):
-            start = time.process_time()
-            with pytest.raises(DocumentProcessingError):
-                ImageParser._svg_to_png_in_process(svg)
-            best = min(best, time.process_time() - start)
-        return best
+    built: list[int] = []
+    real_builder = svg_core._budget_builder
 
-    at_limit, far_past = refuse(60_000), refuse(1_200_000)
-    assert far_past < max(at_limit, 0.05) * 3, (at_limit, far_past)
+    def counting_builder() -> object:
+        builder = real_builder()
+        start = builder.start
+
+        def counted(tag: str, attrs: dict[str, str]) -> object:
+            built[-1] += 1
+            return start(tag, attrs)
+
+        builder.start = counted
+        return builder
+
+    monkeypatch.setattr(svg_core, "_budget_builder", counting_builder)
+
+    def refuse(n: int) -> int:
+        built.append(0)
+        with pytest.raises(DocumentProcessingError):
+            ImageParser._svg_to_png_in_process(_b64('<svg xmlns="http://www.w3.org/2000/svg">' + "<g/>" * n + "</svg>"))
+        return built[-1]
+
+    assert refuse(60_000) == refuse(1_200_000) == svg_core._MAX_SVG_ELEMENTS + 1
+
+
+# The refusal each hostile SVG gets from the renderer's budget checks.
+REFUSED_AS = {
+    "use chain": "SVG expands to too much to rasterise",
+    "entities": "SVG uses entities or DTDs",
+    "deep nesting": "SVG is too complex to rasterise",
+    "huge size": "SVG would be rasterised too large",
+    "huge viewBox": "SVG would be rasterised too large",
+    "too many elements": "SVG is too complex to rasterise",
+}
 
 
 @pytest.mark.parametrize("name", sorted(HOSTILE))
 def test_a_hostile_svg_is_refused_through_the_renderer(name: str) -> None:
-    # A warm renderer first, so the timed window is the refusal, not a cold
-    # start (each test process starts its own renderers).
+    # A warm renderer first, so the refusal comes from a running renderer, not a cold start.
     ImageParser.svg_base64_to_png_base64(_b64(GOOD_SVG))
-    start = time.monotonic()  # wall-clock: the refusal happens in the child
-    with pytest.raises(DocumentProcessingError):
+    with pytest.raises(DocumentProcessingError) as err:
         ImageParser.svg_base64_to_png_base64(_b64(HOSTILE[name]))
-    assert time.monotonic() - start < 2.0
+    # Refused by the renderer's budget check, told apart by the reason rather than the wall time (which a busy runner
+    # stretches past a small bound): not stopped at the deadline, not a renderer that died or sent an unreadable reply.
+    assert REFUSED_AS[name] in str(err.value), err.value
 
 
 def test_an_oversized_svg_is_refused_before_it_is_parsed() -> None:

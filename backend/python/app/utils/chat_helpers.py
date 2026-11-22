@@ -16,6 +16,7 @@ from uuid import uuid4
 if TYPE_CHECKING:
     from jinja2 import Template
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.config.constants.service import config_node_constants
@@ -74,6 +75,7 @@ from app.utils.text_fragments import (  # noqa: F401  (re-exported for existing 
     SourceFormat,
     build_text_fragment_url,
 )
+from app.utils.user_lookup import get_caller_user
 
 valid_group_labels = [
         GroupType.LIST.value,
@@ -1476,8 +1478,9 @@ async def _build_linked_record_context_metadata(
         blob_record = None
         if vrid and blob_store and org_id:
             try:
+                # Only metadata and the summary are used: the blocks need not be decoded.
                 blob_record = await record_artifact_reader(blob_store).read_record(
-                    vrid, org_id, lookup=lookup_result
+                    vrid, org_id, lookup=lookup_result, head_only=True
                 )
             except Exception as e:
                 logger.debug(
@@ -1616,7 +1619,7 @@ async def resolve_frontend_url(
         return None
     try:
         endpoints_config = await config_service.get_config(
-            config_node_constants.ENDPOINTS.value, default={},
+            config_node_constants.ENDPOINTS.value, default={}, use_cache=True,
         )
         if isinstance(endpoints_config, dict):
             return endpoints_config.get("frontend", {}).get("publicEndpoint")
@@ -1755,22 +1758,16 @@ async def _resolve_target_metadata(
             })
         return resolved
 
-    doc_results, vrid_result = await asyncio.gather(
-        _fetch_docs(),
-        graph_provider.get_virtual_record_ids_for_record_ids(list(context_ids)),
-        return_exceptions=True,
-    )
+    try:
+        doc_results = await _fetch_docs()
+    except Exception as e:
+        doc_results = e
 
     # Populate doc_index from fetched docs
     if ids_needing_docs and not isinstance(doc_results, Exception):
         for rid, doc in doc_results.items():
             if doc and isinstance(doc, dict):
                 doc_index[rid] = doc  # noqa: PERF403
-
-    # Build id -> vrid mapping
-    id_to_vrid: dict[str, str] = {}
-    if not isinstance(vrid_result, Exception) and isinstance(vrid_result, dict):
-        id_to_vrid = vrid_result
 
     # Build context for out-of-context, non-deleted IDs
     out_of_context_ids = [
@@ -1781,6 +1778,22 @@ async def _resolve_target_metadata(
 
     context_map: dict[str, str] = {}
     if out_of_context_ids:
+        # Each of these has its graph record doc in hand, and that doc carries
+        # the virtual record id the lookup query would return; only docs
+        # without one (e.g. a projection that left it out) are asked for.
+        id_to_vrid: dict[str, str] = {
+            rid: vrid for rid in out_of_context_ids
+            if (vrid := doc_index[rid].get("virtualRecordId"))
+        }
+        unresolved = [rid for rid in out_of_context_ids if rid not in id_to_vrid]
+        if unresolved:
+            try:
+                vrid_result = await graph_provider.get_virtual_record_ids_for_record_ids(unresolved)
+                if isinstance(vrid_result, dict):
+                    id_to_vrid.update(vrid_result)
+            except Exception as e:
+                logger.warning("Linked record context: virtual record id lookup failed: %s", e)
+
         # Resolve both per-record lookups once for the whole batch. Each linked
         # record otherwise pays its own virtual-record mapping query inside
         # read_record, plus its own type-specific get_document.
@@ -1931,9 +1944,9 @@ async def accessible_node_ids(
     if not node_ids or not user_id or not org_id:
         return set()
     try:
-        user = await graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+        user = await get_caller_user(graph_provider, user_id, raise_on_error=True)
     except Exception as exc:
-        raise PermissionVerificationUnavailableError(str(exc)) from exc
+        raise PermissionVerificationUnavailableError() from exc
     user_key = (user or {}).get("id") or (user or {}).get("_key")
     if not user_key:
         return set()
@@ -3951,16 +3964,18 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
             extension = meta.get("extension")
             if extension is None:
                 extension = get_extension_from_mimetype(mime_type)
+            # An .xlsm's rows are cited as an .xlsx's are, a .docm's text as a .docx's.
+            cited_as = file_types.blocks_like(extension)
 
             block_num = meta.get("blockNum")
             if block_num is None:
-                if extension == "xlsx" or extension == "tsv":
+                if cited_as == "xlsx" or cited_as == "tsv":
                     # Guard against non-dict data
                     if isinstance(data, dict):
                         block_num = [data.get("row_number", 1)]
                     else:
                         block_num = [1]
-                elif extension == "csv":
+                elif cited_as == "csv":
                     if isinstance(data, dict):
                         block_num = [data.get("row_number", 1)-1]
                     else:
@@ -4032,12 +4047,12 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                         "hideWeburl": hide_weburl,
                         "updatedAt": record_updated_at_iso,
                     }
-            if extension == "xlsx" or meta.get("sheetName"):
+            if cited_as == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):
                     enhanced_metadata["sheetName"] = data.get("sheet_name", "")
                 else:
                     enhanced_metadata["sheetName"] = meta.get("sheetName", "")
-            if extension == "xlsx" or meta.get("sheetNum"):
+            if cited_as == "xlsx" or meta.get("sheetNum"):
                 if isinstance(data, dict):
                     enhanced_metadata["sheetNum"] = data.get("sheet_number", 1)
                 else:
@@ -4352,7 +4367,7 @@ def create_block_from_metadata(metadata: dict[str, Any],page_content: str) -> di
             # _process_flattened_results takes its existing "missing uri" skip
             # path instead of crashing on `str.get`.
             data = {"uri": None, "description": page_content}
-        elif extension == "docx":
+        elif file_types.blocks_like(extension) == "docx":
             data = page_content
         else:
             data = metadata.get("blockText",page_content)

@@ -11,7 +11,7 @@ import pytest
 
 from app.events.events import EventProcessor
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
-
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,6 +30,7 @@ def _make_event_processor():
         "virtualRecordId": "vrid-1",
     })
     graph_provider.update_node = AsyncMock(return_value=True)
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     graph_provider.get_departments = AsyncMock(return_value=[])
     config_service = AsyncMock()
 

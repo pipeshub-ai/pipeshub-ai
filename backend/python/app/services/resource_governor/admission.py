@@ -114,16 +114,19 @@ async def acquire_gate_with_backpressure(
         except asyncio.CancelledError:
             await _cancel_and_release_if_granted(acquire_task, gate, cost)
             raise
-        if not admitted:
-            logger.warning(
-                "%s saturated: %s gate timeout after %.0fs (in_use=%d/%d); "
-                "returning 429 backpressure to let the caller retry/back off",
-                log_prefix, tier.value, gate_timeout_seconds, gate.in_use, max_slots,
-            )
-            SemaphoreLogger.log_message_error(
-                message_id, f"{log_prefix} gate timeout — 429 backpressure"
-            )
-            return False
+
+    if not admitted:
+        # The gate's own timeout can expire before the warn window ends (a short
+        # configured timeout), so this also covers a wait that never reached the warn branch.
+        logger.warning(
+            "%s saturated: %s gate timeout after %.0fs (in_use=%d/%d); "
+            "returning 429 backpressure to let the caller retry/back off",
+            log_prefix, tier.value, gate_timeout_seconds, gate.in_use, max_slots,
+        )
+        SemaphoreLogger.log_message_error(
+            message_id, f"{log_prefix} gate timeout — 429 backpressure"
+        )
+        return False
 
     wait_ms = (time.monotonic() - start) * 1000
     SemaphoreLogger.log_semaphore_acquired(

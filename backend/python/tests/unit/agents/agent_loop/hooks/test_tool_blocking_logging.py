@@ -64,3 +64,18 @@ def test_a_model_made_tool_path_is_capped(caplog: pytest.LogCaptureFixture) -> N
     (record,) = _blocked(caplog)
     assert log_record_fields(record)["tool_path"] == path[:MAX_LOGGED_TOOL_NAME]
     assert tracker.is_blocked(path)          # the cap is the log's only: blocking still keys on the full path
+
+
+async def test_a_call_refused_after_the_streak_names_why() -> None:
+    from app.agent_loop_lib.hooks.middleware.context import ToolCallContext
+
+    tracker = ToolErrorTracker()
+    for turn in range(3):
+        tracker.record(_PATH, is_error=True, turn_index=turn)
+    ctx = ToolCallContext(tool_path=_PATH, tool_input={})
+
+    async def _next() -> None:
+        raise AssertionError("a blocked tool must not run")
+
+    await tracker.pre_tool_use(ctx, _next)
+    assert ctx.decision_code == "consecutive_failures"

@@ -18,11 +18,11 @@ from app.models.blocks import (
     summary_with_captions,
 )
 from app.utils.indexing_metrics import track_indexing_enrichment
-from app.utils.llm import get_llm_for_role
 from app.utils.table_enrichment import (
     TableEnrichmentResult,
     enrich_table_grid,
     enrich_tables,
+    indexing_llm_or_none,
     simple_table_enrichment,
 )
 from app.utils.transformation.bbox import (
@@ -369,7 +369,7 @@ class DoclingDocToBlocksConverter():
                 self.logger.warning(f"Table {ref_path} missed pre-enrichment; enriching inline")
                 fallback_llm = llm
                 if fallback_llm is None:
-                    fallback_llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                    fallback_llm = await indexing_llm_or_none(self.config, self.logger)
                 enrichment = await enrich_table_grid(
                     fallback_llm,
                     table_grid,
@@ -534,7 +534,7 @@ class DoclingDocToBlocksConverter():
                 if skip_table_enrichment:
                     results = [simple_table_enrichment(grid) for grid in grids]
                 else:
-                    llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                    llm = await indexing_llm_or_none(self.config, self.logger)
                     results = await enrich_tables(
                         llm,
                         grids,

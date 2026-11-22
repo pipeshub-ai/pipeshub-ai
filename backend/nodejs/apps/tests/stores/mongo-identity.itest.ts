@@ -75,6 +75,7 @@ describe('Identity repositories against a real MongoDB', function () {
     identity: new MongoIdentityPort(),
     uow: new MongoUnitOfWork(rsAvailable),
     transactional: rsAvailable,
+    adminLease: true,
     newOrg: async () => {
       const org = await Org.create({
         registeredName: 'Contract Org',
@@ -88,6 +89,9 @@ describe('Identity repositories against a real MongoDB', function () {
     newId: () => new mongoose.Types.ObjectId().toString(),
     clearOrgAuth: async () => {
       await OrgAuthConfig.deleteMany({});
+    },
+    storeRemovedSignInMethods: async (orgId, methods) => {
+      await OrgAuthConfig.updateOne({ orgId }, { $set: { removedSignInMethods: methods } });
     },
   });
 

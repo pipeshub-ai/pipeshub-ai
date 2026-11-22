@@ -2,7 +2,7 @@
 
 The answers are those of ``Neo4jProvider``. Every statement binds the ambient org and the org argument matches the documents' ``orgId``. A failed read
 raises: nothing here answers "empty" or "all" for "failed". A list of ids or connectors that is empty matches nothing, and an empty ``within`` admits nothing.
-``get_permitted_entity_records`` is not the access decision (it reads neither the access rule nor the connector gate): its callers decide each row with ``check_access``.
+``get_permitted_entity_records`` is not the access decision (it reads the access rule only so far that a record needing its own grant, RESTRICTED or PARENT_AND_GRANT, takes its role from its own grants alone, never from what it inherits, and it does not read the connector gate): its callers decide each row with ``check_access``.
 Every statement is a literal with bound parameters.
 """
 from __future__ import annotations
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _C = CollectionNames
+_ROLE_BATCH = 50      # candidates whose roles are read by one statement
 # entity type -> (edge collection from the record, the collections of the entity, how its org is matched)
 _TARGETS: dict[str, tuple[str, tuple[str, ...], str]] = {
     EntityType.DEPARTMENT.value: (_C.BELONGS_TO_DEPARTMENT.value, (_C.DEPARTMENTS.value,), "none"),
@@ -165,8 +166,13 @@ class EntityAccessMixin(PgBase):
                         return None
                     found, capped = await self._scan(tx, org, org_id, typ, ref, record_types, scopes, max(0, offset), max(1, window))
                     hits = []
+                    roles: dict[str, Any] = {}
                     for pos, (rid, doc) in enumerate(found):
-                        if doc.get("connectorId") in apps or await self._role_on(tx, org, user_key, "records", rid):
+                        if doc.get("connectorId") not in apps and rid not in roles:      # the roles of the next candidates, as many as hits are still wanted (at most a batch): none is read past the limit
+                            # every candidate may be a hit, an app-level one too: only the next ``limit - len(hits)`` of them can be read before the limit
+                            ahead = [i for i, d in found[pos:pos + min(_ROLE_BATCH, limit - len(hits))] if d.get("connectorId") not in apps and i not in roles]
+                            roles.update(await self._roles_on(tx, org, user_key, "records", ahead))
+                        if doc.get("connectorId") in apps or roles[rid]:
                             hits.append({"pos": pos, "row": _row(rid, doc)})
                             if len(hits) >= limit:
                                 break
@@ -227,18 +233,20 @@ class EntityAccessMixin(PgBase):
                   UNION ALL SELECT g.to_id, NULL FROM graph.edges b JOIN graph.nodes o ON o.org_id = b.org_id AND o.coll = 'organizations' AND o.id = b.to_id
                     JOIN graph.edges g ON g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = 'organizations' AND g.from_id = o.id AND g.to_coll = 'recordGroups' AND g.doc->>'type' = 'ORG'
                     WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION')
-                SELECT DISTINCT rg.id, coalesce((rg.doc->>'hideChildren')::boolean, false) AS hide FROM reach JOIN graph.nodes rg ON rg.org_id = $1 AND rg.coll = 'recordGroups' AND rg.id = reach.rg
+                SELECT DISTINCT rg.id, coalesce((rg.doc->>'hideChildren')::boolean, false) AS hide, rg.doc->>'connectorId' AS cid FROM reach JOIN graph.nodes rg ON rg.org_id = $1 AND rg.coll = 'recordGroups' AND rg.id = reach.rg
                 WHERE rg.doc->>'orgId' = $5 AND coalesce((rg.doc->>'isDeleted')::boolean, false) = false AND rg.doc->>'connectorId' = ANY($6::text[])
                   AND (reach.cid IS NULL OR rg.doc->>'connectorId' = reach.cid)""",
                                     org, uk, [p for p, _ in principals], [c for _, c in principals], org_id, levels)
-            roots = [r["id"] for r in seeds if not r["hide"]]
-            nested = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_nested */ WITH RECURSIVE w(id, depth) AS (
-                  SELECT x, 0 FROM unnest($2::text[]) x
-                  UNION SELECT i.from_id, w.depth + 1 FROM w JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.to_coll = 'recordGroups' AND i.to_id = w.id
-                    AND i.from_coll = 'recordGroups' JOIN graph.nodes c ON c.org_id = i.org_id AND c.coll = 'recordGroups' AND c.id = i.from_id WHERE w.depth < $3::int)
+            roots = [r for r in seeds if not r["hide"]]
+            # The walk stays inside each seed's connector.
+            nested = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_nested */ WITH RECURSIVE w(id, cid, depth) AS (
+                  SELECT x, c, 0 FROM unnest($2::text[], $6::text[]) AS s(x, c)
+                  UNION SELECT i.from_id, w.cid, w.depth + 1 FROM w JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.to_coll = 'recordGroups' AND i.to_id = w.id
+                    AND i.from_coll = 'recordGroups' JOIN graph.nodes c ON c.org_id = i.org_id AND c.coll = 'recordGroups' AND c.id = i.from_id AND c.doc->>'connectorId' = w.cid
+                    WHERE w.depth < $3::int)
                 SELECT DISTINCT c.id FROM w JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'recordGroups' AND c.id = w.id
                 WHERE w.depth >= 1 AND c.doc->>'orgId' = $4 AND coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'connectorId' = ANY($5::text[])""",
-                                     org, roots, CONTAINER_INHERIT_MAX_DEPTH, org_id, levels)
+                                     org, [r["id"] for r in roots], CONTAINER_INHERIT_MAX_DEPTH, org_id, levels, [r["cid"] for r in roots])
             return {"user_key": uk, "apps": apps, "record_group_ids": sorted({r["id"] for r in seeds} | {r["id"] for r in nested})}
         return await self._q(go, transaction)
 
@@ -271,12 +279,26 @@ class EntityAccessMixin(PgBase):
         org = current_org_id()
         if spec.scope_field != "connectorId" and scope_id != org:      # an org-scoped source is the ambient org's: another org's rows are not this org's to page
             raise OrgMismatch("the scope names an org other than the ambient org")
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source */ SELECT n.id, n.doc FROM graph.nodes n
-            WHERE n.org_id = $1 AND n.coll = $2 AND (n.doc->>$3 = $4 OR ($5::boolean AND n.doc->>$3 IS NULL))
-              AND (NOT $6::boolean OR (n.doc->>'normalizedName' IS NOT NULL AND n.doc->>'mergedInto' IS NULL))
-              AND NOT EXISTS (SELECT 1 FROM unnest($7::text[]) f WHERE n.doc->f IS DISTINCT FROM 'true'::jsonb)
-              AND ($8::text IS NULL OR n.id > $8) ORDER BY n.id LIMIT $9""",
-                                             org, spec.collection, spec.scope_field, scope_id, spec.include_global, spec.canonical_only, list(spec.required_true), after_key or None, max(1, int(limit))), transaction)
+        n = max(1, int(limit))
+        # A connector's records are read by the vetted page of graph_0006, in byte order (the keyset the connector's index keeps), whose statement is the same filter. The other
+        # sources are small collections that the primary key pages. shortcut: record groups scan their collection past other connectors' rows, add a vetted page when one org holds
+        # hundreds of thousands of them.
+        records = spec.collection == CollectionNames.RECORDS.value
+        if records and 0 < len(scope_id) <= 200 and len(after_key or "") <= 200 and n <= 1000:
+            rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.records_page_by_connector_for_index */ SELECT node_id AS id, doc FROM graph.records_page_by_connector($1, $2, $3)",
+                                                     scope_id, after_key or "", n), transaction)
+        elif records:      # the vetted page's byte order, so a page after one of its keys is the next of the same sequence
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source_c */ SELECT n.id, n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND n.doc->>$3 = $4
+                  AND ($5::text IS NULL OR n.id COLLATE "C" > $5 COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $6""",
+                                                 org, spec.collection, spec.scope_field, scope_id, after_key or None, n), transaction)
+        else:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source */ SELECT n.id, n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND (n.doc->>$3 = $4 OR ($5::boolean AND n.doc->>$3 IS NULL))
+                  AND (NOT $6::boolean OR (n.doc->>'normalizedName' IS NOT NULL AND n.doc->>'mergedInto' IS NULL))
+                  AND NOT EXISTS (SELECT 1 FROM unnest($7::text[]) f WHERE n.doc->f IS DISTINCT FROM 'true'::jsonb)
+                  AND ($8::text IS NULL OR n.id > $8) ORDER BY n.id LIMIT $9""",
+                                                 org, spec.collection, spec.scope_field, scope_id, spec.include_global, spec.canonical_only, list(spec.required_true), after_key or None, n), transaction)
         return [self._index_row(spec, r["id"], _doc(r["doc"])) for r in rows]
 
     @staticmethod

@@ -57,7 +57,11 @@ export function lockKeyArgs(key: LockKey, objectId: number): [number, number] {
     throw new UowUsageError('lock key is in a class the kernel reserves');
   if (byName.get(key.name) !== key)
     throw new UowUsageError(`lock key '${key.name}' is not registered`);
-  if (!Number.isInteger(objectId) || Math.abs(objectId) > 2 ** 31 - 1) {
+  if (
+    !Number.isInteger(objectId) ||
+    objectId < -(2 ** 31) ||
+    objectId > 2 ** 31 - 1
+  ) {
     throw new UowUsageError('lock object id must be a 32-bit integer');
   }
   return [key.classId, objectId];

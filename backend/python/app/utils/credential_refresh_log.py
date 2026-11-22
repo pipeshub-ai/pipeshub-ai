@@ -23,14 +23,18 @@ from contextlib import (
     contextmanager,
     nullcontext,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 
+# Not error_class's sys.modules lookup: that is for SDKs that may be absent, and every refresh path loads aiohttp.
+import aiohttp
+
 from app.core import org_context
 from app.services.messaging.error_classifier import extract_status_code
-from app.utils.error_class import classify_error, level_for, log_failure
+from app.utils.error_class import OUR_BUGS, classify_error, level_for, log_failure
 from app.utils.logging_fields import current_log_fields, log_event, log_fields, log_once
+from app.utils.oauth_errors import transient_error_class
 from app.utils.request_context import (
     get_context,
     new_system_root,
@@ -47,6 +51,7 @@ EVENT_STRIKE = "credential_refresh.strike"
 EVENT_DEAUTHENTICATED = "credential_refresh.deauthenticated"
 EVENT_DEAUTHENTICATE_FAILED = "credential_refresh.deauthenticate_failed"
 EVENT_APP_DISABLED_EVENT_FAILED = "credential_refresh.app_disabled_event_failed"
+EVENT_SKIPPED = "credential_refresh.skipped"
 
 JOB = "credential_refresh"
 _LOGGED_ATTR = "_credential_refresh_logged"
@@ -67,12 +72,72 @@ class Trigger(StrEnum):
 
 # The `refresh_reason` tag our exceptions carry → error_class. classify_error's "misconfigured"
 # (the provider rejected our OAuth client) is never overridden: it needs a human either way.
-ERROR_CLASS_BY_REASON = {"invalid_grant": "auth_expired", "config_missing": "misconfigured"}
+ERROR_CLASS_BY_REASON = {
+    "invalid_grant": "auth_expired", "config_missing": "misconfigured",
+    # MCP (app/agents/mcp/token_refresh.py, oauth_client.py)
+    "no_refresh_token": "auth_expired", "invalid_token_record": "auth_expired", "no_token_url": "auth_expired",
+    "no_credential": "not_found", "credential_removed": "conflict", "lock_contention": "unavailable",
+    "url_blocked": "misconfigured", "host_unresolved": "unavailable",
+    # A 2xx answer with no access token (oauth_service.TokenResponseError, MCP oauth_client): the token URL or provider setup is wrong.
+    "no_access_token": "misconfigured",
+    # A token field we cannot parse (oauth_service.MalformedTokenError, MCP oauth_client.MCPMalformedTokenError):
+    # a provider answer or a saved record.
+    "malformed_token": "misconfigured",
+}
+
+# aiohttp refuses the token URL before sending, and its text is the URL, query included.
+# NonHttpUrlClientError (ftp://) is not an InvalidURL in aiohttp 3.14.
+_UNUSABLE_URL_ERRORS = (aiohttp.InvalidURL, aiohttp.NonHttpUrlClientError)
+
+
+# The keywords the end lines pass themselves: an Attempt.fields key with one of these names would collide with them.
+_END_LINE_KEYS = frozenset({
+    "outcome", "reason", "duration_ms", "error_class", "error_type", "error_message", "http_status", "oauth_error",
+    "level", "include_error_text",
+})
+
+
+class _EndFields(dict[str, object]):
+    """Rejects a key the end line writes itself where it is set: in ``refresh_attempt``'s ``except`` the
+    collision would raise instead, replacing the attempt's real error and writing no ``end``."""
+
+    def __setitem__(self, key: str, value: object) -> None:
+        if key in _END_LINE_KEYS:
+            raise ValueError(f"Attempt.fields cannot set {key!r}: the credential_refresh.end line writes it")
+        super().__setitem__(key, value)
+
+    def update(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
+        # shortcut: setdefault and |= skip the check; route them here if a caller starts using them.
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+
+# The keywords the end lines pass themselves: an Attempt.fields key with one of these names would collide with them.
+_END_LINE_KEYS = frozenset({
+    "outcome", "reason", "duration_ms", "error_class", "error_type", "error_message", "http_status", "oauth_error",
+    "level", "include_error_text",
+})
+
+
+class _EndFields(dict[str, object]):
+    """Rejects a key the end line writes itself where it is set: in ``refresh_attempt``'s ``except`` the
+    collision would raise instead, replacing the attempt's real error and writing no ``end``."""
+
+    def __setitem__(self, key: str, value: object) -> None:
+        if key in _END_LINE_KEYS:
+            raise ValueError(f"Attempt.fields cannot set {key!r}: the credential_refresh.end line writes it")
+        super().__setitem__(key, value)
+
+    def update(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
+        # shortcut: setdefault and |= skip the check; route them here if a caller starts using them.
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
 
 
 @dataclass
 class Attempt:
     reason: str | None = None  # why a success did not call the token endpoint ("adopted")
+    fields: dict[str, object] = field(default_factory=_EndFields)  # facts about this attempt, on its end line either way
 
 
 def org_of(doc: Mapping[str, object] | None) -> str | None:
@@ -127,9 +192,9 @@ async def refresh_attempt(logger: logging.Logger, *, once_key: str) -> AsyncIter
     try:
         yield attempt
     except (Exception, asyncio.CancelledError) as e:
-        _log_failed(logger, EVENT_END, e, once_key, duration_ms=_ms_since(start))
+        _log_failed(logger, EVENT_END, e, once_key, duration_ms=_ms_since(start), **attempt.fields)
         raise
-    log_event(logger, EVENT_END, outcome="success", reason=attempt.reason, duration_ms=_ms_since(start))
+    log_event(logger, EVENT_END, outcome="success", reason=attempt.reason, duration_ms=_ms_since(start), **attempt.fields)
 
 
 def log_check_failed(logger: logging.Logger, exc: BaseException, *, once_key: str) -> None:
@@ -147,21 +212,26 @@ def log_scheduled(logger: logging.Logger, *, next_refresh_at: datetime, delay_s:
     )
 
 
+def log_skipped(logger: logging.Logger, *, reason: str) -> None:
+    """An attempt that did not start, e.g. another refresh of the same credential holds its lock."""
+    log_event(logger, EVENT_SKIPPED, level=logging.WARNING, outcome="skipped", reason=reason)
+
+
 def log_strike(
     logger: logging.Logger, *, strike: int, max_strikes: int, cause: BaseException, counted: bool = True,
+    reason: str | None = None,
 ) -> None:
-    """A rejected refresh token: ``counted=False`` when it was already rotated (a lost race). The cause's
-    class and OAuth code (never its text) are on the line: the ``end`` that said it may be a DEBUG repeat."""
+    """A rejected refresh token: ``counted=False`` when it was already rotated (a lost race), with ``reason`` where
+    there is more than one why (MCP: ``rotated``, ``within_window``, ``not_saved``). The cause's class and OAuth code
+    (never its text) are on the line: the ``end`` that said it may be a DEBUG repeat."""
     cls, _ = _classified(cause)
-    log_event(logger, EVENT_STRIKE, strike=f"{strike}/{max_strikes}", counted=counted,
+    log_event(logger, EVENT_STRIKE, strike=f"{strike}/{max_strikes}", counted=counted, reason=reason,
               error_class=cls, oauth_error=_first(cause, _oauth_error))
 
 
-def log_deauthenticated(
-    logger: logging.Logger, *, reason: str, strikes: int, path: str | None = None, **fields: object,
-) -> None:
-    """``path`` only where one kind has more than one (MCP: background or route); ``trigger`` already says how."""
-    log_event(logger, EVENT_DEAUTHENTICATED, level=logging.WARNING, reason=reason, strikes=strikes, path=path, **fields)
+def log_deauthenticated(logger: logging.Logger, *, reason: str, strikes: int, **fields: object) -> None:
+    """A sign-in switched off after ``strikes`` rejections; ``trigger`` says which path saw the last one."""
+    log_event(logger, EVENT_DEAUTHENTICATED, level=logging.WARNING, reason=reason, strikes=strikes, **fields)
 
 
 def log_refresh_failure(
@@ -216,6 +286,13 @@ def _logged_level(exc: BaseException) -> int | None:
     return max(levels) if levels else None
 
 
+def refresh_error_class(exc: BaseException) -> str | None:
+    """The error_class a refresh ``end`` gave ``exc``: a refresh tag, or the endpoint rule on a chain this module logged.
+    None otherwise, so a sign-in or route failure that never went through a refresh keeps its own class."""
+    cls = _classified(exc)[0]
+    return cls if _reason(exc) or (_logged_level(exc) is not None and cls != classify_error(exc)) else None
+
+
 def _classified(exc: BaseException) -> tuple[str, str | None]:
     """(error_class, reason): the tag refines classify_error, except that our rejected client stays misconfigured."""
     reason = _reason(exc)
@@ -223,7 +300,24 @@ def _classified(exc: BaseException) -> tuple[str, str | None]:
     tagged = ERROR_CLASS_BY_REASON.get(reason)
     if cls == "misconfigured" and tagged not in (None, cls):
         return cls, None  # the provider rejected our client, not the grant the tag names
-    return tagged or cls, reason
+    cls = tagged or cls
+    if cls == "internal":
+        cls = _first(exc, _endpoint_class) or cls
+    return cls, reason
+
+
+def _endpoint_class(link: BaseException) -> str | None:
+    """What a link of an ``internal`` refresh failure says instead. Our bug stops the walk as ``internal``: raised while
+    handling a 2xx error, it is still ours. An unusable token URL, or a 2xx answer that is not a token, is ``misconfigured``
+    unless its error says the provider is busy or down."""
+    if isinstance(link, OUR_BUGS):
+        return "internal"
+    if isinstance(link, _UNUSABLE_URL_ERRORS):
+        return "misconfigured"
+    status = _status(link)
+    if status is not None and 200 <= status < 300:
+        return transient_error_class(_oauth_error(link)) or "misconfigured"
+    return None
 
 
 def _log_failed(logger: logging.Logger, event: str, exc: BaseException, once_key: str, **fields: object) -> None:
@@ -260,12 +354,14 @@ def _oauth_error(link: BaseException) -> str | None:
 
 def _from_token_endpoint(link: BaseException) -> bool | None:
     tagged_rejection = _str_attr(link, "refresh_reason") == "invalid_grant"  # its message embeds the endpoint's answer
-    return True if _status(link) is not None or _oauth_error(link) or tagged_rejection else None
+    unusable_url = isinstance(link, _UNUSABLE_URL_ERRORS)  # its message is the token URL
+    return True if _status(link) is not None or _oauth_error(link) or tagged_rejection or unusable_url else None
 
 
 def _status(link: BaseException) -> int | None:
     status = extract_status_code(link)  # type: ignore[arg-type]
-    return status if isinstance(status, int) and not isinstance(status, bool) else None
+    # An HTTP status only: our own errors default theirs to 0 (FetchError) when no answer came.
+    return status if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599 else None
 
 
 def _ms_since(start: float) -> int:

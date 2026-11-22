@@ -214,7 +214,7 @@ async def other_roles_rows(p, org: str, monkeypatch: pytest.MonkeyPatch, n: int 
 
 
 async def test_with_the_projection_off_the_connectors_service_leaves_no_row_in_the_log(pg_db, monkeypatch) -> None:
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
+    monkeypatch.setenv("PG_KG_PROJECT", "0")
     p, org = prov(pg_db), new_org()
     await quiet_world2(p, org, monkeypatch)
     monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
@@ -230,7 +230,7 @@ async def test_with_the_projection_off_the_connectors_service_leaves_no_row_in_t
 
 async def test_the_log_is_swept_by_any_write_unit_of_the_connectors_service_not_only_by_one_that_wrote_the_graph(pg_db, monkeypatch) -> None:
     """Rows of the indexing and query roles pile up when only they write the graph: the connectors service's next write of anything takes them."""
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
+    monkeypatch.setenv("PG_KG_PROJECT", "0")
     p, org = prov(pg_db), new_org()
     await quiet_world2(p, org, monkeypatch)
     await other_roles_rows(p, org, monkeypatch, n=30)
@@ -251,7 +251,7 @@ async def broken_statement(self, *_a: object) -> int:
 
 
 async def test_an_ack_that_fails_does_not_fail_the_business_write_and_the_sweep_takes_the_rows_later(pg_db, monkeypatch) -> None:
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
+    monkeypatch.setenv("PG_KG_PROJECT", "0")
     monkeypatch.setattr(flush, "SWEEP_GAP_S", 1e9)                      # no sweep with this unit
     p, org = prov(pg_db), new_org()
     monkeypatch.setattr(KgWriter, "changes_ack", broken_statement)
@@ -260,7 +260,7 @@ async def test_an_ack_that_fails_does_not_fail_the_business_write_and_the_sweep_
         assert (await p.get_document("f1", "records")) is not None
     assert await log_rows(p, org) > 0                                   # the rows stay
     monkeypatch.undo()
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
+    monkeypatch.setenv("PG_KG_PROJECT", "0")
     monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
     monkeypatch.setattr(flush, "_last_sweep", {})
     with ctx(org):
@@ -270,7 +270,7 @@ async def test_an_ack_that_fails_does_not_fail_the_business_write_and_the_sweep_
 
 
 async def test_a_sweep_that_fails_does_not_fail_the_business_write(pg_db, monkeypatch, caplog) -> None:
-    monkeypatch.delenv("PG_KG_PROJECT", raising=False)
+    monkeypatch.setenv("PG_KG_PROJECT", "0")
     p, org = prov(pg_db), new_org()
     await quiet_world2(p, org, monkeypatch)
     await other_roles_rows(p, org, monkeypatch, n=20)

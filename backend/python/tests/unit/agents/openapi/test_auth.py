@@ -6,7 +6,11 @@ import httpx
 import pytest
 
 from app.agents.mcp.models import OAuthTokens
-from app.agents.mcp.oauth_client import MCPOAuthError
+from app.agents.mcp.oauth_client import (
+    MCPMalformedTokenError,
+    MCPOAuthError,
+    refresh_access_token,
+)
 from app.agents.openapi import auth as auth_module
 from app.agents.openapi.auth import (
     ApiToolsetAuthError,
@@ -26,6 +30,7 @@ from tests.unit.agents.mcp.refresh_failures import (
     BODY_SECRET,
     TOKEN_HOST,
     token_endpoint_error,
+    token_request_error,
 )
 
 BASE = "https://api.acme.test/v2"
@@ -190,6 +195,16 @@ class TestOAuth:
             await source.access_token()
         assert "abc" not in str(raised.value)
 
+    @pytest.mark.parametrize("scheme", [CLIENT_CREDENTIALS, AUTH_CODE], ids=["client_credentials", "refresh"])
+    async def test_a_malformed_token_answer_asks_to_check_the_oauth_settings(
+        self, endpoint: _FakeTokenEndpoint, scheme: AuthScheme,
+    ) -> None:
+        endpoint.error = MCPMalformedTokenError("expires_in")  # what the token client raises for such an answer
+        creds = ApiToolsetCredentials(client_id="c", oauth=_tokens("old", expires_in=10, age=100, refresh="r1"))
+        source = OAuthTokenSource(scheme, creds, token_url="https://a/t", allow_private=False)
+        with pytest.raises(ApiToolsetAuthError, match="Check the API action's OAuth settings"):
+            await source.access_token()
+
 
 PROVIDER_DOWN = (
     "The API's OAuth server is down or busy, so PipesHub couldn't get an access token. Try again in a few minutes."
@@ -242,6 +257,32 @@ class TestTokenEndpointOutage:
         with pytest.raises(ApiCallError, match="^The API's OAuth server is down or busy"):
             await source.access_token()
         assert [kind for kind, _ in endpoint.calls] == ["client_credentials"]
+
+    @pytest.mark.parametrize("raised", [
+        httpx.ConnectError("All connection attempts failed"), httpx.ReadTimeout("timed out"),
+    ], ids=["refused", "timed-out"])
+    async def test_a_token_endpoint_that_never_answers_says_try_again(
+        self, endpoint: _FakeTokenEndpoint, raised: Exception,
+    ) -> None:
+        endpoint.error = await token_request_error(raised)
+        saved: list[ApiToolsetCredentials] = []
+
+        async def save(creds: ApiToolsetCredentials) -> None:
+            saved.append(creds)
+
+        source = OAuthTokenSource(AUTH_CODE, _refreshable(), token_url="https://auth.acme.test/token", allow_private=False, save=save)
+        with pytest.raises(ApiCallError) as raised_error:
+            await source.access_token()
+        assert str(raised_error.value) == PROVIDER_DOWN
+        assert raised_error.value.__cause__ is endpoint.error and not saved
+
+    async def test_a_token_url_the_guard_refuses_is_not_an_outage(self, endpoint: _FakeTokenEndpoint) -> None:
+        with pytest.raises(MCPOAuthError) as refused:  # what the real client raises for a private token URL
+            await refresh_access_token("https://10.0.0.8/token", "c", None, "r", allow_private=False)
+        endpoint.error = refused.value
+        source = OAuthTokenSource(AUTH_CODE, _refreshable(), token_url="https://auth.acme.test/token", allow_private=False)
+        with pytest.raises(ApiToolsetAuthError, match="or sign in again"):
+            await source.access_token()
 
     @pytest.mark.parametrize(("status", "body"), REFUSALS)
     async def test_a_refusal_still_asks_to_sign_in_again(self, endpoint: _FakeTokenEndpoint, status: int, body: dict[str, Any]) -> None:

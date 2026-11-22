@@ -23,6 +23,7 @@ const speech = vi.hoisted(() => ({
   onError: null as null | ((error: string) => void),
 }));
 const device = vi.hoisted(() => ({ isMobile: false }));
+const webSearchSetup = vi.hoisted(() => ({ configured: null as boolean | null }));
 const mentionField = vi.hoisted(() => ({
   rendered: vi.fn<(mentionsOff: boolean | undefined) => void>(),
   setMentions: null as null | ((mentions: import('@/chat/utils/node-mentions').MentionNode[]) => void),
@@ -59,6 +60,7 @@ vi.mock('@/lib/hooks/use-chat-speech-recognition', () => ({
 }));
 
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => device.isMobile }));
+vi.mock('@/chat/hooks/use-web-search-configured', () => ({ useWebSearchConfigured: () => webSearchSetup.configured }));
 
 vi.mock('@/chat/components/chat-panel', async () => {
   const plus = await vi.importActual<typeof import('../chat-panel/plus-menu-button')>(
@@ -171,6 +173,7 @@ beforeEach(() => {
   speech.stop.mockReset();
   speech.resetTranscript.mockReset();
   device.isMobile = false;
+  webSearchSetup.configured = null;
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);
 });
 
@@ -2207,5 +2210,65 @@ describe('ChatInput — quote selected text', () => {
     });
     expect(screen.getByTestId('quoted-excerpt-chip').textContent).toContain('the SLA is 99.9%');
     expect(composer().value).toBe('What does this cover?');
+  });
+});
+
+describe('ChatInput — web search before an admin has set it up', () => {
+  function openPlusMenu() {
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Attach files and capabilities' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach files and capabilities' }));
+  }
+  const webSearchSwitch = () => screen.getByRole('switch', { name: 'Web search' });
+
+  it('shows the switch off and explains why when it is turned on', () => {
+    webSearchSetup.configured = false;
+    renderInput();
+    openPlusMenu();
+
+    expect(webSearchSwitch().getAttribute('data-state')).toBe('unchecked');
+    fireEvent.click(webSearchSwitch());
+
+    expect(screen.getByTestId('web-search-setup-dialog')).toBeTruthy();
+    expect(useChatStore.getState().settings.agentCapabilities.webSearch).toBe(true);
+  });
+
+  it('does not mark the + button as filtered when the only difference is the missing setup', () => {
+    webSearchSetup.configured = false;
+    renderInput();
+
+    expect(screen.queryByTestId('plus-menu-filter-badge')).toBeNull();
+  });
+
+  it('is on, and turns off without a dialog, once web search is set up', () => {
+    webSearchSetup.configured = true;
+    renderInput();
+    openPlusMenu();
+
+    expect(webSearchSwitch().getAttribute('data-state')).toBe('checked');
+    fireEvent.click(webSearchSwitch());
+
+    expect(screen.queryByTestId('web-search-setup-dialog')).toBeNull();
+    expect(useChatStore.getState().settings.agentCapabilities.webSearch).toBe(false);
+  });
+
+  it('keeps the current behaviour while it cannot tell (still loading, or the read failed)', () => {
+    webSearchSetup.configured = null;
+    renderInput();
+    openPlusMenu();
+
+    expect(webSearchSwitch().getAttribute('data-state')).toBe('checked');
+  });
+
+  it('leaves a chat with its own agent alone: the agent brings its own search provider', () => {
+    webSearchSetup.configured = false;
+    useChatStore.setState({ agentHasWebSearch: true });
+    renderInput({ isAgentChat: true, agentId: 'agent-1' });
+    openPlusMenu();
+    fireEvent.click(webSearchSwitch());
+
+    expect(screen.queryByTestId('web-search-setup-dialog')).toBeNull();
   });
 });

@@ -21,7 +21,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.services.permissions.mode import AclFilterMode
 from app.services.permissions.pending import parse
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
@@ -42,6 +43,33 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+
+#: The connector's own choice, set by an admin: `inherit` (the deployment's ``ACL_FILTER_MODE``), `legacy` or `scopes`.
+MODE_KEY = "aclFilterMode"
+MODES = ("inherit", "legacy", "scopes")
+
+
+def chosen_mode(app: Mapping[str, object] | None) -> str:
+    """Missing is `inherit`; a value that is not exactly a mode (a hand edit, "Scopes") is `legacy`, so nothing unreadable ever turns the filter on,
+    and every reader (the status, the plan, the switched-connector read, which matches the stored text) agrees on it."""
+    raw = (app or {}).get(MODE_KEY)
+    if raw is None or raw == "":
+        return "inherit"
+    return raw if raw in MODES else "legacy"
+
+
+def effective_mode(app: Mapping[str, object] | None, default: AclFilterMode) -> AclFilterMode:
+    chosen = chosen_mode(app)
+    return default if chosen == "inherit" else AclFilterMode(chosen)
+
+
+async def switched_connectors(graph: IGraphDBProvider, org_id: str) -> frozenset[str]:
+    """The connectors of ``org_id`` whose own mode is `scopes`, from their app documents: the organisation's apps as its org-to-app edges list them
+    (`get_org_apps`, the same read on every store), so no document's own org field is trusted and instances that predate it are found. A value other
+    than exactly `scopes` (a hand edit) is not, which leaves that connector on the classic check."""
+    docs = await graph.get_org_apps(org_id, active_only=False, raise_on_error=True)
+    return frozenset(str(d.get("_key") or d.get("id")) for d in docs or [] if isinstance(d, dict) and chosen_mode(d) == "scopes")
 
 
 def app_is_current(app: Mapping[str, object] | None) -> bool:
@@ -70,9 +98,52 @@ def app_is_current(app: Mapping[str, object] | None) -> bool:
     return stamped_from is not None and held is not None and stamped_from == held
 
 
+#: A running sync writes grants and memberships and moves the viewer-scope version only when it ends, so the cached scopes of a viewer who gained access
+#: during it are stale: the connector is read with the legacy check until the sync is over.
+RUNNING = frozenset({AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value})
+
+
+def app_is_served(app: Mapping[str, object] | None) -> bool:
+    """Whether a search may be decided by the stamps of this connector now: current, no pending root, and no sync running. A pending root hides its subtree
+    from the filter and its container points are not read from their stamps, so the stamps alone would under-admit: the connector is read
+    with the legacy check until the roots are rewritten. An unreadable list is not current already."""
+    return app_is_current(app) and not parse((app or {}).get(PENDING_KEY)) and (app or {}).get("status") not in RUNNING
+
+
+def app_is_exact(app: Mapping[str, object] | None) -> bool:
+    """Whether the connector is served and its last pass left no stale or legacy point (`Progress.exact`, recorded with the pass's own keys, so it is read
+    only beside the version, generation and structure generation `app_is_current` checks). Anything but the boolean ``True`` (missing, a number, a
+    string) is not exact: a connector's points that no stamp decides are then the request's arms' to return, so it keeps today's over-fetch."""
+    return app_is_served(app) and (app or {}).get(BACKFILL_KEYS["exact"]) is True
+
+
 class StampCurrency:
     def __init__(self, graph_provider: IGraphDBProvider) -> None:
         self._graph = graph_provider
+
+    async def switched(self, org_id: str) -> frozenset[str]:
+        return await switched_connectors(self._graph, org_id)
+
+    async def served(self, connector_ids: Iterable[str]) -> frozenset[str]:
+        return (await self.read(connector_ids))[0]
+
+    async def read(self, connector_ids: Iterable[str], *, default: AclFilterMode | None = None) -> tuple[frozenset[str], frozenset[str]]:
+        """The connectors among ``connector_ids`` whose stamps may decide a search now (`app_is_served`) and, of those, the exact ones (`app_is_exact`), from one batched read of their app
+        documents, made for this call and kept by nobody: the answer moves in the transaction that moves the generation, so a cached one is
+        a window in which a revoked access still admits. A read that fails, or a connector it does not return, is not served. Runs inside the
+        organisation the connectors belong to. With ``default`` (the deployment's mode), only the connectors whose own mode resolves to `scopes`
+        are served: the serving plan passes it, the shadow comparison does not."""
+        ids = sorted(set(connector_ids))
+        if not ids:
+            return frozenset(), frozenset()
+        try:
+            found = await self._graph.get_nodes_by_field_in(CollectionNames.APPS.value, "_key", ids, raise_on_error=True)
+        except Exception:
+            return frozenset(), frozenset()
+        docs = {key: d for d in found or [] if isinstance(d, dict) and (key := str(d.get("_key") or d.get("id"))) in ids}
+        if default is not None:
+            docs = {k: d for k, d in docs.items() if effective_mode(d, default) is AclFilterMode.SCOPES}
+        return frozenset(k for k, d in docs.items() if app_is_served(d)), frozenset(k for k, d in docs.items() if app_is_exact(d))
 
     async def current(self, connector_ids: Iterable[str]) -> frozenset[str]:
         """The connectors among ``connector_ids`` whose stamps are usable now. Runs inside the organisation the connectors belong to. A

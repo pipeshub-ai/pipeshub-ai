@@ -27,6 +27,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "batch_upsert_nodes": (PROJECTED, ""),
     "batch_upsert_records": (PROJECTED, ""),
     "compare_and_set_indexing_status": (NO_PROJECTION, _STATUS),
+    "transition_unsupported": (NO_PROJECTION, _STATUS),
     "compare_and_set_record_fields": (PROJECTED, ""),
     "copy_document_relationships": (NO_PROJECTION, _ENTITY),
     "create_edges_if_absent": (PROJECTED, ""),
@@ -56,13 +57,17 @@ WRITERS: dict[str, tuple[str, str]] = {
     "stage_state_create": (NO_PROJECTION, "stage states of the indexing pipeline"),
     "stage_states_delete_for_virtual_records": (NO_PROJECTION, "stage states of the indexing pipeline"),
     "stage_states_delete_unheld_revisions": (NO_PROJECTION, "stage states of the indexing pipeline"),
+    "sweep_deleted_connector_writes": (NO_PROJECTION, "blocks, stage states and code links, written after a connector's delete"),
     "update_indexing_status_for_record_ids": (NO_PROJECTION, _STATUS),
     "update_knowledge_base": (PROJECTED, ""),
     "update_node": (PROJECTED, ""),
+    "update_node_fields_if": (PROJECTED, ""),
     "update_node_fields_if_match": (PROJECTED, ""),
     "update_sync_point_if": (NO_PROJECTION, _SYNC),
     "upsert_authenticated_as": (PROJECTED, ""),
     "upsert_sync_point": (NO_PROJECTION, _SYNC),
+    # the attempt-start write takes any record fields, as the update_node it replaces did
+    "write_attempt_start": (PROJECTED, ""),
     # trash.py
     "soft_delete_records": (PROJECTED, ""), "restore_records": (PROJECTED, ""), "purge_trashed_records": (PROJECTED, ""), "purge_trash_kept_record_groups": (PROJECTED, ""),
     "take_back_kept_record_group": (PROJECTED, ""), "claim_push_record": (PROJECTED, ""),
@@ -78,7 +83,8 @@ WRITERS: dict[str, tuple[str, str]] = {
     "migrate_legacy_kb_to_app": (PROJECTED, ""), "migrate_legacy_relation_edge": (PROJECTED, ""),
     "migrate_agent_hub_knowledge": (NO_PROJECTION, "agent knowledge sources and their edges to the agents: kg holds no agent data"),
     # permissions.py
-    "batch_update_team_member_roles": (PROJECTED, ""), "delete_all_team_permissions": (PROJECTED, ""),
+    "batch_update_team_member_roles": (PROJECTED, ""), "delete_all_team_permissions": (PROJECTED, ""), "remove_user_access_to_connector": (PROJECTED, ""),
+    "remove_unlinked_user_access_to_connector": (PROJECTED, ""),
     # core.py, lookups.py: an edge's document changes (a grant's role or type is what the projection reads of it), and the sync's edges and the stale external memberships go
     "update_edge": (PROJECTED, ""), "delete_connector_sync_edges": (PROJECTED, ""), "reap_stale_external_app_relations": (PROJECTED, ""),
     # delete.py: a connector instance and everything of it goes in one unit

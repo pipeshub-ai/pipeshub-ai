@@ -68,7 +68,7 @@ async def test_the_registry_creates_the_scope_indexes_only_while_scope_fields_ar
     svc = MagicMock()
     svc.create_index = AsyncMock()
     reg = CollectionRegistry.__new__(CollectionRegistry)
-    reg._vector_db_service, reg._logger = svc, MagicMock()
+    reg._vector_db_service, reg._logger, reg._fence_missing = svc, MagicMock(), set()
     await CollectionRegistry._ensure_payload_indexes(reg, "c")
     made = {c.kwargs["field_name"] for c in svc.create_index.await_args_list}
     assert ("pathIds" in made) is on and "connectorIds" in made and "grantTokens" not in made

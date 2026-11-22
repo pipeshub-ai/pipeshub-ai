@@ -26,10 +26,21 @@ def _provider_contract_tests_skip_schema_validation(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "off")
 
 
+@pytest.fixture(autouse=True)
+def _no_background_sample(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reader repeats 1 % of its answers by the walk on a task of its own, which calls ``decide`` again: a test that counts the decisions of its call would sometimes see two. Tests of the sample set it themselves."""
+    monkeypatch.setenv("PG_KG_SHADOW_SAMPLE", "0")
+
+
 @pytest.fixture
-async def pg_db() -> AsyncIterator[KernelDB]:
+def pg_required() -> None:
+    """Skips a test that builds its own ``KernelDB`` where no database is configured; ``pg_db`` has it too."""
     if not os.environ.get("PG_CORE_URL"):
         pytest.skip("PG_CORE_URL is not set")
+
+
+@pytest.fixture
+async def pg_db(pg_required: None) -> AsyncIterator[KernelDB]:
     db = KernelDB(DbConfig.from_env("connectors"))
     await db.start()
     yield db

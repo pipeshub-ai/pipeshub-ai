@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
     from .scopes import ViewerScopes
+    from .serving import ServingPlanner
     from .shadow import ShadowComparator
 
 
@@ -48,8 +49,8 @@ async def register_scope_generation(config_service: ConfigurationService, logger
     await init_scope_generation(config_service, logger)
 
 
-class _ScopesAtCompare:
-    """The viewer-scope service of the shadow comparator, on the cache registered *now*: the comparator may be built before
+class _ScopesAtUse:
+    """The viewer-scope service of the shadow comparator and the serving planner, on the cache registered *now*: the comparator may be built before
     `register_viewer_scope_version` runs, and a cache captured at construction would stay absent for the life of the process."""
 
     def __init__(self, resolver: object) -> None:
@@ -109,4 +110,20 @@ def build_shadow_comparator(graph_provider: IGraphDBProvider) -> ShadowComparato
 
     settings = shadow_settings_from_env()
     resolver = ViewerScopeResolver(graph_provider.permission_hierarchy_view(), GraphPrincipalView(graph_provider))
-    return ShadowComparator(_ScopesAtCompare(resolver), graph_provider, **settings)  # type: ignore[arg-type]
+    return ShadowComparator(_ScopesAtUse(resolver), graph_provider, **settings)  # type: ignore[arg-type]
+
+
+def build_serving_planner(graph_provider: IGraphDBProvider) -> ServingPlanner | None:
+    """The planner that reads a search with the scope filter for the connectors whose mode resolves to `scopes` (``ACL_FILTER_MODE=scopes``, or a
+    connector an admin switched to `scopes` under ``shadow``); None in `legacy` mode (no object, no read): the writers are off there, so no stamp
+    could be current. It reads viewer scopes through the cache registered at the time of each search, as the shadow comparator does."""
+    mode = AclFilterMode.from_env()
+    if mode is AclFilterMode.LEGACY:
+        return None
+    from .adapters import GraphPrincipalView
+    from .currency import StampCurrency
+    from .serving import ServingPlanner
+    from .viewer import ViewerScopeResolver
+
+    resolver = ViewerScopeResolver(graph_provider.permission_hierarchy_view(), GraphPrincipalView(graph_provider))
+    return ServingPlanner(_ScopesAtUse(resolver), StampCurrency(graph_provider), default=mode)  # type: ignore[arg-type]

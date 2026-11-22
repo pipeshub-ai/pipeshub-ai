@@ -12,6 +12,7 @@ import {
   FilePayload,
   StorageServiceResponse,
   Document,
+  ObjectPage,
   SignObjectUrlOptions,
   SignedObjectUrl,
 } from '../types/storage.service.types';
@@ -30,10 +31,27 @@ import { AzureBlobStorageConfig } from '../config/storage.config';
 import { encodeRFC5987 } from '../utils/utils';
 import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
 
+/**
+ * Containers (by URL) that a check in this process has seen to exist, and until when. The verification expires, so a
+ * container deleted after a successful check is created again by a later adapter instead of failing every upload
+ * with ContainerNotFound until the process restarts.
+ */
+const verifiedContainers = new Map<string, number>();
+const VERIFIED_CONTAINER_TTL_MS = 5 * 60 * 1000;
+
+/** Containers (by URL) whose adapter creation this process has already logged. */
+const announcedAdapters = new Set<string>();
+
+/** For tests: forget which containers were seen, so the next adapter checks again. */
+export const forgetVerifiedContainers = (): void => {
+  verifiedContainers.clear();
+  announcedAdapters.clear();
+};
+
 @injectable()
 class AzureBlobStorageAdapter implements StorageServiceInterface {
   private blobServiceClient: BlobServiceClient;
-  private containerClient: any;
+  private containerClient: ContainerClient;
   private readonly containerName!: string;
   private containerReady!: Promise<void>;
   private readonly logger = Logger.getInstance({
@@ -96,10 +114,15 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
 
       this.containerReady = this.startContainerCheck();
 
-      this.logger.info('Azure Blob Storage adapter initialized', {
-        account: accountName,
-        container: containerName,
-      });
+      // The controller builds an adapter per request: say so once per container, not once per request.
+      const announced: string = this.containerClient.url;
+      if (!announcedAdapters.has(announced)) {
+        announcedAdapters.add(announced);
+        this.logger.info('Azure Blob Storage adapter initialized', {
+          account: accountName,
+          container: containerName,
+        });
+      }
     } catch (error) {
       if (error instanceof StorageError) {
         throw error;
@@ -119,7 +142,15 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
    * rejection; the failure surfaces from the next storage operation instead.
    */
   private startContainerCheck(): Promise<void> {
-    const check = this.ensureContainerExists();
+    const ready = this.containerClient.url;
+    // A container seen to exist is not asked about again by the adapters built later in this process
+    // (the controller builds one per request): a cache lookup is a request, and the check is a round trip.
+    if ((verifiedContainers.get(ready) ?? 0) > Date.now()) {
+      return Promise.resolve();
+    }
+    const check = this.ensureContainerExists().then(() => {
+      verifiedContainers.set(ready, Date.now() + VERIFIED_CONTAINER_TTL_MS);
+    });
     check.catch(() => undefined);
     return check;
   }
@@ -271,9 +302,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
 
   /** The client for one blob, typed, since the container client is not. */
   private blobAt(blobPath: string): BlockBlobClient {
-    return (this.containerClient as ContainerClient).getBlockBlobClient(
-      blobPath,
-    );
+    return this.containerClient.getBlockBlobClient(blobPath);
   }
 
   async deleteObject(document: Document): Promise<void> {
@@ -281,7 +310,9 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageNotFoundError('Azure Blob Storage URL not found');
     }
     await this.waitForContainer();
-    await this.blobAt(this.getBlobPath(document.azureBlob.url)).deleteIfExists();
+    await this.blobAt(
+      this.getBlobPath(document.azureBlob.url),
+    ).deleteIfExists();
   }
 
   async objectExists(document: Document): Promise<boolean> {
@@ -403,7 +434,9 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       const blobClient = this.containerClient.getBlockBlobClient(blobPath);
 
       // Prepare safe content-disposition for non-ASCII filenames
-      const fullName = fileName ? `${fileName}${document.extension}` : undefined;
+      const fullName = fileName
+        ? `${fileName}${document.extension}`
+        : undefined;
       const filenameStar = fullName ? encodeRFC5987(fullName) : undefined;
 
       // Generate SAS token
@@ -536,9 +569,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
   ): Promise<SignedObjectUrl> {
     try {
       await this.waitForContainer();
-      const blobClient = (
-        this.containerClient as ContainerClient
-      ).getBlockBlobClient(storageKey);
+      const blobClient = this.containerClient.getBlockBlobClient(storageKey);
       const url = await blobClient.generateSasUrl({
         permissions: BlobSASPermissions.from(
           options.method === 'PUT'
@@ -554,6 +585,9 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
           headers: {
             'x-ms-blob-type': 'BlockBlob',
             'Content-Type': options.contentType ?? 'application/octet-stream',
+            // Enforced by the service when the uploader sends it; a SAS with `create` alone is refused by Azurite
+            // (403) even for a new blob, so the URL itself cannot be made once-only here.
+            ...(options.ifAbsent === true && { 'If-None-Match': '*' }),
           },
         };
       }
@@ -572,11 +606,76 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     }
   }
 
+  async listObjects(
+    prefix: string,
+    options: { after?: string; limit: number },
+  ): Promise<ObjectPage> {
+    try {
+      await this.waitForContainer();
+      const iterator = this.containerClient.listBlobsFlat({ prefix }).byPage({
+        maxPageSize: options.limit,
+        continuationToken: options.after,
+      });
+      const result = await iterator.next();
+      if (result.done === true) {
+        return { objects: [] };
+      }
+      const page = result.value;
+      const next = page.continuationToken;
+      return {
+        objects: page.segment.blobItems.map((b) => ({
+          key: b.name,
+          size: b.properties.contentLength ?? 0,
+          lastModifiedMs: b.properties.lastModified.getTime(),
+        })),
+        ...(next !== undefined && next !== '' && { next }),
+      };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      const status = (error as { statusCode?: number }).statusCode;
+      if (options.after !== undefined && status === 400) {
+        throw new StorageValidationError('The listing cursor is not valid');
+      }
+      throw new StorageDownloadError(
+        'Failed to list blobs in Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+    }
+  }
+
+  async deleteObjects(storageKeys: string[]): Promise<void> {
+    try {
+      await this.waitForContainer();
+      const container = this.containerClient;
+      for (let i = 0; i < storageKeys.length; i += 16) {
+        await Promise.all(
+          storageKeys
+            .slice(i, i + 16)
+            .map((key) => container.getBlockBlobClient(key).deleteIfExists()),
+        );
+      }
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError(
+        'Failed to delete blobs in Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+    }
+  }
+
   async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
     try {
       await this.waitForContainer();
       // Delete all blobs with this prefix
-      const prefix = storagePath.endsWith('/') ? storagePath : `${storagePath}/`;
+      const prefix = storagePath.endsWith('/')
+        ? storagePath
+        : `${storagePath}/`;
       for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
         const blobClient = this.containerClient.getBlockBlobClient(blob.name);
         await blobClient.deleteIfExists();
@@ -588,9 +687,13 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       return { statusCode: 200, data: undefined };
     } catch (error) {
       if (error instanceof StorageError) throw error;
-      throw new StorageUploadError('Failed to delete object from Azure Blob Storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new StorageUploadError(
+        'Failed to delete object from Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -601,16 +704,24 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     try {
       await this.waitForContainer();
       const srcClient = this.containerClient.getBlockBlobClient(sourcePath);
-      const dstClient = this.containerClient.getBlockBlobClient(destinationPath);
+      const dstClient =
+        this.containerClient.getBlockBlobClient(destinationPath);
       const copyPoller = await dstClient.beginCopyFromURL(srcClient.url);
       await copyPoller.pollUntilDone();
-      this.logger.info('Azure copy successful', { src: sourcePath, dst: destinationPath });
+      this.logger.info('Azure copy successful', {
+        src: sourcePath,
+        dst: destinationPath,
+      });
       return { statusCode: 200, data: dstClient.url };
     } catch (error) {
       if (error instanceof StorageError) throw error;
-      throw new StorageUploadError('Failed to copy object in Azure Blob Storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new StorageUploadError(
+        'Failed to copy object in Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -626,12 +737,16 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
   ): Promise<StorageServiceResponse<void>> {
     try {
       await this.waitForContainer();
-      const srcPrefix = sourcePrefix.endsWith('/') ? sourcePrefix : `${sourcePrefix}/`;
+      const srcPrefix = sourcePrefix.endsWith('/')
+        ? sourcePrefix
+        : `${sourcePrefix}/`;
       const dstPrefix = destinationPrefix.endsWith('/')
         ? destinationPrefix
         : `${destinationPrefix}/`;
 
-      for await (const blob of this.containerClient.listBlobsFlat({ prefix: srcPrefix })) {
+      for await (const blob of this.containerClient.listBlobsFlat({
+        prefix: srcPrefix,
+      })) {
         const relativePath = blob.name.substring(srcPrefix.length);
         const destName = `${dstPrefix}${relativePath}`;
         const srcClient = this.containerClient.getBlockBlobClient(blob.name);
@@ -640,13 +755,20 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
         await copyPoller.pollUntilDone();
       }
 
-      this.logger.info('Azure tree copy successful', { src: sourcePrefix, dst: destinationPrefix });
+      this.logger.info('Azure tree copy successful', {
+        src: sourcePrefix,
+        dst: destinationPrefix,
+      });
       return { statusCode: 200, data: undefined };
     } catch (error) {
       if (error instanceof StorageError) throw error;
-      throw new StorageUploadError('Failed to copy tree in Azure Blob Storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new StorageUploadError(
+        'Failed to copy tree in Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -657,17 +779,25 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     try {
       await this.waitForContainer();
       const srcClient = this.containerClient.getBlockBlobClient(sourcePath);
-      const dstClient = this.containerClient.getBlockBlobClient(destinationPath);
+      const dstClient =
+        this.containerClient.getBlockBlobClient(destinationPath);
       const copyPoller = await dstClient.beginCopyFromURL(srcClient.url);
       await copyPoller.pollUntilDone();
       await srcClient.deleteIfExists();
-      this.logger.info('Azure rename successful', { src: sourcePath, dst: destinationPath });
+      this.logger.info('Azure rename successful', {
+        src: sourcePath,
+        dst: destinationPath,
+      });
       return { statusCode: 200, data: dstClient.url };
     } catch (error) {
       if (error instanceof StorageError) throw error;
-      throw new StorageUploadError('Failed to rename object in Azure Blob Storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new StorageUploadError(
+        'Failed to rename object in Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -679,13 +809,20 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       await this.waitForContainer();
       await this.copyTree(sourcePrefix, destinationPrefix);
       await this.deleteTree(sourcePrefix);
-      this.logger.info('Azure tree rename successful', { src: sourcePrefix, dst: destinationPrefix });
+      this.logger.info('Azure tree rename successful', {
+        src: sourcePrefix,
+        dst: destinationPrefix,
+      });
       return { statusCode: 200, data: undefined };
     } catch (error) {
       if (error instanceof StorageError) throw error;
-      throw new StorageUploadError('Failed to rename tree in Azure Blob Storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new StorageUploadError(
+        'Failed to rename tree in Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 

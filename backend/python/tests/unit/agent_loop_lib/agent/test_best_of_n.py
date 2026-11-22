@@ -136,7 +136,9 @@ class TestRunBestOfN:
             result = await run_best_of_n(agent, call, Goal(description="parent"), 0, "t0")
 
         assert result.content["winner_index"] == 0
-        assert "judge exploded" in result.content["judge_reason"]
+        # The judge's error can quote its model's answer: the parent model gets only why it failed.
+        assert result.content["judge_reason"].startswith("Judge call failed (internal (RuntimeError));")
+        assert "judge exploded" not in result.content["judge_reason"]
 
     async def test_winner_index_maps_through_failed_candidates(self) -> None:
         """`local_index` from `_judge` indexes into `successful`, not
@@ -219,7 +221,7 @@ class TestRunOneCandidate:
         result = await _run_one_candidate(agent, "spec", goal, "team-1")
 
         assert result.success is False
-        assert result.error == "infra failure"
+        assert result.error == "internal (RuntimeError)"
         assert result.goal == goal
 
     async def test_success_passes_through(self) -> None:
@@ -270,3 +272,22 @@ class TestJudge:
 
         assert index == 0
         assert reason == ""
+
+
+class TestACandidateThatRaisesIsLoggedOnce:
+    async def test_one_classed_line_and_the_failed_candidate_is_unchanged(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        from app.utils.logger import log_record_fields
+
+        caplog.set_level(logging.DEBUG)
+        agent = _fake_agent(run_child_results=[TimeoutError("candidate hung sentinel-662")])
+
+        result = await _run_one_candidate(agent, MagicMock(), Goal(description="g"), "team-1")
+
+        assert (result.success, result.error) == (False, "timeout (TimeoutError)")
+        (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        fields = log_record_fields(failed)
+        assert (failed.getMessage(), fields["error_class"]) == ("sub_agent.failed", "timeout")
+        # The error can quote a provider's answer: it reaches neither the result nor the log.
+        assert "error_message" not in fields and "sentinel-662" not in caplog.text

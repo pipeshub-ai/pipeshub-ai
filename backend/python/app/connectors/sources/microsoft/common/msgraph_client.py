@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -145,6 +146,37 @@ class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         super().serialize(writer)
         writer.write_collection_of_object_values("value", self.value)
 
+class UserListing(list):
+    """The users of one listing, with whether it is known to be complete."""
+
+    complete: bool = True
+
+
+async def read_user_status(graph: GraphServiceClient, user_id: str) -> str:
+    """Read one user by id: ``gone`` only when it answers 404 three times, 2 s and then 4 s
+    apart, ``disabled`` when the account is found with ``accountEnabled`` false, ``present``
+    otherwise. Any other failure (throttling, a server error), on any attempt, raises, so the
+    caller keeps the user."""
+    query = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(select=["id", "accountEnabled"])
+    waits = iter((2, 4))
+    while True:
+        try:
+            user = await graph.users.by_user_id(user_id).get(RequestConfiguration(query_parameters=query))
+        except ODataError as e:
+            if e.response_status_code != 404:
+                raise
+            wait = next(waits, None)
+            if wait is None:
+                return "gone"
+            # A just-created user can answer 404 from a lagging replica: wait, read again, double the wait.
+            # shortcut: this covers seconds of replication, not several minutes; an account withdrawn wrongly
+            # comes back on the next listing that shows it; upgrade to a two-sync confirmation if real
+            # deployments show this happening.
+            await asyncio.sleep(wait)
+        else:
+            return "disabled" if user is not None and user.account_enabled is False else "present"
+
+
 class MSGraphClient:
     def __init__(self, app_name: str, connector_id: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
         """
@@ -229,12 +261,19 @@ class MSGraphClient:
                 raise
             return []
 
-    async def get_all_users(self) -> List[AppUser]:
+    async def get_user_status(self, user_id: str) -> str:
+        """See ``read_user_status``."""
+        async with self.rate_limiter:
+            return await read_user_status(self.client, user_id)
+
+    async def get_all_users(self) -> "UserListing":
         """
         Retrieves a list of all users in the organization.
 
         Returns:
-            List[User]: A list of users with their details.
+            The users with their details. ``complete`` is False when the list may be cut
+            (a next page with no data, fewer users than the
+            directory counts, or no count at all); callers then must not withdraw anyone.
         """
         try:
             users = []
@@ -242,14 +281,20 @@ class MSGraphClient:
             async with self.rate_limiter:
                 query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
                     select=['id', 'displayName', 'userPrincipalName', 'accountEnabled',
-                            'mail', 'jobTitle', 'department', 'surname', 'userType']
+                            'mail', 'jobTitle', 'department', 'surname', 'userType'],
+                    count=True,
                 )
 
                 request_configuration = RequestConfiguration(
                     query_parameters=query_params
                 )
+                request_configuration.headers.add("ConsistencyLevel", "eventual")
 
                 result = await self.client.users.get(request_configuration)
+
+            # The directory's own total: a list that ends short of it was cut, not complete.
+            expected = result.odata_count if result else None
+            complete = True
 
             while result:
                 if result.value:
@@ -258,10 +303,15 @@ class MSGraphClient:
                 if hasattr(result, 'odata_next_link') and result.odata_next_link:
                     async with self.rate_limiter:
                         result = await self.client.users.with_url(result.odata_next_link).get()
+                    complete = complete and bool(result)    # a next page with no data
                 else:
                     break
 
-            self.logger.info(f"Retrieved {len(users)} users.")
+            # A missing count cannot confirm the list, so it is not complete either.
+            if not isinstance(expected, int) or len(users) < expected:
+                complete = False
+
+            self.logger.info(f"Retrieved {len(users)} users (complete: {complete}).")
 
             user_list: List[AppUser] = []
             for user in users:
@@ -277,7 +327,9 @@ class MSGraphClient:
                     is_guest=user.user_type == GUEST_USER_TYPE,
                 ))
 
-            return user_list
+            listing = UserListing(user_list)
+            listing.complete = complete
+            return listing
 
         except ODataError as e:
             self.logger.error(f"Error fetching users: {e}")

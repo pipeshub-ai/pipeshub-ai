@@ -91,7 +91,7 @@ async def test_batch_upsert_app_users_rejects_a_bad_later_user_before_any_statem
     h = Harness()
     users = [_User("u1", "a@x.io"), _User("u2", "b@x.io", created_at="not-a-number")]
     with pytest.raises(SchemaValidationError):
-        await h.call("batch_upsert_app_users", users, transaction)
+        await h.call("batch_upsert_app_users", users, transaction, org_id=ORG)
     assert_nothing_issued(h)
 
 
@@ -100,7 +100,7 @@ async def test_batch_upsert_app_users_rejects_a_bad_member_edge_before_any_state
     users = [_User("u1", "a@x.io"), _User("u2", "b@x.io")]
     users[1].updated_at = "later"      # the user node and the belongsTo edge both carry it
     with pytest.raises(SchemaValidationError):
-        await h.call("batch_upsert_app_users", users, "t1")
+        await h.call("batch_upsert_app_users", users, "t1", org_id=ORG)
     assert_nothing_issued(h)
 
 

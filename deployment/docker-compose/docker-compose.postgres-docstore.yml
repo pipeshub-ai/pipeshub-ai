@@ -19,6 +19,15 @@ services:
       - DOC_STORE=postgres
       - PG_NODE_URL=postgresql://pipeshub_node_login:${PG_NODE_PASSWORD:?PG_NODE_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
       - PG_JOBS_URL=postgresql://pipeshub_jobs:${PG_JOBS_PASSWORD:?PG_JOBS_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      # The Python services' logins, one per service (process_monitor.sh hands each process only its own, as PG_CORE_URL); used when a
+      # Python store is on PostgreSQL (KV_STORE_TYPE, MESSAGE_BROKER, DATA_STORE, VECTOR_DB_TYPE). Each login can act only as its
+      # service's role, so query cannot write what only connectors may, and the configuration-only services hold the key-value role.
+      - PG_CORE_URL=postgresql://pipeshub_connectors_login:${PG_CONNECTORS_PASSWORD:?PG_CONNECTORS_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_RUNTIME_SERVICE=connectors
+      - PG_CORE_CONNECTORS_URL=postgresql://pipeshub_connectors_login:${PG_CONNECTORS_PASSWORD:?PG_CONNECTORS_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_CORE_INDEXING_URL=postgresql://pipeshub_indexing_login:${PG_INDEXING_PASSWORD:?PG_INDEXING_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_CORE_QUERY_URL=postgresql://pipeshub_query_login:${PG_QUERY_PASSWORD:?PG_QUERY_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_CORE_KV_URL=postgresql://pipeshub_kv_login:${PG_KV_PASSWORD:?PG_KV_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
     depends_on:
       pgbouncer:
         condition: service_healthy

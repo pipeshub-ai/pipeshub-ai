@@ -48,7 +48,7 @@ def embedding_models(models: dict[str, FakeEmbeddingModel]) -> Iterator[None]:
     """Build the client named by a config's ``model`` from ``models``."""
     with patch(
         "app.modules.transformers.entity_vectorstore.get_embedding_model",
-        side_effect=lambda provider, config: models[config["configuration"]["model"]],
+        side_effect=lambda provider, config, **_: models[config["configuration"]["model"]],
     ):
         yield
 

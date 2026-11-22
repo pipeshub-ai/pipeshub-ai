@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class NotificationSeverity(str, Enum):
     """Matches INotification.severity in backend/nodejs notification schema."""
 
@@ -32,6 +33,9 @@ class NotificationType(str, Enum):
     # Agent toolsets ("Actions") — distinct from connectors.
     TOOLSET_AUTH_ERROR = "TOOLSET_AUTH_ERROR"
     ARTIFACT_SHARED = "ARTIFACT_SHARED"
+    # Indexing: a model provider key put on hold after several documents kept failing on it, and its end.
+    INDEXING_PROVIDER_ON_HOLD = "INDEXING_PROVIDER_ON_HOLD"
+    INDEXING_PROVIDER_HOLD_RELEASED = "INDEXING_PROVIDER_HOLD_RELEASED"
 
 class NotificationStatus(str, Enum):
     UNREAD = "unread"

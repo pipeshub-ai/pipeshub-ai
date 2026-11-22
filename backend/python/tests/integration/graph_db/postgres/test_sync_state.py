@@ -49,21 +49,21 @@ async def test_a_users_sync_state_is_the_relation_to_the_app_of_that_name_in_thi
     await w.edge("userAppRelation", ("users", "u1"), ("apps", "drive"), syncState="NOT_STARTED")
     await w.edge("userAppRelation", ("users", "u1"), ("apps", "mail"), syncState="DONE")
     await w.edge("userAppRelation", ("users", "u2"), ("apps", "drive"), syncState="DONE")
-    s = await w.p.get_user_sync_state("a@x.io", "DRIVE")
+    s = await w.p.get_user_sync_state("a@x.io", "DRIVE", org_id=w.org)
     assert s == {"syncState": "NOT_STARTED", "from_id": "u1", "from_collection": "users", "to_id": "drive", "to_collection": "apps"}
-    assert (await w.p.get_user_sync_state("a@x.io", "GMAIL"))["syncState"] == "DONE"
-    assert await w.p.get_user_sync_state("A@x.io", "DRIVE") is None and await w.p.get_user_sync_state("a@x.io", "SLACK") is None
-    assert await w.p.get_user_sync_state("nobody@x.io", "DRIVE") is None
-    u = await w.p.update_user_sync_state("a@x.io", "IN_PROGRESS", "DRIVE")
+    assert (await w.p.get_user_sync_state("a@x.io", "GMAIL", org_id=w.org))["syncState"] == "DONE"
+    assert await w.p.get_user_sync_state("A@x.io", "DRIVE", org_id=w.org) is None and await w.p.get_user_sync_state("a@x.io", "SLACK", org_id=w.org) is None
+    assert await w.p.get_user_sync_state("nobody@x.io", "DRIVE", org_id=w.org) is None
+    u = await w.p.update_user_sync_state("a@x.io", "IN_PROGRESS", "DRIVE", org_id=w.org)
     assert u["syncState"] == "IN_PROGRESS" and u["lastSyncUpdate"] > 0 and (u["from_id"], u["to_id"]) == ("u1", "drive")
-    assert (await w.p.get_user_sync_state("a@x.io", "DRIVE"))["syncState"] == "IN_PROGRESS"
-    assert (await w.p.get_user_sync_state("a@x.io", "GMAIL"))["syncState"] == "DONE"                  # the user's other app
-    assert (await w.p.get_user_sync_state("b@x.io", "DRIVE"))["syncState"] == "DONE"                  # another user's relation to the same app
-    assert await w.p.update_user_sync_state("a@x.io", "X", "SLACK") is None and await w.p.update_user_sync_state("nobody@x.io", "X", "DRIVE") is None
+    assert (await w.p.get_user_sync_state("a@x.io", "DRIVE", org_id=w.org))["syncState"] == "IN_PROGRESS"
+    assert (await w.p.get_user_sync_state("a@x.io", "GMAIL", org_id=w.org))["syncState"] == "DONE"                  # the user's other app
+    assert (await w.p.get_user_sync_state("b@x.io", "DRIVE", org_id=w.org))["syncState"] == "DONE"                  # another user's relation to the same app
+    assert await w.p.update_user_sync_state("a@x.io", "X", "SLACK", org_id=w.org) is None and await w.p.update_user_sync_state("nobody@x.io", "X", "DRIVE", org_id=w.org) is None
     with other_org():
-        assert await w.p.get_user_sync_state("a@x.io", "DRIVE") is None
-        assert await w.p.update_user_sync_state("a@x.io", "HACKED", "DRIVE") is None
-    assert (await w.p.get_user_sync_state("a@x.io", "DRIVE"))["syncState"] == "IN_PROGRESS"
+        assert await w.p.get_user_sync_state("a@x.io", "DRIVE", org_id=w.org) is None
+        assert await w.p.update_user_sync_state("a@x.io", "HACKED", "DRIVE", org_id=w.org) is None
+    assert (await w.p.get_user_sync_state("a@x.io", "DRIVE", org_id=w.org))["syncState"] == "IN_PROGRESS"
 
 
 async def test_a_drives_sync_state_is_read_and_set_on_its_own_node(w: World) -> None:
@@ -295,11 +295,23 @@ def test_every_method_of_the_module_is_in_the_no_org_cases() -> None:
     assert set(NAMES) == set(CALLS)
 
 
+# the methods whose org argument is required: a call names it, and a None one is refused (never the ambient org by default)
+NAMED_ORG = {"get_user_sync_state", "update_user_sync_state"}
+
+
 @pytest.mark.parametrize("name", sorted(CALLS))
 async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_provider, name: str) -> None:
+    kwargs = {"org_id": None} if name in NAMED_ORG else {}
     with pytest.raises(MissingOrgContext):
-        await getattr(pg_provider, name)(*CALLS[name])
+        await getattr(pg_provider, name)(*CALLS[name], **kwargs)
     if name == "backfill_indexed_copy_flags":
         return                                                  # under a system context it is the sweep of every org (tested above)
     with org_context.system("test.no-org"), pytest.raises(Exception, match="(?i)system|org"):
-        await getattr(pg_provider, name)(*CALLS[name])
+        await getattr(pg_provider, name)(*CALLS[name], **kwargs)
+
+
+@pytest.mark.parametrize("name", sorted(NAMED_ORG))
+async def test_an_org_argument_of_none_is_refused_even_inside_an_org(w: World, name: str) -> None:
+    for empty in (None, ""):
+        with pytest.raises(MissingOrgContext, match="org argument is required"):
+            await getattr(w.p, name)(*CALLS[name], org_id=empty)

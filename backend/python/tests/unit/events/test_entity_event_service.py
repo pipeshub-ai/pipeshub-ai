@@ -25,11 +25,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.non_retryable import NonRetryableError
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.user_errors import CONNECTOR_OFF
+from tests.unit.attempt_start import attempt_start_via
 from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -60,15 +61,15 @@ class TestProcessEvent:
     @pytest.mark.asyncio
     async def test_unknown_event_type(self):
         svc, logger, gp, _ = _make_service()
-        result = await svc.process_event("unknownEvent", {})
-        assert result is False
+        with pytest.raises(NonRetryableError):
+            await svc.process_event("unknownEvent", {})
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
-        # orgCreated will fail because payload is empty (KeyError)
-        result = await svc.process_event("orgCreated", {})
-        assert result is False
+        # orgCreated fails because payload is empty: the KeyError reaches the consumer (transient by default)
+        with pytest.raises(KeyError, match="accountType"):
+            await svc.process_event("orgCreated", {})
 
     @pytest.mark.skip(reason="Method __create_kb_connector_app_instance removed - KB creation now inline in __get_or_create_knowledge_base")
     @pytest.mark.asyncio
@@ -184,12 +185,12 @@ class TestHandleOrgCreated:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("db error"))
         payload = {"orgId": "org-1", "accountType": "enterprise"}
-        result = await svc.process_event("orgCreated", payload)
-        assert result is False
+        with pytest.raises(Exception, match="db error"):
+            await svc.process_event("orgCreated", payload)
 
 
 # ============================================================================
@@ -202,15 +203,15 @@ class TestHandleOrgUpdatedDeleted:
     async def test_org_updated_exception(self):
         svc, logger, gp, _ = _make_service()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("fail"))
-        result = await svc.process_event("orgUpdated", {"orgId": "org-1", "registeredName": "X"})
-        assert result is False
+        with pytest.raises(Exception, match="fail"):
+            await svc.process_event("orgUpdated", {"orgId": "org-1", "registeredName": "X"})
 
     @pytest.mark.asyncio
     async def test_org_deleted_exception(self):
         svc, logger, gp, _ = _make_service()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("fail"))
-        result = await svc.process_event("orgDeleted", {"orgId": "org-1"})
-        assert result is False
+        with pytest.raises(Exception, match="fail"):
+            await svc.process_event("orgDeleted", {"orgId": "org-1"})
 
 
 # ============================================================================
@@ -261,8 +262,9 @@ class TestHandleUserAdded:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
+        gp.get_user_by_user_id = AsyncMock(return_value=None)
         gp.get_user_by_email = AsyncMock(side_effect=Exception("db error"))
         payload = {
             "userId": "uid-1",
@@ -270,8 +272,9 @@ class TestHandleUserAdded:
             "email": "x@example.com",
             "syncAction": "none",
         }
-        result = await svc.process_event("userAdded", payload)
-        assert result is False
+        with pytest.raises(Exception, match="db error"):
+            await svc.process_event("userAdded", payload)
+        gp.get_user_by_email.assert_awaited_once_with("x@example.com", raise_on_error=True, org_id="org-1")
 
 
 # ============================================================================
@@ -306,13 +309,13 @@ class TestHandleUserUpdated:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
         gp.get_user_by_user_id = AsyncMock(side_effect=Exception("fail"))
-        result = await svc.process_event("userUpdated", {
-            "userId": "uid-1", "orgId": "org-1", "email": "a@b.com"
-        })
-        assert result is False
+        with pytest.raises(Exception, match="fail"):
+            await svc.process_event("userUpdated", {
+                "userId": "uid-1", "orgId": "org-1", "email": "a@b.com"
+            })
 
 
 # ============================================================================
@@ -324,30 +327,33 @@ class TestHandleUserDeleted:
     @pytest.mark.asyncio
     async def test_user_not_found(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_entity_id_by_email = AsyncMock(return_value=None)
+        gp.get_user_by_email = AsyncMock(return_value=None)
         result = await svc.process_event("userDeleted", {
             "orgId": "org-1", "email": "ghost@example.com"
         })
         assert result is False
+        gp.get_user_by_email.assert_awaited_once_with("ghost@example.com", raise_on_error=True, org_id="org-1")
 
     @pytest.mark.asyncio
     async def test_user_found_and_soft_deleted(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_entity_id_by_email = AsyncMock(return_value="key-1")
+        gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-1", user_id=None))
         gp.batch_upsert_nodes = AsyncMock()
         result = await svc.process_event("userDeleted", {
             "orgId": "org-1", "email": "alice@example.com"
         })
         assert result is True
+        gp.get_user_by_email.assert_awaited_once_with("alice@example.com", raise_on_error=True, org_id="org-1")
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
-        gp.get_entity_id_by_email = AsyncMock(side_effect=Exception("fail"))
-        result = await svc.process_event("userDeleted", {
-            "orgId": "org-1", "email": "x@x.com"
-        })
-        assert result is False
+        gp.get_user_by_email = AsyncMock(side_effect=Exception("fail"))
+        with pytest.raises(Exception, match="fail"):
+            await svc.process_event("userDeleted", {
+                "orgId": "org-1", "email": "x@x.com"
+            })
+        gp.get_user_by_email.assert_awaited_once_with("x@x.com", raise_on_error=True, org_id="org-1")
 
 
 # ============================================================================
@@ -396,11 +402,11 @@ class TestHandleAppEnabled:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
         gp.get_document = AsyncMock(side_effect=Exception("fail"))
-        result = await svc.process_event("appEnabled", {"orgId": "org-1", "apps": ["X"]})
-        assert result is False
+        with pytest.raises(Exception, match="fail"):
+            await svc.process_event("appEnabled", {"orgId": "org-1", "apps": ["X"]})
 
 
 # ============================================================================
@@ -593,13 +599,13 @@ class TestHandleAppDisabled:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_exception_raises(self):
         svc, logger, gp, _ = _make_service()
         gp.get_document = AsyncMock(side_effect=Exception("fail"))
-        result = await svc.process_event("appDisabled", {
-            "orgId": "org-1", "apps": ["X"], "connectorId": "c"
-        })
-        assert result is False
+        with pytest.raises(Exception, match="fail"):
+            await svc.process_event("appDisabled", {
+                "orgId": "org-1", "apps": ["X"], "connectorId": "c"
+            })
 
 
 # ============================================================================
@@ -802,6 +808,7 @@ class TestAppDisabledDrainsQueuedRecords:
             "createdAtTimestamp": 1000000,
         })
         gp.update_node = AsyncMock()
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.reset_indexing_status_for_connector = AsyncMock(
             side_effect=RuntimeError("graph unavailable")
         )

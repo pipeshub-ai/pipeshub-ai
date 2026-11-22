@@ -32,7 +32,10 @@ import {
   makeInstance,
   toasts,
   clearToasts,
+  signInAs,
+  signOut,
 } from '../../../__tests__/fixtures';
+
 
 function stats(indexingStatus: Record<string, number>, total?: number): ConnectorStatsResponse['data'] {
   return {
@@ -355,5 +358,17 @@ describe('OverviewTab: actions', () => {
     expect(s.isPanelOpen).toBe(true);
     expect(s.panelConnectorId).toBe(instance._key);
     expect(s.panelActiveTab).toBe('authenticate');
+  });
+
+  it('offers the access check to an admin only', () => {
+    signInAs('member');
+    const { unmount } = renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={stats({ COMPLETED: 1 })} />);
+    expect(screen.queryByRole('button', { name: "Check someone's access" })).toBeNull();
+    unmount();
+
+    signInAs('admin');
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={stats({ COMPLETED: 1 })} />);
+    expect(screen.getByRole('button', { name: "Check someone's access" })).toBeTruthy();
+    signOut();
   });
 });

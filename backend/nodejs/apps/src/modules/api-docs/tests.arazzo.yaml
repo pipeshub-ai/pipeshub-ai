@@ -1526,7 +1526,7 @@ workflows:
             name: sdk-test-pat-admin-revoke
             scopes:
               - kb:read
-            expiryDays: never
+            expiryDays: 7
         successCriteria:
           - condition: $statusCode == 201
           - condition: $response.header.Content-Type == application/json

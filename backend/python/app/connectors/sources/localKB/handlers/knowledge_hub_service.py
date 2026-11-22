@@ -3,7 +3,9 @@
 import asyncio
 import inspect
 import logging
+import math
 import re
+import time
 import traceback
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
@@ -39,13 +41,18 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
 from app.connectors.sources.localKB.handlers.kh_search import SearchPage, search_page
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
+    KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
     is_out_of_memory,
+    listing_busy,
 )
 from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.selection_scope import NamedNode
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    KH_SKIP_READS,
+    IGraphDBProvider,
+)
 from app.utils.kh_cursor import (
     Boundary,
     CursorError,
@@ -54,9 +61,13 @@ from app.utils.kh_cursor import (
     derive_cursor_secret,
     encode,
 )
+from app.utils.user_lookup import get_caller_user
 from app.utils.user_messages import action_failed
 
 _T = TypeVar("_T")
+
+
+SCAN_BUDGET_S = 1.0     # how long one request keeps going on from an empty page whose scan stopped at a bound
 
 
 class BrowseRequestError(Exception):
@@ -88,6 +99,30 @@ _START_TYPES = {
 }
 
 
+_MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _embed_progress(doc: dict[str, Any]) -> dict[str, int | None]:
+    """The embedding progress of a record row, or none.
+
+    Only an ``IN_PROGRESS`` record has any: the indexer does not clear the
+    counts when a record is queued, paused or switched to manual indexing, so
+    they can be stale. Both counts are plain numbers read back as stored, so a
+    missing, negative, non-finite, boolean or beyond-JSON-safe pair is dropped
+    rather than shown, and a count that ran ahead of the total is held at it.
+    """
+    none: dict[str, int | None] = {"embedDone": None, "embedTotal": None}
+    if doc.get("indexingStatus") != "IN_PROGRESS":
+        return none
+    done, total = doc.get("embedDone"), doc.get("embedTotal")
+    for value in (done, total):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return none
+    if total < 1 or done < 0 or total > _MAX_SAFE_INTEGER or done > _MAX_SAFE_INTEGER:
+        return none
+    return {"embedDone": min(int(done), int(total)), "embedTotal": int(total)}
+
+
 def _start_type(parent_type: str | None) -> str:
     """The kind of node a scoped listing starts from, for the type in the URL."""
     return _START_TYPES.get(parent_type or "", "record")
@@ -105,6 +140,7 @@ _SORT_FROM_PROVIDER = {
     "updatedAt": "updatedAt",
     "sizeInBytes": "size",
     "nodeType": "type",
+    "origin": "origin",
 }
 
 
@@ -145,6 +181,7 @@ class KnowledgeHubService:
         "updatedAt": "updatedAt",
         "size": "sizeInBytes",
         "type": "nodeType",
+        "origin": "origin",
     }
 
     def __init__(
@@ -277,32 +314,56 @@ class KnowledgeHubService:
         issued_for = (cursor.mode, cursor.parent_id, _start_type(cursor.parent_type))
         if issued_for != (mode, parent_id, _start_type(parent_type)):
             raise BrowseRequestError("Invalid cursor: issued for a different location", 400)
-        return cursor
+        return cursor.with_fresh_counts()
 
     async def _walk_pages(
         self,
-        fetch_page: Callable[[str | None], Awaitable[SearchPage]],
+        fetch_page: Callable[[str | None, int], Awaitable[SearchPage]],
         cursor_token: str | None,
         page: int,
+        limit: int,
+        *,
+        browse: bool = False,
     ) -> SearchPage:
-        """One page, by cursor if given, otherwise by walking forward to `page`."""
+        """One page, by cursor if given, otherwise by reading the rows before `page` and then the page from where they end.
+
+        ``fetch_page(token, rows)`` reads ``rows`` rows past the cursor ``token`` (None: from the start); ``browse``: one level below a start."""
+        async def fetch(token: str | None, rows: int = limit) -> SearchPage:
+            # A provider that stopped looking at a bound before it had a page leaves a page with no rows and a cursor to go on with: go on, within a time budget,
+            # so that in practice a caller sees rows or the end. Only if the budget runs out is the empty page returned (with its cursor).
+            started = time.monotonic()
+            got = await fetch_page(token, rows)
+            while not got.rows and got.scan_cursor and time.monotonic() - started < SCAN_BUDGET_S:
+                got = await fetch_page(got.scan_cursor, rows)
+            return got
         if cursor_token:
-            return await fetch_page(cursor_token)
+            return await fetch(cursor_token)
         if page > MAX_PAGE_WALK:
             raise BrowseRequestError(
                 f"Invalid page: page must not exceed {MAX_PAGE_WALK}. "
                 f"Use the cursor from a previous response.",
                 400,
             )
-        result = await fetch_page(None)
-        for _ in range(page - 1):
-            if not result.next_cursor:
-                return replace(
-                    result, rows=[], start_index=0, end_index=0,
-                    next_cursor=None, prev_cursor=None,
-                )
-            result = await fetch_page(result.next_cursor)
-        return result
+        # The rows before the page are read as many at a time as the backend takes (``kh_skip_rows``; a page's worth unless it says more): on a backend whose every
+        # read pays the listing's fixed cost (per connector: its state, its access classes), page N is then about two reads, not N. A read that stopped early at a
+        # bound is continued from where it stopped until every row before the page is read; one that found no row within the scan budget is handed back as it is
+        # (no rows, its cursor), never a page from too early.
+        step = getattr(self.graph_provider, "kh_browse_skip_rows" if browse else "kh_skip_rows", 0)
+        step = step if type(step) is int and step > limit else limit      # exactly an int: a spec'd test double passes isinstance
+        token, left = None, (page - 1) * limit
+        skipping = KH_SKIP_READS.set({"page_rows": limit})
+        try:
+            while left > 0:
+                got = await fetch(token, min(left, step))
+                if not got.next_cursor:
+                    return replace(got, rows=[], start_index=0, end_index=0, next_cursor=None, prev_cursor=None)
+                if not got.rows:
+                    return got
+                left -= len(got.rows)
+                token = got.next_cursor
+        finally:
+            KH_SKIP_READS.reset(skipping)
+        return await fetch(token)
 
     def _page_from_partition(
         self,
@@ -331,8 +392,10 @@ class KnowledgeHubService:
         direction = cursor.direction if cursor else "next"
 
         if cursor is not None and cursor.total is not None:
-            total, counts = cursor.total, cursor.counts_by_type
+            total, counts, total_capped, counted_at = cursor.total, cursor.counts_by_type, cursor.total_capped, cursor.counted_at_ms
         else:
+            counted_at = int(time.time() * 1000)
+            total_capped = bool(part.get("totalCapped"))
             total = part["total"] if part["total"] is not None else len(rows)
             if want_counts and part.get("counts") is not None:
                 counts = part["counts"]
@@ -359,6 +422,7 @@ class KnowledgeHubService:
                     direction=next_direction,
                     items_seen=items_seen,
                     total=total,
+                    total_capped=total_capped,
                     counts_by_type=counts,
                     filters=filters,
                     sort_by=sort_field,
@@ -370,20 +434,27 @@ class KnowledgeHubService:
                     user_id=user_id,
                     org_id=org_id,
                     limit_apps=limit_apps,
+                    counted_at_ms=counted_at,
                 ),
                 secret,
             )
 
+        # A scan that stopped at a bound before it had a page says where it got to: the page may have no rows and still has somewhere to go.
+        resume = part.get("resume")
+        next_edge = (rows[-1] if rows else None) if direction == "prev" else (resume or (rows[-1] if rows else None))
+        prev_edge = (resume or (rows[0] if rows else None)) if direction == "prev" else (rows[0] if rows else None)
+        next_cursor = issue(next_edge, "next", seen_before + len(rows)) if next_edge and has_next else None
+        prev_cursor = issue(prev_edge, "prev", seen_before) if prev_edge and has_prev else None
         return SearchPage(
             rows=rows,
             total=total,
             counts_by_type=counts,
             start_index=seen_before + 1 if rows else 0,
             end_index=seen_before + len(rows),
-            next_cursor=issue(rows[-1], "next", seen_before + len(rows))
-            if rows and has_next else None,
-            prev_cursor=issue(rows[0], "prev", seen_before)
-            if rows and has_prev else None,
+            next_cursor=next_cursor,
+            prev_cursor=prev_cursor,
+            total_capped=total_capped,
+            scan_cursor=(next_cursor if direction == "next" else prev_cursor) if not rows and resume else None,
         )
 
     async def _v2_nodes(
@@ -453,26 +524,26 @@ class KnowledgeHubService:
                 if within is not None:
                     access = _only_apps(access, within)
 
-            async def fetch_global(token: str | None) -> SearchPage:
+            async def fetch_global(token: str | None, rows: int) -> SearchPage:
                 self._decode_cursor(token, secret, user_id, org_id, mode=mode)
                 return await search_page(
                     self.graph_provider,
                     user_key=user_key, user_id=user_id, org_id=org_id,
-                    limit=limit, sort_field=sort_field, sort_dir=sort_dir,
+                    limit=rows, sort_field=sort_field, sort_dir=sort_dir,
                     filters=filters, cursor_token=token, secret=secret,
                     access=access, limit_apps=limit_apps,
                     # Depth counts from the root, and each App is one hop below it.
                     max_depth=max_depth - 1 if max_depth < 50 else 50,
                 )
             try:
-                global_page = await self._walk_pages(fetch_global, cursor, page)
+                global_page = await self._walk_pages(fetch_global, cursor, page, limit)
             except CursorError as exc:
                 raise BrowseRequestError(f"Invalid cursor: {exc}", 400) from exc
             return global_page, None
 
         scope: dict[str, Any] | None = None
 
-        async def fetch_single(token: str | None) -> SearchPage:
+        async def fetch_single(token: str | None, rows: int) -> SearchPage:
             nonlocal scope
             page_cursor = self._decode_cursor(
                 token, secret, user_id, org_id,
@@ -485,22 +556,17 @@ class KnowledgeHubService:
             order = (page_cursor.sort_order if page_cursor else None) or sort_dir
             reuse_total = page_cursor is not None and page_cursor.total is not None
 
-            common = {
-                "user_key": user_key, "org_id": org_id, "limit": limit,
-                "sort_field": field, "sort_dir": order,
-                "after": page_cursor.boundary.as_after() if page_cursor else None,
-                "direction": page_cursor.direction if page_cursor else "next",
-                "include_ids": want_counts and not reuse_total,
-            }
-            if parent_id is None:
-                envelope = await self.graph_provider.get_knowledge_hub_root_nodes_v2(
-                    user_app_ids=access["gated_app_ids"],
-                    # Apps are in no record group, and this filter only narrows
-                    # collection-origin groups.
-                    **{k: v for k, v in active.items() if k != "record_group_ids"},
-                    **common,
-                )
-            else:
+            async def ask(after: dict[str, Any] | None, going: str, rows: int, *, counting: bool) -> dict[str, Any]:
+                """The provider's answer for the rows past ``after`` (None: from the start); ``counting`` asks for the total."""
+                if parent_id is None:
+                    return await self.graph_provider.get_knowledge_hub_root_nodes_v2(
+                        user_app_ids=access["gated_app_ids"],
+                        # Apps are in no record group, and this filter only narrows
+                        # collection-origin groups.
+                        **{k: v for k, v in active.items() if k != "record_group_ids"},
+                        user_key=user_key, org_id=org_id, limit=rows, sort_field=field, sort_dir=order,
+                        after=after, direction=going, include_ids=want_counts and counting,
+                    )
                 start_type = _start_type(parent_type)
                 page = await self.graph_provider.get_knowledge_hub_connector_page_v3(
                     app_id=parent_id if start_type == "app" else "",
@@ -511,30 +577,44 @@ class KnowledgeHubService:
                     # connector's grants, not every grant the user holds.
                     granted_ids=None,
                     user_key=user_key,
-                    limit=limit,
+                    limit=rows,
                     flatten=flatten,
                     sort_field=field,
                     sort_dir=order,
-                    after=page_cursor.boundary.as_after() if page_cursor else None,
-                    direction=page_cursor.direction if page_cursor else "next",
+                    after=after,
+                    direction=going,
                     filters=active,
-                    include_total=not reuse_total,
+                    include_total=counting,
                     start_id=parent_id,
                     start_type=start_type,
                     include_scope=True,
                     via_parent_id=page_cursor.via_parent_id if page_cursor else None,
                     max_depth=max_depth,
                 )
-                envelope = {
+                return {
                     "partitions": [{
                         "rows": page["rows"],
                         "hasMore": page["hasMore"],
                         "total": page["total"],
                         "ids": [],
                         "counts": page.get("counts"),
+                        # A scan that stopped early says where it got to, and a capped total says so: both reach the cursor.
+                        "resume": page.get("resume"),
+                        "totalCapped": page.get("totalCapped"),
                     }],
                     "scope": page.get("scope"),
                 }
+
+            envelope = await ask(
+                page_cursor.boundary.as_after() if page_cursor else None,
+                page_cursor.direction if page_cursor else "next",
+                rows, counting=page_cursor is None,
+            )
+            if page_cursor is not None and not reuse_total:
+                # A carried total that aged out: the page's own query would count only the rows past its boundary, so the whole listing is
+                # counted again with the same query and no boundary.
+                whole = (await ask(None, "next", 1, counting=True))["partitions"][0]
+                envelope["partitions"][0].update({k: whole.get(k) for k in ("total", "counts", "ids", "totalCapped")})
             scope = envelope.get("scope")
             return self._page_from_partition(
                 envelope["partitions"][0], page_cursor, secret,
@@ -543,7 +623,7 @@ class KnowledgeHubService:
                 user_id=user_id, org_id=org_id, want_counts=want_counts, limit_apps=limit_apps,
             )
 
-        return await self._walk_pages(fetch_single, cursor, page), scope
+        return await self._walk_pages(fetch_single, cursor, page, limit, browse=parent_id is not None and not flatten), scope
 
     def _only_signed_cursors(self, page: SearchPage, secret: bytes | None) -> SearchPage:
         """Hand out cursors only when they are signed.
@@ -572,8 +652,14 @@ class KnowledgeHubService:
         it (seconds for the listing and the access check) and again when its
         statistics move, and this takes that cost off a person's click. Returns
         how many requests were made."""
-        sample = await self.graph_provider.get_knowledge_hub_warm_sample()
-        if not sample:
+        sample, user_id, org_id = None, "", ""
+        for candidate in await self.graph_provider.get_knowledge_hub_warm_samples():
+            user_id, org_id = candidate["userId"], candidate["orgId"]
+            # An App the user has switched off (demo data) leaves their gate: every browse under it would be refused.
+            if candidate["appId"] not in await self._excluded_apps(user_id, org_id):
+                sample = candidate
+                break
+        if sample is None:
             return 0
         full = ["counts", "permissions", "breadcrumbs", "availableFilters"]
         main = {"limit": 50, "sort_by": "updatedAt", "sort_order": "desc", "include": full}
@@ -591,7 +677,7 @@ class KnowledgeHubService:
                 })
         for request in requests:
             try:
-                await self.get_nodes(user_id=sample["userId"], org_id=sample["orgId"], **request)
+                await self.get_nodes(user_id=user_id, org_id=org_id, **request)
             except Exception as exc:
                 self.logger.warning("knowledge hub plan warm-up request failed: %s", exc)
         return len(requests)
@@ -618,7 +704,7 @@ class KnowledgeHubService:
 
     async def _resolve_user(self, user_id: str, org_id: str) -> Any | None:
         """Resolve graph user node from external userId. EE overrides for org-scoped lookup."""
-        return await self.graph_provider.get_user_by_user_id(user_id=user_id)
+        return await get_caller_user(self.graph_provider, user_id)
 
     async def _get_user_app_ids(
         self, user_key: str, org_id: str
@@ -782,6 +868,7 @@ class KnowledgeHubService:
                 permissions_task = asyncio.create_task(self._get_permissions(
                     user_key, org_id, parent_id, parent_type, is_org_admin=is_org_admin,
                 ))
+            preparing = False
             try:
                 page_result, scope = await self._v2_nodes(
                     user_id=user_id,
@@ -808,6 +895,11 @@ class KnowledgeHubService:
                 raise BrowseRequestError(str(too_large), 422) from too_large
             except KnowledgeHubListingBusy as busy:
                 raise BrowseRequestError(str(busy), 503) from busy
+            except KnowledgeHubListingNotReady:
+                # The source holds nodes its copy has not reached yet (the provider refuses only a start the user may open): an empty page that says so, no cursor
+                # to page on with. Nothing is listed, so nothing is shown that the user may not read.
+                preparing = True
+                page_result, scope = SearchPage(rows=[], total=0, counts_by_type={}, start_index=0, end_index=0, next_cursor=None, prev_cursor=None), None
 
             # The start node's own admission decides this, and the 404 body is
             # constant: naming the node, or its type, would confirm it exists
@@ -872,6 +964,7 @@ class KnowledgeHubService:
                 pagination=PaginationInfo(
                     limit=limit,
                     totalItems=total_count,
+                    totalCapped=page_result.total_capped,
                     hasNext=has_next,
                     hasPrev=has_prev,
                     startIndex=page_result.start_index,
@@ -887,6 +980,11 @@ class KnowledgeHubService:
             )
 
             # Fetch typed records if requested (for LLM context enrichment)
+            if page_result.not_ready:
+                response.notReady = page_result.not_ready
+            if preparing:
+                response.preparing = True
+
             if include_typed_records and items:
                 record_ids = [
                     item.id for item in items
@@ -944,6 +1042,7 @@ class KnowledgeHubService:
                     response.counts = CountsInfo(
                         items=count_items,
                         total=total_count,  # Use actual total count, not paginated length
+                        capped=page_result.total_capped,
                     )
 
                 if permissions_task is not None:
@@ -955,9 +1054,11 @@ class KnowledgeHubService:
             self.logger.warning("⚠️ Browse request refused: %s", request_error.message)
             return self._refusal(parent_id, page, limit, request_error.message, request_error.status_code)
         except Exception as e:
-            if is_out_of_memory(e):
-                # Some other statement of this request found the transaction pool spent: a retry, not a failure.
-                return self._refusal(parent_id, page, limit, str(KnowledgeHubListingBusy()), 503)
+            busy = listing_busy(e)
+            if busy is not None or is_out_of_memory(e):
+                # Some other statement of this request found the transaction pool spent, or the deadline passed inside the batch check:
+                # a retry, not a failure.
+                return self._refusal(parent_id, page, limit, str(busy or KnowledgeHubListingBusy()), 503)
             self.logger.error("❌ Failed to get nodes: %s", e, exc_info=True)
             return KnowledgeHubNodesResponse(
                 success=False,
@@ -1189,6 +1290,8 @@ class KnowledgeHubService:
                 "recordType": doc.get("recordType"),
                 "recordGroupType": doc.get("groupType"),
                 "indexingStatus": doc.get("indexingStatus"),
+                "embedDone": doc.get("embedDone"),
+                "embedTotal": doc.get("embedTotal"),
                 "createdAt": node.created_at or 0,
                 "updatedAt": node.updated_at or 0,
                 "sizeInBytes": doc.get("sizeInBytes"),
@@ -1268,6 +1371,7 @@ class KnowledgeHubService:
             recordGroupType=doc.get('recordGroupType'),
             indexingStatus=doc.get('indexingStatus'),
             reason=doc.get('reason'),
+            **_embed_progress(doc),
             createdAt=doc.get('createdAt', 0),
             updatedAt=doc.get('updatedAt', 0),
             sizeInBytes=doc.get('sizeInBytes'),

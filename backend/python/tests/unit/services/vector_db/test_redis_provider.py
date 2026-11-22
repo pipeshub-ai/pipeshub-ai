@@ -20,6 +20,7 @@ from app.services.vector_db.models import (
 )
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.redis_vector import RedisVectorService, _check_version
+from tests.support.redis_schema import with_schema
 
 # ---------------------------------------------------------------------------
 # Version check helper
@@ -76,7 +77,7 @@ def mock_redis_client() -> AsyncMock:
 
 @pytest.fixture
 def service(redis_config: RedisVectorConfig, mock_redis_client: AsyncMock) -> RedisVectorService:
-    svc = RedisVectorService(redis_config)
+    svc = with_schema(RedisVectorService(redis_config))
     svc.client = mock_redis_client
     return svc
 
@@ -103,7 +104,7 @@ class TestRedisHealthCheck:
 
     @pytest.mark.asyncio
     async def test_unhealthy_when_not_connected(self, redis_config) -> None:
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         svc.client = None
         result = await svc.health_check()
         assert result.status == HealthStatus.UNHEALTHY
@@ -499,7 +500,7 @@ def _make_redis_service() -> RedisVectorService:
     svc.client.ping = AsyncMock()
     svc._dense_dtype = "FLOAT16"
     svc._collection_configs = {}
-    return svc
+    return with_schema(svc)
 
 
 class TestRedisDeletePointsEmptyFilter:
@@ -841,7 +842,7 @@ class TestConnectionLifecycle:
     async def test_connect_success(self, redis_config, mock_redis_client) -> None:
         """connect() establishes connection through the connection provider
         and verifies it with ping."""
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         mock_provider = MagicMock()
         mock_provider.create_client = MagicMock(return_value=mock_redis_client)
         with patch(
@@ -856,7 +857,7 @@ class TestConnectionLifecycle:
     @pytest.mark.asyncio
     async def test_connect_failure_raises(self, redis_config) -> None:
         """connect() raises exception on connection failure."""
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         mock_client = AsyncMock()
         mock_client.ping = AsyncMock(side_effect=ConnectionError("Cannot reach Redis"))
 
@@ -883,7 +884,7 @@ class TestConnectionLifecycle:
     @pytest.mark.asyncio
     async def test_disconnect_without_client(self, redis_config) -> None:
         """disconnect() handles None client gracefully."""
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         svc.client = None
 
         await svc.disconnect()  # Should not raise
@@ -927,7 +928,7 @@ class TestPerLoopClients:
     """A redis.asyncio pool binds to one loop, so each loop gets its own client."""
 
     def test_each_loop_gets_its_own_client_with_the_same_options(self, redis_config) -> None:
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         provider = _per_loop_provider()
         a, b = asyncio.new_event_loop(), asyncio.new_event_loop()
         try:
@@ -949,7 +950,7 @@ class TestPerLoopClients:
             b.close()
 
     def test_disconnect_closes_each_client_on_its_owning_loop(self, redis_config) -> None:
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         owner = asyncio.new_event_loop()
         thread = threading.Thread(target=owner.run_forever, daemon=True)
         thread.start()
@@ -976,7 +977,7 @@ class TestPerLoopClients:
         client.ping = AsyncMock(side_effect=ConnectionError("down"))
         provider = MagicMock()
         provider.create_client = MagicMock(return_value=client)
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
 
         with patch(_GET_PROVIDER, return_value=provider), pytest.raises(ConnectionError):
             await svc.connect()
@@ -1031,7 +1032,7 @@ class TestKeysMatchingFilter:
     @staticmethod
     def _filter() -> FilterExpression:
         from app.services.vector_db.models import FieldCondition, FilterExpression
-        return FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
+        return FilterExpression(must=[FieldCondition(key="metadata.orgId", value="org1")])
 
     @pytest.mark.asyncio
     async def test_reads_through_a_cursor_until_it_ends(self, service, mock_redis_client) -> None:
@@ -1050,8 +1051,9 @@ class TestKeysMatchingFilter:
         assert second[:4] == ("FT.CURSOR", "READ", first[1], 7)
 
     @pytest.mark.asyncio
-    async def test_a_repeated_key_is_counted_once_and_a_short_scan_raises(self, service, mock_redis_client) -> None:
+    async def test_a_repeated_key_is_counted_once_and_a_short_scan_raises(self, service, mock_redis_client, monkeypatch) -> None:
         """Offset paging repeated some keys and missed others; the cursor can still repeat one."""
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_ATTEMPTS", 1)
         mock_redis_client.execute_command = AsyncMock(side_effect=[
             [3], _agg(3, [b"k1", b"k2"], cursor=9), _agg(0, [b"k2"], cursor=0),
         ])
@@ -1065,14 +1067,33 @@ class TestKeysMatchingFilter:
 
     @pytest.mark.asyncio
     async def test_a_misleading_first_integer_of_the_aggregate_does_not_hide_a_short_scan(
-        self, service, mock_redis_client,
+        self, service, mock_redis_client, monkeypatch,
     ) -> None:
         """The first integer of an aggregate reply is not defined as the number of matches: here it says 2,
         as many as came back, while the index counts 3. The count query is what the scan is held to."""
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_ATTEMPTS", 1)
         mock_redis_client.execute_command = AsyncMock(side_effect=[[3], _agg(2, [b"k1", b"k2"], cursor=0)])
 
         with pytest.raises(RuntimeError, match="2 of 3 counted"):
             await service._keys_matching_filter("test_collection", self._filter())
+
+    @pytest.mark.asyncio
+    async def test_a_short_scan_is_read_again_while_the_index_settles(self, service, mock_redis_client, monkeypatch) -> None:
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_DELAY_SECONDS", 0.0)
+        mock_redis_client.execute_command = AsyncMock(side_effect=[
+            [2], _agg(1, [b"k1"], cursor=0), [2], _agg(2, [b"k1", b"k2"], cursor=0),
+        ])
+
+        assert await service._keys_matching_filter("test_collection", self._filter()) == [b"k1", b"k2"]
+
+    @pytest.mark.asyncio
+    async def test_a_scan_that_stays_short_raises_after_every_attempt(self, service, mock_redis_client, monkeypatch) -> None:
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_DELAY_SECONDS", 0.0)
+        mock_redis_client.execute_command = AsyncMock(side_effect=lambda cmd, *a: [2] if cmd == "FT.SEARCH" else _agg(1, [b"k1"], cursor=0))
+
+        with pytest.raises(RuntimeError, match="1 of 2 counted"):
+            await service._keys_matching_filter("test_collection", self._filter())
+        assert mock_redis_client.execute_command.await_count == 10
 
     @pytest.mark.asyncio
     async def test_documents_removed_during_the_scan_are_not_an_error(self, service, mock_redis_client) -> None:
@@ -1212,7 +1233,7 @@ class TestRedisFailuresAreLoud:
         mock_redis_client.delete = AsyncMock()
 
         filter_expr = FilterExpression(
-            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         with pytest.raises(RuntimeError, match="aborted after"):
             await service.delete_points("records", filter_expr)
@@ -1259,7 +1280,7 @@ class TestRedisFailuresAreLoud:
         pipeline.execute = AsyncMock(return_value=[Exception("OOM")])
 
         filter_expr = FilterExpression(
-            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         with pytest.raises(RuntimeError, match="failed HSET"):
             await service.set_payload("records", {"connectorIds": ["c1"]}, filter_expr)
@@ -1268,9 +1289,9 @@ class TestRedisFailuresAreLoud:
 class TestRedisScrollCeilingAndFanOut:
     @pytest.mark.asyncio
     async def test_scroll_returns_the_page_that_reaches_the_ceiling(self, service, mock_redis_client) -> None:
-        """Every point inside the window comes back, with a cursor; the call
-        for the offset past it is refused rather than answered with
-        next_offset=None, which the caller would read as the last page."""
+        """Every point inside the window comes back, with a cursor; the call for the offset past it goes to FT.AGGREGATE (FT.SEARCH
+        cannot go there), and if that cannot continue the scroll it is refused rather than answered with next_offset=None, which the
+        caller would read as the last page."""
         page = []
         for i in range(100):
             page.extend([f"records:{i}".encode(), [b"page_content", b"x"]])
@@ -1280,10 +1301,11 @@ class TestRedisScrollCeilingAndFanOut:
         assert len(result.points) == 100
         assert result.next_offset == "10050"
 
-        mock_redis_client.execute_command.reset_mock()
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError("no aggregate"))
         with pytest.raises(ScrollWindowExceededError, match="ceiling"):
             await service.scroll("records", FilterExpression(), limit=100, offset=result.next_offset)
-        mock_redis_client.execute_command.assert_not_awaited()
+        first = mock_redis_client.execute_command.await_args_list[0].args
+        assert first[0] == "FT.AGGREGATE" and "WITHCURSOR" in first and "LIMIT" not in first  # a cursor, not an offset past the cap
 
     @pytest.mark.asyncio
     async def test_scroll_returns_cursor_below_ceiling(self, service, mock_redis_client) -> None:
@@ -1557,3 +1579,51 @@ class TestRedisFilterOpsSeeEveryMatch:
         svc = self._svc()
         page = await svc.scroll("records", self.FILT, limit=40)
         assert len(page.points) == 40
+
+
+class TestRedisExistingPointIds:
+    @pytest.mark.asyncio
+    async def test_is_one_exists_per_key_in_one_round_trip_and_reads_no_hash(self, service, mock_redis_client) -> None:
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[1, 0, 1])
+        mock_redis_client.pipeline = MagicMock(return_value=pipeline)
+
+        found = await service.existing_point_ids("coll", ["a", "b", "c"])
+
+        assert found == {"a", "c"}
+        assert [c.args for c in pipeline.execute_command.call_args_list] == [
+            ("EXISTS", "coll:a"), ("EXISTS", "coll:b"), ("EXISTS", "coll:c"),
+        ]
+        pipeline.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reply_fails_the_call_rather_than_reading_as_absent(self, service, mock_redis_client) -> None:
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[1, RuntimeError("boom")])
+        mock_redis_client.pipeline = MagicMock(return_value=pipeline)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await service.existing_point_ids("coll", ["a", "b"])
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, service, mock_redis_client) -> None:
+        mock_redis_client.pipeline = MagicMock()
+        assert await service.existing_point_ids("coll", []) == set()
+        mock_redis_client.pipeline.assert_not_called()
+
+
+class TestRedisCreateIndex:
+    SCHEMA = {"type": "keyword"}
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_is_not_a_duplicate_is_raised(self, service, mock_redis_client) -> None:
+        # Kills: swallowing the error, which let the registry treat an unindexed field as indexed.
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError("ERR unknown command 'FT.ALTER'"))
+        with pytest.raises(RuntimeError):
+            await service.create_index("c", "metadata.contentRev", self.SCHEMA)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["Field already exists", "Duplicate field in schema"])
+    async def test_a_field_already_in_the_schema_returns_quietly(self, service, mock_redis_client, message) -> None:
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError(message))
+        await service.create_index("c", "metadata.contentRev", self.SCHEMA)

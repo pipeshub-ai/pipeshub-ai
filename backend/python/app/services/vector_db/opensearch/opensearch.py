@@ -71,7 +71,7 @@ from app.services.vector_db.const.const import (
     ROOT_RECORD_GROUP_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
 )
-from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.errors import OrgRequired, PartialResult
 from app.services.vector_db.filters import (
     forbid_fence_in_payload,
     forbid_org_in_payload,
@@ -905,9 +905,10 @@ class OpenSearchService(IVectorDBService):
             if with_payload
             else {"exclude": ["dense_embedding"]}
         )
+        page_size = min(limit, 10000)  # the store's page ceiling: a full page of that size, not of *limit*, means there may be more
         body: Dict[str, Any] = {
             "query": bool_query,
-            "size": min(limit, 10000),
+            "size": page_size,
             "_source": source,
             "sort": [{"point_id": "asc"}],
         }
@@ -920,12 +921,12 @@ class OpenSearchService(IVectorDBService):
 
         result = await self.client.search(index=collection_name, body=body)  # type: ignore
         hits = result.get("hits", {}).get("hits", [])
-        if len(hits) > limit:
-            hits = hits[:limit]
+        if len(hits) > page_size:
+            hits = hits[:page_size]
         points = [self._hit_to_point(hit) for hit in hits]
         # Return a cursor for the next page when the result set is full
         next_offset = None
-        if len(hits) == limit and hits:
+        if len(hits) == page_size and hits:
             last_sort = hits[-1].get("sort")
             if not last_sort:
                 # No sort value on a full page means the documents predate the
@@ -940,6 +941,56 @@ class OpenSearchService(IVectorDBService):
             next_offset = json.dumps(last_sort)
 
         return ScrollResult(points=points, next_offset=next_offset)
+
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: Optional[str] = None,
+    ) -> ScrollResult:
+        """``scroll`` with ``dense_embedding`` kept in ``_source``. The text is searched server-side, so there is no sparse vector."""
+        await self._assert_connected()
+        page_size = min(limit, 10000)  # the store's page ceiling: a full page of that size, not of *limit*, means there may be more
+        body: dict[str, Any] = {
+            "query": OpenSearchUtils.filter_expression_to_bool_query(scroll_filter),
+            "size": page_size,
+            "sort": [{"point_id": "asc"}],
+        }
+        if offset is not None:
+            try:
+                body["search_after"] = json.loads(offset)
+            except (ValueError, TypeError):
+                body["search_after"] = [offset]
+        result = await self.client.search(index=collection_name, body=body)  # type: ignore
+        hits = (result.get("hits", {}).get("hits", []))[:page_size]
+        points = []
+        for hit in hits:
+            point = self._hit_to_point(hit)
+            dense = hit.get("_source", {}).get("dense_embedding")
+            point.dense_vector = list(dense) if dense is not None else None
+            points.append(point)
+        next_offset = None
+        if len(hits) == page_size and hits:
+            last_sort = hits[-1].get("sort")
+            if not last_sort:
+                raise RuntimeError(f"Cannot page '{collection_name}': documents have no 'point_id' to sort on.")
+            next_offset = json.dumps(last_sort)
+        return ScrollResult(points=points, next_offset=next_offset)
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        await self._assert_connected()
+        result = await self.client.count(  # type: ignore
+            index=collection_name, body={"query": OpenSearchUtils.filter_expression_to_bool_query(count_filter)},
+        )
+        if result.get("_shards", {}).get("failed"):
+            raise PartialResult(f"{collection_name}: {result['_shards']['failed']} shard(s) failed to count")
+        return int(result["count"])
+
+    async def make_searchable(self, collection_name: str) -> None:
+        """A write reaches a search at the next refresh (30 s here), a get by id at once: publish every write acknowledged so far."""
+        await self._assert_connected()
+        await self.client.indices.refresh(index=collection_name)  # type: ignore
 
     @staticmethod
     def _hit_to_point(hit: Dict[str, Any]) -> VectorPoint:
@@ -971,6 +1022,18 @@ class OpenSearchService(IVectorDBService):
             _source_excludes=["dense_embedding"],
         )
         return [self._hit_to_point(doc) for doc in result.get("docs", []) if doc.get("found")]
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """``mget`` with the source switched off: realtime, and no payload or vector crosses the wire."""
+        await self._assert_connected()
+        if not ids:
+            return set()
+        result = await self.client.mget(  # type: ignore
+            index=collection_name,
+            body={"ids": list(ids)},
+            _source=False,
+        )
+        return {doc["_id"] for doc in result.get("docs", []) if doc.get("found")}
 
     async def _clause_limit(self) -> int:
         """The cluster's ``indices.query.bool.max_clause_count`` (1024 unless set), read once. If it cannot be read the default is assumed: a

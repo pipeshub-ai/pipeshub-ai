@@ -104,3 +104,26 @@ class TestUnknownSandboxTools:
         message = unknown_sandbox_guidance(UnknownSandboxError("no 'coding' sandbox with id 'abc'"))
 
         assert message.startswith("no 'coding' sandbox with id 'abc'.")
+
+
+class TestPythonVenvFailureSaysWhy:
+    async def test_the_error_carries_what_venv_printed_on_stdout(self, tmp_path, monkeypatch) -> None:
+        import asyncio
+
+        from app.agent_loop_lib.sandbox.coding.base import EnvironmentSetupError
+        from app.agent_loop_lib.sandbox.coding.environment import EnvironmentManager
+
+        class _Proc:
+            returncode = 1
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return b"ensurepip is not available; install python3.12-venv\n", b""
+
+        async def _exec(*_args: object, **_kwargs: object) -> _Proc:
+            return _Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+        manager = EnvironmentManager(str(tmp_path))
+
+        with pytest.raises(EnvironmentSetupError, match="ensurepip is not available"):
+            await manager.ensure_python_venv()

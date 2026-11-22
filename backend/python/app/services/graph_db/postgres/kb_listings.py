@@ -1,7 +1,7 @@
-"""What is inside a knowledge base (its root, a folder, a flat listing of records), the artifact gallery, agent templates and the legacy hub app.
+"""What is inside a knowledge base (its root, a folder), the artifact gallery, agent templates and the legacy hub app.
 
 The callers decide who may open a collection or a folder (``get_user_kb_permission``); these methods list what the graph holds for the ids they are given,
-in the ambient org, and ``list_kb_records`` and the artifact gallery start from the user's own grant. Every method resolves the ambient org first (before
+in the ambient org, and the artifact gallery starts from the user's own grant. Every method resolves the ambient org first (before
 any ``try``); every statement is a literal with bound parameters, an optional filter being a null-when-absent bound value.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Co
 from app.core.org_context import current_org_id
 from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.postgres.base import PgBase, _arango, _doc
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -27,13 +28,12 @@ _TEMPLATE_ROLES = ["OWNER", "ORGANIZER", "WRITER", "READER"]
 _SORT_KEYS = {"name": 1, "created_at": 2, "updated_at": 3, "size": 4}
 
 
-def _file(f: Any, *, path: bool) -> dict | None:  # noqa: ANN401
+def _file(f: Any) -> dict | None:  # noqa: ANN401
     if not f:
         return None
     d = _doc(f)
-    out = {"id": d.get("id"), "name": d.get("name"), "extension": d.get("extension"), "mimeType": d.get("mimeType"), "sizeInBytes": d.get("sizeInBytes"),
-           "webUrl": d.get("webUrl"), "isFile": d.get("isFile")}
-    return {**out, "path": d.get("path")} if path else out
+    return {"id": d.get("id"), "name": d.get("name"), "extension": d.get("extension"), "mimeType": d.get("mimeType"), "sizeInBytes": d.get("sizeInBytes"),
+            "webUrl": d.get("webUrl"), "isFile": d.get("isFile"), "path": d.get("path")}
 
 
 def _child_record(doc: Any, fdoc: Any) -> dict:  # noqa: ANN401
@@ -43,7 +43,7 @@ def _child_record(doc: Any, fdoc: Any) -> dict:  # noqa: ANN401
             "indexingStatus": d.get("indexingStatus"), "version": d.get("version"), "isLatestVersion": d.get("isLatestVersion", True),
             "createdAtTimestamp": d.get("createdAtTimestamp"), "updatedAtTimestamp": d.get("updatedAtTimestamp"),
             "sourceCreatedAtTimestamp": d.get("sourceCreatedAtTimestamp"), "sourceLastModifiedTimestamp": d.get("sourceLastModifiedTimestamp"),
-            "webUrl": d.get("webUrl"), "orgId": d.get(_ORG_FIELD), "type": "record", "fileRecord": _file(fdoc, path=True)}
+            "webUrl": d.get("webUrl"), "orgId": d.get(_ORG_FIELD), "type": "record", "fileRecord": _file(fdoc)}
 
 
 def _folder_item(doc: Any, subs: int, recs: int, parent_id: str | None, path: str | None = None) -> dict:  # noqa: ANN401
@@ -182,7 +182,7 @@ class KbListingsMixin(PgBase):
                                           "foldersShown": len(folders), "recordsShown": len(records)}}
             return await self._q(go, transaction)
         except Exception as e:
-            self.logger.error(f"❌ Failed to get children: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="_children")
             return {"success": False, "reason": str(e)}
 
     async def get_kb_children(self, kb_id: str, skip: int, limit: int, level: int = 1, search: str | None = None, record_types: list[str] | None = None,
@@ -197,95 +197,6 @@ class KbListingsMixin(PgBase):
         """The caller must validate that the folder is in the knowledge base (``validate_folder_in_kb``): the listing reads the folder by id."""
         current_org_id()
         return await self._children(kb_id, folder_id, skip, limit, level, search, record_types, origins, connectors, indexing_status, sort_by, sort_order, transaction)
-
-    async def list_kb_records(self, kb_id: str, user_id: str, org_id: str, skip: int, limit: int, search: str | None = None, record_types: list[str] | None = None,
-                              origins: list[str] | None = None, connectors: list[str] | None = None, indexing_status: list[str] | None = None,
-                              date_from: int | None = None, date_to: int | None = None, sort_by: str = "createdAtTimestamp", sort_order: str = "desc",
-                              folder_id: str | None = None, transaction: str | None = None) -> tuple[list[dict], int, dict]:
-        """The collection's records one level per folder (a record in two folders is listed in each) and at the root, for a user who holds a role on
-        it; with no role the answer is empty. A failed read raises."""
-        org = current_org_id()
-        role = await self.get_user_kb_permission(kb_id, user_id, transaction)
-        if not role:
-            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
-
-        async def go(tx: Tx) -> tuple[list[dict], int, dict]:
-            rows = await tx.fetch("""/* pipeshub:graph.list_kb_records */ WITH kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $2 AND k.doc->>'type' = $4),
-                folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                    JOIN graph.nodes f ON f.org_id = $1 AND f.coll = 'records' AND f.id = b.from_id WHERE f.doc->>'mimeType' = ANY($3::text[]) AND ($5::text IS NULL OR f.id = $5)),
-                cand AS (
-                  SELECT r.id, r.doc, f.id AS fid, f.doc->>'recordName' AS fname FROM folders f
-                    JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = f.id AND e.to_coll = 'records'
-                    JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = e.to_id
-                  UNION ALL
-                  SELECT r.id, r.doc, NULL, NULL FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                    JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = b.from_id
-                  WHERE $5::text IS NULL AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
-                                                          AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)),
-                live AS (SELECT c.* FROM cand c WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'orgId' = $6 AND NOT (c.doc->>'mimeType' = ANY($3::text[]))),
-                kept AS (SELECT c.* FROM live c WHERE ($7::text IS NULL OR position(lower($7::text) IN lower(c.doc->>'recordName')) > 0 OR position(lower($7::text) IN lower(c.doc->>'externalRecordId')) > 0)
-                    AND ($8::text[] IS NULL OR c.doc->>'recordType' = ANY($8::text[])) AND ($9::text[] IS NULL OR c.doc->>'origin' = ANY($9::text[]))
-                    AND ($10::text[] IS NULL OR c.doc->>'connectorName' = ANY($10::text[])) AND ($11::text[] IS NULL OR c.doc->>'indexingStatus' = ANY($11::text[]))
-                    AND ($12::bigint IS NULL OR (c.doc->>'createdAtTimestamp')::numeric >= $12) AND ($13::bigint IS NULL OR (c.doc->>'createdAtTimestamp')::numeric <= $13)),
-                ranked AS (SELECT x.id, x.doc, x.fid, x.fname, row_number() OVER (ORDER BY
-                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'string' AND $17::boolean THEN x.doc->>$14::text END) COLLATE "C" ASC,
-                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'string' AND NOT $17::boolean THEN x.doc->>$14::text END) COLLATE "C" DESC,
-                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'number' AND $17::boolean THEN (x.doc->>$14::text)::numeric END) ASC,
-                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'number' AND NOT $17::boolean THEN (x.doc->>$14::text)::numeric END) DESC, x.id, x.fid) AS rn FROM kept x)
-                SELECT s.total, s.live_n, s.facets, s.folders, p.doc, p.fdoc, p.fid, p.fname, p.rn FROM
-                  (SELECT (SELECT count(*) FROM ranked) AS total,
-                          CASE WHEN $5::text IS NULL THEN (SELECT count(*) FROM live) END AS live_n,
-                          CASE WHEN $5::text IS NULL THEN (SELECT coalesce(jsonb_agg(jsonb_build_object('rt', g.rt, 'o', g.o, 'cn', g.cn, 'st', g.st)), '[]'::jsonb)
-                           FROM (SELECT doc->>'recordType' AS rt, doc->>'origin' AS o, doc->>'connectorName' AS cn, doc->>'indexingStatus' AS st FROM live GROUP BY 1, 2, 3, 4) g) END AS facets,
-                          CASE WHEN $5::text IS NULL THEN (SELECT coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.doc->'recordName') ORDER BY t.id), '[]'::jsonb) FROM folders t
-                           WHERE coalesce((t.doc->>'isDeleted')::boolean, false) = false) END AS folders) s
-                  LEFT JOIN LATERAL (SELECT q.doc, q.fid, q.fname, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = $1 AND ff.coll = 'files' AND ff.id = te.to_id
-                        WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
-                     FROM (SELECT * FROM ranked WHERE rn > $15::bigint AND rn <= $15::bigint + $16::bigint) q) p ON true ORDER BY p.rn""",
-                                 org, kb_id, FOLDER_MIME_TYPES, _KB, folder_id, org_id, search or None, record_types or None, origins or None, connectors or None,
-                                 indexing_status or None, date_from or None, date_to or None, sort_by, max(skip, 0), max(limit, 0), sort_order.upper() == "ASC")
-            records = []
-            for r in rows:
-                if r["doc"] is None:
-                    continue
-                d, f = _doc(r["doc"]), (_doc(r["fdoc"]) if r["fdoc"] else None)
-                records.append({"id": d.get("id"), "externalRecordId": d.get("externalRecordId"), "externalRevisionId": d.get("externalRevisionId"),
-                                "recordName": d.get("recordName"), "recordType": d.get("recordType"), "origin": d.get("origin"),
-                                "connectorName": d.get("connectorName") or "KNOWLEDGE_BASE", "indexingStatus": d.get("indexingStatus"),
-                                "createdAtTimestamp": d.get("createdAtTimestamp"), "updatedAtTimestamp": d.get("updatedAtTimestamp"),
-                                "sourceCreatedAtTimestamp": d.get("sourceCreatedAtTimestamp"), "sourceLastModifiedTimestamp": d.get("sourceLastModifiedTimestamp"),
-                                "orgId": d.get(_ORG_FIELD), "version": d.get("version"), "isDeleted": d.get("isDeleted"), "deletedByUserId": d.get("deletedByUserId"),
-                                "isLatestVersion": d.get("isLatestVersion", True), "webUrl": d.get("webUrl"), "fileRecord": _file(f, path=False) and
-                                {k: v for k, v in _file(f, path=False).items() if k != "path"},
-                                "permission": {"role": role, "type": "USER"}, "kb_id": kb_id,
-                                "folder": {"id": r["fid"], "name": r["fname"]} if r["fid"] is not None else None})
-            # the folders are named only when some record exists (as the other stores' filter query, which unwinds records)
-            if folder_id is None:           # the collection's whole listing: what the page statement already counted is the facet set
-                combos, folders_json, live_n = _doc_list(rows[0]["facets"]), rows[0]["folders"], rows[0]["live_n"]
-            else:                           # one folder's page: the facets still describe the whole collection
-                filt = await tx.fetch("""/* pipeshub:graph.list_kb_records_filters */ WITH kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $2 AND k.doc->>'type' = $4),
-                    folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                        JOIN graph.nodes f ON f.org_id = $1 AND f.coll = 'records' AND f.id = b.from_id WHERE f.doc->>'mimeType' = ANY($3::text[])),
-                    recs AS (
-                      SELECT r.id, r.doc FROM folders f JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD'
-                          AND e.from_coll = 'records' AND e.from_id = f.id AND e.to_coll = 'records' JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = e.to_id
-                      UNION ALL
-                      SELECT r.id, r.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                        JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = b.from_id
-                      WHERE NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
-                                        AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)),
-                    live AS (SELECT c.* FROM recs c WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'orgId' = $5 AND NOT (c.doc->>'mimeType' = ANY($3::text[])))
-                    SELECT g.rt, g.o, g.cn, g.st, g.n, f.folders
-                    FROM (SELECT doc->>'recordType' AS rt, doc->>'origin' AS o, doc->>'connectorName' AS cn, doc->>'indexingStatus' AS st, count(*) AS n FROM live GROUP BY 1, 2, 3, 4) g,
-                         (SELECT coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.doc->'recordName') ORDER BY t.id), '[]'::jsonb) AS folders FROM folders t
-                          WHERE coalesce((t.doc->>'isDeleted')::boolean, false) = false) f""",
-                                       org, kb_id, FOLDER_MIME_TYPES, _KB, org_id)
-                combos = [{"rt": r["rt"], "o": r["o"], "cn": r["cn"], "st": r["st"]} for r in filt]
-                folders_json, live_n = (filt[0]["folders"] if filt else "[]"), sum(r["n"] for r in filt)
-            facets = {k: sorted({r[c] for r in combos if r[c] is not None}) for k, c in (("recordTypes", "rt"), ("origins", "o"), ("connectors", "cn"), ("indexingStatus", "st"))}
-            # the folders are named only when some record exists (as the other stores' filter query, which unwinds records)
-            return records, rows[0]["total"], {**facets, "permissions": [role], "folders": _doc_list(folders_json) if live_n else []}
-        return await self._q(go, transaction)
 
     # ---- the artifact gallery ---------------------------------------------------------------------------------------
     async def list_accessible_artifacts(self, user_id: str, org_id: str, skip: int, limit: int, search: str | None, artifact_types: list[str] | None,
@@ -377,14 +288,79 @@ class KbListingsMixin(PgBase):
                 WHERE t.org_id = $1 AND t.coll = 'agentTemplates' AND t.id = $3 AND coalesce((t.doc->>'isDeleted')::boolean, false) = false""",
                                                       org, user_id, template_id, _TEMPLATE_ROLES), transaction)
         except Exception as e:
-            self.logger.error("❌ Failed to get template access: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_template")
             return None
-        if not r:
-            return None
-        role = r["role"]
-        return {**_arango(_doc(r["doc"]), _TEMPLATES), "access_type": r["access"], "user_role": role, "permission_id": r["pid"],
-                "permission_created_at": _scalar(r["created"]), "permission_updated_at": _scalar(r["updated"]), "can_edit": role in ("OWNER", "WRITER", "ORGANIZER"),
-                "can_delete": role == "OWNER", "can_share": role in ("OWNER", "ORGANIZER"), "can_view": True}
+        return _with_access(r) if r else None
+
+    async def get_all_agent_templates(self, user_id: str, transaction: str | None = None) -> list[dict]:
+        """The live templates the user holds a grant on (``access_type`` USER) or reaches through a team they are in (TEAM, the highest team role), once each,
+        their own grants first; a failed read is an empty list."""
+        org = current_org_id()
+        try:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_all_agent_templates */ SELECT * FROM (
+                  SELECT DISTINCT ON (t.id) t.id, t.doc, gr.access, gr.role, gr.pid, gr.created, gr.updated, gr.ord FROM (
+                      SELECT p.to_id AS tid, 'USER' AS access, p.doc->>'role' AS role, p.doc->>'id' AS pid, p.doc->'createdAtTimestamp' AS created,
+                             p.doc->'updatedAtTimestamp' AS updated, 0 AS ord, 0 AS rk
+                        FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id
+                          AND p.to_coll = 'agentTemplates' AND p.doc->>'type' = 'USER' AND p.doc->>'role' = ANY($3::text[])
+                        WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
+                      UNION ALL
+                      SELECT g.to_id, 'TEAM', g.doc->>'role', g.doc->>'id', g.doc->'createdAtTimestamp', g.doc->'updatedAtTimestamp', 1,
+                             CASE g.doc->>'role' WHEN 'OWNER' THEN 4 WHEN 'ORGANIZER' THEN 3 WHEN 'WRITER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END
+                        FROM graph.nodes u JOIN graph.edges m ON m.org_id = u.org_id AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = u.id
+                          AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'
+                          JOIN graph.nodes tm ON tm.org_id = u.org_id AND tm.coll = 'teams' AND tm.id = m.to_id
+                          JOIN graph.edges g ON g.org_id = u.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = tm.id
+                          AND g.to_coll = 'agentTemplates' AND g.doc->>'type' = 'TEAM' AND g.doc->>'role' = ANY($3::text[])
+                        WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2) gr
+                  JOIN graph.nodes t ON t.org_id = $1 AND t.coll = 'agentTemplates' AND t.id = gr.tid AND coalesce((t.doc->>'isDeleted')::boolean, false) = false
+                  ORDER BY t.id, gr.ord, gr.rk DESC, gr.pid) x
+                ORDER BY x.ord, x.id""", org, user_id, _TEMPLATE_ROLES), transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_all_agent_templates")
+            return []
+        return [_with_access(r) for r in rows]
+
+    async def _template_owned(self, template_id: str, user_id: str, transaction: str | None) -> bool:
+        """Whether the user's own grant on the live template is OWNER (a team's is not enough, as on the other stores)."""
+        org = current_org_id()
+        return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.template_owned */ SELECT 1 FROM graph.nodes u
+            JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentTemplates'
+              AND p.to_id = $3 AND p.doc->>'role' = 'OWNER'
+            JOIN graph.nodes t ON t.org_id = u.org_id AND t.coll = 'agentTemplates' AND t.id = p.to_id AND coalesce((t.doc->>'isDeleted')::boolean, false) = false
+            WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2 LIMIT 1""", org, user_id, template_id), transaction))
+
+    async def update_agent_template(self, template_id: str, template_updates: dict[str, Any], user_id: str, transaction: str | None = None) -> bool | None:
+        """Write the allowed fields of the update when the user owns the live template; False when not."""
+        current_org_id()
+        try:
+            if not await self._template_owned(template_id, user_id, transaction):
+                self.logger.warning("User %s is not the owner of template %s", user_id, template_id)
+                return False
+            data = {"updatedAtTimestamp": get_epoch_timestamp_in_ms(), "updatedByUserId": user_id,
+                    **{f: template_updates[f] for f in ("name", "description", "startMessage", "systemPrompt", "tools", "models", "memory", "tags") if f in template_updates}}
+            return await self.update_node(template_id, _TEMPLATES, data, transaction=transaction)
+        except SchemaValidationError:
+            raise
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_agent_template")
+            return False
+
+    async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None = None) -> bool | None:
+        """Mark the live template deleted when the user owns it; False when not."""
+        current_org_id()
+        try:
+            if not await self._template_owned(template_id, user_id, transaction):
+                self.logger.warning("User %s is not the owner of template %s", user_id, template_id)
+                return False
+            return await self.update_node(template_id, _TEMPLATES, {"isDeleted": True, "deletedAtTimestamp": get_epoch_timestamp_in_ms(), "deletedByUserId": user_id},
+                                          transaction=transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_agent_template")
+            return False
 
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
         """A copy of the template under a new key, active and not deleted, with no owner and no grants; None for a missing template."""
@@ -400,7 +376,7 @@ class KbListingsMixin(PgBase):
         except SchemaValidationError:
             raise
         except Exception as e:
-            self.logger.error("❌ Failed to clone agent template: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="clone_agent_template")
             return None
 
     async def delete_kb_hub_app(self, org_id: str) -> bool:
@@ -420,7 +396,7 @@ class KbListingsMixin(PgBase):
                 return True
             return await self._q(go, None, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete legacy KB hub app for org {org_id}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_kb_hub_app")
             return False
 
 
@@ -428,5 +404,11 @@ def _scalar(v: Any) -> Any:  # noqa: ANN401
     return json.loads(v) if isinstance(v, str) else v
 
 
-def _doc_list(v: Any) -> list:  # noqa: ANN401
-    return json.loads(v) if isinstance(v, str) else list(v or [])
+def _with_access(r: Any) -> dict:  # noqa: ANN401
+    """A template row with the user's access to it: how they reach it, the grant and what it lets them do. Edit and delete need the user's own OWNER
+    grant (``_template_owned``), so a team's grant or a direct writer's says no to both."""
+    role = r["role"]
+    owner = r["access"] in ("USER", "INDIVIDUAL") and role == "OWNER"
+    return {**_arango(_doc(r["doc"]), _TEMPLATES), "access_type": r["access"], "user_role": role, "permission_id": r["pid"],
+            "permission_created_at": _scalar(r["created"]), "permission_updated_at": _scalar(r["updated"]), "can_edit": owner,
+            "can_delete": owner, "can_share": role in ("OWNER", "ORGANIZER"), "can_view": True}

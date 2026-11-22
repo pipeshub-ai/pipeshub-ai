@@ -37,6 +37,7 @@ import {
   OAuthErrorResponse,
 } from '../types/oauth.types';
 import { getUserRepository } from '../../../libs/repositories/user';
+import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { getOrgRepository } from '../../../libs/repositories/org';
 import {
   isKnowledgeLimitWithin,
@@ -177,6 +178,17 @@ export class OAuthProviderController {
         }));
       const org = await getOrgRepository().getNames(user.orgId);
       const workspaceName = org?.shortName || org?.registeredName;
+      // Any member may register an app under any name, so the consent page
+      // says who did. A dynamically registered client has no such person.
+      const registeredBy =
+        app.isDynamic === true || !isValidId(idOf(app.createdBy))
+          ? undefined
+          : (
+              await getUserRepository().listNamesByIds(user.orgId, [
+                idOf(app.createdBy),
+              ])
+            )[0];
+      const registeredByLabel = registeredBy?.fullName || registeredBy?.email;
 
       const consentData: ConsentData = {
         app: {
@@ -189,6 +201,7 @@ export class OAuthProviderController {
           ...(isClientIdMetadataUrl(app.clientId)
             ? { clientIdHost: new URL(app.clientId).host }
             : {}),
+          ...(registeredByLabel ? { registeredBy: registeredByLabel } : {}),
           knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
         },
         scopes: toScopeInfo(granted),
@@ -304,7 +317,7 @@ export class OAuthProviderController {
       );
 
       // A metadata document client is stored only now, once the person has consented.
-      await client.store();
+      await client.store({ orgId: user.orgId, userId: user.userId });
 
       // Generate authorization code
       const code = await this.authorizationCodeService.generateCode(

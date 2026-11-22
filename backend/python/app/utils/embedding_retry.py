@@ -18,8 +18,6 @@ from typing import TYPE_CHECKING, TypeVar
 import openai
 from google.genai import errors as genai_errors
 
-from app.services.base_client import parse_retry_after
-
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -37,13 +35,60 @@ _RETRIABLE_HTTP_STATUS_CODES = frozenset({429, 502, 503, 504})
 # stall the pipeline behind it.
 _MAX_RETRY_DELAY_SECONDS = 30.0
 
+# What a provider says when the account has no credit left. OpenAI answers it with the same 429 as a rate limit
+# (code ``insufficient_quota``), Anthropic with a 400 whose message is "Your credit balance is too low ...". No wait
+# fixes it, so it is never retried. Deliberately narrow: Gemini words an ordinary per-minute limit as "You exceeded
+# your current quota", which a wait does fix.
+_QUOTA_EXHAUSTED_CODES = frozenset({"insufficient_quota", "billing_hard_limit_reached", "billing_not_active"})
+_QUOTA_EXHAUSTED_CODE_PREFIX = "credit_balance"
+# Anthropic has no code for it: a 400 ``invalid_request_error`` whose message opens with this sentence.
+_QUOTA_EXHAUSTED_MESSAGE_START = "your credit balance is too low"
+_QUOTA_EXHAUSTED_MESSAGE_STATUSES = frozenset({400, 402, 403})
+
+
+def _says_quota_exhausted(exc: BaseException) -> bool:
+    """Whether the provider classified ``exc`` as an empty balance. Only the fields that classify an error are read (its
+    code and type, and for the wording Anthropic uses the start of the provider's own message on a 4xx refusal): an
+    error's text, the rest of its body, and a message that quotes the request can repeat what was submitted, and a
+    document that mentions a credit balance is not an empty one."""
+    body = getattr(exc, "body", None)
+    error = body.get("error", body) if isinstance(body, dict) else None
+    fields = error if isinstance(error, dict) else {}
+    for value in (getattr(exc, "code", None), getattr(exc, "type", None), fields.get("code"), fields.get("type")):
+        if isinstance(value, str):
+            code = value.strip().lower()
+            if code in _QUOTA_EXHAUSTED_CODES or code.startswith(_QUOTA_EXHAUSTED_CODE_PREFIX):
+                return True
+    message = fields.get("message")
+    status = getattr(exc, "status_code", None)
+    return (
+        status in _QUOTA_EXHAUSTED_MESSAGE_STATUSES
+        and isinstance(message, str)
+        and message.strip().lower().startswith(_QUOTA_EXHAUSTED_MESSAGE_START)
+    )
+
+
+def is_quota_exhausted(exc: BaseException) -> bool:
+    """Whether ``exc`` or one of its causes is a provider saying the account is out of credit."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if _says_quota_exhausted(current):
+            return True
+        current = current.__cause__
+    return False
+
 
 def is_retriable_embedding_error(exc: BaseException) -> bool:
     """Return True only for transient embedding failures worth retrying.
 
     Application-level 500 responses (e.g. missing trust_remote_code, bad model
-    name) are not retried — they will fail the same way on every attempt.
+    name) are not retried — they will fail the same way on every attempt. Nor
+    is an exhausted credit balance, although OpenAI answers it with a 429.
     """
+    if is_quota_exhausted(exc):
+        return False
     if isinstance(
         exc,
         (
@@ -97,9 +142,20 @@ def signal_backpressure_if_rate_limited(
     of the outcome of) this call's own retry budget — mirrors
     BaseServiceClient._request_with_retry's signal-on-every-occurrence for
     ParsingClient/DoclingClient."""
-    if coordinator is None or not isinstance(exc, openai.RateLimitError):
+    if coordinator is None:
         return
-    retry_after = parse_retry_after(exc.response.headers.get("Retry-After"))
+    # Imported here: the gateway module imports this one. Any provider's throttle counts (an OpenAI error, a Cohere or Voyage
+    # error with a 429 status, a botocore throttle), and its Retry-After is read the one way every wait is: finite,
+    # non-negative and at most an hour (``parse_retry_after`` of the wire module).
+    from app.services.llm_gateway.embedding_gateway import (
+        EmbeddingGateway,
+        retry_after_of,
+    )
+    from app.services.spend_guard.retry_policy import RetryKind
+
+    if EmbeddingGateway.retry_kind(exc) is not RetryKind.THROTTLE:
+        return
+    retry_after = retry_after_of(exc)
     if retry_after is not None:
         coordinator.signal(service_name, retry_after)
 
@@ -131,8 +187,9 @@ def call_with_retry(
                 operation,
                 attempt,
                 total_attempts,
-                str(exc) or type(exc).__name__,
+                type(exc).__name__,
                 delay,
+                extra={"error_type": type(exc).__name__},
             )
             time.sleep(delay)
     if last_exc is not None:
@@ -167,8 +224,9 @@ async def await_with_retry(
                 operation,
                 attempt,
                 total_attempts,
-                str(exc) or type(exc).__name__,
+                type(exc).__name__,
                 delay,
+                extra={"error_type": type(exc).__name__},
             )
             await asyncio.sleep(delay)
     if last_exc is not None:

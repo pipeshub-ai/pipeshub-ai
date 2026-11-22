@@ -3,11 +3,13 @@ Unit tests for ArangoHTTPProvider.get_documents_paginated
 (app/services/graph_db/arango/arango_http_provider.py).
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from tests.support.log_capture import failure_line
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +189,8 @@ class TestGetDocumentsPaginatedTransaction:
 
 class TestGetDocumentsPaginatedErrorHandling:
     @pytest.mark.asyncio
-    async def test_aql_exception_returns_empty_list(self, provider):
+    async def test_aql_exception_returns_empty_list(self, provider, caplog):
+        provider.logger = logging.getLogger("tests.get_documents_paginated")
         provider.http_client.execute_aql = AsyncMock(
             side_effect=RuntimeError("ArangoDB unreachable")
         )
@@ -195,15 +198,16 @@ class TestGetDocumentsPaginatedErrorHandling:
         result = await provider.get_documents_paginated("Apps")
 
         assert result == []
-        provider.logger.error.assert_called_once()
+        failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "ArangoDB unreachable")
 
     @pytest.mark.asyncio
-    async def test_error_logged_with_collection_name(self, provider):
+    async def test_error_logged_with_collection_name(self, provider, caplog):
+        provider.logger = logging.getLogger("tests.get_documents_paginated")
         provider.http_client.execute_aql = AsyncMock(
             side_effect=RuntimeError("connection refused")
         )
 
         await provider.get_documents_paginated("MyCollection")
 
-        log_call = provider.logger.error.call_args
-        assert "MyCollection" in str(log_call)
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "connection refused")
+        assert (fields["op"], fields["collection"]) == ("get_documents_paginated", "MyCollection")

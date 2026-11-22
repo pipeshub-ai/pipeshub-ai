@@ -157,6 +157,11 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Stored-record cache: memory (default, per worker, up to 512 MiB) | redis.
+      - PIPESHUB_RECORD_CACHE_BACKEND=${PIPESHUB_RECORD_CACHE_BACKEND:-memory}
+      - PIPESHUB_RECORD_CACHE_BYTES=${PIPESHUB_RECORD_CACHE_BYTES:-}
+      # ripgrep threads per search; blank = half the container's CPUs (also the cap).
+      - GREP_THREADS=${GREP_THREADS:-}
       # Most characters one agent turn may stream before it is stopped as a
       # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
       - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
@@ -206,11 +211,13 @@ services:
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
       - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
       - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
+      - PDF_DOCLING_TABLE_MODE=${PDF_DOCLING_TABLE_MODE:-accurate}
       # CONNECTOR_SYNC_MAX_CONCURRENT caps how many syncs run at once.
       - CONNECTOR_SYNC_MAX_CONCURRENT=${CONNECTOR_SYNC_MAX_CONCURRENT:-8}
       # How long a delete waits for a running sync to stop.
       - CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC=${CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC:-15}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
+      - INDEXING_TABLE_ROW_BATCH_SIZE=${INDEXING_TABLE_ROW_BATCH_SIZE:-50}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
@@ -395,6 +402,8 @@ services:
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
       - NEO4J_dbms_memory_heap_initial__size=${NEO4J_HEAP_INITIAL:-1G}
       - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_MAX:-2G}
+      # A cached plan outlives index-statistics drift this long: the knowledge hub statements take minutes to plan again.
+      - NEO4J_dbms_cypher_min__replan__interval=${NEO4J_MIN_REPLAN_INTERVAL:-30m}
       - NEO4J_dbms_memory_pagecache_size=${NEO4J_PAGECACHE:-1G}
     volumes:
       - neo4j_data:/data

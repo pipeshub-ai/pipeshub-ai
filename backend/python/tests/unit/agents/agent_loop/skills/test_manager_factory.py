@@ -235,6 +235,31 @@ class TestBuildRuntimeSkillManager:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_no_graph_provider_is_warned_once_per_process(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+        from types import SimpleNamespace
+
+        from app.agents.agent_loop.skills.manager_factory import (
+            build_runtime_skill_manager,
+        )
+        from app.utils import logging_fields
+
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
+        context = SimpleNamespace(graph_provider=None, org_id="o", user_id="u", retrieval_service=None)
+
+        with caplog.at_level(logging.DEBUG):
+            for _turn in range(2):
+                assert await build_runtime_skill_manager(context, MagicMock()) is None
+
+        lines = [
+            (r.levelno, r.getMessage()) for r in caplog.records
+            if r.name == "app.agents.agent_loop.skills.manager_factory"
+        ]
+        assert lines == [(logging.WARNING, "skills.unavailable")]
+
+    @pytest.mark.asyncio
     async def test_builds_manager_with_graph_provider(self) -> None:
         from app.agents.agent_loop.skills.manager_factory import build_runtime_skill_manager
         from types import SimpleNamespace

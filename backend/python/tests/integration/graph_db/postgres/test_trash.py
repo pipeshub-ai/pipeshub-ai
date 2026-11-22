@@ -5,6 +5,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import pytest
@@ -13,6 +14,7 @@ from app.core import org_context
 from app.core.org_context import MissingOrgContext, SystemContextNotAllowed
 from app.services.graph_db.postgres.trash import TrashMixin
 from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
+from tests.support import plan_gate
 
 from .pg_support import OrgBound, StandInProvider, new_org
 
@@ -133,6 +135,67 @@ async def test_the_trash_lists_one_row_per_batch_newest_first_and_counts_batches
     assert (await p.list_trashed_records("c1", p.org, skip=1, limit=1))["items"][0]["record"]["id"] == "m"
     assert (await p.list_trashed_records("other", p.org))["total"] == 0 and (await p.list_trashed_records("c1", ""))["items"] == []
     assert (await bound(pg_db).list_trashed_records("c1", p.org))["total"] == 0                                  # another org sees none of it
+
+
+async def test_the_trash_pages_by_keyset_through_tied_delete_times_and_its_count_stops_at_the_cap(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, f"k{i}") for i in range(7)], "records")
+    for i in range(7):
+        await trash(p, [f"k{i}"], f"bt{i}")
+    at = 1_790_000_000_000
+    await p.batch_update_nodes([{"id": f"k{i}", "deletedAtTimestamp": at if i < 3 else at - 1} for i in range(7)], "records")
+    whole = (await p.list_trashed_records("c1", p.org, limit=100))["items"]
+    keys = [(i["batchDeletedAt"], i["batchId"]) for i in whole]
+    assert keys == sorted(keys, reverse=True) and len(set(keys)) == 7 and keys[0] == (at, "bt2")
+
+    seen, after = [], None
+    while True:
+        page = await p.list_trashed_records("c1", p.org, limit=2, after=after)
+        seen += [i["record"]["id"] for i in page["items"]]
+        if len(page["items"]) < 2:
+            break
+        after = (page["items"][-1]["batchDeletedAt"], page["items"][-1]["batchId"])
+    assert seen == [i["record"]["id"] for i in whole]                                                            # no gap, no repeat at a tie
+    assert (await p.list_trashed_records("c1", p.org, after=(at - 1, "bt3")))["items"] == []
+    assert [i["record"]["id"] for i in (await p.list_trashed_records("c1", p.org, after=(at, "bt0"), skip=1, limit=1))["items"]] == ["k5"]
+    assert [(await p.list_trashed_records("c1", p.org, count_cap=cap))["total"] for cap in (0, 3, 6, 7, None)] == [1, 4, 7, 7, 7]
+    assert (await bound(pg_db).list_trashed_records("c1", p.org, after=(at + 1, "z")))["total"] == 0              # another org: none, cursor or not
+
+
+async def test_a_single_file_listing_reads_each_batch_size_once_not_once_per_trashed_record(pg_db, monkeypatch) -> None:
+    """40 single-file batches and one two-file batch: the single-file listing shows the 40. Each statement reads the org's trash (``tr``) a bounded number of times;
+    a batch's size looked up per trashed record read the whole trash again for each one (52 s for 11,000 one-file batches)."""
+    from app.core.db import uow
+    p = bound(pg_db)
+    ids = [f"s{i:02d}" for i in range(40)] + ["pa", "pb"]
+    await p.batch_upsert_nodes([rec(p.org, r) for r in ids], "records")
+    await p.batch_upsert_nodes([{"_key": f"f-{r}", "isFile": True, "mimeType": "text/plain", "orgId": p.org} for r in ids], "files")
+    await p.batch_create_edges([{"from_id": r, "from_collection": "records", "to_id": f"f-{r}", "to_collection": "files"} for r in ids], "isOfType")
+    for r in ids[:40]:
+        await trash(p, [r], f"bt-{r}")
+    await trash(p, ["pa", "pb"], "bt-pair")
+    loops: list[int] = []
+    real_fetch, real_fetchval = uow.Tx.fetch, uow.Tx.fetchval
+
+    async def explained(self: object, sql: str, args: tuple) -> None:
+        ran = await real_fetchval(self, "EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args)
+        plan = json.loads(ran) if isinstance(ran, str) else ran
+        loops.extend(n["Actual Loops"] for n in plan_gate.nodes(plan) if n["Node Type"] == "CTE Scan" and n.get("CTE Name") == "tr")
+
+    async def fetch(self: object, sql: str, *args: object) -> object:
+        if "pipeshub:graph.list_trashed_records */" in sql:
+            await explained(self, sql, args)
+        return await real_fetch(self, sql, *args)
+
+    async def fetchval(self: object, sql: str, *args: object) -> object:
+        if "pipeshub:graph.list_trashed_records_total */" in sql:
+            await explained(self, sql, args)
+        return await real_fetchval(self, sql, *args)
+    monkeypatch.setattr(uow.Tx, "fetch", fetch)
+    monkeypatch.setattr(uow.Tx, "fetchval", fetchval)
+    page = await p.list_trashed_records("c1", p.org, limit=3, single_file_batches_only=True)
+    assert page["total"] == 40 and len(page["items"]) == 3 and all(i["batchId"].startswith("bt-s") for i in page["items"])
+    assert loops and max(loops) <= 3, loops                 # at most once per row of the page (its batch size), never once per trashed record
 
 
 async def test_the_purge_takes_what_is_due_keeps_what_has_a_child_and_counts_failures(pg_db) -> None:

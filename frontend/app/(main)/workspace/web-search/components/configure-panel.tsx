@@ -18,6 +18,7 @@ import type {
   ConfiguredWebSearchProvider,
   WebSearchProviderAgentUsage,
 } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 // ========================================
 // Types
@@ -259,8 +260,8 @@ export function ConfigurePanel({
                     />
                   ) : null}
                 </Flex>
-                <TextField.Root
-                  type={showKey ? 'text' : 'password'}
+                <SecretTextField
+                  masked={!showKey}
                   placeholder={field.placeholder}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
@@ -281,7 +282,7 @@ export function ConfigurePanel({
                       />
                     </span>
                   </TextField.Slot>
-                </TextField.Root>
+                </SecretTextField>
                 {field.helperText && (
                   <Text size="1" style={{ color: 'var(--slate-10)' }}>
                     {field.helperText}

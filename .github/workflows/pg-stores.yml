@@ -9,12 +9,10 @@ on:
       - 'main'
     paths:
       - 'backend/db/**'
-      - 'backend/nodejs/apps/src/libs/repositories/**'
-      - 'backend/nodejs/apps/src/libs/db/**'
-      - 'backend/nodejs/apps/src/modules/storage/**'
+      # The store tests load the chat controller, which reaches most of the Node source tree, so any source change runs them.
+      - 'backend/nodejs/apps/src/**'
       - 'backend/nodejs/apps/tests/support/**'
       - 'backend/nodejs/apps/tests/storage/fingerprint-model/**'
-      - 'backend/nodejs/apps/src/libs/services/ttl-sweeper.service.ts'
       - 'backend/nodejs/apps/tests/stores/**'
       - 'backend/nodejs/apps/tests/libs/repositories/**'
       - 'backend/nodejs/apps/package.json'
@@ -54,7 +52,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: npm
           cache-dependency-path: backend/nodejs/apps/package-lock.json
 

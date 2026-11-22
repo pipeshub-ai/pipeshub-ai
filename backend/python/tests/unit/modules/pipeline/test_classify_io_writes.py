@@ -6,10 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config.constants.arangodb import CollectionNames
 from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import Record
 from app.modules.named_entities.domain.models import NamedEntityExtraction
+from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import Priority, StageJob
 from app.modules.pipeline.policy import DEFAULT_POLICY
@@ -68,15 +70,24 @@ class _Blob:
         return self.stored
 
 
-def _graph(rev: str) -> MagicMock:
+def _record_document(rev: str) -> dict[str, Any]:
+    return {
+        "_key": "rec-1", "orgId": "org-1", "contentRev": rev, "recordName": "a.txt", "recordType": "FILE",
+        "externalRecordId": "ext-1", "connectorId": "conn-1", "mimeType": "text/plain",
+        "connectorName": "KB", "origin": "UPLOAD",
+    }
+
+
+def _graph(rev: str, stored_rev: str | None = None) -> MagicMock:
+    """The record ``rec-1`` on *rev*; its mapping says the stored record holds *stored_rev* (default *rev*), written by ``gen-1:run-1``."""
     graph = MagicMock()
-    graph.get_document = AsyncMock(
-        return_value={
-            "_key": "rec-1", "orgId": "org-1", "contentRev": rev, "recordName": "a.txt", "recordType": "FILE",
-            "externalRecordId": "ext-1", "connectorId": "conn-1", "mimeType": "text/plain",
-            "connectorName": "KB", "origin": "UPLOAD",
-        }
-    )
+    record = _record_document(rev)
+    mapping = {"storedRev": stored_rev or rev, "storedRun": "gen-1:run-1"}
+
+    async def get_document(key: str, collection: str, *args: Any, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+        return mapping if collection == CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value else record
+
+    graph.get_document = AsyncMock(side_effect=get_document)
     graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
     return graph
 
@@ -277,9 +288,11 @@ class _Leases:
 def _two_records(second_rev: str) -> MagicMock:
     """rec-1 on the job's revision; rec-2 (a bound copy) on ``second_rev``."""
     graph = _graph("rev-a")
-    base = graph.get_document.return_value
+    base = _record_document("rev-a")
 
     async def document(record_id: str, collection: str, **_: object) -> dict[str, Any]:
+        if collection == CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value:
+            return {"storedRev": "rev-a", "storedRun": "gen-1:run-1"}
         rev = "rev-a" if record_id == "rec-1" else second_rev
         return {**base, "_key": record_id, "contentRev": rev}
 
@@ -374,18 +387,20 @@ class _Sidecars:
 
     async def write(
         self, org_id: str, virtual_record_id: str, rev: str | None, name: str, version: int, payload: dict[str, Any],
+        *, stored_run: str | None,
     ) -> bool:
         self.calls.append({
-            "at": (org_id, virtual_record_id, rev, name, version), "payload": payload,
+            "at": (org_id, virtual_record_id, rev, name, version), "payload": payload, "stored_run": stored_run,
             "held": "record:rec-1" in self._manager.held, "saves": self._blob.saves,
         })
         return True
 
     async def write_at(
         self, org_id: str, virtual_record_id: str, rev: str | None, path: str, payload: dict[str, Any],
+        *, stored_run: str | None,
     ) -> bool:
         self.calls.append({
-            "at": (org_id, virtual_record_id, rev, path), "payload": payload,
+            "at": (org_id, virtual_record_id, rev, path), "payload": payload, "stored_run": stored_run,
             "held": "record:rec-1" in self._manager.held, "saves": self._blob.saves,
         })
         return True
@@ -393,11 +408,12 @@ class _Sidecars:
 
 def _with_sidecars(
     blob: _Blob, *, rev: str = "rev-a", entities: bool = False, sink: MagicMock | None = None,
+    stored_rev: str | None = None,
 ) -> tuple[GraphClassifyIO | GraphEntitiesIO, _Sidecars]:
     leases, manager = _bound_leases()
     sidecars = _Sidecars(manager, blob)
     common: dict[str, Any] = {
-        "policy": DEFAULT_POLICY, "graph": _graph(rev), "blob_storage": blob, "sink": sink or _sink(),
+        "policy": DEFAULT_POLICY, "graph": _graph(rev, stored_rev), "blob_storage": blob, "sink": sink or _sink(),
         "config_service": MagicMock(), "record_from_document": _record, "record_leases": leases,
         "sidecars": sidecars,
     }
@@ -422,6 +438,8 @@ async def test_classify_files_its_sidecar_under_the_lease_before_the_switch_that
     assert call["held"] is True and call["saves"] == 0 and blob.saves == 1
     classification = metadata.model_dump(mode="json", exclude={"named_entities"})
     assert call["payload"] == {"storedRun": "gen-1:run-1", "storedMeta": path, "classification": classification}
+    # Filed in the set of the stored write the envelope names.
+    assert call["stored_run"] == "gen-1:run-1"
 
 
 @pytest.mark.asyncio
@@ -490,4 +508,57 @@ async def test_entities_files_its_sidecar_only_for_a_written_extraction(outcome:
     [call] = sidecars.calls
     assert call["at"] == ("org-1", "vr-1", "rev-a", "entities", 1)
     assert call["held"] is True and call["payload"] == extraction.model_dump(mode="json")
+    assert call["stored_run"] == "gen-1:run-1"
     assert blob.saves == 0
+
+
+@pytest.mark.asyncio
+async def test_entities_names_no_stored_write_when_the_stored_record_holds_another_revision() -> None:
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    io, sidecars = _with_sidecars(blob, entities=True, stored_rev="rev-b")
+
+    assert await io.save(_job("entities"), ["rec-1"], _extraction(), _BLOCKS) == "written"  # type: ignore[arg-type]
+
+    [call] = sidecars.calls
+    assert call["stored_run"] is None
+
+
+def _deleting_classify_io(blob: _Blob, deleting: set[str]) -> GraphClassifyIO:
+    async def connector_deleting(connector_id: str) -> bool:
+        return connector_id in deleting
+
+    return GraphClassifyIO(
+        _job(), Deadline(30), policy=DEFAULT_POLICY, graph=_graph("rev-a"), blob_storage=blob,  # type: ignore[arg-type]
+        sink=_sink(), classifier=AsyncMock(), config_service=MagicMock(),
+        record_from_document=_record, record_leases=RecordLeases(), connector_deleting=connector_deleting,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_connector_being_deleted_is_raised_not_reported_as_no_record() -> None:
+    """No record would end the run STALE, which is terminal; a delete that is put back must leave it runnable."""
+    io = _deleting_classify_io(_Blob({"block_containers": {"blocks": [], "block_groups": []}}), {"conn-1"})
+    with pytest.raises(ConnectorBeingDeleted):
+        await io.current_record_ids(_job())
+
+
+@pytest.mark.asyncio
+async def test_a_delete_that_starts_mid_run_stops_the_next_write() -> None:
+    """The lease checks the record is still current before every write; a connector being deleted is not."""
+    deleting: set[str] = set()
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    io = _deleting_classify_io(blob, deleting)
+    assert await io.current_record_ids(_job()) == ["rec-1"]
+    deleting.add("conn-1")
+    with pytest.raises(ConnectorBeingDeleted):
+        await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))
+    assert blob.saves == 0
+
+
+@pytest.mark.asyncio
+async def test_a_live_connector_is_written_as_before() -> None:
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    io = _deleting_classify_io(blob, {"conn-other"})
+    assert await io.current_record_ids(_job()) == ["rec-1"]
+    await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))
+    assert blob.saves == 1

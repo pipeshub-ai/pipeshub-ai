@@ -145,13 +145,23 @@ export function currentDisplayId(suffix = ''): string {
   return `${ctx.rootId}${suffix}`;
 }
 
-/** Add the root id and any /mcp relay header to outbound HTTP headers (returns a copy, never mutates). */
+/**
+ * Add the root id and any /mcp relay header to outbound HTTP headers (returns a copy, never mutates).
+ * With a context the root id replaces any request id already there (in any case): callers pass the
+ * inbound headers on, and the service must get the sanitised root, not the client's raw id.
+ */
 export function injectRequestHeaders(
   headers: Record<string, string> = {},
 ): Record<string, string> {
-  const out = { ...headers };
   const ctx = storage.getStore();
-  if (ctx && !hasHeader(out, HEADER_REQUEST_ID)) {
+  const out = ctx
+    ? Object.fromEntries(
+        Object.entries(headers).filter(
+          ([name]) => name.toLowerCase() !== HEADER_REQUEST_ID,
+        ),
+      )
+    : { ...headers };
+  if (ctx) {
     out[HEADER_REQUEST_ID] = ctx.rootId;
   }
   if (ctx?.mcpRelay && !hasHeader(out, HEADER_MCP_RELAY)) {

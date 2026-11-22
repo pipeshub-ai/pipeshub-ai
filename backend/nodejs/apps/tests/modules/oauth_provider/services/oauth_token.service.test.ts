@@ -15,6 +15,8 @@ import {
   InvalidTargetError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { createMockLogger } from '../../../helpers/mock-logger'
+import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
+import { NO_APP_CREATOR } from '../../../../src/libs/repositories/oauth-app'
 
 // The re-read after a user grant stores its tokens.
 function stubCurrentApp(doc: { allowedScopes: string[]; knowledgeLimit?: unknown } | null) {
@@ -149,6 +151,53 @@ describe('OAuthTokenService', () => {
       expect(result.tokenType).to.equal('Bearer')
       expect(result.expiresIn).to.equal(3600)
       expect(result.refreshToken).to.be.undefined
+    })
+
+    it('names no creator in the tokens of a client registered once for the instance; an app a person made keeps theirs', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+      const userId = new Types.ObjectId().toString()
+      const org = new Types.ObjectId().toString()
+      const claims = async (app: any) => {
+        const t = await service.generateTokens(app, userId, org, ['org:read', 'offline_access'], true)
+        return [jwt.decode(t.accessToken) as any, jwt.decode(t.refreshToken as string) as any]
+      }
+
+      // A dynamic client stored before this change still names the person it borrowed.
+      for (const app of [
+        { ...mockApp, isDynamic: true, createdBy: new Types.ObjectId().toString() },
+        { ...mockApp, clientId: FIRST_PARTY_DEVICE_CLIENT_ID, createdBy: NO_APP_CREATOR },
+        { ...mockApp, createdBy: NO_APP_CREATOR },
+      ]) {
+        for (const payload of await claims(app)) {
+          expect(payload, app.clientId).to.not.have.property('createdBy')
+          expect(payload.userId).to.equal(userId)
+        }
+      }
+
+      const creator = new Types.ObjectId().toString()
+      for (const payload of await claims({ ...mockApp, createdBy: creator })) {
+        expect(payload.createdBy).to.equal(creator)
+      }
+    })
+
+    it('marks only a token that acts as the app\'s service account', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const org = new Types.ObjectId().toString()
+      const serviceAccount = new Types.ObjectId()
+      const marker = async (app: any, userId: string | null) =>
+        (jwt.decode((await service.generateTokens(app, userId, org, ['org:read'], false)).accessToken) as any)
+          .actsAsServiceAccount
+
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount }, null)).to.equal(true)
+      // An app that still acts as its creator speaks as a person.
+      expect(await marker(mockApp, null)).to.equal(undefined)
+      // A user grant on the same app speaks as the user who granted it.
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount }, new Types.ObjectId().toString()))
+        .to.equal(undefined)
+      // An instance app names no identity at all.
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount, isDynamic: true }, null))
+        .to.equal(undefined)
     })
 
     it('stamps the agent registration on the access token only when asked', async () => {
@@ -419,11 +468,13 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').resolves({ _id: 'row-1', isRevoked: false } as any)
 
       const result = await service.verifyAccessToken(token)
       expect(result.userId).to.equal('user-1')
       expect(result.client_id).to.equal('client-1')
+      // The stored row's id, which token lists and revocation use, not the jti claim.
+      expect(result.tokenRowId).to.equal('row-1')
     })
 
     it('rejects a signed token whose scope claim is empty or missing', async () => {

@@ -58,6 +58,10 @@ class IdentityHook:
         self._forwarder = forwarder
         self._projector = projector or IdentityProjector()
 
+    @property
+    def settings(self) -> ConnectionForwardingSettings:
+        return self._settings
+
     def _wants_groups(self, ctx: ModelCallContext) -> bool:
         return (
             ctx.principal.is_user
@@ -200,4 +204,10 @@ def has_identity_hook(client: Any) -> bool:  # noqa: ANN401 - SDK clients and mo
     return getattr(client, HOOK_MARKER, None) is not None
 
 
-__all__ = ["IdentityHook", "has_identity_hook", "install_identity_hook"]
+def background_api_key(client: Any) -> str | None:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
+    """The key this client's identity hook sends background requests with, or None (no hook, or the model's own key)."""
+    hook = getattr(client, HOOK_MARKER, None)
+    return hook.settings.background_api_key if isinstance(hook, IdentityHook) else None
+
+
+__all__ = ["IdentityHook", "background_api_key", "has_identity_hook", "install_identity_hook"]

@@ -6,6 +6,7 @@ handling connection pooling, transaction management, and query execution.
 """
 
 import asyncio
+import logging
 import math
 import random
 import re
@@ -16,9 +17,15 @@ from contextlib import nullcontext
 from logging import Logger
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from neo4j import AsyncGraphDatabase, Query
+from neo4j import (
+    AsyncGraphDatabase,
+    AsyncSession,
+    NotificationDisabledClassification,
+    Query,
+)
 from neo4j.exceptions import (
     ClientError,
+    Neo4jError,
     ServiceUnavailable,
     SessionExpired,
     TransientError,
@@ -26,6 +33,9 @@ from neo4j.exceptions import (
 
 from app.exceptions.graph_db_exceptions import MEMORY_LIMIT_CODES, GraphMemoryLimitError
 from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.utils import error_class
+from app.utils.db_query_log import query_logged
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from neo4j import AsyncResult, AsyncSession
@@ -50,6 +60,11 @@ DEFAULT_REBUILD_COOLDOWN = 30.0
 # budget on purpose: a transaction is one graph write at the end of a record,
 # not the whole record.
 DEFAULT_TRANSACTION_TIMEOUT = 120.0
+# Inside the process monitor's 120 s start limit; covers the status queries too.
+# A database that misses it is left to fail on its first query, as it did
+# before this wait existed.
+DATABASE_ONLINE_TIMEOUT = 60.0
+DATABASE_ONLINE_POLL_INTERVAL = 0.5
 # The driver's message when connection_acquisition_timeout elapses with every
 # pooled connection checked out. A ClientError, not ServiceUnavailable: the
 # server is fine, this process has too many queries in flight for its pool.
@@ -100,16 +115,50 @@ def is_memory_limit(error: BaseException) -> bool:
     return isinstance(error, TransientError) and error.code in MEMORY_LIMIT_CODES
 
 
-def _memory_limit_error(operation: str, size: int, logger: Logger) -> GraphMemoryLimitError:
-    """The error for a bulk statement the memory pool refused. Logged here, once, so a
-    caller that logs and goes on cannot hide it."""
+def _memory_limit_error(operation: str, size: int) -> GraphMemoryLimitError:
+    """The error for a bulk statement the memory pool refused. The call's ``db.query.failed`` reports it at ERROR, once,
+    so a caller that logs and goes on cannot hide it."""
     message = (
         f"{operation} of {size:,} rows exceeded the graph server's transaction memory pool; "
         "it was rolled back and is not retried. Raise NEO4J_HEAP_MAX (with NEO4J_MEMORY_LIMIT) "
         "or write fewer rows at once"
     )
-    logger.error("Neo4j memory limit: %s", message)
     return GraphMemoryLimitError(message, operation=operation, size=size)
+
+
+_SKIP = (__name__,)
+_CONSTRAINT_FAILED = "Neo.ClientError.Schema.ConstraintValidationFailed"
+
+
+def describe_neo4j_error(error: Exception) -> tuple[str | None, str, dict[str, object], bool]:
+    """(code, error_class, extra fields, hide_text) of a failed call, for its log record. Driver texts can quote parameter
+    values (a constraint names the clashing property's value), so they are hidden; our own texts are not."""
+    if isinstance(error, GraphMemoryLimitError):
+        return None, "misconfigured", {"bulk": error.operation, "size": error.size}, False
+    if type(error) is RuntimeError and str(error).startswith("Neo4j "):
+        return None, "unavailable", {}, False  # our own "driver not connected" / "reconnection failed"
+    code = error.code if isinstance(error, Neo4jError) else None
+    gql_status = getattr(error, "gql_status", None) if isinstance(error, Neo4jError) else None
+    if isinstance(error, (ServiceUnavailable, SessionExpired)):
+        cls = "unavailable"
+    elif is_write_conflict(error) or lost_to_a_delete(error) or code == _CONSTRAINT_FAILED:
+        cls = "conflict"
+    elif isinstance(code, str) and code.startswith("Neo.ClientError.Security."):
+        cls = "misconfigured"
+    elif isinstance(code, str) and code.startswith("Neo.ClientError.Transaction.TransactionTimedOut"):
+        cls = "timeout"
+    elif isinstance(gql_status, str) and gql_status.startswith("22"):
+        cls = "bad_request"  # a data exception: a value the caller passed (the code may still say Statement.SyntaxError)
+    elif (isinstance(error, ClientError) and _POOL_EXHAUSTED_MARKER in str(error)) or (
+            isinstance(code, str) and code.startswith("Neo.TransientError.")):
+        cls = "unavailable"
+    else:
+        cls = "internal"
+    return code, cls, {}, True
+
+
+def _logged(op: str):  # noqa: ANN202
+    return query_logged("neo4j", op, describe=describe_neo4j_error, skip=_SKIP)
 
 
 def _report_neo4j_failure(error: BaseException) -> None:
@@ -213,7 +262,7 @@ class Neo4jClient:
         self._explicit_transactions = bool(explicit_transactions)
         self._honour_explicit_requests = bool(honour_explicit_requests)
         self._transaction_timeout = float(transaction_timeout)
-        # Populated on the first successful connect. Rebuilding a driver must
+        # Set once a connect finds the database online. Rebuilding a driver must
         # not re-run SHOW/CREATE DATABASE against the system database: the
         # database has not gone anywhere, and a rebuild happens exactly when
         # the server is least able to answer.
@@ -238,9 +287,7 @@ class Neo4jClient:
         self._active_txs: dict[str, Any] = {}  # explicit transactions, when enabled
 
         # Log connection details
-        self.logger.info(f"🔌 Connecting to Neo4j at {uri}")
-        self.logger.info(f"🔌 Username: {username}")
-        self.logger.info(f"🔌 Database: {database}")
+        self.logger.info(f"Connecting to Neo4j at {uri}, database {database}")
 
 
     @staticmethod
@@ -312,6 +359,10 @@ class Neo4jClient:
                 max_connection_pool_size=self._max_connection_pool_size,
                 connection_acquisition_timeout=self._connection_acquisition_timeout,
                 liveness_check_timeout=self._liveness_check_timeout,
+                # A query naming a property, label or relationship type no node has held yet (an optional field most
+                # graphs never set) gets this notification on every run, and the driver logs it with the whole query.
+                # The other classifications (deprecation, performance, hint, ...) are kept.
+                notifications_disabled_classifications=[NotificationDisabledClassification.UNRECOGNIZED],
             )
             with self._drivers_lock:
                 self._drivers[self._current_loop()] = driver
@@ -319,24 +370,15 @@ class Neo4jClient:
             # Test connection
             await driver.verify_connectivity()
             server_info = await driver.get_server_info()
-            self.logger.info(f"✅ Connected to Neo4j {server_info}")
+            self.logger.info(f"Connected to {getattr(server_info, 'agent', 'Neo4j')}")  # a log line never fails the connect
 
             if not self._database_ensured:
-                await self._ensure_database_exists()
-                self._database_ensured = True
+                self._database_ensured = await self._ensure_database_exists()
 
             return True
 
-        except ServiceUnavailable as e:
-            self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
-            await self._close_driver_safely(driver)
-            return False
-        except ClientError as e:
-            self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
-            await self._close_driver_safely(driver)
-            return False
         except Exception as e:
-            self.logger.error(f"❌ Unexpected error connecting to Neo4j: {str(e)}")
+            error_class.log_failure(self.logger, "db.connect.failed", e, backend="neo4j", include_error_text=False)  # names the host
             await self._close_driver_safely(driver)
             return False
 
@@ -357,32 +399,60 @@ class Neo4jClient:
             with self._drivers_lock:
                 self._drivers.pop(loop, None)
 
-    async def _ensure_database_exists(self) -> None:
+    async def _database_rows(self, session: AsyncSession) -> list[dict[str, Any]]:
+        """The database's row on each server that hosts it; empty if it does not exist."""
+        # Neo4j stores database names in lowercase, and this filter is case-sensitive.
+        result = await session.run(
+            "SHOW DATABASES WHERE name = $dbName",
+            {"dbName": self.database.lower()}
+        )
+        return await result.data()
+
+    async def _ensure_database_exists(self) -> bool:
+        """Create the database if it is missing, then wait until it is online.
+
+        Returns False when it was still not online at the deadline, or when the
+        check itself failed, so the next driver build checks again.
         """
-        Check if the database exists, and create it if it doesn't.
-        This method connects to the 'system' database to check and create databases.
-        """
+        rows: list[dict[str, Any]] = []
         try:
-            # Connect to system database to check if our target database exists
-            async with self.driver.session(database="system") as session:
-                # Query to check if database exists
-                result = await session.run(
-                    "SHOW DATABASES WHERE name = $dbName",
-                    {"dbName": self.database}
-                )
-                databases = await result.data()
+            # Covers the queries too: one that hangs must not hold startup past the deadline.
+            async with asyncio.timeout(DATABASE_ONLINE_TIMEOUT):
+                async with self.driver.session(database="system") as session:
+                    rows = await self._database_rows(session)
+                    if not rows:
+                        self.logger.info(f"Database '{self.database}' not found. Creating it...")
+                        created = await session.run(f"CREATE DATABASE `{self.database}` IF NOT EXISTS")
+                        await created.consume()
 
-                if not databases:
-                    # Database doesn't exist, create it
-                    self.logger.info(f"📦 Database '{self.database}' not found. Creating it...")
-                    await session.run(f"CREATE DATABASE `{self.database}` IF NOT EXISTS")
-                    self.logger.info(f"✅ Database '{self.database}' created successfully")
-                else:
-                    self.logger.info(f"✅ Database '{self.database}' already exists")
+                    # A new database is listed before it is online, and a query in
+                    # between fails with DatabaseNotFound. The same goes for one that
+                    # another service created a moment ago, so an existing one waits
+                    # too. Polled rather than CREATE ... WAIT: WAIT can't cover that
+                    # case, and how it reports a timeout differs between Cypher versions.
+                    # In a cluster a secondary can be online before a writer is elected;
+                    # servers older than 5.0 have no writer column.
+                    while not any(r.get("currentStatus") == "online" and r.get("writer", True) for r in rows):
+                        await asyncio.sleep(DATABASE_ONLINE_POLL_INTERVAL)
+                        rows = await self._database_rows(session)
 
+            self.logger.info(f"Database '{self.database}' is online")
+            return True
+
+        except TimeoutError:
+            statuses = ", ".join(str(r.get("currentStatus")) for r in rows) or "not listed"
+            self.logger.warning(
+                f"Database '{self.database}' is not online after {DATABASE_ONLINE_TIMEOUT:.0f}s (status: {statuses})"
+            )
+            return False
         except ClientError as e:
-            self.logger.warning(f"⚠️ Could not verify/create database '{self.database}': {str(e)}")
-            self.logger.warning("This may be expected if using Neo4j Community Edition (single database only)")
+            # Community Edition hosts one database and refuses CREATE DATABASE. Any
+            # other refusal (no privilege, a terminated poll) is not a verdict.
+            community = e.code == "Neo.ClientError.Statement.UnsupportedAdministrationCommand"
+            error_class.log_failure(self.logger, "db.schema.failed", e, level=logging.WARNING, backend="neo4j",
+                                    op="ensure_database",
+                                    reason="community_edition" if community else "not_checked")
+            return community
 
     async def _close_on_owning_loop(self, resource: Any, owner: Any, what: str) -> bool:
         """Close a loop-bound resource on the loop that created it.
@@ -475,10 +545,11 @@ class Neo4jClient:
                     self._drivers.pop(owner, None)
                     self._connect_locks.pop(owner, None)
             if owned:
-                self.logger.info("✅ Disconnected from Neo4j")
+                self.logger.info("Disconnected from Neo4j")
         except (ClientError, ServiceUnavailable) as e:
-            self.logger.error(f"❌ Error disconnecting from Neo4j: {str(e)}")
+            error_class.log_failure(self.logger, "db.disconnect.failed", e, backend="neo4j", include_error_text=False)
 
+    @_logged("begin_transaction")
     async def begin_transaction(
         self, read: list[str], write: list[str], explicit: bool | None = None,
     ) -> str:
@@ -524,7 +595,7 @@ class Neo4jClient:
         self._session_loops[txn_id] = self._current_loop()
         self._session_started[txn_id] = time.monotonic()
 
-        self.logger.debug(f"🔵 Started Neo4j transaction: {txn_id}")
+        self.logger.debug(f"Started Neo4j transaction: {txn_id}")
         return txn_id
 
     @property
@@ -596,6 +667,7 @@ class Neo4jClient:
             )
         return reaped
 
+    @_logged("commit_transaction")
     async def commit_transaction(self, txn_id: str) -> None:
         """
         Commit a Neo4j transaction.
@@ -616,7 +688,7 @@ class Neo4jClient:
 
         try:
             await self._refusing_memory(commit, bulk)
-            self.logger.debug(f"✅ Committed Neo4j transaction: {txn_id}")
+            self.logger.debug(f"Committed Neo4j transaction: {txn_id}")
         finally:
             try:
                 await session.close()
@@ -639,11 +711,8 @@ class Neo4jClient:
             if not is_memory_limit(e):
                 raise
             if bulk is None:
-                self.logger.warning(
-                    "Neo4j server transaction memory exhausted, possibly by a concurrent large write: %s", e
-                )
-                raise
-        raise _memory_limit_error(bulk[0], bulk[1], self.logger) from None
+                raise  # the call's db.query.failed reports it (unavailable: possibly a concurrent large write)
+        raise _memory_limit_error(bulk[0], bulk[1]) from None
 
     async def abort_transaction(self, txn_id: str) -> None:
         """
@@ -668,10 +737,11 @@ class Neo4jClient:
                     # pooled connection either way.
                     self.logger.warning("Neo4j rollback of %s raised: %s", txn_id, e)
             await session.close()
-            self.logger.debug(f"🔄 Aborted Neo4j transaction: {txn_id}")
+            self.logger.debug(f"Aborted Neo4j transaction: {txn_id}")
         finally:
             self._forget_session(txn_id)
 
+    @_logged("execute_query")
     async def execute_query(
         self,
         query: str,
@@ -757,9 +827,8 @@ class Neo4jClient:
                 # One dead connection is not a dead driver: the pool opens a
                 # fresh connection for the retry, so try that before doing
                 # anything to the driver other coroutines are using.
-                self.logger.warning(
-                    "Neo4j connection lost during query — retrying on the pool: %s", first
-                )
+                log_event(self.logger, "db.query.retry", level=logging.WARNING, backend="neo4j", op="execute_query",
+                          reason="connection_lost", error_type=type(first).__name__)
                 try:
                     return await self._run_autocommit(
                         query, parameters, plain=plain, timeout=timeout, bulk=marked
@@ -833,7 +902,7 @@ class Neo4jClient:
                     f"not rebuilding within {self._rebuild_cooldown:.0f}s"
                 ) from cause
             self.logger.warning(
-                "Neo4j driver unreachable — rebuilding its connection pool: %s", cause
+                "Neo4j driver unreachable — rebuilding its connection pool: %s", type(cause).__name__  # its text names hosts
             )
             with self._drivers_lock:
                 self._rebuilt_at[loop] = now

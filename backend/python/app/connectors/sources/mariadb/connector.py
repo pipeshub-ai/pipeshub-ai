@@ -1024,8 +1024,9 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
                     if existing.external_revision_id != record.external_revision_id:
                         await self.data_entities_processor.on_record_content_update(record)
                     else:
-                        # Written again as it is: the save keeps an indexed or in-flight
-                        # record as it is and retries a failed one a few times at most.
+                        # Written again as it is: the save keeps an indexed, in-flight or
+                        # failed record as it is. A failed table waits for a change at the
+                        # source or a manual retry; a sync is not a retry.
                         # A full sync counts the records it writes, and unlinks the rest after.
                         await self.data_entities_processor.on_new_records([(record, [])])
                     written.add(table.fqn)

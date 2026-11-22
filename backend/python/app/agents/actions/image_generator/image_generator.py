@@ -42,6 +42,7 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import upload_bytes_artifact
 from app.services.artifact_registry.models import artifact_owner_id
 from app.utils.conversation_tasks import register_task
+from app.utils.error_class import log_failure
 from app.utils.llm import get_image_generation_config
 
 logger = logging.getLogger(__name__)
@@ -326,7 +327,10 @@ class ImageGenerator:
                 "error": str(e),
             })
         except Exception as e:
-            logger.exception("[generate_image] provider call failed")
+            log_failure(
+                logger, "image_generation.failed", e, include_error_text=False,
+                provider=adapter.provider, model=adapter.model, mode="edit" if is_edit else "generate",
+            )
             failure: dict[str, Any] = {
                 "success": False,
                 "provider": adapter.provider,

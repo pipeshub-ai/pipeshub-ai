@@ -51,6 +51,7 @@ from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToo
 from app.agents.agent_loop.answer_rules import multi_step_answer_rules
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.agents.agent_loop.sub_agent_prompt import build_sub_agent_prompt
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
@@ -610,15 +611,12 @@ def register_domain_agents(
                 )
             )
         except (DuplicateToolNameError, DuplicateToolPathError):
-            logger.warning(
-                "register_domain_agents: name %r already registered — skipping this domain agent",
-                definition.name,
-            )
+            log_event(logger, "domain_agent.duplicate", level=logging.WARNING, role=definition.name)
             continue
         built.append(definition.name)
-        logger.info(
-            "register_domain_agents: built %s with %d tool(s) %s + delegates %s",
-            definition.name, len(claimed_names), claimed_names, delegate_names,
+        log_event(
+            logger, "domain_agent.built", level=logging.DEBUG, role=definition.name,
+            tools=len(claimed_names), delegates=len(delegate_names),
         )
 
     # Only tools claimed by an agent that actually got built leave the

@@ -38,6 +38,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
 )
+from app.services.resource_governor.kinds import ParseKind
 from app.utils.user_errors import (
     PARSE_WORKER_OUT_OF_MEMORY,
     PASSWORD_PROTECTED,
@@ -276,7 +277,7 @@ class TestSettings:
         await inspect_untrusted_pdf(ORIGINAL, label="report.pdf")
 
         for _name, content, _args, kwargs in jobs.jobs:
-            assert kwargs == {"label": "report.pdf", "size": len(content), "timeout": 45.0}
+            assert kwargs == {"label": "report.pdf", "size": len(content), "timeout": 45.0, "kind": ParseKind.INSPECT}
         assert [args for name, _, args, _ in jobs.jobs if name == "detect_ocr"] == [(7,)]
 
     @pytest.mark.parametrize(("raw", "expected"), [("0.01", 1.0), ("99999", 3600.0), ("soon", 120.0)])

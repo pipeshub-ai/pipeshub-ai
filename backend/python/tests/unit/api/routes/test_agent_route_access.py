@@ -1270,6 +1270,34 @@ class TestTemplates:
         assert tgraph.nodes["agentTemplates"]["tpl"]["name"] == "New"
         assert tgraph.nodes["agentTemplates"]["tpl"]["isDeleted"] is True
 
+    @pytest.mark.parametrize("method", ["put", "delete"])
+    @pytest.mark.parametrize("caller,template_id", [("alice", "nope"), ("bob", "tpl"), ("mallory", "tpl")])
+    def test_a_missing_or_unseen_template_is_404(self, tgraph, method, caller, template_id) -> None:
+        # The same answer for both, so a caller cannot tell whether a template they cannot see exists.
+        c, _ = make_client(tgraph)
+        response = c.request(method, f"/api/v1/agent/template/{template_id}", headers=as_user(caller), json={"name": "x"})
+        assert response.status_code == 404
+        assert tgraph.nodes["agentTemplates"]["tpl"]["name"] == "Template tpl"
+        assert tgraph.nodes["agentTemplates"]["tpl"]["isDeleted"] is False
+
+    @pytest.mark.parametrize("method", ["put", "delete"])
+    def test_a_reader_cannot_change_or_delete(self, tgraph, method) -> None:
+        tgraph.add_edge(PERMISSION, {"_from": f"{USERS_COLL}/{user_key('bob')}", "_to": "agentTemplates/tpl", "type": "USER", "role": "READER"})
+        c, _ = make_client(tgraph)
+        response = c.request(method, "/api/v1/agent/template/tpl", headers=as_user("bob"), json={"name": "x"})
+        assert response.status_code == 403
+        assert tgraph.nodes["agentTemplates"]["tpl"]["name"] == "Template tpl"
+        assert tgraph.nodes["agentTemplates"]["tpl"]["isDeleted"] is False
+
+    @pytest.mark.parametrize("method,write", [("put", "update_agent_template"), ("delete", "delete_agent_template")])
+    def test_a_failed_write_on_an_owned_template_is_500(self, tgraph, method, write) -> None:
+        async def refuse(*args: object, **kwargs: object) -> bool:
+            return False
+        setattr(tgraph, write, refuse)
+        c, _ = make_client(tgraph)
+        response = c.request(method, "/api/v1/agent/template/tpl", headers=as_user("alice"), json={"name": "x"})
+        assert response.status_code == 500
+
     @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
     @pytest.mark.parametrize("how", ["raises", "returns_false"])
     def test_copy_whose_owner_edge_fails_is_not_left_behind(self, tgraph, how, rollback_undoes_writes) -> None:

@@ -38,10 +38,9 @@ from app.agents.agent_loop.mcp_session import MCPSessionManager
 from app.agents.agent_loop.mcp_sign_in import note_sign_in_needed
 from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
 from app.agents.agent_loop.tool_approvals import TOOLS_BY_PATH
-from app.agents.mcp.failure import classify_mcp_failure, mcp_error_class
+from app.agents.mcp.failure import classify_mcp_failure, log_discover_end
 from app.agents.mcp.naming import namespace_key, unique_keys
 from app.agents.mcp.models import MCPToolInfo
-from app.utils import error_class
 from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
@@ -90,24 +89,6 @@ def _assign_names(servers: list["ResolvedMCPServer"], context: "AgentContext") -
     }
     context.tool_state[MCP_NAMES_STATE_KEY] = names
     return names
-
-
-def _log_discover_end(
-    log: logging.Logger, mcp_server_id: str, failure: BaseException | None, **fields: object,
-) -> None:
-    """One `mcp.discover.end` for a server whose tools this turn can't use: its failure at the
-    failure's level (with the stack only for our own bugs, and never the server's text), or a
-    WARNING when it listed none of the attached tools."""
-    if failure is None:
-        log_event(
-            log, "mcp.discover.end", level=logging.WARNING, mcp_server_id=mcp_server_id, outcome="skipped",
-            reason="no_attached_tools", source="turn", **fields,
-        )
-        return
-    error_class.log_failure(
-        log, "mcp.discover.end", failure, error_class=mcp_error_class(failure), include_error_text=False,
-        mcp_server_id=mcp_server_id, source="turn", **fields,
-    )
 
 
 class MCPToolProvider:
@@ -167,8 +148,8 @@ class MCPToolProvider:
             if failure is not None and not context.is_assistant and note_sign_in_needed(context, server, failure):
                 entry["signInHere"] = True
             context.mcp_tool_load_failures.append(entry)
-            _log_discover_end(
-                state_logger, server.instance_id, failure, mcp_reason=failure_reason,
+            log_discover_end(
+                state_logger, server.instance_id, failure, source="turn", mcp_reason=failure_reason,
                 duration_ms=round((time.perf_counter() - started) * 1000),
             )
             return 0

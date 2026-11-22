@@ -8,6 +8,9 @@ fields:
       - OPEN
       - STRICT
       - RESTRICTED
+  adds_permissions:
+    required: false
+    type: boolean
   authored_by:
     required: false
     type: object
@@ -114,6 +117,12 @@ fields:
   queued_at:
     required: false
     type: integer
+  first_queued_at:
+    required: false
+    type: integer
+  indexing_attempts:
+    required: false
+    type: integer
   inherit_permissions:
     required: false
     type: boolean
@@ -122,6 +131,11 @@ fields:
   inherit_permissions_from_group:
     required: false
     type: boolean
+  # Write-time: the record group the record takes its access from (a Jira issue's security level); empty when it has none, absent when the
+  # writer names none. Never stored on the record (the processor writes it as edges).
+  access_group_external_id:
+    required: false
+    type: string
   rewrite_permissions:
     required: false
     type: boolean

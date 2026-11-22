@@ -23,7 +23,6 @@ BEGIN
   IF EXISTS (SELECT 1 FROM unnest(p_gtypes) e WHERE e IS NOT NULL AND length(e) NOT BETWEEN 1 AND 64) THEN RAISE EXCEPTION 'w_grants_set: p_gtypes has an item of the wrong length' USING ERRCODE = '22023'; END IF;
   IF p_roles IS NULL THEN RAISE EXCEPTION 'w_grants_set: p_roles is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_roles) > 5000 THEN RAISE EXCEPTION 'w_grants_set: p_roles takes at most 5000 items' USING ERRCODE = '22023'; END IF;
-  IF EXISTS (SELECT 1 FROM unnest(p_roles) e WHERE e IS NOT NULL AND length(e) NOT BETWEEN 0 AND 64) THEN RAISE EXCEPTION 'w_grants_set: p_roles has an item of the wrong length' USING ERRCODE = '22023'; END IF;
   IF p_apps IS NULL THEN RAISE EXCEPTION 'w_grants_set: p_apps is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_apps) > 5000 THEN RAISE EXCEPTION 'w_grants_set: p_apps takes at most 5000 items' USING ERRCODE = '22023'; END IF;
   IF p_leaves IS NULL THEN RAISE EXCEPTION 'w_grants_set: p_leaves is required' USING ERRCODE = '22023'; END IF;

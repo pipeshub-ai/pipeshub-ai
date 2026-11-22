@@ -1,7 +1,8 @@
 """An OAuth token endpoint that refuses every request with one fixed answer.
 
 It stands in for ``aiohttp.ClientSession`` inside ``oauth_service``, so the real
-``OAuthProvider`` sends the request and classifies the provider's answer.
+``OAuthProvider`` sends the request and classifies the provider's answer. With ``raises``
+the endpoint is unreachable: every request raises it (an ``aiohttp.ClientConnectorError``).
 """
 
 from __future__ import annotations
@@ -17,8 +18,12 @@ ENTRA_INTERACTION_REQUIRED = (
 
 
 class RefusingTokenEndpoint:
-    def __init__(self, status: int, body: str, content_type: str = "application/json; charset=utf-8") -> None:
+    def __init__(
+        self, status: int, body: str, content_type: str = "application/json; charset=utf-8",
+        *, raises: BaseException | None = None,
+    ) -> None:
         self.status = status
+        self.raises = raises
         self.body = body
         self.content_type = content_type
         self.requests: list[dict[str, str]] = []
@@ -34,6 +39,8 @@ class _Session:
 
     def post(self, _url: str, *, data: dict | None = None, json: dict | None = None, **_: object) -> _Response:
         self._endpoint.requests.append({k: str(v) for k, v in (data or json or {}).items()})
+        if self._endpoint.raises is not None:
+            raise self._endpoint.raises
         return _Response(self._endpoint)
 
     async def close(self) -> None:

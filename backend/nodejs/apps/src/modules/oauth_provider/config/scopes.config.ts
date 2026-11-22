@@ -274,6 +274,12 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     category: 'Code',
     requiresUserConsent: true,
   },
+  'code:write': {
+    name: 'code:write',
+    description: 'Push local repositories to be indexed into the code graph',
+    category: 'Code',
+    requiresUserConsent: true,
+  },
 
   // Configuration (Admin only)
   'config:read': {
@@ -404,6 +410,8 @@ export const AgentMcpScopes = [
   'connector:write',
   'connector:sync',
   'code:read',
+  // Lets the CLI push a local repository to be indexed (pipeshub index).
+  'code:write',
 ] as const;
 
 /**

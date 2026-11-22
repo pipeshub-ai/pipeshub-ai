@@ -19,6 +19,7 @@ from PIL import Image
 
 from app.agents.constants.mcp_server_constants import get_mcp_logo_path
 from app.agents.mcp.models import MAX_LOGO_UPLOAD_BYTES
+from app.config.configuration_service import delete_config_confirmed
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -119,16 +120,9 @@ async def load_logo(config_service: ConfigurationService, instance_id: str) -> O
 
 
 async def delete_logo(config_service: ConfigurationService, instance_id: str) -> bool:
-    """Remove the instance's logo. True when it has none afterwards, also when it had none: the
-    stores answer False for deleting a key that isn't there."""
-    path = get_mcp_logo_path(instance_id)
-    if await config_service.delete_config(path):
-        return True
+    """Remove the instance's logo. True when it has none afterwards, also when it had none."""
     try:
-        left = await config_service.get_config(
-            path, default=None, use_cache=False, keep_in_cache=False, raise_on_error=True,
-        )
+        return await delete_config_confirmed(config_service, get_mcp_logo_path(instance_id))
     except Exception as e:
         logger.warning(f"Could not check the logo of MCP instance {instance_id} was removed: {e}")
         return False
-    return left is None

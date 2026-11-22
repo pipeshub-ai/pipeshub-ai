@@ -27,6 +27,7 @@ from app.exceptions.indexing_exceptions import (
     MultimodalModelNotConfiguredError,
     PasswordProtectedError,
     ProcessingError,
+    ProviderRateLimitedTooLongError,
     RecordStatusUpdateError,
     VectorStoreError,
 )
@@ -34,6 +35,7 @@ from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
 from app.utils.api_call import ApiCallError
+from app.utils.embedding_retry import is_quota_exhausted
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -174,6 +176,41 @@ def unsupported_file_type(extension: str | None) -> str:
     ext = (extension or "").strip().lstrip(".").lower()
     what = f".{ext} files" if ext and ext not in {"unknown", "none"} else "this type of file"
     return f"PipesHub can't read {what} yet. Convert the file to PDF, DOCX or TXT to make it searchable."
+
+
+def _size_label(size: int) -> str:
+    return f"{size // (1024 * 1024)} MB" if size >= 1024 * 1024 else f"{size // 1024} KiB"
+
+
+def file_too_large_to_read(extension: str | None) -> str:
+    from app.config.file_types import TEXT_LOG_HARD_LIMIT_BYTES
+
+    ext = (extension or "").strip().lstrip(".").lower()
+    what = f".{ext} file" if ext and ext not in {"unknown", "none"} else "file"
+    return (
+        f"This {what} is too large to index (over {_size_label(TEXT_LOG_HARD_LIMIT_BYTES)}). "
+        "It can still be found by its name."
+    )
+
+
+# The record field for a note on how a record was indexed (shown on a COMPLETED record), kept apart
+# from `reason`, which says why a record or one of its stages was not done.
+INDEXING_NOTE_FIELD = "indexingNote"
+
+
+def partly_indexed_text() -> str:
+    from app.config.file_types import TEXT_LOG_MAX_BYTES
+
+    return (
+        "Only the first and last part of this file is indexed "
+        f"(file is larger than {_size_label(TEXT_LOG_MAX_BYTES)})."
+    )
+
+
+def binary_text_file(extension: str | None) -> str:
+    ext = (extension or "").strip().lstrip(".").lower()
+    what = f".{ext} file" if ext and ext not in {"unknown", "none"} else "file"
+    return f"This {what} holds binary data, not text, so PipesHub can't read it."
 
 
 # What a synced item is called in a reason. Some sources let a file be fixed
@@ -338,6 +375,11 @@ def _ai_messages(model: str) -> dict[str, str]:
         "rate_limit": (
             f"The {model} is busy right now, so this file wasn't indexed. Reindex it in "
             "a few minutes."
+        ),
+        "quota_exceeded": (
+            f"The {model}'s provider account is out of credit, so this file wasn't indexed. "
+            "An admin can add credit with the provider or choose another model in "
+            "Workspace → AI Models, then Reindex the file."
         ),
         "auth_error": (
             f"The {model} rejected PipesHub's API key, so this file wasn't indexed. An "
@@ -532,6 +574,9 @@ def _provider_code(chain: list[BaseException]) -> str:
         if _aws_error_code(e) == "NotAuthorized":
             return "auth_error"
         status = _status_code(e)
+        # An empty balance: OpenAI answers it 429 and Anthropic 400, and neither is fixed by waiting.
+        if status in (400, 402, 429) and is_quota_exhausted(e):
+            return "quota_exceeded"
         if status == 429:
             return "rate_limit"
         if status in (401, 403):
@@ -547,7 +592,7 @@ def _provider_code(chain: list[BaseException]) -> str:
     for e in theirs:
         name = type(e).__name__
         if "RateLimit" in name:
-            return "rate_limit"
+            return "quota_exceeded" if is_quota_exhausted(e) else "rate_limit"
         if "Authentication" in name or "PermissionDenied" in name:
             return "auth_error"
         if "ContextWindow" in name or "ContextLength" in name:
@@ -604,6 +649,11 @@ def _ai_failure_code(chain: list[BaseException]) -> str:
 def provider_error_code(exc: BaseException) -> str:
     """`classify_error`'s code for an exception raised by an AI provider's SDK."""
     return _provider_code(list(_chain(exc)))
+
+
+def provider_response_status(exc: BaseException) -> int | None:
+    """The HTTP status of the response an AI provider sent, or ``None`` when no response arrived."""
+    return next((status for e in _chain(exc) if not _ours(e) and (status := _status_code(e)) is not None), None)
 
 
 def _llm_not_configured(exc: BaseException) -> bool:
@@ -705,6 +755,14 @@ def _reason(exc: BaseException | None) -> str:
         if getattr(e, "code", None) == ParseErrorCode.UNSUPPORTED_FORMAT:
             details = getattr(e, "details", None) or {}
             return unsupported_file_type(details.get("extension"))
+        # A file found damaged says why in its own words, ahead of the processing error
+        # that wraps it in-process (which would read as a generic unreadable file).
+        if getattr(e, "code", None) == ParseErrorCode.PARSE_FAILED:
+            user_reason = (getattr(e, "details", None) or {}).get("user_reason")
+            if isinstance(user_reason, str) and user_reason:
+                return user_reason
+        if isinstance(e, ProviderRateLimitedTooLongError):
+            return str(e)
         if _llm_not_configured(e):
             return str(e)
         if e.args and isinstance(e.args[0], str) and e.args[0] in _STORED_AS_WRITTEN:

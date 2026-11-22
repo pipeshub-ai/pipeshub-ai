@@ -9,6 +9,8 @@ import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { BaseError } from '../../../../src/libs/errors/base.error'
 import { ExpiredTokenError, InvalidTokenError } from '../../../../src/libs/errors/oauth.errors'
 import { createMockLogger } from '../../../helpers/mock-logger'
+import { DEFAULT_MCP_ACCESS_POLICY, McpAccessPolicyStore } from '../../../../src/modules/mcp/access-policy'
+import { makeOrgContext, runWithOrgContext } from '../../../../src/libs/context/orgContext'
 
 const sendError: express.ErrorRequestHandler = (err, _req, res, _next) => {
   res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
@@ -19,12 +21,15 @@ describe('MCP Routes — createMCPRouter', () => {
   let mockAuthMiddleware: any
   let mockAppConfig: any
 
+  let readPolicy: sinon.SinonStub
+
   beforeEach(() => {
     container = new Container()
+    readPolicy = sinon.stub(McpAccessPolicyStore, 'read').resolves(DEFAULT_MCP_ACCESS_POLICY)
 
     mockAuthMiddleware = {
       authenticate: sinon.stub().callsFake((req: any, _res: any, next: any) => {
-        req.user = { userId: 'user-1', isOAuth: true }
+        req.user = { userId: 'user-1', orgId: 'org-1', isOAuth: true }
         next()
       }),
     }
@@ -153,21 +158,21 @@ describe('MCP Routes — createMCPRouter', () => {
   // Middleware chain
   // =========================================================================
   describe('middleware chain', () => {
-    it('should guard POST with origin, limits, auth and the token check before the handler', () => {
+    it('should guard POST with origin, limits, auth, the token check and the org access check before the handler', () => {
       const router = createMCPRouter(container)
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
       // route.stack contains the handler layers for that route
-      expect(postLayer.route.stack).to.have.length(6)
+      expect(postLayer.route.stack).to.have.length(7)
     })
 
-    it('should guard GET with origin, limits, auth and the token check before the 405 handler', () => {
+    it('should guard GET with origin, limits, auth, the token check and the org access check before the 405 handler', () => {
       const router = createMCPRouter(container)
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      expect(getLayer.route.stack).to.have.length(6)
+      expect(getLayer.route.stack).to.have.length(7)
     })
 
     it('should authenticate after the origin check and the rejected-token limit on POST', () => {
@@ -193,7 +198,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
-      const secondHandler = postLayer.route.stack[5].handle
+      const secondHandler = postLayer.route.stack[6].handle
       // handleMCPRequest(appConfig) returns an async function
       expect(secondHandler).to.be.a('function')
       expect(secondHandler).to.not.equal(mockAuthMiddleware.authenticate)
@@ -204,7 +209,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      const secondHandler = getLayer.route.stack[5].handle
+      const secondHandler = getLayer.route.stack[6].handle
       expect(secondHandler).to.be.a('function')
       expect(secondHandler).to.not.equal(mockAuthMiddleware.authenticate)
     })
@@ -359,7 +364,7 @@ describe('MCP Routes — createMCPRouter', () => {
     async function serve(): Promise<{ get: (headers?: Record<string, string>) => Promise<Response>; close: () => void }> {
       mockAuthMiddleware.authenticate = (req: any, _res: any, next: any) => {
         if (authFails) return next(new UnauthorizedError('Invalid token'))
-        req.user = { userId: user, isOAuth: true, oauthAudience: audience }
+        req.user = { userId: user, orgId: 'org-1', isOAuth: true, oauthAudience: audience }
         next()
       }
       const app = express()
@@ -396,7 +401,7 @@ describe('MCP Routes — createMCPRouter', () => {
 
     it('refuses a web session token, which is not meant for MCP clients', async () => {
       mockAuthMiddleware.authenticate = (req: any, _res: any, next: any) => {
-        req.user = { userId: 'user-1' }
+        req.user = { userId: 'user-1', orgId: 'org-1' }
         next()
       }
       const app = express()
@@ -472,6 +477,52 @@ describe('MCP Routes — createMCPRouter', () => {
       } finally {
         close()
       }
+    })
+  })
+
+  // =========================================================================
+  // The org's MCP access switch
+  // =========================================================================
+  describe('org access', () => {
+    const turnedOff = {
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'MCP access is turned off for this organization by an admin.' },
+      id: null,
+    }
+
+    beforeEach(() => {
+      mockAuthMiddleware.authenticate = (req: any, _res: any, next: any) => {
+        req.user = { userId: 'user-1', orgId: 'org-off', isOAuth: true }
+        runWithOrgContext(makeOrgContext({ orgId: 'org-off', userId: 'user-1', kind: 'user', source: 'jwt' }), () => next())
+      }
+    })
+
+    it("answers POST and GET with a JSON-RPC 403 while the caller's org has MCP off", async () => {
+      const read = readPolicy.resolves({ enabled: false, allowWriteTools: true, disabledTools: [] })
+      const post = await request({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      })
+      expect(post.status).to.equal(403)
+      expect(await post.json()).to.deep.equal(turnedOff)
+      const get = await request({ headers: { accept: 'text/event-stream' } })
+      expect(get.status).to.equal(403)
+      expect(read.alwaysCalledWith('org-off')).to.equal(true)
+    })
+
+    it('still challenges a caller with no token while the org has MCP off', async () => {
+      readPolicy.resolves({ enabled: false, allowWriteTools: true, disabledTools: [] })
+      const res = await request({ method: 'POST', body: '{}' }, new UnauthorizedError('No token provided'))
+      expect(res.status).to.equal(401)
+      expect(res.headers.get('www-authenticate')).to.contain('resource_metadata=')
+    })
+
+    it('answers 503 when the settings cannot be read and none were read before', async () => {
+      readPolicy.rejects(new Error('MCP access settings could not be read. Try again shortly.'))
+      const res = await request({ headers: { accept: 'text/event-stream' } })
+      expect(res.status).to.equal(503)
+      expect(((await res.json()) as any).error.code).to.equal(-32000)
     })
   })
 })

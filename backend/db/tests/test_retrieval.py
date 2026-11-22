@@ -6,6 +6,9 @@ import psycopg
 import pytest
 from psycopg import errors as pg
 
+from db import vetted_harness
+from db.lib import fold
+
 from .conftest import run_migrate
 from .rls_fixture import ORG_A, ORG_B, uow
 
@@ -398,6 +401,90 @@ def test_the_postings_of_a_term_are_its_document_frequency(rdb):
     assert [r[0] for r in first] == [sk] and len(second) == 2 and second[0][1] != first[0][1]
 
 
+def kept_frequencies(cluster, name, org: str) -> dict[int, int]:
+    """What the search reads as a term's frequency: the folded value plus the deltas."""
+    with cluster.admin(name) as c:
+        return dict(c.execute(
+            "SELECT term, sum(n)::int FROM (SELECT term, df AS n FROM retrieval.lexical_df WHERE org_id = %s "
+            "UNION ALL SELECT term, d FROM retrieval.lexical_term_delta WHERE org_id = %s) x GROUP BY term HAVING sum(n) <> 0", (org, org)))
+
+
+def counted_frequencies(cluster, name, org: str) -> dict[int, int]:
+    with cluster.admin(name) as c:
+        return dict(c.execute("SELECT term, count(*)::int FROM retrieval.postings WHERE org_id = %s GROUP BY term", (org,)))
+
+
+def postings_read(cluster, name, org, terms) -> tuple[list, int, int]:
+    """A search's answer, the postings index entries it read and its probes of the kept frequencies: this transaction's own counters, so
+    nothing another session does counts."""
+    with connect_as(cluster, name, "pipeshub_query_login") as c, uow(c, "pipeshub_query", org):
+        got = c.execute("SELECT point_sk, score FROM retrieval.search_sparse(1::smallint, %s::bigint[], %s::real[], NULL, NULL, NULL, NULL, NULL, 10)",
+                        (list(terms), [1.0] * len(terms))).fetchall()
+        read, probes = c.execute(
+            "SELECT coalesce(sum(pg_stat_get_xact_tuples_returned(i.indexrelid)) FILTER (WHERE t.relname LIKE 'postings%%'), 0)::int, "
+            "coalesce(sum(pg_stat_get_xact_numscans(i.indexrelid)) FILTER (WHERE t.relname = 'lexical_df'), 0)::int "
+            "FROM pg_index i JOIN pg_class t ON t.oid = i.indrelid WHERE t.relnamespace = 'retrieval'::regnamespace").fetchone()
+        return got, read, probes
+
+
+def test_the_search_reads_kept_term_frequencies_and_each_posting_once(rdb):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        sks = [write_terms(c, ORG_A, f"a0000000-0000-0000-0000-0000000000{i:02x}", f"g{i}", {5: 1.0 + i, 6: 2.0, 7 + i % 3: 0.5}) for i in range(30)]
+        delta(c, ORG_A, 30)
+        c.execute("DELETE FROM retrieval.postings WHERE org_id = %s AND point_sk = ANY(%s) AND term = 6", (ORG_A, sks[:4]))     # a rewrite drops a term
+        c.execute("UPDATE retrieval.postings SET w = 9 WHERE org_id = %s AND point_sk = %s AND term = 5", (ORG_A, sks[5]))     # a weight changes
+        c.execute("INSERT INTO retrieval.postings (org_id, collection_id, space_id, term, point_sk, w) "
+                  "SELECT %s, 1, 1, 11, s, 1.0 FROM unnest(%s::bigint[]) s", (ORG_A, sks[:7]))                                     # one statement, many rows
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A) == {5: 30, 6: 26, 7: 10, 8: 10, 9: 10, 11: 7}
+    with cluster.admin(name) as c:            # other terms, so that the postings of a term are a range of the index and not the whole org
+        c.execute("INSERT INTO retrieval.postings (org_id, collection_id, space_id, term, point_sk, w) "
+                  "SELECT %s, 1, 1, 1000 + t, s, 1.0 FROM unnest(%s::bigint[]) s, generate_series(1, 300) t", (ORG_A, sks))
+        c.execute("VACUUM (ANALYZE) retrieval.postings")                   # no dead entries of the rewrites above left in the index
+    kept, read, probes = postings_read(cluster, name, ORG_A, (5, 6, 11))
+    assert read == 30 + 26 + 7 and probes == 3                                # every posting of the query's terms once; one kept frequency per term
+    with cluster.admin(name) as c:                                            # a collection whose postings predate the kept frequencies
+        c.execute("INSERT INTO retrieval.lexical_df_pending VALUES (%s, 1, 1)", (ORG_A,))
+    counted, read, probes = postings_read(cluster, name, ORG_A, (5, 6, 11))
+    assert counted == kept and read == 2 * (30 + 26 + 7) and probes == 0       # the same answer, scores included, by counting
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.run(jobs)[1] == {}
+        assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A)    # the fold, before recount could repair it
+        assert fold.recount_org(jobs, ORG_A) is not None
+    with cluster.admin(name) as c:
+        assert c.execute("SELECT count(*) FROM retrieval.lexical_term_delta WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM retrieval.lexical_df_pending WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 0
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A)
+    assert postings_read(cluster, name, ORG_A, (5, 6, 11)) == (kept, 30 + 26 + 7, 3)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        c.execute("DELETE FROM retrieval.postings WHERE org_id = %s AND point_sk = ANY(%s)", (ORG_A, sks[20:]))           # points deleted
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A)
+    with cluster.admin(name) as c:                                            # recount repairs a frequency that drifted
+        c.execute("UPDATE retrieval.lexical_df SET df = df + 5 WHERE org_id = %s AND term = 5", (ORG_A,))
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.recount_org(jobs, ORG_A) is not None
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A)
+
+
+def test_a_fold_keeps_no_frequency_row_for_a_term_that_has_no_postings_left(rdb):
+    """A term's postings inserted and folded, then deleted and folded: the row goes (a missing row is a frequency of 0 to the search), so
+    the table does not grow with every term that ever came and went."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        write_terms(c, ORG_A, "a0000000-0000-0000-0000-000000000001", "g1", {5: 1.0, 6: 1.0})
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.run(jobs)[1] == {}
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        c.execute("DELETE FROM retrieval.postings WHERE org_id = %s AND term = 6", (ORG_A,))
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.run(jobs)[1] == {}
+    with cluster.admin(name) as c:
+        assert dict(c.execute("SELECT term, df FROM retrieval.lexical_df WHERE org_id = %s", (ORG_A,))) == {5: 1}
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A) == {5: 1}
+
+
 def test_every_table_the_lexical_search_reads_is_filtered_by_the_bound_org():
     """Static check: the function takes the org from the unit of work, so every reference to a retrieval table must say so."""
     import re
@@ -407,10 +494,37 @@ def test_every_table_the_lexical_search_reads_is_filtered_by_the_bound_org():
 
     fn = next(f for f in vetted.load(Path(__file__).parents[1] / "versions/retrieval/vetted/manifest.yaml") if f.name == "search_sparse")
     refs = re.findall(r"\b(?:FROM|JOIN)\s+retrieval\.(\w+)\s+(\w+)", fn.body)
-    assert {t for t, _ in refs} == {"org_spaces", "collection_stats", "lexical_df_delta", "postings", "points", "group_members", "point_tombstones"}
-    for table, alias in refs:
-        assert re.search(rf"\b{alias}\.org_id = v_org\b", fn.body), f"{table} {alias} is not filtered by v_org"
+    assert {t for t, _ in refs} == {"org_spaces", "collection_stats", "lexical_df_delta", "postings", "points", "group_members", "point_tombstones",
+                                    "lexical_df", "lexical_term_delta", "lexical_df_pending"}
+    assert scopes_without_org(fn.body) == []
     assert "p_org" not in fn.body and all("org" not in a.name for a in fn.args)               # no argument can name an org
+
+
+def scopes_without_org(body: str) -> list[str]:
+    """The retrieval table references of a function body whose own query scope (from the reference to the end of its parenthesised
+    query, or of its statement) has no ``<alias>.org_id = v_org``: one alias reused in two subqueries is checked in each."""
+    import re
+
+    body = re.sub(r"--[^\n]*", "", body)
+    missing = []
+    for m in re.finditer(r"\b(?:FROM|JOIN)\s+retrieval\.(\w+)\s+(\w+)", body):
+        depth, end = 0, len(body)
+        for i in range(m.end(), len(body)):
+            depth += {"(": 1, ")": -1}.get(body[i], 0)
+            if depth < 0 or (depth == 0 and body[i] == ";"):
+                end = i
+                break
+        if not re.search(rf"\b{m[2]}\.org_id = v_org\b", body[m.end():end]):
+            missing.append(f"{m[1]} {m[2]}")
+    return missing
+
+
+def test_the_org_check_of_a_table_reference_looks_only_inside_its_own_query():
+    body = ("SELECT (SELECT 1 FROM retrieval.lexical_df_pending x WHERE x.collection_id = 1) INTO v_kept;\n"
+            "SELECT 1 FROM retrieval.points p WHERE p.org_id = v_org AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x "
+            "WHERE x.org_id = v_org AND x.point_sk = p.point_sk);")
+    assert scopes_without_org(body) == ["lexical_df_pending x"]
+    assert scopes_without_org(body.replace("WHERE x.collection_id", "WHERE x.org_id = v_org AND x.collection_id")) == []
 
 
 def test_the_membership_path_widens_to_every_point_when_the_best_ones_do_not_pass(rdb):
@@ -424,6 +538,52 @@ def test_the_membership_path_widens_to_every_point_when_the_best_ones_do_not_pas
         c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g19', 1, 'only')", (ORG_A,))
     assert [r[0] for r in search(cluster, name, ORG_A, (5,), arms=(["only"], [], [], []), leg=1)] == [sks[19]]
     assert search(cluster, name, ORG_A, (5,), arms=(["nobody"], [], [], []), leg=1) == []
+
+
+@pytest.mark.parametrize("points", [7, 8, 9])
+def test_the_lexical_search_goes_over_every_point_exactly_when_the_best_ones_may_not_be_all(rdb, points):
+    """Leg 1 checks the best 8 first. With fewer than 8 candidates they are all of them; with 8 or more there may be more, so the last pass
+    (no bound) runs: only the lowest-scoring point passes, and it is found whatever the count, and nothing is found when none passes."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        sks = [write_terms(c, ORG_A, f"a0000000-0000-0000-0000-0000000000{i:02d}", f"g{i}", {5: 2.0 - i / 100}) for i in range(points)]
+        delta(c, ORG_A, points)
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, %s, 1, 'only')", (ORG_A, f"g{points - 1}"))
+    assert [r[0] for r in search(cluster, name, ORG_A, (5,), arms=(["only"], [], [], []), leg=1)] == [sks[-1]]
+    assert search(cluster, name, ORG_A, (5,), arms=(["nobody"], [], [], []), leg=1) == []
+    assert [r[0] for r in search(cluster, name, ORG_A, (5,), leg=points)] == sks                      # whole org: best first, in one pass
+
+
+SPARSE = "retrieval.search_sparse(smallint, bigint[], real[], text[], text[], text[], text[], text[], int)"
+
+
+def test_downgrading_the_cheaper_lexical_search_keeps_the_function_and_an_upgrade_replaces_it(rdb):
+    """retrieval_0003 replaces the body of a function retrieval_0001 owns: a downgrade keeps the function and its registry row
+    (retrieval_0001 runs the same generated file), and an upgrade from there replaces it again with nothing left over."""
+    cluster, name = rdb
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def state() -> tuple:
+        with cluster.admin(name) as a:
+            return (a.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'retrieval'::regnamespace AND proname = 'search_sparse'").fetchone()[0],
+                    a.execute(f"SELECT count(*) FROM kernel.function_registry WHERE proc = '{SPARSE}'::regprocedure").fetchone()[0],
+                    a.execute(f"SELECT prosrc LIKE '%%agg AS MATERIALIZED%%' FROM pg_proc WHERE oid = '{SPARSE}'::regprocedure").fetchone()[0],
+                    a.execute("SELECT count(*) FROM kernel.rls_violations").fetchone()[0])
+
+    assert state() == (1, 1, False, 0)
+    r = run_migrate(url, "downgrade", "retrieval_0002", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    assert state() == (1, 1, False, 0)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    assert state() == (1, 1, False, 0)
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        sk = write_terms(c, ORG_A, "a0000000-0000-0000-0000-000000000001", "g1", {5: 1.0})
+        delta(c, ORG_A, 1)
+    assert [r[0] for r in search(cluster, name, ORG_A, (5,))] == [sk]                  # the query role can still call it
 
 
 def test_a_space_check_is_written_and_read_by_its_own_org_only_and_the_lock_classes_are_registered(rdb):
@@ -444,7 +604,7 @@ def test_a_space_check_is_written_and_read_by_its_own_org_only_and_the_lock_clas
     with connect_as(cluster, name, "pipeshub_node_login") as c, uow(c, "pipeshub_node", ORG_A), pytest.raises(pg.InsufficientPrivilege):
         c.execute("SELECT 1 FROM retrieval.space_checks")
     with cluster.admin(name) as c:
-        assert {r[0] for r in c.execute("SELECT class_id FROM kernel.lock_keys")} >= {7361, 7362, 7363, 7370}
+        assert {r[0] for r in c.execute("SELECT class_id FROM kernel.lock_keys")} >= {7361, 7362, 7363, 7366, 7370}
 
 
 def test_an_upgrade_without_pgvector_stops_with_a_message_and_changes_nothing(db):
@@ -539,3 +699,305 @@ def test_downgrading_the_scope_fields_removes_the_path_and_scope_members_of_ever
     with cluster.admin(name) as a:
         a.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g', 4, 'p1'), (%s, 1, 'g', 5, 's1')", (ORG_A, ORG_B))
         assert a.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'retrieval' AND table_name = 'point_groups' AND column_name = 'scope_stamp'").fetchone()[0] == 1
+
+
+# ---- whether another org still holds a vrid (retrieval_0004) ------------------------------------------------------------------------------
+HELD = "SELECT retrieval.vrid_held_elsewhere(%s)"
+HELD_SIG = "retrieval.vrid_held_elsewhere(text)"
+
+
+def put_vrid(c: psycopg.Connection, org: str, vrid: str, tombstone: bool = False) -> None:
+    sk = c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim) "
+                   "VALUES (%s, 1, 1, gen_random_uuid(), %s, %s, %s::ext.halfvec, 4) RETURNING point_sk", (org, vrid, vrid, VEC)).fetchone()[0]
+    if tombstone:
+        c.execute("INSERT INTO retrieval.point_tombstones (org_id, point_sk) VALUES (%s, %s)", (org, sk))
+
+
+def held(cluster, name: str, org: str | None, vrid: str) -> bool:
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", org):
+        return c.execute(HELD, (vrid,)).fetchone()[0]
+
+
+def test_vrid_held_elsewhere_answers_for_the_other_orgs_only(rdb):
+    """A and B both hold vr-shared; only A holds vr-a; B's only point of vr-gone is tombstoned (deleted in safe mode)."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    adopt(cluster, name, ORG_B)
+    with connect_as(cluster, name, "pipeshub_jobs") as c:
+        with uow(c, "pipeshub_jobs", ORG_A):
+            put_vrid(c, ORG_A, "vr-shared")
+            put_vrid(c, ORG_A, "vr-a")
+            put_vrid(c, ORG_A, "vr-gone")
+        with uow(c, "pipeshub_jobs", ORG_B):
+            put_vrid(c, ORG_B, "vr-shared")
+            put_vrid(c, ORG_B, "vr-gone", tombstone=True)
+    assert held(cluster, name, ORG_A, "vr-shared") is True
+    assert held(cluster, name, ORG_B, "vr-shared") is True
+    assert held(cluster, name, ORG_A, "vr-a") is False               # the caller's own points do not count
+    assert held(cluster, name, ORG_B, "vr-a") is True
+    assert held(cluster, name, ORG_A, "vr-gone") is False            # a tombstoned point is not held
+    assert held(cluster, name, ORG_A, "vr-none") is False
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_B):
+        c.execute("DELETE FROM retrieval.points WHERE org_id = %s AND vrid = 'vr-shared'", (ORG_B,))
+    assert held(cluster, name, ORG_A, "vr-shared") is False          # the last other copy went
+    assert held(cluster, name, None, "vr-a") is True                 # no org: the answer that keeps the mapping, whatever is stored
+
+
+def test_vrid_held_elsewhere_returns_one_boolean_and_nothing_else(rdb):
+    cluster, name = rdb
+    with cluster.admin(name) as a:
+        row = a.execute("SELECT prorettype::regtype::text, proretset, proallargtypes, pg_get_function_arguments(oid) FROM pg_proc "
+                        "WHERE oid = %s::regprocedure", (HELD_SIG,)).fetchone()
+    assert row == ("boolean", False, None, "p_vrid text")              # one scalar boolean, no OUT argument, no set
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        cur = c.execute(HELD, ("vr-x",))
+        assert [d.name for d in cur.description] == ["vrid_held_elsewhere"] and cur.fetchall() == [(False,)]
+    for bad in ("", None, "v" * 2001):
+        with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A), pytest.raises(pg.InvalidParameterValue):
+            c.execute(HELD, (bad,))
+
+
+def test_vrid_held_elsewhere_is_executable_by_the_indexing_role_only(rdb):
+    cluster, name = rdb
+    with cluster.admin(name) as a:
+        for role, ok in (("pipeshub_indexing", True), ("pipeshub_node", False), ("pipeshub_connectors", False), ("pipeshub_query", False),
+                         ("pipeshub_jobs", False), ("pipeshub_kv", False), ("pipeshub_backup", False), ("pipeshub_restore", False), ("public", False)):
+            assert a.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, HELD_SIG)).fetchone()[0] is ok, role
+        definer, config = a.execute("SELECT prosecdef, proconfig FROM pg_proc WHERE oid = %s::regprocedure", (HELD_SIG,)).fetchone()
+    assert definer and "search_path=pg_catalog, retrieval, pg_temp" in config
+    for login, role in (("pipeshub_query_login", "pipeshub_query"), ("pipeshub_connectors_login", "pipeshub_connectors"), ("pipeshub_node_login", "pipeshub_node")):
+        with connect_as(cluster, name, login) as c, uow(c, role, ORG_A), pytest.raises(pg.InsufficientPrivilege):
+            c.execute(HELD, ("vr-a",))
+
+
+def test_vrid_held_elsewhere_counts_a_point_in_a_space_that_is_not_active(rdb):
+    """Org B holds its only point of the vrid in a shadow space and has no active space: it still holds the vrid."""
+    cluster, name = rdb
+    with cluster.admin(name) as a:
+        a.execute("INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30005, 'shadow-model', 4, 'cosine') "
+                  "ON CONFLICT DO NOTHING")
+        a.execute("INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES (%s, 30005, 4, 'shadow')", (ORG_B,))
+        a.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim) "
+                  "VALUES (%s, 1, 30005, gen_random_uuid(), 'vr-shadow', 'vr-shadow', %s::ext.halfvec, 4)", (ORG_B, VEC))
+        assert a.execute("SELECT count(*) FROM retrieval.org_spaces WHERE org_id = %s AND role = 'active'", (ORG_B,)).fetchone()[0] == 0
+    assert held(cluster, name, ORG_A, "vr-shadow") is True
+
+
+def test_vrid_held_elsewhere_probes_the_vrid_index_and_never_scans_the_points(rdb):
+    """20,000 points in each of two orgs, half of B's tombstoned. Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    adopt(cluster, name, ORG_B)
+    with cluster.admin(name) as c:
+        for org in (ORG_A, ORG_B):
+            c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim) "
+                      "SELECT %s, 1, 1, gen_random_uuid(), 'vr-' || g, 'vr-' || g, %s::ext.halfvec, 4 FROM generate_series(1, 20000) g", (org, VEC))
+        c.execute("INSERT INTO retrieval.point_tombstones (org_id, point_sk) SELECT org_id, point_sk FROM retrieval.points WHERE org_id = %s AND point_sk %% 2 = 0", (ORG_B,))
+        c.execute("ANALYZE retrieval.points, retrieval.point_tombstones")
+        big = vetted_harness.org_tables_over(c, 1000)
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_indexing", ORG_A, HELD, ("vr-777",))
+    assert any(t.startswith("points_") for t in big) and any(t.startswith("point_tombstones_") for t in big), big
+    # an empty leaf may be read whole; a leaf that holds rows is probed: points by (org, collection, vrid), a tombstone by its key
+    for i in (0, 6):
+        assert "_vrid_block_id_idx" in plans[i] and "Scan using point_tombstones_h" in plans[i], (i, plans[i])
+        assert vetted_harness.seq_scanned(plans[i], big) == [], (i, plans[i])
+
+
+# ---- the membership keys on the point row (retrieval_0006) ------------------------------------------------------------------------
+
+def keys_of(cluster, name, org: str) -> dict[str, list[str] | None]:
+    with cluster.admin(name) as c:
+        return dict(c.execute("SELECT point_id::text, member_keys FROM retrieval.points WHERE org_id = %s ORDER BY 1", (org,)))
+
+
+def group(c, org: str, key: str, members: dict[int, list[str]]) -> None:
+    """A group row and its membership rows, as write_groups leaves them (the row first, then the member diff)."""
+    c.execute("INSERT INTO retrieval.point_groups (org_id, collection_id, group_key, computed_at) VALUES (%s, 1, %s, clock_timestamp()) "
+              "ON CONFLICT (org_id, collection_id, group_key) DO UPDATE SET computed_at = EXCLUDED.computed_at", (org, key))
+    c.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND collection_id = 1 AND group_key = %s AND kind IN (1, 2, 3)", (org, key))
+    for kind, ids in members.items():
+        c.execute("INSERT INTO retrieval.group_members (org_id, collection_id, group_key, kind, member_id) SELECT %s, 1, %s, %s, unnest(%s::text[])",
+                  (org, key, kind, ids))
+
+
+P1, P2, P3 = (f"a0000000-0000-0000-0000-00000000010{i}" for i in (1, 2, 3))
+
+
+def test_a_point_row_carries_its_groups_membership_keys_whoever_writes_and_in_whatever_order(rdb):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c:
+        with uow(c, "pipeshub_indexing", ORG_A):
+            group(c, ORG_A, "g1", {1: ["c1"], 2: ["rg2", "rg1"]})
+            put(c, ORG_A, P1)                                                   # group_key = point id: no group row
+            c.execute("UPDATE retrieval.points SET group_key = 'g1' WHERE org_id = %s AND point_id = %s", (ORG_A, P1))   # moved into g1
+            c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                      "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4), (%s, 1, 1, %s, 'g2', %s::ext.halfvec, 4)", (ORG_A, P2, VEC, ORG_A, P3, VEC))
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c1", "2:rg1", "2:rg2"], P2: ["1:c1", "2:rg1", "2:rg2"], P3: None}   # g2 has no row: unknown
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c2"], 3: ["root"]})                         # the membership changes after the points were written
+        group(c, ORG_A, "g2", {})
+        c.execute("INSERT INTO retrieval.group_members (org_id, collection_id, group_key, kind, member_id) VALUES (%s, 1, 'g1', 4, 'path')", (ORG_A,))
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c2", "3:root"], P2: ["1:c2", "3:root"], P3: None}     # kind 4 is not an arm; g2 has no members
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        c.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))   # a job removes members
+    assert keys_of(cluster, name, ORG_A)[P1] == ["3:root"]
+
+
+def test_a_point_and_a_membership_change_of_its_group_wait_for_each_other(rdb):
+    """The keys a point takes are never those of a membership another transaction is changing: the two writers are serialised on the
+    group row (FOR SHARE against the membership writer's update), so the later one sees and keeps the earlier one's state."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c1"]})
+    with connect_as(cluster, name, "pipeshub_indexing_login") as members, connect_as(cluster, name, "pipeshub_indexing_login") as points:
+        with uow(members, "pipeshub_indexing", ORG_A):
+            group(members, ORG_A, "g1", {1: ["c2"]})                            # uncommitted
+            with pytest.raises(pg.LockNotAvailable), uow(points, "pipeshub_indexing", ORG_A):
+                points.execute("SET LOCAL lock_timeout = '300ms'")
+                points.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                               "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))
+        with uow(points, "pipeshub_indexing", ORG_A):                           # after the membership committed: its keys
+            points.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                           "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))
+            with pytest.raises(pg.LockNotAvailable), uow(members, "pipeshub_indexing", ORG_A):     # and the other way round
+                members.execute("SET LOCAL lock_timeout = '300ms'")
+                group(members, ORG_A, "g1", {1: ["c3"]})
+        with uow(members, "pipeshub_indexing", ORG_A):
+            group(members, ORG_A, "g1", {1: ["c3"]})
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c3"]}
+
+
+def test_a_membership_change_by_any_writer_waits_for_an_open_point_of_its_group_and_then_rewrites_its_keys(rdb):
+    """A job that deletes membership rows without touching the group row still waits for a point writer of that group (the membership
+    triggers take the group rows), so the point it had not seen when it ran gets its keys rewritten instead of keeping the old ones."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c1"]})
+    with connect_as(cluster, name, "pipeshub_indexing_login") as points, connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        with uow(points, "pipeshub_indexing", ORG_A):
+            points.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                           "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))           # uncommitted, keys 1:c1
+            with pytest.raises(pg.LockNotAvailable), uow(jobs, "pipeshub_jobs", ORG_A):
+                jobs.execute("SET LOCAL lock_timeout = '300ms'")
+                jobs.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))
+        with uow(jobs, "pipeshub_jobs", ORG_A):
+            jobs.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))
+    assert keys_of(cluster, name, ORG_A) == {P1: []}
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs, uow(jobs, "pipeshub_jobs", ORG_A):           # a group without a row: unknown keys
+        jobs.execute("DELETE FROM retrieval.point_groups WHERE org_id = %s AND group_key = 'g1'", (ORG_A,))
+        jobs.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g1', 1, 'c9')", (ORG_A,))
+    assert keys_of(cluster, name, ORG_A) == {P1: None}
+
+
+def test_a_point_moved_to_another_collection_takes_that_collections_membership_keys(rdb):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c1"]})
+        c.execute("INSERT INTO retrieval.point_groups (org_id, collection_id, group_key, computed_at) VALUES (%s, 2, 'g1', clock_timestamp())", (ORG_A,))
+        c.execute("INSERT INTO retrieval.group_members VALUES (%s, 2, 'g1', 1, 'c2')", (ORG_A,))
+        c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                  "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c1"]}
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        c.execute("UPDATE retrieval.points SET collection_id = 2 WHERE org_id = %s AND point_id = %s", (ORG_A, P1))
+    assert keys_of(cluster, name, ORG_A) == {P1: ["1:c2"]}
+
+
+def test_point_writers_and_membership_writers_running_at_once_leave_every_points_keys_equal_to_its_groups_membership(rdb):
+    """Point inserts and membership changes of one group, interleaved by two connections for a while (the membership writer a job that
+    never touches the group row itself): afterwards every point's keys are its group's membership, none kept from a state since replaced.
+    The point writer starts only once the membership writer is connected, and at least one membership change must commit while points
+    are still being written, so the test cannot pass on point writes alone."""
+    import threading
+
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c0"]})
+    stop, ready, errors, overlapped = threading.Event(), threading.Event(), [], []
+
+    def points() -> None:
+        try:
+            with connect_as(cluster, name, "pipeshub_indexing_login") as c:
+                if not ready.wait(20):
+                    errors.append("the membership writer never started")
+                    return
+                for _ in range(60):
+                    with uow(c, "pipeshub_indexing", ORG_A):
+                        c.execute("SET LOCAL lock_timeout = '20s'")                     # a wait that never ends fails the test instead of hanging it
+                        c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                                  "VALUES (%s, 1, 1, gen_random_uuid(), 'g1', %s::ext.halfvec, 4)", (ORG_A, VEC))
+                        c.execute("SELECT pg_sleep(0.005)")                               # hold the group row while the other side runs
+        except psycopg.Error as e:
+            errors.append(e)
+        finally:
+            stop.set()
+
+    def members() -> None:
+        with connect_as(cluster, name, "pipeshub_jobs") as c:
+            ready.set()
+            i = 0
+            while not stop.is_set():
+                i += 1
+                try:
+                    with uow(c, "pipeshub_jobs", ORG_A):
+                        c.execute("SET LOCAL lock_timeout = '20s'")
+                        c.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))
+                        c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g1', 1, %s)", (ORG_A, f"c{i}"))
+                    if not stop.is_set():
+                        overlapped.append(i)                                              # committed while points were still being written
+                except psycopg.Error as e:                                                # a deadlock or a lock wait that ran out
+                    errors.append(e)
+
+    threads = [threading.Thread(target=points, daemon=True), threading.Thread(target=members, daemon=True)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(120)
+    assert not any(t.is_alive() for t in threads) and errors == []
+    assert overlapped
+    with cluster.admin(name) as c:
+        want = c.execute("SELECT array_agg(kind || ':' || member_id ORDER BY kind, member_id) FROM retrieval.group_members "
+                         "WHERE org_id = %s AND group_key = 'g1' AND kind IN (1, 2, 3)", (ORG_A,)).fetchone()[0]
+        got = {tuple(r[0]) for r in c.execute("SELECT member_keys FROM retrieval.points WHERE org_id = %s", (ORG_A,))}
+    assert got == {tuple(want)}
+
+
+def test_a_restored_point_is_searched_through_the_membership_rows_whatever_keys_its_export_carried(rdb):
+    """A restore loads exported rows, and the export of points and of membership rows need not be one snapshot: the keys a restored
+    point carries could be out of date, so it gets none (NULL: the search probes the membership rows) until its group is written again."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with cluster.admin(name) as c:
+        with c.transaction():
+            c.execute("INSERT INTO retrieval.point_groups (org_id, collection_id, group_key, computed_at) VALUES (%s, 1, 'g1', now())", (ORG_A,))
+            c.execute("INSERT INTO kernel.restore_window (org, until) VALUES (%s, now() + interval '1 hour')", (ORG_A,))
+            c.execute("SET LOCAL ROLE pipeshub_restore")
+            c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim, member_keys) "
+                      "VALUES (%s, 1, 1, %s, 'g1', %s, 4, '{1:exported}')", (ORG_A, P1, VEC))             # as a load does: text into the column
+            c.execute("RESET ROLE")
+            c.execute("DELETE FROM kernel.restore_window")
+    assert keys_of(cluster, name, ORG_A) == {P1: None}
+
+
+def test_a_membership_change_rewrites_the_keys_of_its_groups_points_by_index_without_reading_the_orgs_other_points(rdb):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        group(c, ORG_A, "g1", {1: ["c1"]})
+        c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                  "SELECT %s, 1, 1, gen_random_uuid(), 'other' || g, %s::ext.halfvec, 4 FROM generate_series(1, 3000) g", (ORG_A, VEC))
+        c.execute("INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
+                  "VALUES (%s, 1, 1, %s, 'g1', %s::ext.halfvec, 4)", (ORG_A, P1, VEC))
+    with cluster.admin(name) as c:
+        c.execute("ANALYZE retrieval.points")
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g1', 2, 'rg1')", (ORG_A,))
+        seq = c.execute("SELECT coalesce(sum(pg_stat_get_xact_numscans(c.oid)), 0)::int FROM pg_class c "
+                        "WHERE c.relnamespace = 'retrieval'::regnamespace AND c.relkind = 'r' AND c.relname LIKE 'points%%'").fetchone()[0]
+    assert seq == 0                                                                    # no sequential scan of the points; their group index instead
+    assert keys_of(cluster, name, ORG_A)[P1] == ["1:c1", "2:rg1"]

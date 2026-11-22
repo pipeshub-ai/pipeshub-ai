@@ -7,12 +7,17 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+import aiohttp
 import pytest
+from multidict import CIMultiDict, CIMultiDictProxy
+from yarl import URL
 
 from app.connectors.core.base.token_service.oauth_service import (
+    MalformedTokenError,
     OAuthTokenRequestError,
     RefreshConfigError,
     RefreshTokenInvalidError,
+    TokenResponseError,
 )
 from app.connectors.core.base.token_service.token_refresh_service import (
     CredentialSaveError,
@@ -22,6 +27,7 @@ from app.utils import credential_refresh_log as CR
 from app.utils import logging_fields
 from app.utils.logger import TextFormatter, log_record_fields
 from app.utils.logging_fields import current_log_fields, log_fields
+from app.utils.oauth_errors import transient_error_class
 from app.utils.request_context import get_context, reset_context, set_context
 from app.utils.structured_logging import DefaultLoggingProvider
 
@@ -107,6 +113,199 @@ async def _attempt(exc: BaseException | None = None, *, once_key: str = "connect
     return None
 
 
+QUERY_MARKER = "tenant=QRY-SEEDED-77"
+
+
+def _rendered(record: logging.LogRecord) -> str:
+    return TextFormatter().format(record) + repr(log_record_fields(record)) + (record.exc_text or "")
+
+
+async def _unusable_url_error(url: str) -> BaseException:
+    """What aiohttp really raises for a token URL it cannot send to (it fails before any connection)."""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, data={"grant_type": "refresh_token"}):
+                pass
+        except aiohttp.ClientError as e:
+            return e
+    raise AssertionError(f"aiohttp sent {url!r}")
+
+
+def _html_answer() -> aiohttp.ContentTypeError:
+    url = URL(f"https://idp.example/token?{QUERY_MARKER}")
+    info = aiohttp.RequestInfo(url, "POST", CIMultiDictProxy(CIMultiDict()), url)
+    return aiohttp.ContentTypeError(info, (), status=200, message="Attempt to decode JSON with unexpected mimetype: text/html")
+
+
+def _ok_with_error(code: str) -> OAuthTokenRequestError:
+    """A 200 answer carrying an OAuth `error` (GitHub's form body, Slack's ok=false)."""
+    return OAuthTokenRequestError(f"OAuth token request was rejected by https://idp.example/token?{QUERY_MARKER}: {code}",
+                                  status=200, error_code=code)
+
+
+def _while_handling(handled: BaseException, bug: BaseException) -> BaseException:
+    try:
+        try:
+            raise handled
+        except type(handled):
+            raise bug  # noqa: B904 - the implicit context is the case under test
+    except type(bug) as e:
+        return e
+
+
+class TestMisconfiguredEndpoint:
+    """F26: a token URL aiohttp cannot send to, or a 2xx answer that is not a token, is the admin's to fix: misconfigured,
+    once per credential per hour, with no URL query or body on any line."""
+
+    @pytest.mark.parametrize("url", [
+        f"idp.example/token?{QUERY_MARKER}", f"ftp://idp.example/token?{QUERY_MARKER}", f"http://[bad/token?{QUERY_MARKER}",
+    ], ids=["no_scheme", "non_http_scheme", "bad_ipv6_host_with_value_error_cause"])
+    async def test_unusable_token_url_is_misconfigured_once_and_never_quoted(
+        self, records: _Records, url: str,
+    ) -> None:
+        first = await _unusable_url_error(url)
+        assert QUERY_MARKER in str(first)  # aiohttp's text is the URL: what must not reach a line
+        for _ in range(2):
+            exc = await _attempt(await _unusable_url_error(url))
+            CR.log_check_failed(_logger(), exc, once_key="connector:c1")
+
+        ends = _ends(records)
+        assert [log_record_fields(r)["error_class"] for r in ends] == ["misconfigured", "misconfigured"]
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
+        assert ends[0].exc_text and "File " in ends[0].exc_text  # the stack keeps its frames
+        assert all(r.levelno < logging.ERROR for r in records if r is not ends[0])
+        for record in records:
+            assert "error_message" not in log_record_fields(record)
+            assert QUERY_MARKER not in _rendered(record)
+
+    @pytest.mark.parametrize("make", [
+        lambda: _ok_with_error("bad_verification_code"),
+        _html_answer,
+        lambda: TokenResponseError("OAuth token response missing required 'access_token' field. "),
+    ], ids=["200_form_error", "200_html", "200_no_access_token"])
+    async def test_a_2xx_answer_that_is_not_a_token_is_misconfigured_once(
+        self, records: _Records, make: Callable[[], BaseException],
+    ) -> None:
+        for _ in range(2):
+            exc = await _attempt(make())
+            CR.log_check_failed(_logger(), exc, once_key="connector:c1")
+
+        ends = _ends(records)
+        assert [log_record_fields(r)["error_class"] for r in ends] == ["misconfigured", "misconfigured"]
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
+        assert not any(QUERY_MARKER in _rendered(r) for r in records)
+
+    async def test_a_malformed_token_field_is_misconfigured_once_and_named_by_its_field(self, records: _Records) -> None:
+        for _ in range(2):
+            exc = await _attempt(MalformedTokenError("created_at"))
+            CR.log_check_failed(_logger(), exc, once_key="connector:c1")
+
+        ends = _ends(records)
+        assert [(log_record_fields(r)["error_class"], log_record_fields(r)["reason"]) for r in ends] == [
+            ("misconfigured", "malformed_token")] * 2
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
+        assert ends[0].exc_text and "File " in ends[0].exc_text
+        assert log_record_fields(ends[0])["error_message"] == (
+            "MalformedTokenError: OAuth token field 'created_at' is malformed")  # our text: kept
+        assert all(r.levelno < logging.ERROR for r in records if r is not ends[0])
+
+    @pytest.mark.parametrize("make", [
+        lambda: _raised(RuntimeError("refresh failed"), aiohttp.InvalidUrlClientError(f"idp.example/token?{QUERY_MARKER}")),
+        lambda: _raised(Exception("refresh failed"), _ok_with_error("bad_verification_code")),
+    ], ids=["wrapped_unusable_url", "wrapped_200_form_error"])
+    async def test_the_decisive_link_is_found_under_a_wrapper(
+        self, records: _Records, make: Callable[[], BaseException],
+    ) -> None:
+        await _attempt(make())
+
+        [end] = _ends(records)
+        assert log_record_fields(end)["error_class"] == "misconfigured"
+        assert "error_message" not in log_record_fields(end)
+        assert QUERY_MARKER not in _rendered(end)
+
+    @pytest.mark.parametrize(("status", "error_class"), [(200, "misconfigured"), (299, "misconfigured"), (300, "internal")])
+    async def test_only_a_2xx_status_is_refined(self, records: _Records, status: int, error_class: str) -> None:
+        await _attempt(OAuthTokenRequestError("an answer that is not a token", status=status))
+
+        assert log_record_fields(_ends(records)[0])["error_class"] == error_class
+
+    async def test_the_gate_rearms_after_the_hour(self, records: _Records, clock: list[float]) -> None:
+        await _attempt(_ok_with_error("bad_verification_code"))
+        await _attempt(_ok_with_error("bad_verification_code"))
+        clock[0] += CR.MISCONFIGURED_REPEAT_S
+        await _attempt(_ok_with_error("bad_verification_code"))
+
+        assert [r.levelno for r in _ends(records)] == [logging.ERROR, logging.DEBUG, logging.ERROR]
+
+    @pytest.mark.parametrize(("make", "error_class", "level"), [
+        (lambda: _raised(RefreshTokenInvalidError("rejected"), _ok_with_error("bad_refresh_token")), "auth_expired", logging.WARNING),
+        (lambda: _raised(RefreshTokenInvalidError("rejected"), _ok_with_error("invalid_grant")), "auth_expired", logging.WARNING),
+        (lambda: _ok_with_error("incorrect_client_credentials"), "misconfigured", None),
+        (lambda: TypeError("our bug"), "internal", logging.ERROR),
+        (lambda: _provider_error(503), "unavailable", logging.WARNING),
+    ], ids=["200_rejected_grant", "200_invalid_grant", "200_rejected_client", "plain_bug", "503"])
+    async def test_other_verdicts_are_unchanged(
+        self, records: _Records, make: Callable[[], BaseException], error_class: str, level: int | None,
+    ) -> None:
+        await _attempt(make())
+        await _attempt(make())
+
+        ends = _ends(records)
+        assert [log_record_fields(r)["error_class"] for r in ends] == [error_class, error_class]
+        if level is not None:  # not gated: the same level on every attempt
+            assert [r.levelno for r in ends] == [level, level]
+
+    @pytest.mark.parametrize("make", [
+        lambda: _while_handling(_ok_with_error("bad_verification_code"), AttributeError("our bug")),
+        lambda: _raised(TypeError("our bug"), _ok_with_error("bad_verification_code")),
+    ], ids=["bug_while_handling_a_200", "bug_raised_from_a_200"])
+    async def test_our_bug_over_a_2xx_answer_stays_internal_every_attempt(
+        self, records: _Records, make: Callable[[], BaseException],
+    ) -> None:
+        await _attempt(make())
+        await _attempt(make())
+
+        ends = _ends(records)
+        assert [log_record_fields(r)["error_class"] for r in ends] == ["internal", "internal"]
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.ERROR]
+
+    @pytest.mark.parametrize("code", [  # literals, not the sets: dropping a member must fail here
+        "fatal_error", "internal_error", "service_unavailable", "request_timeout", "ratelimited", "rate_limited",
+        "server_error", "temporarily_unavailable", "RATELIMITED",
+    ])
+    async def test_a_2xx_answer_saying_the_provider_is_busy_is_not_misconfigured(
+        self, records: _Records, code: str,
+    ) -> None:
+        await _attempt(_ok_with_error(code))
+        await _attempt(_ok_with_error(code))
+
+        ends = _ends(records)
+        assert [log_record_fields(r)["error_class"] for r in ends] == [transient_error_class(code)] * 2
+        assert [r.levelno for r in ends] == [logging.WARNING, logging.WARNING]
+
+    def test_a_strike_from_a_200_rejection_is_still_auth_expired(self, records: _Records) -> None:
+        cause = _raised(RefreshTokenInvalidError("rejected"), _ok_with_error("bad_refresh_token"))
+        CR.log_strike(_logger(), strike=1, max_strikes=3, cause=cause)
+
+        assert log_record_fields(records[0])["error_class"] == "auth_expired"
+
+    def test_an_outer_line_drops_an_unusable_url_with_no_prior_log(self, records: _Records) -> None:
+        exc = _raised(aiohttp.InvalidUrlClientError(f"idp.example/token?{QUERY_MARKER}"))
+        CR.log_refresh_failure(_logger(), CR.EVENT_CHECK_FAILED, exc)
+
+        [line] = records
+        assert "error_message" not in log_record_fields(line)
+        assert QUERY_MARKER not in _rendered(line)
+
+    async def test_refresh_error_class_reports_only_what_a_refresh_logged(self) -> None:
+        never_logged = _ok_with_error("bad_verification_code")
+        assert CR.refresh_error_class(never_logged) is None  # a sign-in or route failure keeps its own class
+        logged = await _attempt(_ok_with_error("bad_verification_code"))
+        assert CR.refresh_error_class(logged) == "misconfigured"
+        assert CR.refresh_error_class(await _attempt(TypeError("our bug"))) is None
+        assert CR.refresh_error_class(TokenResponseError("no token")) == "misconfigured"  # tagged: as before
+
+
 class TestRefreshAttempt:
     async def test_success_writes_a_debug_start_and_one_info_end(self, records: _Records) -> None:
         assert await _attempt() is None
@@ -125,6 +324,32 @@ class TestRefreshAttempt:
 
         [end] = _ends(records)
         assert log_record_fields(end)["reason"] == "adopted"
+
+    async def test_attempt_fields_are_on_its_end_either_way(self, records: _Records) -> None:
+        async with CR.refresh_attempt(_logger(), once_key="toolset:t1") as attempt:
+            attempt.fields["oauth_app"] = "unlinked"
+        with pytest.raises(TimeoutError):
+            async with CR.refresh_attempt(_logger(), once_key="toolset:t1") as attempt:
+                attempt.fields["oauth_app"] = "linked"
+                raise TimeoutError
+
+        assert [(log_record_fields(r)["outcome"], log_record_fields(r)["oauth_app"]) for r in _ends(records)] == [
+            ("success", "unlinked"), ("failure", "linked"),
+        ]
+
+    async def test_an_attempt_field_cannot_take_an_end_line_key(self, records: _Records) -> None:
+        with pytest.raises(TimeoutError):
+            async with CR.refresh_attempt(_logger(), once_key="toolset:t1") as attempt:
+                for key in ("reason", "duration_ms", "outcome"):
+                    with pytest.raises(ValueError, match=repr(key)):
+                        attempt.fields[key] = "x"
+                    with pytest.raises(ValueError, match=repr(key)):
+                        attempt.fields.update({key: "x"})
+                raise TimeoutError
+
+        [end] = _ends(records)  # the attempt's own error still ends it
+        assert (log_record_fields(end)["error_class"], log_record_fields(end)["outcome"]) == ("timeout", "failure")
+        assert isinstance(log_record_fields(end)["duration_ms"], int)
 
     @pytest.mark.parametrize(("exc", "cls", "status"), [
         (_provider_error(503), "unavailable", 503),
@@ -484,3 +709,14 @@ class TestSmallLines:
         assert deauth.levelno == logging.WARNING
         assert log_record_fields(deauth)["reason"] == "refresh_token_invalid"
         assert "path" not in log_record_fields(deauth)
+
+    def test_skipped_is_a_warning_with_the_bound_ids(self, records: _Records) -> None:
+        with CR.refresh_scope(CR.Kind.TOOLSET, trigger=CR.Trigger.SCAN, toolset_id="t1", owner_id="agent-key-1"):
+            CR.log_skipped(_logger(), reason="lock_wait_timeout")
+
+        [line] = records
+        assert (line.getMessage(), line.levelno) == ("credential_refresh.skipped", logging.WARNING)
+        assert log_record_fields(line).items() >= {
+            "outcome": "skipped", "reason": "lock_wait_timeout", "refresh_kind": "toolset", "trigger": "scan",
+            "toolset_id": "t1", "owner_id": "agent-key-1",
+        }.items()

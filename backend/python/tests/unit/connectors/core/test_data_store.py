@@ -131,7 +131,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def reap_stale_external_app_relations(self, connector_id):
         return 0
 
-    async def get_users(self, org_id, active=True):
+    async def get_users(self, org_id, active=True, *, raise_on_error=False):
         return []
 
     async def get_user_groups(self, connector_id, org_id, *, raise_on_error=False):
@@ -164,13 +164,13 @@ class ConcreteTransactionStore(TransactionStore):
     async def batch_upsert_record_permissions(self, record_id, permissions):
         pass
 
-    async def batch_upsert_record_group_permissions(self, record_group_id, permissions, connector_id):
+    async def batch_upsert_record_group_permissions(self, record_group_id, permissions, connector_id, org_id):
         pass
 
     async def batch_upsert_user_groups(self, user_groups):
         pass
 
-    async def batch_upsert_app_users(self, users):
+    async def batch_upsert_app_users(self, users, org_id):
         pass
 
     async def batch_upsert_orgs(self, orgs):
@@ -206,7 +206,8 @@ class ConcreteTransactionStore(TransactionStore):
     async def delete_edge(self, from_id, from_collection, to_id, to_collection, collection):
         pass
 
-    async def delete_edges_by_relationship_types(self, from_id, from_collection, collection, relationship_types):
+    async def delete_edges_by_relationship_types(self, from_id, from_collection, collection, relationship_types, *,
+                                                 raise_on_error=False):
         return 0
 
     async def delete_parent_child_edge_to_record(self, record_id):

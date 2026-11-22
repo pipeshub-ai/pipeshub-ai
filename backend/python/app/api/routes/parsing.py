@@ -16,8 +16,10 @@ GET  /health
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
 import time
 from collections.abc import Mapping
 from typing import Annotated, Any
@@ -30,32 +32,70 @@ from app.api.middlewares.auth import (
     require_service_token,
     service_token_org,
 )
+from app.config import file_types
 from app.config.constants.service import TokenScopes
 from app.exceptions.indexing_exceptions import (
     MultimodalModelNotConfiguredError,
     PasswordProtectedError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.encryption import raise_if_password_protected_office
+from app.modules.pipeline.fingerprint import content_revision
+from app.services.docling.client import DoclingNotServing
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
+from app.services.paid_cache import access as paid_cache_access
+from app.services.paid_cache import locks as lock_limits
+from app.services.paid_cache.access import (
+    abandon_run,
+    ambient_identity,
+    claim_refresh,
+    complete_run,
+    start_run,
+)
+from app.services.paid_cache.orphan import (
+    OrphanFields,
+    RecordGone,
+    bind_guard,
+    guard_from_request,
+    orphan_check_enabled,
+)
 from app.services.parsing.interface import (
+    DOCLING_UNAVAILABLE_REASON,
     ParseError,
     ParseErrorCode,
     ParserProvider,
 )
+from app.services.parsing.load import (
+    parse_load,
+    parsing_max_concurrent,
+    stuck_conversions,
+)
 from app.services.parsing.registry import ParserRegistry
+from app.services.parsing.thread_work import ThreadWork, track
 from app.services.resource_governor import (
     acquire_gate_with_backpressure,
-    classify,
     gate_pool,
     parse_cost,
+    reader_tier,
+)
+from app.services.resource_governor.kinds import (
+    EXCESS_WAIT_SECONDS,
+    classify_kind,
+    permit_excess_bytes,
 )
 from app.services.resource_governor.lanes import LaneWaitTimeout
 from app.services.resource_governor.memory_domain import (
     parse_admission_cap,
+    reset_permit_covers,
+    set_permit_covers,
     stamp_admitted_here,
 )
+from app.services.resource_governor.models import ParseTier
 from app.services.resource_governor.org_share import OrgShare, max_org_share
+from app.services.resource_governor.policy import INDEX_LIGHT_WORKING_SET_GB
+from app.utils.error_class import already_logged, classify_error, level_for, log_failure
+from app.utils.logging_fields import log_event
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
@@ -92,6 +132,116 @@ SLOW_PARSE_WARN_SECONDS = 300.0
 # Per pool, one org holds at most this share while another org wants the pool (S-4).
 _ORG_SHARE = OrgShare(max_org_share())
 
+# Why parse requests were refused with a 429, cumulative since start, per tier. No caller is
+# recorded. Counted on the request path, read from the health endpoint's thread.
+_REJECTION_REASONS = ("gate_timeout", "over_share", "memory_excess", "lane_timeout")
+_rejected_lock = threading.Lock()
+_rejected: dict[str, dict[str, int]] = {
+    tier.value: dict.fromkeys(_REJECTION_REASONS, 0) for tier in ParseTier
+}
+
+
+class _StageDeadlineExceeded(Exception):
+    """The parse ran longer than the stage deadline (not any other timeout raised inside the parser)."""
+
+    def __init__(self, limit_s: float) -> None:
+        super().__init__(limit_s)
+        self.limit_s = limit_s
+
+
+#: A conversion still running this long after its parse ended is logged (with its age) at every tick.
+THREAD_OVERRUN_WARN_SECONDS = 30.0
+#: How often a held admission is re-reported and the stuck-conversion gauges refreshed.
+STUCK_TICK_SECONDS = 30.0
+
+#: Held admissions are counted on the parsing service's ``/metrics`` (``pipeshub_parse_stuck_*``).
+
+
+def _release_when_work_ends(release: Any, work: ThreadWork, deadline_at: float, record_name: str) -> None:  # noqa: ANN401
+    """Keep the gate permit and the memory reservation until the conversion's threads return, then free them once.
+
+    The 504 has been answered, but the cancelled parse may still be running in a thread on the memory those stand
+    for; releasing them now would admit the next parse beside it. The release runs on the event loop. While it is
+    held, every tick logs the age and the stuck-conversion gauges say how many and how old.
+    """
+    loop = asyncio.get_running_loop()
+    done = threading.Event()
+    token = id(done)
+    logger.warning(
+        "Parse ended with %d conversion(s) still running in threads; the permit is held until they return",
+        work.running(),
+    )
+    stuck_conversions().add(token, deadline_at)
+
+    def tick() -> None:
+        if done.is_set():
+            return
+        age = time.monotonic() - deadline_at
+        if age > THREAD_OVERRUN_WARN_SECONDS:
+            logger.warning("A conversion for '%s' still runs %.0f s after its parse; its permit is held", record_name, age)
+        loop.call_later(STUCK_TICK_SECONDS, tick)
+
+    loop.call_later(STUCK_TICK_SECONDS, tick)
+
+    def free() -> None:
+        if done.is_set():
+            return
+        done.set()
+        stuck_conversions().remove(token)
+        over = time.monotonic() - deadline_at
+        if over > THREAD_OVERRUN_WARN_SECONDS:
+            logger.warning("A conversion for '%s' ended %.0f s after its parse", record_name, over)
+        release()
+
+    def hop_to_loop() -> None:
+        # Runs on the thread that finished last. A loop that is already closed means the process is stopping: the
+        # release has nothing left to free and is dropped quietly.
+        if loop.is_closed():
+            stuck_conversions().remove(token)
+            return
+        try:
+            loop.call_soon_threadsafe(free)
+        except RuntimeError:
+            stuck_conversions().remove(token)
+
+    work.when_idle(hop_to_loop)
+
+
+_budget_mismatch_logged: set[tuple[float, float]] = set()
+
+
+def _warn_if_budget_differs(sent: float | None, extension: str, mime_type: str | None) -> None:
+    """One warning per pair when the caller's record budget is not this service's own (the settings drifted)."""
+    from app.services.messaging.config import messaging_env
+
+    raw = sent
+    sent = lock_limits.valid_record_budget(sent)
+    if sent is None:                       # absent or unusable: the service's own settings apply, nothing to compare
+        if isinstance(raw, int | float) and not isinstance(raw, bool) and raw == raw and raw > lock_limits.MAX_RECORD_BUDGET_S:
+            logger.warning(
+                "The caller's record budget (%.0f s) is above the %.0f s this service accepts (the open-manifest "
+                "protection window less a margin); this service's own settings apply.", raw, lock_limits.MAX_RECORD_BUDGET_S,
+            )
+        return
+    own = messaging_env.record_processing_timeout_for(extension, mime_type)
+    if abs(own - sent) > 1.0 and (round(sent), round(own)) not in _budget_mismatch_logged:
+        _budget_mismatch_logged.add((round(sent), round(own)))
+        logger.warning(
+            "The caller's record budget (%.0f s) differs from this service's (%.0f s); the caller's is used. "
+            "Set RECORD_PROCESSING_TIMEOUT and PDF_RECORD_PROCESSING_TIMEOUT alike on both.", sent, own,
+        )
+
+
+def _count_rejection(tier: ParseTier, reason: str) -> None:
+    with _rejected_lock:
+        _rejected[tier.value][reason] += 1
+
+
+def parse_admission_stats() -> dict[str, Any]:
+    """Parse requests refused with a 429, by tier and reason, for the health endpoint."""
+    with _rejected_lock:
+        return {"rejected": {tier: dict(reasons) for tier, reasons in _rejected.items()}}
+
 
 def _config_service(request: Request) -> Any:  # noqa: ANN401
     container = getattr(request.app, "container", None)
@@ -109,6 +259,21 @@ def _get_registry(request: Request) -> ParserRegistry:
 # ---------------------------------------------------------------------------
 
 
+def _saturated_response(max_concurrent: int | None) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
+        content={
+            "success": False,
+            "error": {
+                "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
+                "message": "Parsing service is at capacity; retry later.",
+                "details": {"reason": "max_concurrent", "limit": max_concurrent},
+            },
+        },
+    )
+
+
 @router.post("", summary="Parse a file into a BlocksContainer")
 async def parse_file(
     request: Request,
@@ -119,8 +284,50 @@ async def parse_file(
     extension: Annotated[str, Form(description="File extension (without dot)")] = "",
     org_id: Annotated[str | None, Form(description="Organisation ID")] = None,
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
-    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,
+    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
+    refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
+    record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
+    refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
+    orphan_guard: Annotated[bool, Form(description="The caller sent the delete markers its run started under")] = False,  # noqa: FBT002
+    record_marker: Annotated[str, Form(description="The record's delete marker as the run saw it at its start")] = "",
+    org_marker: Annotated[str, Form(description="The org's delete marker as the run saw it at its start")] = "",
+    stop_disabled: Annotated[bool, Form(description="Do not refuse this parse for a changed delete marker")] = False,  # noqa: FBT002
+) -> JSONResponse:
+    """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
+    load = parse_load()
+    max_concurrent = parsing_max_concurrent()
+    if not load.try_enter(max_concurrent):
+        return _saturated_response(max_concurrent)
+    try:
+        response = await _parse_file(
+            request, file, claims, record_name, mime_type, extension, org_id,
+            provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s, refresh_token,
+            OrphanFields(orphan_guard, record_marker[:64], org_marker[:64], stop_disabled),
+        )
+    finally:
+        load.leave()
+    if response.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+        # The gate's wait or the memory wait ran out: saturated all the same.
+        load.note_saturated()
+    return response
+
+
+async def _parse_file(
+    request: Request,
+    file: Annotated[UploadFile, File(description="File to parse")],
+    claims: Annotated[Mapping[str, Any], Depends(require_parse_token)],
+    record_name: Annotated[str, Form(description="Human-readable filename")] = "",
+    mime_type: Annotated[str, Form(description="MIME type of the file")] = "",
+    extension: Annotated[str, Form(description="File extension (without dot)")] = "",
+    org_id: Annotated[str | None, Form(description="Organisation ID")] = None,
+    provider: Annotated[str | None, Form(description="Parser provider override")] = None,
+    skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,  # noqa: FBT002
+    file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
+    refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
+    record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
+    refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
+    orphan_fields: OrphanFields | None = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -184,7 +391,8 @@ async def parse_file(
             })
 
     message_id = current_display_id()
-    tier = classify(extension, mime_type)
+    # The parser the registry resolves decides a heavy tier: a PDF labelled txt is parsed by the PDF parser.
+    tier = reader_tier(extension, mime_type, file_types.format_tier(file_types.parse_format(mime_type, extension)))
     cost = parse_cost(tier, len(content))
     logger.debug(
         "Received parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s cost=%d",
@@ -197,11 +405,13 @@ async def parse_file(
     gate = governor.gate(gate_pool(tier))
     cap = parse_admission_cap(governor, gate_pool(tier))
     org_key = org_id or ""
+    reject_reason = "gate_timeout"
 
     _ORG_SHARE.arrive(pool, org_key)
     try:
         if _ORG_SHARE.over_share(pool, org_key, cost, gate.limit if cap is None else cap):
             admitted = False
+            reject_reason = "over_share"
         else:
             admitted = await acquire_gate_with_backpressure(
                 gate, cost, tier, message_id,
@@ -216,6 +426,7 @@ async def parse_file(
         raise
     if not admitted:
         _ORG_SHARE.leave(pool, org_key)
+        _count_rejection(tier, reject_reason)
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
@@ -235,7 +446,35 @@ async def parse_file(
         stamp_admitted_here()
 
     parse_start = time.monotonic()
+    excess_held = 0
+    thread_work = ThreadWork()
+    covers = set_permit_covers() if tier is ParseTier.HEAVY else None
     try:
+        # The permit's base covers the parent's fixed part for the PdfPlumber parse only; a kind
+        # above it reserves the rest here, and never waits for it for long while it holds the permit.
+        # A light parse holds no heavy permit, but text still grows the parent with its size.
+        working_set = governor.heavy_working_set
+        base_gb = working_set.gb if tier is ParseTier.HEAVY else INDEX_LIGHT_WORKING_SET_GB
+        excess = permit_excess_bytes(
+            classify_kind(extension, mime_type), base_gb, working_set.source, len(content)
+        )
+        if excess:
+            if not await governor.memory_budget.reserve(excess, EXCESS_WAIT_SECONDS):
+                logger.warning("Parse deferred: record='%s' waited too long for memory", record_name)
+                _count_rejection(tier, "memory_excess")
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
+                    content={
+                        "success": False,
+                        "error": {
+                            "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
+                            "message": "Parsing service is at capacity; retry later.",
+                            "details": {"tier": tier.value, "reason": "memory"},
+                        },
+                    },
+                )
+            excess_held = excess
         try:
             parser = registry.resolve(mime_type, extension, provider_enum)
             async with scope_from_claims(
@@ -247,7 +486,46 @@ async def parse_file(
                 raise_if_password_protected_office(
                     content, extension=extension, mime_type=mime_type
                 )
-                result = await parser.parse(content, record_name, config)
+                # The paid calls this parse makes (page OCR, table summaries) go into the revision's manifest.
+                # The deadline is the caller's own record budget (the figure it waits for); an older caller sends none
+                # and the service's own settings apply. A budget that differs from this service's is logged.
+                stage_limit = lock_limits.stage_deadline_for(record_budget_s)
+                _warn_if_budget_differs(record_budget_s, extension, mime_type)
+                # A refresh is claimed once: the client's own retry of the request reuses what the first paid for.
+                first_request = not refresh_paid_outputs or await claim_refresh(
+                    _config_service(request), (refresh_token or "")[:128], logger,
+                )
+                paid_run = start_run(
+                    content_revision(content), "parse", refresh=refresh_paid_outputs, stage_deadline_s=stage_limit,
+                    reuse_prior_attempt=refresh_paid_outputs and not first_request,
+                )
+                # The caller's delete markers: a marker that changed since its run started refuses the parse (410), and
+                # the caller confirms with the graph. An older caller sends none: no check (fail open).
+                identity = ambient_identity()
+                if identity is not None and orphan_check_enabled() and orphan_fields is not None:
+                    orphan = guard_from_request(
+                        identity[0], identity[1], present=orphan_fields.present, record_marker=orphan_fields.record_marker,
+                        org_marker=orphan_fields.org_marker, stop_disabled=orphan_fields.stop_disabled,
+                    )
+                    if orphan is not None:
+                        orphan.backend_of = getattr(paid_cache_access.paid_cache_for(_config_service(request), logger), "_backend", None)
+                        bind_guard(orphan)
+                # Bounded server-side: a client that gave up does not stop a parse, and its paid calls must not
+                # outlive what the delayed re-purge after a delete covers. The bound is the longest record budget
+                # configured (never shorter than the client's own read timeout for the record), and only this
+                # timeout is the stage deadline: a TimeoutError raised inside the parser is the parser's.
+                stage_timer = asyncio.timeout(stage_limit)
+                try:
+                    with track(thread_work):
+                        async with stage_timer:
+                            result = await parser.parse(content, record_name, config)
+                except BaseException as exc:
+                    # A parse that failed keeps its open manifest, brought up to date: what it paid for stays protected.
+                    await abandon_run(paid_run, _config_service(request), logger)
+                    if isinstance(exc, TimeoutError) and stage_timer.expired():
+                        raise _StageDeadlineExceeded(stage_limit) from exc
+                    raise
+                await complete_run(paid_run, _config_service(request), logger)
         except PasswordProtectedError as exc:
             logger.warning(
                 "Parse refused: record='%s' provider=%s code=%s",
@@ -261,6 +539,16 @@ async def parse_file(
                     "error": ParseError(
                         ParseErrorCode.PASSWORD_REQUIRED, exc.message, exc.details
                     ).to_dict(),
+                },
+            )
+        except RecordGone as exc:
+            # Not a fact about the file: the record's delete marker changed. The caller reads the record before it acts.
+            logger.info("Parse refused: record='%s' its delete marker changed", record_name)
+            return JSONResponse(
+                status_code=status.HTTP_410_GONE,
+                content={
+                    "success": False,
+                    "error": ParseError(ParseErrorCode.RECORD_GONE, exc.message, exc.details).to_dict(),
                 },
             )
         except MultimodalModelNotConfiguredError as exc:
@@ -298,9 +586,28 @@ async def parse_file(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={"success": False, "error": exc.to_dict()},
             )
+        except NonRetryableError as exc:
+            # A deliberate stop (a model call refused for good, say): sending the file again gets the same answer.
+            # As a 500 the client retried it and counted it against the parsing circuit breaker.
+            logger.warning(
+                "Parse stopped: record='%s' provider=%s by %s, which a retry would repeat",
+                record_name, provider_enum.value, type(exc).__name__,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_FAILED.value,
+                        "message": "Parsing was stopped by an error that a retry would repeat",
+                        "details": {"requestId": message_id, "error_type": type(exc).__name__},
+                    },
+                },
+            )
         except LaneWaitTimeout:
             # A local conversion found no CPU lane in time: retryable, like a full gate.
             logger.warning("Parse deferred: record='%s' waited too long for a CPU lane", record_name)
+            _count_rejection(tier, "lane_timeout")
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
@@ -313,14 +620,52 @@ async def parse_file(
                     },
                 },
             )
-        except Exception:  # noqa: BLE001
-            parse_ms = (time.monotonic() - parse_start) * 1000
-            logger.exception(
-                "Unexpected error parsing '%s' (provider=%s, parse_ms=%.0f)",
-                record_name, provider_enum.value, parse_ms,
+        except _StageDeadlineExceeded as exc:
+            logger.warning(
+                "Parse stopped: record='%s' provider=%s ran longer than %s s",
+                record_name, provider_enum.value, exc.limit_s,
             )
-            # The exception and its type stay in the log above: the text can quote the
-            # document or a path, and the caller only needs to correlate.
+            return JSONResponse(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_FAILED.value,
+                        "message": "Parsing took longer than the service allows",
+                        "details": {"requestId": message_id},
+                    },
+                },
+            )
+        except DoclingNotServing:
+            # Docling never received the file: the caller's record waits for it. 424, not 5xx, as extraction answers a
+            # provider outage: a 5xx is retried and counted by the caller's breaker, which then fails every parse type.
+            # PARSE_BACKPRESSURE, not a new code: an older client reads an unknown code as PARSE_FAILED, a verdict.
+            logger.info("Parse deferred: provider=%s Docling is not serving", provider_enum.value)
+            return JSONResponse(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
+                        "message": "Docling is not serving; retry later",
+                        "details": {"requestId": message_id, "reason": DOCLING_UNAVAILABLE_REASON},
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            parse_ms = (time.monotonic() - parse_start) * 1000
+            # Class and frames only: the text can quote the document, a path, or (VLM OCR) the model
+            # provider's response body; the caller only needs to correlate.
+            fields = {"provider": provider_enum.value, "parse_ms": round(parse_ms)}
+            cls = classify_error(exc)
+            if already_logged(exc, level_for(cls)):
+                # VLM OCR re-raises the last page's error once every page failed: the 500 keeps its line, no second stack.
+                log_event(
+                    logger, "parse.failed", level=level_for(cls), outcome="failure", error_class=cls,
+                    error_type=type(exc).__name__, **fields,
+                )
+            else:
+                log_failure(logger, "parse.failed", exc, error_class=cls, include_error_text=False, **fields)
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={
@@ -333,11 +678,23 @@ async def parse_file(
                 },
             )
     finally:
-        gate.release(cost)
-        _ORG_SHARE.leave(pool, org_key, cost)
-        SemaphoreLogger.log_semaphore_release(
-            f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
-        )
+        reset_permit_covers(covers)
+
+        def release_admission() -> None:
+            if excess_held:
+                governor.memory_budget.release(excess_held)
+            gate.release(cost)
+            _ORG_SHARE.leave(pool, org_key, cost)
+            SemaphoreLogger.log_semaphore_release(
+                f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
+            )
+
+        # Whatever way the parse ended (deadline, a timeout raised inside it, a cancel, any other error), a conversion
+        # still running in a thread keeps its memory: the permit and the reservation are held until it returns.
+        if thread_work.running():
+            _release_when_work_ends(release_admission, thread_work, time.monotonic(), record_name)
+        else:
+            release_admission()
 
     parse_ms = (time.monotonic() - parse_start) * 1000
     if parse_ms >= SLOW_PARSE_WARN_SECONDS * 1000:

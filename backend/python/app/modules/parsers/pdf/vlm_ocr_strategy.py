@@ -27,13 +27,18 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
     render_batch_from_path_sync,
 )
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.paid_cache import NotCached, cache_key, paid_cache_for
+from app.services.paid_cache.keys import KIND_OCR_PAGE, sha256_hex
 from app.utils.aimodels import (
+    INDEXING_SDK_RETRIES,
     LLMProvider,
     coerce_message_content_to_text,
     get_generator_model,
     is_multimodal_llm,
 )
 from app.utils.env_config import env_int
+from app.utils.error_class import log_failure
+from app.utils.is_truncated import is_truncated
 from app.utils.llm import LLMUnavailableError, get_llm_for_role, load_ai_models
 from app.utils.opik import get_llm_invoke_config
 
@@ -48,6 +53,10 @@ DEFAULT_MAX_PAGES = 500
 def vlm_ocr_max_pages() -> int:
     return max(1, env_int(MAX_PAGES_ENV, DEFAULT_MAX_PAGES))
 
+
+
+class VlmOutputTruncated(DocumentProcessingError):
+    """The model's answer for a page was cut off at its output-token cap."""
 
 
 def _without_frames(error: BaseException) -> BaseException:
@@ -192,7 +201,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             model_name = model_names[0] if model_names else None
         else:
             model_name = None
-        return get_generator_model(provider, config, model_name)
+        # The gateway is the one retry layer of a page's paid call: the SDK client repeats nothing.
+        return get_generator_model(provider, config, model_name, sdk_retries=INDEXING_SDK_RETRIES)
 
     async def _get_multimodal_llm(self) -> BaseChatModel:
         """
@@ -215,7 +225,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         try:
             # 1. Check indexing role assignment first — use it if multimodal
             try:
-                _, role_config = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                _, role_config = await get_llm_for_role(
+                    self.config, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+                )
                 if is_multimodal_llm(role_config):
                     self.logger.info(
                         f"✅ Using indexing-role LLM for VLM OCR: {role_config.get('provider')}"
@@ -355,93 +367,106 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
     _coerce_content_to_text = staticmethod(coerce_message_content_to_text)
 
-    async def _call_llm_for_markdown(self, image_base64: str, page_number: int) -> str:
-        """
-        Call LLM with page image to get markdown output
-
-        Args:
-            image_base64: Base64-encoded image with data URI prefix
-            page_number: Page number for the prompt
-
-        Returns:
-            str: Markdown content from LLM
-        """
-        try:
-            # Format prompt with page number
-            prompt = self.DEFAULT_PROMPT
-
-            # Create multimodal message
-            message = HumanMessage(
-                content=[
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_base64}},
-                ]
-            )
-
-            # Call LLM
-            self.logger.debug(f"📤 Calling LLM for page {page_number}")
-            invoke_kwargs: dict[str, Any] = {}
-            if (
-                self.llm_config
-                and self.llm_config.get("provider") == LLMProvider.OPENAI_COMPATIBLE.value
-            ):
-                invoke_kwargs = {
-                    "max_tokens": self.MAX_OUTPUT_TOKENS,
-                    "temperature": 0,
+    def _invoke_kwargs(self) -> dict[str, Any]:
+        invoke_kwargs: dict[str, Any] = {}
+        if (
+            self.llm_config
+            and self.llm_config.get("provider") == LLMProvider.OPENAI_COMPATIBLE.value
+        ):
+            invoke_kwargs = {
+                "max_tokens": self.MAX_OUTPUT_TOKENS,
+                "temperature": 0,
+            }
+            model_name = str(
+                self.llm_config.get("configuration", {}).get("model", "")
+            ).lower()
+            if "qwen" in model_name:
+                invoke_kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": False},
                 }
-                model_name = str(
-                    self.llm_config.get("configuration", {}).get("model", "")
-                ).lower()
-                if "qwen" in model_name:
-                    invoke_kwargs["extra_body"] = {
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    }
+        return invoke_kwargs
 
-            llm = self.llm
-            if llm is None:
-                raise DocumentProcessingError("VLM OCR has no model loaded")
-            response = await get_llm_gateway().invoke(
-                llm,
-                [message],
-                provider=provider_key(llm),
-                call_site="vlm_ocr",
-                config=get_llm_invoke_config(llm),
-                **invoke_kwargs,
+    async def _call_llm_for_markdown(self, image_base64: str, page_number: int) -> str:
+        """The page's markdown: the record's stored result for this page render, or one paid model call.
+
+        A retry of a failed document, a replay, a replica race and a re-update of the same record all reach
+        the same key (the page render's hash, the model, the prompt and the call's params), so a page that was
+        read once is never paid for again. An empty page is returned but not stored.
+        """
+        llm = self.llm
+        key = None if llm is None else cache_key(
+            KIND_OCR_PAGE,
+            llm=llm,
+            prompt=self.DEFAULT_PROMPT,
+            input_digest=sha256_hex(image_base64),
+            params={**self._invoke_kwargs(), "dpi": self.RENDER_DPI},
+        )
+        if key is None:
+            return await self._ocr_page_with_model(image_base64, page_number)
+
+        async def compute() -> "str | NotCached[str]":
+            markdown = await self._ocr_page_with_model(image_base64, page_number)
+            return markdown if markdown else NotCached(markdown)
+
+        return await paid_cache_for(self.config, self.logger).get_or_compute(key, compute)
+
+    async def _ocr_page_with_model(self, image_base64: str, page_number: int) -> str:
+        """One paid call: the page image to markdown."""
+        # Format prompt with page number
+        prompt = self.DEFAULT_PROMPT
+
+        # Create multimodal message
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_base64}},
+            ]
+        )
+
+        # Call LLM
+        self.logger.debug(f"📤 Calling LLM for page {page_number}")
+        invoke_kwargs = self._invoke_kwargs()
+
+        llm = self.llm
+        if llm is None:
+            raise DocumentProcessingError("VLM OCR has no model loaded")
+        response = await get_llm_gateway().invoke(
+            llm,
+            [message],
+            provider=provider_key(llm),
+            call_site="vlm_ocr",
+            config=get_llm_invoke_config(llm),
+            **invoke_kwargs,
+        )
+
+        if is_truncated(response):
+            raise VlmOutputTruncated(
+                f"VLM OCR output was truncated for page {page_number}"
             )
 
-            response_metadata = getattr(response, "response_metadata", {}) or {}
-            if response_metadata.get("finish_reason") == "length":
-                raise DocumentProcessingError(
-                    f"VLM OCR output was truncated for page {page_number}"
-                )
+        # Extract content. LangChain message content may be a plain string or
+        # a list of content blocks (e.g. Gemini returns the latter), so coerce
+        # to text before any string handling.
+        raw_content = getattr(response, "content", response)
+        markdown_content = self._coerce_content_to_text(raw_content)
+        markdown_content = self._MULTIPLICATION_ASTERISK.sub(
+            r"\g<left>×", markdown_content
+        )
 
-            # Extract content. LangChain message content may be a plain string or
-            # a list of content blocks (e.g. Gemini returns the latter), so coerce
-            # to text before any string handling.
-            raw_content = getattr(response, "content", response)
-            markdown_content = self._coerce_content_to_text(raw_content)
-            markdown_content = self._MULTIPLICATION_ASTERISK.sub(
-                r"\g<left>×", markdown_content
-            )
+        # Clean up: Remove markdown code block wrapper if present
+        markdown_content = markdown_content.strip()
+        if markdown_content.startswith("```markdown"):
+            markdown_content = markdown_content[len("```markdown"):].strip()
+            if markdown_content.endswith("```"):
+                markdown_content = markdown_content[:-3].strip()
+        elif markdown_content.startswith("```"):
+            # Handle generic code block wrapper
+            markdown_content = markdown_content[3:].strip()
+            if markdown_content.endswith("```"):
+                markdown_content = markdown_content[:-3].strip()
 
-            # Clean up: Remove markdown code block wrapper if present
-            markdown_content = markdown_content.strip()
-            if markdown_content.startswith("```markdown"):
-                markdown_content = markdown_content[len("```markdown"):].strip()
-                if markdown_content.endswith("```"):
-                    markdown_content = markdown_content[:-3].strip()
-            elif markdown_content.startswith("```"):
-                # Handle generic code block wrapper
-                markdown_content = markdown_content[3:].strip()
-                if markdown_content.endswith("```"):
-                    markdown_content = markdown_content[:-3].strip()
-
-            self.logger.debug(f"✅ Received markdown for page {page_number} ({len(markdown_content)} chars)")
-            return markdown_content
-
-        except Exception as e:
-            self.logger.error(f"❌ Error calling LLM for page {page_number}: {str(e)}")
-            raise
+        self.logger.debug(f"✅ Received markdown for page {page_number} ({len(markdown_content)} chars)")
+        return markdown_content
 
     async def process_page(self, page, page_number: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -458,21 +483,17 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             page_number = page.page_number
         self.logger.info(f"📄 Processing page {page_number} with VLM OCR")
 
-        try:
-            image_base64 = self._page_images.get(page_number)
-            if image_base64 is None:
-                raise KeyError(f"No pre-rendered image for page {page_number}")
-            markdown = await self._call_llm_for_markdown(image_base64, page_number)
+        image_base64 = self._page_images.get(page_number)
+        if image_base64 is None:
+            raise KeyError(f"No pre-rendered image for page {page_number}")
+        markdown = await self._call_llm_for_markdown(image_base64, page_number)
 
-            return {
-                "page_number": page_number,
-                "markdown": markdown,
-                "width": page.width,
-                "height": page.height,
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Error processing page {page_number}: {str(e)}")
-            raise
+        return {
+            "page_number": page_number,
+            "markdown": markdown,
+            "width": page.width,
+            "height": page.height,
+        }
 
     async def _preprocess_document(self) -> Dict[str, Any]:
         """
@@ -494,7 +515,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             """Process page with retry logic (3 total attempts)"""
             nonlocal unreadable_count, last_unreadable
             async with semaphore:
-                last_error = None
+                truncated_seen = False
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
                     try:
                         result = await self.process_page(page, page_number)
@@ -506,16 +527,21 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                         # would index an empty document, so the record fails as a whole.
                         raise
                     except Exception as e:
-                        last_error = e
-                        if attempt < self.MAX_RETRY_ATTEMPTS:
+                        # A cut-off page is paid for each time it is sent and usually comes back cut again: it
+                        # gets one more send (two in all), not the full retry allowance.
+                        truncated_seen = truncated_seen or isinstance(e, VlmOutputTruncated)
+                        retries = 1 if truncated_seen else self.MAX_RETRY_ATTEMPTS
+                        if attempt < retries:
                             self.logger.warning(
-                                f"⚠️ Retry {attempt + 1}/2 for page {page_number}: {str(e)}"
+                                "VLM OCR page %d failed (attempt %d of %d); retrying",
+                                page_number, attempt + 1, retries + 1,
+                                extra={"error_type": type(e).__name__},
                             )
                         else:
                             # One page the model cannot read must not cost the document.
-                            self.logger.warning(
-                                "Page %s could not be read after %d attempts (%s); indexing it empty",
-                                page_number, attempt + 1, last_error,
+                            log_failure(
+                                self.logger, "vlm_ocr.page_failed", e, include_error_text=False,
+                                page=page_number, attempts=attempt + 1,
                             )
                             unreadable_count += 1
                             _without_frames(e)
@@ -534,7 +560,10 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         # a slow page never holds up the others. A slot is freed when the page's image is
         # dropped (its call succeeded or it was given up).
         window = max(1, self.PAGE_RENDER_BATCH_SIZE)
-        render_chunk = max(1, window // 4)
+        # A render hands the parent its pages as arrays (up to 30 MB each) until they are
+        # encoded, so a chunk is capped at the default's 5 pages: a raised window then keeps
+        # more encoded images alive, never more arrays, and the parent's 0.5 GiB estimate holds.
+        render_chunk = max(1, min(window // 4, 5))
         slots = asyncio.Semaphore(window)
         ready: asyncio.Queue[Optional[int]] = asyncio.Queue()
         n_workers = max(1, min(self.CONCURRENCY_LIMIT, len(pages)))
@@ -700,9 +729,6 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.document_analysis_result = await self._preprocess_document()
 
             self.logger.info("✅ Document loaded and processed successfully")
-        except Exception as e:
-            self.logger.error(f"❌ Error loading document: {str(e)}")
-            raise
         finally:
             doc, path = self.doc, self._pdf_path
             self.doc = None

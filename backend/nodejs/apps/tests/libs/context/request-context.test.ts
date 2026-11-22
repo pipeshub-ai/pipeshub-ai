@@ -147,7 +147,7 @@ describe('request-context', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // injectRequestHeaders — returns a copy, never mutates, never clobbers
+  // injectRequestHeaders — returns a copy, never mutates; the root id always wins
   // ---------------------------------------------------------------------------
   describe('injectRequestHeaders', () => {
     it('returns a copy unchanged when there is no context', () => {
@@ -168,11 +168,23 @@ describe('request-context', () => {
       });
     });
 
-    it('does not overwrite an existing header (case-insensitive)', () => {
-      runWithRequestContext({ rootId: 'root-9' }, () => {
-        const out = injectRequestHeaders({ 'X-Request-Id': 'preexisting' });
-        expect(out['X-Request-Id']).to.equal('preexisting');
-        expect(out[HEADER_REQUEST_ID]).to.equal(undefined);
+    // Callers copy the inbound headers: the client's raw id must not reach the service in place of the sanitised root.
+    it('replaces a request id already in the headers, in any case, with the root', () => {
+      runWithRequestContext({ rootId: 'rqbad' }, () => {
+        for (const name of ['x-request-id', 'X-Request-ID']) {
+          const out = injectRequestHeaders({ [name]: 'rq bad!', authorization: 'Bearer t' });
+          expect(out).to.deep.equal({ [HEADER_REQUEST_ID]: 'rqbad', authorization: 'Bearer t' });
+        }
+      });
+    });
+
+    it('keeps a request id already in the headers when there is no context', () => {
+      expect(injectRequestHeaders({ 'X-Request-Id': 'sys-1' })).to.deep.equal({ 'X-Request-Id': 'sys-1' });
+    });
+
+    it('does not overwrite a relay header the caller set', () => {
+      runWithRequestContext({ rootId: 'root-9', mcpRelay: 'relay-1' }, () => {
+        expect(injectRequestHeaders({ [HEADER_MCP_RELAY]: 'own' })[HEADER_MCP_RELAY]).to.equal('own');
       });
     });
 

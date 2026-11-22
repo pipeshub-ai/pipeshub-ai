@@ -17,25 +17,35 @@ Usage, from the repository root:
     new_lint_findings.py ruff   <merge-base> <file>...   (files under backend/python)
     new_lint_findings.py eslint <merge-base> <file>...   (files under backend/nodejs/apps)
     new_lint_findings.py log-emoji <merge-base> <file>... (files under backend/python; emoji in log calls)
+    new_lint_findings.py log-pii <merge-base> <file>...   (backend/python/app .py and backend/nodejs/apps/src .ts;
+                                                           emails and names in log calls)
+
+A code in WARN_ONLY never fails the check: a rise in it is printed as a warning for reviewers.
+log-pii reports each reviewed exemption (`# log-pii: ok <reason>`) as LOG-PII-OK.
 """
 import collections
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 
-CWD = {"ruff": "backend/python", "eslint": "backend/nodejs/apps", "log-emoji": "backend/python"}
-LOG_EMOJI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "log_emoji.py")
+# log-pii runs from the repository root: one invocation takes both runtimes' paths.
+CWD = {"ruff": "backend/python", "eslint": "backend/nodejs/apps", "log-emoji": "backend/python", "log-pii": "."}
+_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts")
+SCRIPTS = {"log-emoji": os.path.join(_SCRIPTS_DIR, "log_emoji.py"), "log-pii": os.path.join(_SCRIPTS_DIR, "log_pii.py")}
+WARN_ONLY = frozenset({"LOG-PII-OK"})
 
 
-def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
-    """Return (repo-relative file, rule, line) for every finding that fails the build."""
-    cwd = CWD[tool]
-    rel = [os.path.relpath(f, cwd) for f in files]
+def lint(tool: str, files: list[str], tree: str = ".") -> list[tuple[str, str, int]]:
+    """Return (repo-relative file, rule, line) for every finding that fails the build, linting the copies in tree."""
+    cwd = os.path.join(tree, CWD[tool])
+    rel = [os.path.relpath(f, CWD[tool]) for f in files]
     if tool == "ruff":
         cmd = ["ruff", "check", "--output-format=json", "--exit-zero", *rel]
-    elif tool == "log-emoji":
-        cmd = [sys.executable, LOG_EMOJI, *rel]
+    elif tool in SCRIPTS:
+        cmd = [sys.executable, SCRIPTS[tool], *rel]
     else:
         cmd = ["npx", "eslint", "--format", "json", *rel]
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
@@ -43,10 +53,10 @@ def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
     if proc.returncode not in (0, 1) or (tool != "eslint" and proc.returncode):
         sys.stderr.write(proc.stderr)
         sys.exit(f"{tool} could not run (exit {proc.returncode})")
-    root = os.getcwd()
+    root = os.path.abspath(tree)
     found = []
     for item in json.loads(proc.stdout or "[]"):
-        if tool != "eslint":   # ruff and log-emoji print the same shape
+        if tool != "eslint":   # ruff, log-emoji and log-pii print the same shape
             loc = item.get("location") or {}
             found.append((os.path.relpath(item["filename"], root), item["code"] or "syntax", loc.get("row", 0)))
         else:
@@ -56,8 +66,8 @@ def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
     return found
 
 
-def git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], capture_output=True, check=False)
+def git(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, check=False, env=env)
 
 
 def is_symlink_at(commit: str, path: str) -> bool:
@@ -69,14 +79,9 @@ def main() -> None:
     tool, base, files = sys.argv[1], sys.argv[2], sys.argv[3:]
     if tool not in CWD or not files:
         sys.exit(__doc__)
-
-    # The baseline run overwrites these files and restores them from HEAD, which would drop uncommitted edits.
-    status = git("status", "--porcelain", "--", *files)
-    if status.returncode:
-        sys.exit(f"git status failed (exit {status.returncode}), so nothing was changed: {status.stderr.decode().strip()}")
-    dirty = status.stdout.decode().strip()
-    if dirty:
-        sys.exit(f"Commit or stash these files first; the check restores them from HEAD:\n{dirty}")
+    # log_pii.py resolves TS_MODULE from its cwd, which is the worktree on the baseline run.
+    if os.environ.get("TS_MODULE"):
+        os.environ["TS_MODULE"] = os.path.abspath(os.environ["TS_MODULE"])
 
     head = lint(tool, files)
 
@@ -94,26 +99,60 @@ def main() -> None:
             i += 2
     main_path = {f: renamed.get(f, f) for f in files}
 
-    # Put each file that exists on main back to its main version, lint it, then restore the pull request's version.
-    # A symlink is never put back: writing through it would overwrite its target, which the restore does not undo.
-    # A path that was a symlink on main is skipped too: git show gives the link text, not source to compare.
+    # Main's versions are written into a throwaway worktree of HEAD, never this checkout: a failed or killed run
+    # must not leave them here to be committed. The worktree keeps the pull request's config and every path.
+    # A path that was a symlink on main is skipped: git show gives the link text, not source to compare.
     on_main = [
         f for f in files
-        if not os.path.islink(f)
-        and not is_symlink_at(base, main_path[f])
+        if not is_symlink_at(base, main_path[f])
         and git("cat-file", "-e", f"{base}:{main_path[f]}").returncode == 0
     ]
-    try:
-        for f in on_main:
-            shown = git("show", f"{base}:{main_path[f]}")
-            if shown.returncode:
-                sys.exit(f"git show {base}:{main_path[f]} failed: {shown.stderr.decode().strip()}")
-            with open(f, "wb") as out:
-                out.write(shown.stdout)
-        main_found = lint(tool, on_main) if on_main else []
-    finally:
-        if on_main:
-            subprocess.run(["git", "checkout", "HEAD", "--", *on_main], check=True)
+    main_found = []
+    if on_main:
+        # Uncommitted and untracked files are copied in too, so both passes read the same config and imports.
+        changed = git("diff", "--name-only", "--no-renames", "-z", "HEAD")
+        untracked = git("ls-files", "-z", "--others", "--exclude-standard")
+        if changed.returncode or untracked.returncode:
+            sys.exit(f"git could not list uncommitted files: {(changed.stderr + untracked.stderr).decode().strip()}")
+        # An entry ending in / is a nested repository, not a file. fsdecode keeps names that are not UTF-8.
+        local = [p for p in os.fsdecode(changed.stdout + untracked.stdout).split("\0") if p and not p.endswith("/")]
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = os.path.join(os.path.realpath(tmp), "tree")
+            # No hook directory: a developer's post-checkout hook must not run on, or change, the baseline.
+            no_hooks = ("-c", "core.hooksPath=/dev/null")
+            # git commit exports GIT_INDEX_FILE to its hooks; worktree add would reset that index to HEAD.
+            wt_env = {k: v for k, v in os.environ.items() if k != "GIT_INDEX_FILE"}
+            added = git(*no_hooks, "worktree", "add", "--detach", "--quiet", tree, "HEAD", env=wt_env)
+            if added.returncode:
+                sys.exit(f"git worktree add failed: {added.stderr.decode().strip()}")
+            try:
+                # git lists paths sorted, and changed ones first, so a file or link replaced by a directory is
+                # removed before the directory's files are copied in.
+                for p in local:
+                    dst = os.path.join(tree, p)
+                    if os.path.isdir(dst) and not os.path.islink(dst):
+                        shutil.rmtree(dst)   # a directory the checkout replaced with a file
+                    elif os.path.lexists(dst):
+                        os.remove(dst)   # unlinks a symlink instead of writing through it
+                    if os.path.lexists(p) and (os.path.islink(p) or not os.path.isdir(p)):
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copy2(p, dst, follow_symlinks=False)
+                # Nothing is written through a symlink, in the file or a parent: its target may be outside the worktree.
+                on_main = [f for f in on_main
+                           if os.path.realpath(os.path.join(tree, f)) == os.path.normpath(os.path.join(tree, f))]
+                for f in on_main:
+                    shown = git("show", f"{base}:{main_path[f]}")
+                    if shown.returncode:
+                        sys.exit(f"git show {base}:{main_path[f]} failed: {shown.stderr.decode().strip()}")
+                    os.makedirs(os.path.dirname(os.path.join(tree, f)), exist_ok=True)
+                    with open(os.path.join(tree, f), "wb") as out:
+                        out.write(shown.stdout)
+                if tool == "eslint":   # ESLint loads its plugins from the install, which a fresh worktree lacks
+                    os.symlink(os.path.abspath(os.path.join(CWD[tool], "node_modules")),
+                               os.path.join(tree, CWD[tool], "node_modules"))
+                main_found = lint(tool, on_main, tree) if on_main else []
+            finally:
+                git(*no_hooks, "worktree", "remove", "--force", tree, env=wt_env)
 
     head_count = collections.Counter((f, r) for f, r, _ in head)
     main_count = collections.Counter((f, r) for f, r, _ in main_found)
@@ -122,19 +161,20 @@ def main() -> None:
         lines[(f, r)].append(line)
 
     added = {k: head_count[k] - main_count[k] for k in head_count if head_count[k] > main_count[k]}
-    existing = sum(min(head_count[k], main_count[k]) for k in head_count)
+    existing = sum(min(head_count[k], main_count[k]) for k in head_count if k[1] not in WARN_ONLY)
 
     for (f, r), n in sorted(added.items()):
         where = ", ".join(str(x) for x in sorted(lines[(f, r)]))
         msg = f"{n} new {r} (main has {main_count[(f, r)]}, this pull request has {head_count[(f, r)]}); lines {where}"
-        print(f"::error file={f},line={min(lines[(f, r)])}::{msg}")
+        print(f"::{'warning' if r in WARN_ONLY else 'error'} file={f},line={min(lines[(f, r)])}::{msg}")
         print(f"{f}: {msg}")
+    failing = sum(n for (_, r), n in added.items() if r not in WARN_ONLY)
     if existing:
         print(f"::notice::{existing} {tool} findings in these files were already on main. "
               "They do not fail this check; fixing them in a separate pull request is welcome.")
     sys.stdout.flush()
-    if added:
-        sys.exit(f"{sum(added.values())} new {tool} findings. Fix them before merging.")
+    if failing:
+        sys.exit(f"{failing} new {tool} findings. Fix them before merging.")
     print(f"No new {tool} findings.")
 
 

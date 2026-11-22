@@ -38,3 +38,13 @@ export function structuredLoggingProvider(): unknown {
  * that hold settings rather than secrets, so reads return them as stored.
  */
 export const EXTRA_AI_PUBLIC_CONFIG_KEYS: readonly string[] = [];
+
+/**
+ * Throws to refuse, at start-up, a combination of settings this build does not
+ * run. Each Node entry point calls it right after `applyStoreUmbrella()`, before
+ * it opens a store or listens; it lives here, import-free, so the Slack bot can
+ * call it without loading the API. OSS runs every combination.
+ */
+export function checkStartup(): void {
+  return;
+}

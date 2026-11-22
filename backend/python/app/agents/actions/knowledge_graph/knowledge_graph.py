@@ -91,7 +91,9 @@ def _navigate_args_summary(args: dict[str, Any]) -> str | None:
         base = f"Navigated to node {node_id}"
     else:
         base = "Navigated to root"
-    if page and page > 1:
+    if args.get("cursor"):
+        base += " — next page"
+    elif page and page > 1:
         base += f" — page {page}"
     if depth and depth > 1:
         base += f" (depth {depth})"
@@ -342,6 +344,16 @@ class KnowledgeGraph:
                 default=50,
             ),
             ToolParameter(
+                name="cursor",
+                type=ParameterType.STRING,
+                description=(
+                    "Cursor printed in the previous page's Next: line, copied exactly, with the same node_id "
+                    "and depth. It chooses the next page and keeps that page's filters; page is then ignored. "
+                    "Page numbers stop at 50, a cursor does not."
+                ),
+                required=False,
+            ),
+            ToolParameter(
                 name="depth",
                 type=ParameterType.INTEGER,
                 description=(
@@ -418,6 +430,7 @@ class KnowledgeGraph:
         modified_after: str | None = None,
         modified_before: str | None = None,
         node_types: list[str] | None = None,
+        cursor: str | None = None,
     ) -> tuple[bool, str]:
         """Walk the knowledge graph hierarchy."""
         if not self.state:
@@ -556,9 +569,11 @@ class KnowledgeGraph:
             org_id=org_id,
             frontend_url=frontend_url,
             excluded_app_ids=excluded_app_ids(state),
+            config_service=state.get("config_service"),
         )
 
         app_names = {c.id: c.name for c in catalog.connectors}
+        cursor = cursor.strip() if cursor else None
 
         try:
             view = await navigator.navigate(
@@ -572,6 +587,7 @@ class KnowledgeGraph:
                 updated_at=updated_at,
                 node_types=node_types,
                 app_names=app_names,
+                cursor=cursor,
             )
             if node_id and view.current is None:
                 return False, NODE_NOT_FOUND_MESSAGE
@@ -612,7 +628,8 @@ class KnowledgeGraph:
 
         fetchable = set(_record_ids_in_view(view))
         cite_refs = await cite_listed_records(state, graph_provider, org_id, _listed_facts(view, fetchable))
-        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener, cite_refs)
+        # A cursor page is past the first: no header, breadcrumbs or related again.
+        text, emitted = render_navigation_view_with_ids(view, 2 if cursor else page, record_id_shortener, cite_refs)
         remember_record_ids(
             state,
             [rid for rid in emitted if rid in fetchable],
@@ -964,12 +981,17 @@ class KnowledgeGraph:
         short_description="Find departments, categories, topics, languages, record groups, people, organizations and record titles the user can access",
         description=(
             "Semantic lookup of knowledge-graph entities by name or description: departments, "
-            "categories, subcategories, topics, languages, record groups (a project, space, "
-            "folder, channel, ...), people (members of the organization named on records as "
-            "author, sender, recipient, assignee, reporter, reviewer or owner), organizations "
-            "(customer and prospect companies from CRM accounts, and companies or institutions "
-            "named in two or more documents) and record titles. Only "
+            "categories, subcategories, topics, languages, record groups (a Jira project, a "
+            "Confluence space, a folder, a channel, ...), people (members of the organization "
+            "named on records as author, sender, recipient, assignee, reporter, reviewer or "
+            "owner), organizations (customer and prospect companies from CRM accounts, and "
+            "companies or institutions named in two or more documents) and records by title "
+            "(a document, page, file, epic, issue or ticket). Only "
             "entities backed by records you can access are returned.\n\n"
+            "A name does not tell you its type: 'SAAS Launch' may be an epic (a record), a "
+            "project (a record group) or a topic. Leave entity_types out unless the user named "
+            "the kind of thing; when a type filter matches no name, matches of other types are "
+            "returned in otherTypeMatches.\n\n"
             "Call it when the question names one of these — a team, a topic, a category, a "
             "project or space, a colleague, a customer, a document title — to find the "
             "matching entity, alongside or before a content search.\n\n"
@@ -1001,7 +1023,9 @@ class KnowledgeGraph:
                 description=(
                     "Optional filter on entity type: 'department', 'category', 'subcategory', "
                     "'topic', 'language', 'record_group', 'person', 'organization', 'record'. "
-                    "Omit to search all types."
+                    "Omit it (search every type) unless the user named the kind of thing. An "
+                    "epic, issue, ticket, page or document is 'record'; a Jira project, "
+                    "Confluence space, channel or folder is 'record_group'."
                 ),
                 required=False,
                 items={"type": "string"},
@@ -1576,8 +1600,8 @@ class KnowledgeGraph:
                 name="cursor",
                 type=ParameterType.STRING,
                 description=(
-                    "The next-page token from the selection listed in the prompt. "
-                    "Pass it with any query; the cursor chooses the page. "
+                    "The cursor a previous page's output printed, copied exactly. "
+                    "It chooses the page and keeps that listing's filters; page is then ignored. "
                     "Omit it to start at the first page."
                 ),
                 required=False,

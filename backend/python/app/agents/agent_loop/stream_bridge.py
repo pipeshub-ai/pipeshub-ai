@@ -42,7 +42,10 @@ from app.agents.agent_loop.clarification import (
 )
 from app.agents.agent_loop.confidence import normalize as normalize_confidence
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.error_classification import classify_exception
+from app.agents.agent_loop.error_classification import (
+    classify_exception,
+    run_error_text,
+)
 from app.agents.agent_loop.factory import PipesHubAgentFactory, card_already_answered
 from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
@@ -57,6 +60,7 @@ from app.modules.demo_data.chat import (
 )
 from app.modules.retrieval import degraded_notice
 from app.utils.conversation_tasks import begin_run, discard_tasks
+from app.utils.error_class import log_failure
 from app.utils.logging_fields import bind_log_fields
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
@@ -311,6 +315,7 @@ async def run_agent_loop_stream(
     (which formats `Agent.run()`'s own final answer rather than making a
     second LLM call — see `respond.py`) through one shared `QueueEventSink`.
     """
+    from app.connectors.core.registry.connector_builder import ConnectorScope
     from app.modules.agents.qna.chat_state import build_initial_state
     from app.modules.code_graph.connectors import connector_instances_have_code
     from app.utils.connector_instances import fetch_user_connector_instances
@@ -354,7 +359,11 @@ async def run_agent_loop_stream(
         connector_instances = await fetch_user_connector_instances(
             graph_provider, user_info["userId"], user_info["orgId"], log,
         )
-        has_sql_connector = connector_instances_have_sql(connector_instances)
+        sql_instances = connector_instances
+        if query_info.get("is_service_account"):
+            # Anyone in the org runs this agent on one identity, so only the org's databases.
+            sql_instances = [c for c in connector_instances if c.get("scope") == ConnectorScope.TEAM.value]
+        has_sql_connector = connector_instances_have_sql(sql_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
         has_code_connector = connector_instances_have_code(connector_instances)
         if stage_timer:
@@ -372,7 +381,7 @@ async def run_agent_loop_stream(
         exclude_from_state(chat_state, demo_excluded)
         await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
         chat_state["allowed_sql_connector_ids"] = (
-            sql_connector_instance_ids(connector_instances, user_info["orgId"])
+            sql_connector_instance_ids(sql_instances, user_info["orgId"])
             & agent_knowledge_sql_connector_ids(chat_state.get("agent_knowledge"))
         )
     except asyncio.CancelledError:
@@ -481,7 +490,7 @@ async def run_agent_loop_stream(
                 )
                 run_timer.start("finish", "finish")
                 await finalizer.run(
-                    agent_success=result.success, agent_error=result.error,
+                    agent_success=result.success, agent_error=run_error_text(result),
                     agent_output=result.output, event_sink=context.event_sink,
                     streamed_answer=streamer.streamed_answer,
                     reasoning_turns=streamer.reasoning_turns,
@@ -542,8 +551,8 @@ async def run_agent_loop_stream(
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()
-                except Exception:
-                    log.warning("agent-loop stream: sandbox cleanup failed", exc_info=True)
+                except Exception as exc:
+                    log_failure(log, "agent_turn.cleanup_failed", exc, step="sandbox")
             # Tears down every MCP session `MCPToolProvider`/`MCPToolAdapter`
             # opened this request (see `mcp_session.py`). Guarded on the cache
             # dict itself (rather than always constructing a manager) so a
@@ -555,8 +564,8 @@ async def run_agent_loop_stream(
                     from app.agents.agent_loop.mcp_session import MCPSessionManager
 
                     await MCPSessionManager(context).aclose_all()
-                except Exception:
-                    log.warning("agent-loop stream: MCP session cleanup failed", exc_info=True)
+                except Exception as exc:
+                    log_failure(log, "agent_turn.cleanup_failed", exc, step="mcp_sessions")
             await event_sink.flush()
             await queue.put(_DONE)
 

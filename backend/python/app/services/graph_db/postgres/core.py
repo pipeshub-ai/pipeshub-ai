@@ -2,16 +2,20 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_or_system, current_org_id
+from app.services.graph_db.conditions import check_conditions
+from app.utils import error_class
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Collection, Sequence
 
     from app.core.db import Tx
+    from app.services.graph_db.conditions import Cond
 
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
@@ -59,15 +63,16 @@ class CoreMixin(PgBase):
         org = None if _system_apps(collection) else current_org_id()     # a missing org raises: it is not an empty graph
         try:
             if org is None:
-                row = await self._system_read(lambda tx: tx.fetchrow("/* pipeshub:graph.system_app */ SELECT app_id, node_json FROM graph.system_app($1)", document_key))
-                return _arango(_doc(json.loads(row["node_json"])), collection) if row else None
+                row = await self._system_read(lambda tx: tx.fetchrow("/* pipeshub:graph.system_app */ SELECT org_id, app_id, node_json FROM graph.system_app($1)", document_key))
+                # the partition is the app's org: a legacy instance whose document has no orgId still names it, as in _system_app_pages
+                return {**_arango(_doc(json.loads(row["node_json"])), collection), "orgId": row[0]} if row else None      # row[0]: the row's org_id
             r = await self._q(lambda tx: tx.fetchrow("/* pipeshub:graph.get_document */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3",
                                                     org, collection, document_key), transaction)
             return _arango(_doc(r["doc"]), collection) if r else None
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("get_document failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_document")
             return None
 
     async def get_all_documents(self, collection: str, transaction: str | None = None) -> list[dict]:
@@ -181,6 +186,9 @@ class CoreMixin(PgBase):
             WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd)), transaction, write=True)
         return bool(r)
 
+    async def store_time(self) -> float:
+        return float(await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.store_time */ SELECT extract(epoch FROM clock_timestamp())::float8"), None))
+
     async def increment_node_field(self, key: str, collection: str, field: str, transaction: str | None = None) -> int | None:
         """One UPDATE that adds one to the stored value under the row's lock (two callers get two different values); None when no node
         matches."""
@@ -230,20 +238,32 @@ class CoreMixin(PgBase):
         hot = _hot(collection, filters)
         fields = [_field(k) for k in keys]
         try:
-            async def read(tx: Tx) -> list:
-                # a full page may be only the first: the plain statement then reads every match in the one statement (one snapshot)
-                rows = await _hot_rows(tx, hot, fields, vals, "", _HOT_PAGE, null_absent=True) if hot else []
-                if hot and len(rows) < _HOT_PAGE:
-                    return rows
+            async def read(tx: Tx, *, paged: bool) -> list:
+                # Every page of the vetted read after the last id, so more matches than a page are still read by the key's index (the plain
+                # statement reads every document of the collection in the org). Paged reads run in one repeatable-read unit: one snapshot, as
+                # the one statement had. In a caller's transaction, and after an id the function refuses, the plain statement reads them all.
+                rows: list = []
+                after = ""
+                while hot and len(after) <= 200:
+                    page = await _hot_rows(tx, hot, fields, vals, after, _HOT_PAGE, null_absent=True)
+                    rows += page
+                    if len(page) < _HOT_PAGE:
+                        return rows
+                    if not paged:
+                        break
+                    after = page[-1]["node_id"]
                 return await tx.fetch("""/* pipeshub:graph.get_nodes_by_filters */ SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
                     AND NOT EXISTS (SELECT 1 FROM unnest($3::text[], $4::text[]) f(k, v)
                         WHERE CASE WHEN f.v = 'null' THEN coalesce(n.doc->f.k, 'null'::jsonb) <> 'null'::jsonb ELSE n.doc->f.k IS DISTINCT FROM f.v::jsonb END)""",
                                       org, collection, fields, vals)
-            rows = await self._q(read, transaction)
-        except Exception:
+            if hot and not transaction:
+                rows = await self._db.run(lambda tx: read(tx, paged=True), isolation="repeatable_read")
+            else:
+                rows = await self._q(lambda tx: read(tx, paged=False), transaction)
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("get_nodes_by_filters failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_nodes_by_filters")
             return []
         return [self._shape(_doc(r["doc"]), collection, return_fields) for r in rows]
 
@@ -268,17 +288,53 @@ class CoreMixin(PgBase):
                 AND n.doc->$3::text = ANY (SELECT v::jsonb FROM unnest($4::text[]) v)""", org, collection, _field(field_name), vals), transaction)
         return [self._shape(_doc(r["doc"]), collection, return_fields) for r in rows]
 
-    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None) -> bool:
+    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None, *,
+                                          clock_at_most: float | None = None, unset: Sequence[str] = ()) -> bool:
         if not expected:
             raise ValueError("update_node_fields_if_match needs an expectation")
         org = current_org_id()
         upd = {k: v for k, v in updates.items() if k not in ("_key", "_id", "id")}      # as update_node; a None removes the field
         _VALIDATOR.validate_node_update(collection, upd)
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
+        async def go(tx: Tx) -> int:
+            # The row lock first, in a statement of its own (as update_node_fields_if): the expectation is an anti-join, which a writer that waited for
+            # the lock does not re-check against the row it then updates, and the UPDATE reads its clock before it waits; either way a write would
+            # apply on a row that no longer matches.
+            await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
+            return await tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each((n.doc || $4::jsonb) - $7::text[]) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE org_id = $1 AND coll = $2 AND id = $3 AND NOT EXISTS (SELECT 1 FROM jsonb_each($5::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value
-                AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL)) RETURNING 1) SELECT count(*) FROM u""",
-                                                  org, collection, key, _j(upd), _j(expected)), transaction, write=True)
-        return bool(r)
+                AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL))
+                AND ($6::float8 IS NULL OR extract(epoch FROM clock_timestamp()) <= $6::float8) RETURNING 1) SELECT count(*) FROM u""",
+                                     org, collection, key, _j(upd), _j(expected), clock_at_most, list(unset))
+        return bool(await self._q(go, transaction, write=True))
+
+    async def update_node_fields_if(self, key: str, collection: str, updates: dict, conditions: Sequence[Cond], transaction: str | None = None, *,
+                                    unset: Sequence[str] = ()) -> bool:
+        """``update_node_fields_if_match`` with the operators of ``Cond``, each as ``conditions.holds`` reads it: an absent or null field passes
+        every operator but ``eq``; ``null_or_le`` passes only a stored number (a boolean or a string is never "not newer")."""
+        check_conditions(conditions)
+        org = current_org_id()
+        upd = {k: v for k, v in updates.items() if k not in ("_key", "_id", "id")}
+        _VALIDATOR.validate_node_update(collection, upd)
+        conds = _j([{"f": c.field, "op": c.op, "v": c.value} for c in conditions])
+
+        async def go(tx: Tx) -> int:
+            # The row lock first, in a statement of its own: the NOT EXISTS below is planned as an anti-join, which a writer that waited for the lock
+            # does not re-check against the row it then updates, so two writers holding the same counter would both apply.
+            await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
+            return await tx.fetchval("""/* pipeshub:graph.update_node_fields_if */ WITH u AS (UPDATE graph.nodes n
+            SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each((n.doc || $4::jsonb) - $6::text[]) AS _nv WHERE _nv.value <> 'null'::jsonb)
+            WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset($5::jsonb) AS c(f text, op text, v jsonb) WHERE NOT CASE
+                WHEN coalesce(n.doc->c.f, 'null'::jsonb) = 'null'::jsonb THEN c.op NOT IN ('eq', 'one_of')
+                WHEN c.op IN ('eq', 'null_or_eq') THEN n.doc->c.f = c.v
+                WHEN c.op = 'one_of' THEN jsonb_typeof(n.doc->c.f) = 'string' AND c.v ? (n.doc->>c.f)
+                WHEN c.op = 'null_or_le' THEN jsonb_typeof(n.doc->c.f) = 'number' AND (n.doc->c.f)::numeric <= c.v::numeric
+                ELSE false END) RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd), conds, list(unset))
+        return bool(await self._q(go, transaction, write=True))
+
+    async def set_record_properties(self, key: str, *, values: dict[str, Any], previous_names: Collection[str], controls: dict[str, Any],
+                                    conditions: Sequence[Cond], transaction: str | None = None) -> bool:
+        """The values in one ``recordProps`` sub-document, replaced whole as on ArangoDB, so ``previous_names`` has nothing left to remove."""
+        return await self.update_node_fields_if(key, CollectionNames.RECORDS.value, {"recordProps": dict(values), **controls}, conditions, transaction)
 
     # ---- generic edges -----------------------------------------------------------------------------------------
     async def batch_create_edges(
@@ -358,20 +414,20 @@ class CoreMixin(PgBase):
         org = current_org_id()
         try:
             return await self._node_edges(node_id, edge_collection, org=org, incoming=True, transaction=transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("get_edges_to_node failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_edges_to_node")
             return []
 
     async def get_edges_from_node(self, node_id: str, edge_collection: str, transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
         org = current_org_id()
         try:
             return await self._node_edges(node_id, edge_collection, org=org, incoming=False, transaction=transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("get_edges_from_node failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_edges_from_node")
             return []
 
     async def batch_delete_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> int:
@@ -381,8 +437,9 @@ class CoreMixin(PgBase):
         for e in edges:
             try:
                 fc, fi, tc, ti, _ = _edge(e)
-            except ValueError:
-                self.logger.warning("Skipping invalid edge (missing required fields): %s", e)
+            except ValueError as err:  # the caller's edge, not our bug
+                error_class.log_failure(self.logger, "graph.provider.step_failed", err, include_error_text=False, level=logging.WARNING,
+                                        op="batch_delete_edges", step="parse_edge", collection=collection)
                 continue
             pairs.append({"fc": fc, "fi": fi, "tc": tc, "ti": ti})
         if not pairs:
@@ -435,8 +492,9 @@ class CoreMixin(PgBase):
         try:
             return bool(await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.check_collection_has_document */ SELECT EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3)",
                                                            org, collection_name, document_id), transaction))
-        except Exception:
-            self.logger.exception("Check collection has document failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_collection_has_document")
             return False
 
     async def check_edge_exists(self, from_key: str, to_key: str, edge_collection: str, transaction: str | None = None) -> bool:
@@ -447,8 +505,8 @@ class CoreMixin(PgBase):
             return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.check_edge_exists */ SELECT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
                 AND e.to_id = $4 AND e.from_id = $3 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))))""",
                                                            org, colls, from_key, to_key, kind), transaction))
-        except Exception:
-            self.logger.exception("Check edge exists failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="check_edge_exists")
             return False
 
     async def update_edge(self, from_key: str, to_key: str, edge_updates: dict, collection: str, transaction: str | None = None) -> bool:

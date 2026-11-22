@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-import yaml
 
 from app.config.constants.arangodb import ProgressStatus
 from app.schema.arango.documents import record_schema
+from tests.support.openapi_spec import openapi_spec
 
 
 def _allowed(field: str) -> set[str]:
@@ -63,7 +63,7 @@ def test_node_indexing_status_type_matches() -> None:
 
 
 def test_openapi_record_indexing_status_matches() -> None:
-    spec = yaml.safe_load((_NODE_APPS / "src/modules/api-docs/pipeshub-openapi.yaml").read_text())
+    spec = openapi_spec()
     properties = spec["components"]["schemas"]["Record"]["properties"]
     assert set(properties["indexingStatus"]["enum"]) == {s.value for s in ProgressStatus}
     assert set(properties["parsingStatus"]["enum"]) <= {s.value for s in ProgressStatus}

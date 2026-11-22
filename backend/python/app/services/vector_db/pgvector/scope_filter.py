@@ -28,17 +28,22 @@ _NOTHING = " AND false"
 
 
 def predicate(flt: ScopeFilter, first_param: int) -> tuple[str, list[object]]:
-    """``(" AND EXISTS (...)", parameters)`` numbered from ``first_param``, or ``(" AND false", [])`` for a filter that trusts nothing."""
+    """``(" AND EXISTS (...)", parameters)`` numbered from ``first_param``, or ``(" AND false", [])`` for a filter that trusts nothing. A
+    deferring filter (``ScopeFilter.defer``) instead admits a group whose row no trusted stamp of a current connector decides: no row,
+    another version or generation, a connector outside ``current``, a ``legacy`` or unknown stamp; those are left to the request's own arms
+    (and for a filter that trusts nothing the condition is empty)."""
     if flt.trusts_nothing:
-        return _NOTHING, []
+        return ("", []) if flt.defer else (_NOTHING, [])
     cur, opn, grp, reach, exc, pen, blk, ver, gen = (f"${first_param + i}" for i in range(N_PARAMS))
-    sql = (
-        " AND EXISTS (SELECT 1 FROM retrieval.point_groups sg "
-        "WHERE sg.org_id = $1 AND sg.collection_id = $2 AND sg.group_key = p.group_key "
+    # (not "trusted": a name the code scanner reads as a secret, and this SQL text reaches the slow-statement log)
+    deciding_row = (
+        "sg.org_id = $1 AND sg.collection_id = $2 AND sg.group_key = p.group_key "
         f"AND sg.scope_version = {ver}::int AND sg.scope_generation = {gen}::int "
         f"AND cardinality(sg.connector_ids) > 0 AND sg.connector_ids <@ {cur}::text[] "
+    )
+    admit = (
         # a subtree being rewritten is hidden whatever the stamp (a missing path names no pending scope)
-        f"AND NOT coalesce(sg.path_ids && {pen}::text[], false) AND ("
+        f"NOT coalesce(sg.path_ids && {pen}::text[], false) AND ("
         # a record group or root group the viewer reads, or a connector that opens everything in it: not for a connector with a pending root
         f"(sg.scope_stamp = 'container' AND NOT (sg.connector_ids && {blk}::text[]) "
         f"AND (sg.record_group_ids && {grp}::text[] OR sg.root_record_group_ids && {grp}::text[] OR sg.connector_ids && {opn}::text[])) "
@@ -47,7 +52,13 @@ def predicate(flt: ScopeFilter, first_param: int) -> tuple[str, list[object]]:
         f"AND (sg.scope_stamp <> 'container' OR NOT (sg.connector_ids && {blk}::text[]))) "
         # a path that reaches something the viewer reads and passes through nothing it may not
         f"OR (sg.scope_stamp IN ('union', 'intersection') AND sg.path_ids && {reach}::text[] AND NOT (sg.path_ids && {exc}::text[]))"
-        ") OFFSET 0)"
+        ")"
     )
+    if flt.defer:
+        # one probe of the group's row: its verdict, false for a verdict that cannot be read (a NULL list), or true when no such row decides
+        sql = (f" AND COALESCE((SELECT coalesce({admit}, false) FROM retrieval.point_groups sg WHERE {deciding_row}"
+               "AND sg.scope_stamp IN ('container', 'union', 'intersection', 'override')), true)")
+    else:
+        sql = f" AND EXISTS (SELECT 1 FROM retrieval.point_groups sg WHERE {deciding_row}AND {admit} OFFSET 0)"
     current, open_apps, groups, reach_ids, excluded, pending, blocked = flt.lists()
     return sql, [current, open_apps, groups, reach_ids, excluded, pending, blocked, flt.version, flt.generation]

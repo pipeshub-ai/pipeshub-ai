@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from unittest.mock import MagicMock
 
-from app import edition_services
+import pytest
+
+from app import edition, edition_services
 from app.agents.agent_loop import error_classification
 
 
@@ -22,6 +26,38 @@ def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     edition_services.register_extra_toolsets(registry)
 
     assert app.mock_calls == [] and registry.mock_calls == []
+
+
+APP = Path(edition.__file__).parent
+# The sandbox's Docker socket proxy reads no PipesHub setting.
+READS_NO_SETTINGS = {"docker_proxy_main.py"}
+
+
+def _is_check(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "check_runtime_settings"
+    )
+
+
+def _builds_the_service(node: ast.stmt) -> bool:
+    """The service's container (which holds its stores), its app, or the edition setup of that app."""
+    if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {"container", "app"} for t in node.targets):
+        return True
+    return isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and ast.unparse(node.value.func) == "configure_app"
+
+
+@pytest.mark.parametrize("main", sorted(p.name for p in APP.glob("*_main.py") if p.name not in READS_NO_SETTINGS))
+def test_every_service_runs_the_settings_check_at_load_before_building_itself(main: str) -> None:
+    # Called by the main itself: configure_app is replaceable, so a call inside it can be dropped.
+    body = ast.parse((APP / main).read_text()).body
+    check = next((i for i, node in enumerate(body) if _is_check(node)), None)
+    build = next((i for i, node in enumerate(body) if _builds_the_service(node)), len(body))
+
+    assert check is not None, f"{main} never calls check_runtime_settings() at module level"
+    assert check < build, f"{main} builds its container or app before check_runtime_settings()"
 
 
 def test_a_registered_classifier_is_asked_first(monkeypatch) -> None:

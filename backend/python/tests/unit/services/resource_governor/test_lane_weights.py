@@ -6,6 +6,7 @@ waiter flag can tell them apart. Timing tests use the real clock.
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 import sys
 import textwrap
@@ -305,46 +306,89 @@ def test_waiter_flag_expires_when_the_waiter_dies(make_budget: Callable[..., Lan
         child.wait(timeout=10)
 
 
-def test_waiter_flag_expires_when_its_owner_is_sigstopped(make_budget: Callable[..., LaneBudget], lane_dir: Path) -> None:
-    import os
-    import signal
-
-    holder = real(make_budget, 3, 511)
-    light = real(make_budget, 3, 512)
+def test_waiter_flag_expires_when_its_owner_is_sigstopped(
+    make_budget: Callable[..., LaneBudget], lane_dir: Path, clock: FakeClock
+) -> None:
+    """T64: a waiter stopped between two polls holds no lock and no longer rewrites its
+    flag, which expires ``WAITER_FRESH_SECONDS`` after its last stamp."""
+    holder = make_budget(3, pid=511)
+    light = make_budget(3, pid=512)
     lease = holder.try_acquire()
     assert lease is not None
-    child = _spawn_waiter(lane_dir, 3)
+    child = _spawn_waiter(lane_dir, 3, stop_at="poll")
     try:
-        assert wait_until(lambda: active_waiter(flag(light), time.monotonic()) is not None, 20)
-        os.kill(child.pid, signal.SIGSTOP)
-        started = time.monotonic()
-        got = None
-        while got is None and time.monotonic() - started < 6:
-            got = light.try_acquire()
-            time.sleep(0.02)
-        assert got is not None
-        assert time.monotonic() - started <= WAITER_FRESH_SECONDS + 0.6
+        assert os.WIFSTOPPED(os.waitpid(child.pid, os.WUNTRACED)[1])
+        stamp = flag(light)
+        assert stamp.waiter_pid == child.pid
+        clock.t = stamp.waiter_at + WAITER_FRESH_SECONDS - 0.01
+        assert light.try_acquire() is None  # deferring to the waiter
+        clock.t = stamp.waiter_at + WAITER_FRESH_SECONDS + 0.01
+        assert light.try_acquire() is not None
     finally:
-        os.kill(child.pid, signal.SIGCONT)
         child.kill()
         child.wait(timeout=10)
 
 
-def _spawn_waiter(lane_dir: Path, lanes: int) -> subprocess.Popen:
+def test_a_process_stopped_while_counting_slots_holds_the_lanes_until_it_exits(
+    make_budget: Callable[..., LaneBudget], lane_dir: Path, clock: FakeClock
+) -> None:
+    """A process stopped under the run mutex blocks every lease, its flag expired or not:
+    counting without the mutex could admit past the limit. Its exit frees them at once."""
+    holder = make_budget(3, pid=513)
+    light = make_budget(3, pid=514)
+    lease = holder.try_acquire()
+    assert lease is not None
+    child = _spawn_waiter(lane_dir, 3, stop_at="count")
+    try:
+        assert os.WIFSTOPPED(os.waitpid(child.pid, os.WUNTRACED)[1])
+        clock.t = flag(light).waiter_at + WAITER_FRESH_SECONDS + 0.01
+        assert active_waiter(flag(light), clock()) is None
+        assert light.try_acquire() is None
+        child.kill()
+        child.wait(timeout=10)
+        assert light.try_acquire() is not None
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+
+def _spawn_waiter(lane_dir: Path, lanes: int, stop_at: str = "") -> subprocess.Popen:
+    """A process waiting for weight 3. Once it holds the waiter flag, ``stop_at`` makes it
+    SIGSTOP itself: ``"poll"`` right after a poll, ``"count"`` while it holds the run mutex."""
     code = textwrap.dedent(
         f"""
-        import sys, time
+        import os, signal, sys, time
         from pathlib import Path
+        from app.services.resource_governor import shared_slots
         from app.services.resource_governor.lanes import LaneBudget, plan_lanes
         plan = plan_lanes(cpus={lanes * 2}, heavy={lanes * 2})
         budget = LaneBudget.open(plan, Path(sys.argv[1]), memory_reader=lambda: (None, None))
+        hold_place, unlock = budget._hold_place, shared_slots._unlock
+
+        def stop():
+            if budget._waiter_owner is not None:
+                os.kill(os.getpid(), signal.SIGSTOP)
+
+        def hold_then_stop(request, weight):
+            hold_place(request, weight)
+            stop()
+
+        def stop_then_unlock(fd):
+            if fd == budget._run._mutex_fd:
+                stop()
+            unlock(fd)
+
+        if sys.argv[2] == "poll":
+            budget._hold_place = hold_then_stop
+        elif sys.argv[2] == "count":
+            shared_slots._unlock = stop_then_unlock
         print("up", flush=True)
         budget.acquire(weight=3, timeout=60)
         time.sleep(60)
         """
     )
     child = subprocess.Popen(
-        [sys.executable, "-c", code, str(lane_dir)], stdout=subprocess.PIPE, text=True
+        [sys.executable, "-c", code, str(lane_dir), stop_at], stdout=subprocess.PIPE, text=True
     )
     assert child.stdout is not None
     assert child.stdout.readline().strip() == "up"

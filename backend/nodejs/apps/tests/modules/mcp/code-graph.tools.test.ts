@@ -9,6 +9,8 @@ import {
   registerCodeGraphToolDefinitions,
   ToolRegistrar,
 } from '../../../src/modules/mcp/code-graph.tools'
+import { registerUpstreams } from '../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config'
 
 type Registered = { config: any; handler: (args: any) => Promise<any> }
 
@@ -32,6 +34,9 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 describe('MCP code-graph tools', () => {
+  beforeEach(() => registerAppUpstreams({ aiBackend: 'http://query:8000' }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {
@@ -136,6 +141,7 @@ describe('MCP code-graph tools', () => {
       'pipeshub_code_search',
       'pipeshub_code_semantic_search',
       'pipeshub_code_entry_points',
+      'pipeshub_code_impact_of_diff',
     ]) {
       const schema = z.object(tools.get(name)!.config.inputSchema)
       expect(schema.safeParse({}).success, name).to.equal(false)
@@ -190,6 +196,21 @@ describe('MCP code-graph tools', () => {
     )
   })
 
+  it('bounds the patch impact_of_diff takes', async () => {
+    const tool = register().get('pipeshub_code_impact_of_diff')!;
+    const schema = z.object(tool.config.inputSchema);
+    expect(
+      schema.safeParse({ repo: 'x/y', patch: '--- a/a.py\n+++ b/a.py\n' })
+        .success,
+    ).to.equal(true);
+    expect(schema.safeParse({ repo: 'x/y', patch: '' }).success).to.equal(
+      false,
+    );
+    expect(
+      schema.safeParse({ repo: 'x/y', patch: 'x'.repeat(2_000_001) }).success,
+    ).to.equal(false);
+  });
+
   it('forwards each new tool to its own route', async () => {
     const tools = register()
     const routes: Record<string, string> = {
@@ -198,6 +219,8 @@ describe('MCP code-graph tools', () => {
       pipeshub_code_outline: '/outline',
       pipeshub_code_impact: '/impact',
       pipeshub_code_entry_points: '/entry-points',
+      pipeshub_code_impact_of_diff: '/impact-of-diff',
+      pipeshub_code_history: '/history',
     }
     for (const [name, route] of Object.entries(routes)) {
       fetchStub.resetHistory()

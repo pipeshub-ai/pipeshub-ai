@@ -92,23 +92,24 @@ class TestKnowledgeToolsetGate:
 
         assert not any("search_internal_knowledge" in name for name in registry.names())
 
-    async def test_skipping_a_knowledge_toolset_is_logged_at_info(self) -> None:
+    async def test_skipping_a_knowledge_toolset_is_logged(self, caplog) -> None:
         """The skip is the condition behind "the agent answered as if it had
-        searched and found nothing". At `debug` it was invisible in a running
-        system; `info` makes it greppable without turning on debug logging
-        everywhere."""
+        searched and found nothing". Per toolset it is a DEBUG event, logged
+        with or without a `logger` in the state; at INFO the turn's
+        `agent.build.end has_knowledge=False` makes it greppable."""
+        import logging
+
+        from app.utils.logger import log_record_fields
+
         context = _make_context(has_knowledge=False, conversation_id="conv-1")
-        state_logger = MagicMock()
-        context.tool_state["logger"] = state_logger
         registry_patch, factory_patch = _patch_retrieval_toolset_registry()
-        with registry_patch, factory_patch:
+        with registry_patch, factory_patch, caplog.at_level(logging.DEBUG):
             await PipesHubToolLoader().load(context)
 
-        messages = [call.args[0] % call.args[1:] for call in state_logger.info.call_args_list]
-        assert any(
-            "retrieval" in m and "no knowledge sources attached" in m and "conv-1" in m
-            for m in messages
-        ), messages
+        skipped = [log_record_fields(r) for r in caplog.records if r.getMessage() == "toolset.skipped"]
+        assert {"toolset": "retrieval", "reason": "no_knowledge"}.items() <= next(
+            s for s in skipped if s.get("reason") == "no_knowledge"
+        ).items(), skipped
 
 
 def _patch_codegraph_toolset_registry() -> tuple:

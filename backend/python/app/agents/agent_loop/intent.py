@@ -49,12 +49,15 @@ from app.agents.actions.internal_tools.intrim_tools import (
 )
 from app.agents.agent_loop.converters import convert_message_from_langchain
 from app.agents.agent_loop.langchain_transport import LangChainTransport
+from app.agents.agent_loop.turn_log import LOGGED_BY_THE_LAYER
 from app.modules.agents.qna.router import (
     build_capability_context,
     build_prior_routing_messages,
     build_sql_verify_override,
     build_tier_rubric,
 )
+from app.utils.error_class import log_failure
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -178,7 +181,7 @@ def _parse_clarify_block(text: str) -> list["AskUserQuestionItemInput"] | None:
         asked = asked_questions([AskUserQuestionItemInput.model_validate(q) for q in questions])
         return asked[:ASK_USER_QUESTION_MAX_QUESTIONS] or None
     except (ValueError, ValidationError, AttributeError, TypeError) as e:
-        logger.warning("Intent: malformed ```clarify block, ignoring: %s", e)
+        log_event(logger, "intent.clarify_malformed", level=logging.WARNING, error_type=type(e).__name__)
         return None
 
 
@@ -366,7 +369,7 @@ async def parse_intent_and_route(
                 logger=logger, config_service=config_service, graph_provider=graph_provider,
             )
         except Exception as _bs_exc:
-            logger.warning("Intent: failed to create blob_store: %s", _bs_exc)
+            log_failure(logger, "intent.attachments_failed", _bs_exc, step="blob_store", include_error_text=False)
 
     context_window = query_info.get("context_window")
     prior_messages = await build_prior_routing_messages(
@@ -395,7 +398,7 @@ async def parse_intent_and_route(
                     *attachment_blocks,
                 ]
         except Exception as exc:
-            logger.warning("Intent: failed to resolve attachments for intent context: %s", exc)
+            log_failure(logger, "intent.attachments_failed", exc, step="resolve", include_error_text=False)
 
     seed_messages = [convert_message_from_langchain(m) for m in prior_messages]
     seed_messages.append(convert_message_from_langchain(HumanMessage(content=human_content)))
@@ -432,20 +435,25 @@ async def parse_intent_and_route(
         decision = _decision_from_text(text, include_routing=include_routing)
         if not decision.rewritten_query.strip():
             decision.rewritten_query = user_query
-        logger.info(
-            "Intent parsed: route=%s | interpretation_chars=%d | prior_messages=%d",
-            decision.route, len(decision.rewritten_query), len(prior_messages),
+        log_event(
+            logger, "intent.end", level=logging.DEBUG, route=decision.route,
+            interpretation_chars=len(decision.rewritten_query), prior_messages=len(prior_messages),
         )
         return decision
     except StructuredSingleShotError as e:
-        logger.warning("Intent parse failed, falling back to raw query: %s", e)
+        # A failure its own layer already logged (the model call) is only recorded here.
+        logged = e.end_event in LOGGED_BY_THE_LAYER
+        log_event(
+            logger, "intent.fallback", level=logging.INFO if logged else logging.WARNING,
+            reason=e.reason, end_event=e.end_event,
+        )
         return _fallback_decision(
             user_query,
             include_routing=include_routing,
             reason=f"intent parse failed: {e}",
         )
     except Exception as e:
-        logger.warning("Intent parse failed, falling back to raw query: %s", e)
+        log_failure(logger, "intent.fallback", e, reason="error", include_error_text=False)
         return _fallback_decision(
             user_query,
             include_routing=include_routing,

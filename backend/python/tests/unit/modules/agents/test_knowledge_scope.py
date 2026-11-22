@@ -24,6 +24,7 @@ from app.modules.agents.knowledge_scope import (
     project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
+    service_account_knowledge,
 )
 
 ORG = "org-1"
@@ -435,3 +436,68 @@ class TestProjectFilesKnowledge:
 
         entries = await _project_files(_hidden_graph(["proj-kb"]), ["proj-kb"])
         assert _extract_kb_app_ids([*AGENT_KNOWLEDGE, *entries]) == ["kb-1", "kb-2", "proj-kb"]
+
+
+class TestServiceAccountKnowledge:
+    """What a service-account agent may search: what is shared with the whole org."""
+
+    KNOWLEDGE = [
+        {"connectorId": "pg-team", "type": "POSTGRESQL"},
+        {"connectorId": "pg-mine", "type": "POSTGRESQL"},
+        {"connectorId": "drive-team", "type": "DRIVE"},
+        {"connectorId": "drive-mine", "type": "DRIVE"},
+        {"connectorId": "legacy", "type": "SLACK"},
+        {"connectorId": "gone", "type": "UNKNOWN"},
+        {"connectorId": "kb-1", "type": "KB"},
+        None,
+    ]
+    INSTANCES = [
+        {"_key": "pg-team", "scope": "team"},
+        {"_key": "pg-mine", "scope": "personal", "createdBy": "sa-1"},
+        {"_key": "drive-team", "scope": "team"},
+        {"_key": "drive-mine", "scope": "personal", "createdBy": "sa-1"},
+        # An app written before apps carried their org; the lookup found it through its org edge.
+        {"id": "legacy", "scope": "team"},
+    ]
+
+    @staticmethod
+    def _graph(instances: list[dict] | Exception) -> MagicMock:
+        graph = MagicMock()
+        graph.get_user_connector_instances = AsyncMock(
+            side_effect=instances if isinstance(instances, Exception) else None,
+            return_value=None if isinstance(instances, Exception) else instances,
+        )
+        return graph
+
+    async def _kept(self, graph: MagicMock, *, bound: bool, knowledge: list | None = None) -> list[str]:
+        kept = await service_account_knowledge(
+            graph, self.KNOWLEDGE if knowledge is None else knowledge, "sa-1", ORG, logging.getLogger("t"), bound=bound,
+        )
+        return [k["connectorId"] for k in kept]
+
+    async def test_an_unbound_agent_keeps_only_the_orgs_connectors(self) -> None:
+        assert await self._kept(self._graph(self.INSTANCES), bound=False) == ["pg-team", "drive-team", "legacy"]
+
+    async def test_a_bound_agent_also_keeps_its_collections(self) -> None:
+        assert await self._kept(self._graph(self.INSTANCES), bound=True) == ["pg-team", "drive-team", "legacy", "kb-1"]
+
+    async def test_a_failed_lookup_keeps_no_connector(self) -> None:
+        graph = self._graph(RuntimeError("down"))
+        assert await self._kept(graph, bound=True) == ["kb-1"]
+
+    @pytest.mark.parametrize("bound", [False, True])
+    async def test_a_source_whose_app_could_not_be_read_is_kept_only_as_a_team_connector(self, bound: bool) -> None:
+        graph = self._graph([*self.INSTANCES, {"_key": "kb-2", "scope": "team", "type": "KB"}])
+        knowledge = [{"connectorId": i, "type": "UNKNOWN"} for i in ("drive-team", "drive-mine", "kb-2", "gone")]
+        assert await self._kept(graph, bound=bound, knowledge=knowledge) == ["drive-team"]
+
+    async def test_collections_alone_need_no_lookup(self) -> None:
+        graph = self._graph(self.INSTANCES)
+        assert await self._kept(graph, bound=True, knowledge=[{"connectorId": "kb-1", "type": "KB"}]) == ["kb-1"]
+        graph.get_user_connector_instances.assert_not_awaited()
+
+    async def test_what_is_left_out_is_logged_as_a_count(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.INFO, logger="t"):
+            await self._kept(self._graph(self.INSTANCES), bound=False)
+        assert "4 knowledge source(s)" in caplog.text
+        assert "drive-mine" not in caplog.text

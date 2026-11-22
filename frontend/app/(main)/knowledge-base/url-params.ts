@@ -5,6 +5,7 @@
  * so that links can be shared and reopened with the same view state.
  */
 
+import { ALL_RECORDS_SORT_FIELDS, SORT_FIELDS } from './types';
 import type {
   KnowledgeBaseFilter,
   SortConfig,
@@ -68,8 +69,10 @@ const VALID_INDEXING_STATUS = new Set<string>([
 const VALID_SIZE_RANGES = new Set<string>(['lt1mb', '1to10mb', '10to100mb']);
 const VALID_ORIGINS = new Set<string>(['COLLECTION', 'CONNECTOR']);
 const VALID_DATE_TYPES = new Set<string>(['on', 'between', 'before', 'after']);
-const VALID_SORT_FIELDS = new Set<string>(['name', 'createdAt', 'updatedAt', 'size', 'nodeType']);
-const VALID_ALL_RECORDS_SORT_FIELDS = new Set<string>(['name', 'size', 'createdAt', 'updatedAt', 'indexingStatus', 'origin']);
+const VALID_SORT_FIELDS = new Set<string>(SORT_FIELDS);
+/** Older links name the type sort `nodeType`, which the API refuses; they still open sorted by type. */
+const LEGACY_SORT_FIELDS = new Map<string, SortField>([['nodeType', 'type']]);
+const VALID_ALL_RECORDS_SORT_FIELDS = new Set<string>(ALL_RECORDS_SORT_FIELDS);
 
 // ============================================================================
 // Helpers
@@ -242,7 +245,8 @@ export function parseCollectionsParams(searchParams: URLSearchParams): {
 } {
   const filter = parseCommonFilter(searchParams) as KnowledgeBaseFilter;
 
-  const sfRaw = searchParams.get(PARAM.SORT_FIELD);
+  const sfParam = searchParams.get(PARAM.SORT_FIELD);
+  const sfRaw = sfParam && (LEGACY_SORT_FIELDS.get(sfParam) ?? sfParam);
   const sf = sfRaw && VALID_SORT_FIELDS.has(sfRaw) ? (sfRaw as SortField) : DEFAULTS.SORT_FIELD;
   const soRaw = searchParams.get(PARAM.SORT_ORDER);
   const so = soRaw === 'asc' || soRaw === 'desc' ? soRaw : DEFAULTS.SORT_ORDER;

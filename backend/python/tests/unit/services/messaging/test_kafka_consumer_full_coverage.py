@@ -20,6 +20,7 @@ import pytest
 
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
+from tests.unit.services.messaging.message_log_helpers import in_delivery
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -386,7 +387,7 @@ class TestProcessMessageOuterException:
 
         consumer.message_handler = AsyncMock(return_value=True)
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
 
     @pytest.mark.asyncio
@@ -401,7 +402,7 @@ class TestProcessMessageOuterException:
             '_KafkaMessagingConsumer__is_message_processed',
             side_effect=RuntimeError("unexpected")
         ):
-            result = await consumer._KafkaMessagingConsumer__process_message(msg)
+            result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
 
         assert result[0] is False
         assert consumer._KafkaMessagingConsumer__is_message_processed("test-topic-0-99") is False
@@ -417,7 +418,7 @@ class TestProcessMessageOuterException:
 
         consumer.message_handler = AsyncMock()
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
         # processed_messages should still be empty
         assert consumer.processed_messages == {}
@@ -428,7 +429,7 @@ class TestProcessMessageOuterException:
         consumer.message_handler = AsyncMock(return_value=False)
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=55)
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
 
     @pytest.mark.asyncio
@@ -438,7 +439,7 @@ class TestProcessMessageOuterException:
 
         # Invalid JSON results in parsed_message being None (returns False before handler check)
         msg = _make_message(value=b"not-json!!!", offset=56)
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
 
 

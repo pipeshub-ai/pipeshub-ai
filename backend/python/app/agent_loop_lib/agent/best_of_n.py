@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 
 from app.agent_loop_lib.agent import observability as obs
+from app.agent_loop_lib.core.exceptions import spawn_refusal
 from app.agent_loop_lib.core.types import (
     AgentResult,
     Goal,
@@ -11,6 +13,9 @@ from app.agent_loop_lib.core.types import (
     ToolResult,
 )
 from app.agent_loop_lib.tools.builtin.coordination.parent_results import parent_request
+from app.utils.error_class import failure_reason, log_failure
+
+_logger = logging.getLogger(__name__)
 
 """Run-level best-of-N: the `best_of_n` special route in
 `tools/builtin/coordination/best_of_n.py` dispatches here. Kept as its own
@@ -39,7 +44,9 @@ async def _run_one_candidate(agent, candidate_spec, candidate_goal: Goal, team_i
             parent_scope=agent.scope, user_request=await parent_request(agent),
         )
     except Exception as e:
-        return AgentResult(goal=candidate_goal, success=False, error=str(e))
+        # Swallowed into a failed candidate: no other line reports it.
+        log_failure(_logger, "sub_agent.failed", e, include_error_text=False, **(spawn_refusal(e) or {}))
+        return AgentResult(goal=candidate_goal, success=False, error=failure_reason(e))
 
 
 async def _judge(
@@ -143,7 +150,7 @@ async def run_best_of_n(
         local_index, judge_reason = await _judge(agent, candidate_goal_desc, criteria, successful)
         winner_index = successful[local_index][0]
     except Exception as e:
-        judge_reason = f"Judge call failed ({e}); defaulting to the first successful candidate."
+        judge_reason = f"Judge call failed ({failure_reason(e)}); defaulting to the first successful candidate."
 
     winner = candidates[winner_index]
     await obs.append_timeline(

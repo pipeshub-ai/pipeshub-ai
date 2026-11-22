@@ -60,6 +60,7 @@ from app.agent_loop_lib.tools.builtin.coordination.graph_utils import (
     find_cycle as _shared_find_cycle,
 )
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import stage_input_files
+from app.utils.logging_fields import log_fields
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.scope import RunScope
@@ -504,6 +505,12 @@ async def _fail_immediately(message: str) -> AgentResult:
     raise SpawnDependencyError(message)
 
 
+async def _with_call_ids(call: ToolCall, spawn: Any) -> AgentResult:
+    # The batch is launched before the executor binds the calls' ids, so each child binds its own.
+    with log_fields(tool=call.name, tool_call_id=call.id):
+        return await spawn
+
+
 async def cancel_pending_spawn_tasks(tasks: dict[str, asyncio.Task]) -> None:
     """Cancel and await every still-running task in a `schedule_spawn_batch()`
     batch. A pre-launched spawn task keeps running as soon as `schedule_
@@ -576,13 +583,11 @@ async def schedule_spawn_batch(
         if error is not None:
             tasks[call.id] = asyncio.create_task(_fail_immediately(error))
             continue
-        tasks[call.id] = asyncio.create_task(
-            _run_dependent_spawn(
-                agent=agent, runtime=runtime, call=call, task_id=task_id,
-                deps=plan.depends_by_call_id.get(call.id, []),
-                events=events, run_scope=run_scope, team_id=team_id,
-            )
-        )
+        tasks[call.id] = asyncio.create_task(_with_call_ids(call, _run_dependent_spawn(
+            agent=agent, runtime=runtime, call=call, task_id=task_id,
+            deps=plan.depends_by_call_id.get(call.id, []),
+            events=events, run_scope=run_scope, team_id=team_id,
+        )))
 
     for call in spawn_calls:
         task_id = plan.task_id_by_call_id[call.id]

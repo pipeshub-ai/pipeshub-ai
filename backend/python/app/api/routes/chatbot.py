@@ -14,7 +14,7 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.agents.agent_loop.cancellation.registry import (
     RunCancellationRegistry,
@@ -77,6 +77,7 @@ from app.services.model_identity.principal import Principal, service_principal
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
 from app.services.parsing.interface import ParseError
+from app.services.resource_governor.kinds import ParseKind
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
@@ -96,7 +97,8 @@ from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import EXCEL_TOO_LARGE
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import get_caller_user, get_user_or_503
+from app.utils.validation_messages import validation_error_text
 
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
@@ -209,6 +211,21 @@ class AttachmentUploadItem(BaseModel):
 class AttachmentUploadRequest(BaseModel):
     conversationId: str | None = None
     attachments: list[AttachmentUploadItem]
+
+
+_BodyT = TypeVar("_BodyT", bound=BaseModel)
+
+
+async def _parse_body(request: Request, model: type[_BodyT], problem: str) -> _BodyT:
+    """The JSON body as ``model``, or a 400 naming each refused field and rule, never the value sent."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    try:
+        return model.model_validate(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=f"{problem}: {validation_error_text(e)}") from e
 
 
 def _build_pdf_image_blocks(png_pages: list[bytes]) -> BlocksContainer:
@@ -639,20 +656,41 @@ async def upload_chat_attachments(
         return await _upload_chat_attachments(request, graph_provider, config_service)
 
 
+
+def attachment_record_doc(*, record_id: str, org_id: str, item: Any, external_record_id: str, virtual_record_id: str, now: int) -> dict[str, Any]:  # noqa: ANN401
+    """The record written for an uploaded chat attachment: a new record, so it starts its indexing run at ``now``."""
+    return {
+        "_key": record_id,
+        "id": record_id,
+        "orgId": org_id,
+        "recordName": item.fileName,
+        "externalRecordId": external_record_id,
+        "recordType": "FILE",
+        "origin": "UPLOAD",
+        "connectorId": f"attachments_{org_id}",
+        "connectorName": Connectors.ATTACHMENTS.value,
+        "createdAtTimestamp": now,
+        "updatedAtTimestamp": now,
+        "sourceCreatedAtTimestamp": now,
+        "sourceLastModifiedTimestamp": now,
+        "isDeleted": False,
+        "isArchived": False,
+        "indexingStatus": "NOT_STARTED",
+        "extractionStatus": "NOT_STARTED",
+        "firstQueuedAt": now,
+        "indexingAttempts": 0,
+        "version": 1,
+        "mimeType": item.mimeType,
+        "sizeInBytes": item.size,
+        "virtualRecordId": virtual_record_id,
+    }
+
 async def _upload_chat_attachments(
     request: Request,
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
 ) -> dict[str, Any]:
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        payload = AttachmentUploadRequest(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid attachment upload payload: {str(e)}")
+    payload = await _parse_body(request, AttachmentUploadRequest, "Invalid attachment upload payload")
 
     user = request.state.user or {}
     org_id = user.get("orgId")
@@ -732,29 +770,10 @@ async def _upload_chat_attachments(
         )
         external_record_id = storage_doc_id if storage_doc_id else record_id
 
-        record_doc = {
-            "_key": record_id,
-            "id": record_id,
-            "orgId": org_id,
-            "recordName": item.fileName,
-            "externalRecordId": external_record_id,
-            "recordType": "FILE",
-            "origin": "UPLOAD",
-            "connectorId": f"attachments_{org_id}",
-            "connectorName": Connectors.ATTACHMENTS.value,
-            "createdAtTimestamp": now,
-            "updatedAtTimestamp": now,
-            "sourceCreatedAtTimestamp": now,
-            "sourceLastModifiedTimestamp": now,
-            "isDeleted": False,
-            "isArchived": False,
-            "indexingStatus": "NOT_STARTED",
-            "extractionStatus": "NOT_STARTED",
-            "version": 1,
-            "mimeType": item.mimeType,
-            "sizeInBytes": item.size,
-            "virtualRecordId": virtual_record_id,
-        }
+        record_doc = attachment_record_doc(
+            record_id=record_id, org_id=org_id, item=item, external_record_id=external_record_id,
+            virtual_record_id=virtual_record_id, now=now,
+        )
 
         needs_ocr = False
         parse_mode = "pdfplumber"
@@ -822,6 +841,7 @@ async def _upload_chat_attachments(
                         CHAT_PDF_PAGE_CAP,
                         label=item.fileName,
                         size=len(file_binary),
+                        kind=ParseKind.INSPECT,
                     )
                     if page_count > CHAT_PDF_PAGE_CAP:
                         raise HTTPException(status_code=400, detail=_attachment_too_long(item.fileName, page_count))
@@ -841,6 +861,7 @@ async def _upload_chat_attachments(
                             144,
                             label=item.fileName,
                             size=len(file_binary),
+                            kind=ParseKind.RENDER,
                         )
                         block_containers = _build_pdf_image_blocks(png_pages)
                         ocr_image_pages_used += page_count
@@ -989,23 +1010,7 @@ class ArtifactPermissionRequest(BaseModel):
     userIds: list[str]
 
 
-_PermissionRequestT = TypeVar("_PermissionRequestT", bound=BaseModel)
-
 _PERMISSION_EDGE_LOOKUP_CONCURRENCY = 16
-
-
-async def _parse_permission_request(
-    request: Request, model: type[_PermissionRequestT]
-) -> _PermissionRequestT:
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        return model(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
 
 
 def _permission_grantor(claims: Mapping[str, Any]) -> tuple[str, str]:
@@ -1246,7 +1251,7 @@ async def _attachment_caller(
     if user.get("isServiceAccount"):
         return org_id, None, True
     user_id = user.get("userId")
-    user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+    user_doc = await get_caller_user(graph_provider, user_id) if user_id else None
     return org_id, (user_doc or {}).get("_key") or (user_doc or {}).get("id"), False
 
 
@@ -1331,13 +1336,19 @@ async def check_viewer_record_access(
     own ids after authenticating them, so a shared chat is rendered for the person
     looking at it. An access check that cannot answer is a 503, never a guess."""
     org_id, viewer_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, RecordAccessRequest)
+    payload = await _parse_body(request, RecordAccessRequest, "Invalid request payload")
     ids = list(dict.fromkeys(r for r in payload.recordIds if r))
     urls = list(dict.fromkeys(u for u in payload.webUrls if u))
     by_url: dict[str, list[str]] = {}
     if urls:
         try:
-            rows = await graph_provider.get_records_by_weburls(urls, org_id, per_address=_RECORDS_PER_URL_LIMIT)
+            # Deleted records too: a deleted record's address is that record's, as its id is.
+            # Known limit: a record removed outright leaves no row, so its address reads as unmatched
+            # (a web page). Answers that cite it by record id are still hidden; only one that names it
+            # by address alone is not.
+            rows = await graph_provider.get_records_by_weburls(
+                urls, org_id, per_address=_RECORDS_PER_URL_LIMIT, include_deleted=True,
+            )
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Access check unavailable") from exc
         for row in rows:
@@ -1357,6 +1368,8 @@ async def check_viewer_record_access(
             and len(by_url[u]) < _RECORDS_PER_URL_LIMIT
             and all(r in readable for r in by_url[u])
         ],
+        # An address no record is stored at (a public web page): not a record to lose.
+        "unmatchedUrls": [u for u in urls if not by_url.get(u)],
     }
 
 
@@ -1369,7 +1382,7 @@ async def grant_attachment_permissions(
 ) -> dict[str, Any]:
     """Grant READER on chat attachment records to the users a conversation was shared with."""
     org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    payload = await _parse_body(request, AttachmentPermissionRequest, "Invalid request payload")
     record_ids = await _grantor_chat_attachments(graph_provider, org_id, grantor_user_id, payload.recordIds)
     granted = await _grant_reader_permissions(
         graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
@@ -1386,7 +1399,7 @@ async def revoke_attachment_permissions(
 ) -> dict[str, Any]:
     """Revoke READER on chat attachment records from users a conversation was unshared from."""
     org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    payload = await _parse_body(request, AttachmentPermissionRequest, "Invalid request payload")
     record_ids = await _grantor_chat_attachments(graph_provider, org_id, grantor_user_id, payload.recordIds)
     revoked = await _revoke_reader_permissions(
         graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
@@ -1405,7 +1418,7 @@ async def grant_artifact_permissions(
     each shared viewer's first-page load so artifacts created after the share
     become readable."""
     org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
+    payload = await _parse_body(request, ArtifactPermissionRequest, "Invalid request payload")
     if not payload.userIds:
         return {"granted": 0}
 
@@ -1427,7 +1440,7 @@ async def revoke_artifact_permissions(
 ) -> dict[str, Any]:
     """Revoke READER on a conversation's artifacts from users it was unshared from."""
     org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
+    payload = await _parse_body(request, ArtifactPermissionRequest, "Invalid request payload")
     if not payload.userIds:
         return {"revoked": 0}
 
@@ -1502,7 +1515,7 @@ async def _load_user_doc(graph_provider: IGraphDBProvider, user_id: str | None) 
     by the caller's `gather(..., return_exceptions=True)`."""
     if not user_id:
         return None
-    return await graph_provider.get_user_by_user_id(user_id)
+    return await get_caller_user(graph_provider, user_id)
 
 
 async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) -> dict | None:
@@ -1835,15 +1848,7 @@ async def _parse_chat_query(
 ) -> "ChatQuery":
     """Request prelude shared by `/chat` and `/chat/stream`: parse, validate,
     reject a `runId` that is already running, and record the session."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        query_info = ChatQuery(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+    query_info = await _parse_body(request, ChatQuery, "Invalid request parameters")
 
     # A real HTTP 409 is only possible HERE, before `StreamingResponse` is
     # returned — once the SSE generator below starts, Starlette has already
@@ -1966,15 +1971,7 @@ async def cancel_chat_stream(
     only for a genuine mismatch (403) or a malformed `runId` (400, via
     `CancelRunRequest`'s field validator).
     """
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        cancel_request = CancelRunRequest(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+    cancel_request = await _parse_body(request, CancelRunRequest, "Invalid request parameters")
 
     user = getattr(request.state, "user", {}) or {}
     requester = RunOwner(

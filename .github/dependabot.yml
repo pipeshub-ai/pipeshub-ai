@@ -107,3 +107,7 @@ updates:
       # python:3.12 is a two-part tag, so 3.12 -> 3.13 reads as a minor; the runtime moves on purpose only.
       - dependency-name: "python"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # Images run Node 24 LTS (22 is the minimum). Odd majors never become LTS, and
+      # the next LTS line is adopted on purpose, not by a weekly bump.
+      - dependency-name: "node"
+        versions: [">=25"]

@@ -16,13 +16,32 @@ import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
 import { getOrgRepository } from '../repositories/org';
-import { getOAuthAppRepository } from '../repositories/oauth-app';
+import {
+  getOAuthAppRepository,
+  NO_APP_CREATOR,
+} from '../repositories/oauth-app';
 import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextIdentity } from '../context/request-context';
+import { recordAgentCall } from './agent-call-recorder';
 import { MCP_PATH } from './rate-limit.middleware';
+import {
+  auditAuthRefusal,
+  authRefusal,
+  type AuthRefusalEvent,
+} from '../../modules/auth/utils/sign-in-audit';
+
+/** The user-held tokens whose refusal is an auth decision; S2S scopes are not audited. */
+const AUDITED_SCOPES: Readonly<Record<string, AuthRefusalEvent>> = {
+  [TokenScopes.TOKEN_REFRESH]: 'auth.session.refresh',
+  [TokenScopes.PASSWORD_RESET]: 'auth.password_reset.complete',
+  [TokenScopes.VALIDATE_EMAIL]: 'auth.email.change',
+  // EE mounts these (org email verification at signup); OSS has no route for them.
+  [TokenScopes.ORG_EMAIL_VERIFY]: 'auth.email.verify',
+  [TokenScopes.EMAIL_VERIFIED]: 'auth.email.verify',
+};
 
 const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
@@ -53,7 +72,7 @@ export class AuthMiddleware {
 
   async authenticate(
     req: AuthenticatedUserRequest,
-    _res: Response,
+    res: Response,
     next: NextFunction,
   ) {
     try {
@@ -75,6 +94,8 @@ export class AuthMiddleware {
         // authenticate oauth token
         await this.authenticateOAuthToken(token, req);
       }
+
+      recordAgentCall(req, res);
 
       // Bind the verified token's org for the rest of the request (never a client field).
       const orgId = req.user?.orgId as string | undefined;
@@ -190,6 +211,12 @@ export class AuthMiddleware {
           // Absent means the creator, which is how every app behaves until
           // someone points it at a service account.
           const resolved = app.tokenIdentityUserId ?? app.createdBy;
+          // An app no person created has nobody for its client_credentials tokens to act as.
+          if (resolved === NO_APP_CREATOR) {
+            throw new UnauthorizedError(
+              'This application does not act as a user',
+            );
+          }
 
           // The token carries the identity it was minted for. If the
           // application has been pointed somewhere else since, this token is
@@ -312,6 +339,8 @@ export class AuthMiddleware {
       accountType,
       role,
       isOAuth: true,
+      tokenId: payload.tokenRowId,
+      delegatedBy,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
       oauthAudience: payload.aud,
@@ -344,10 +373,24 @@ export class AuthMiddleware {
         const token = this.extractToken(req);
 
         if (!token) {
-          throw new UnauthorizedError('No token provided');
+          throw authRefusal(
+            new UnauthorizedError('No token provided'),
+            'no_token',
+          );
         }
 
-        const decoded = await this.tokenService.verifyScopedToken(token, scope);
+        const decoded = await this.tokenService
+          .verifyScopedToken(token, scope)
+          .catch((error: unknown) => {
+            if (!(error instanceof UnauthorizedError)) throw error;
+            const { cause } = error as { cause?: unknown };
+            throw authRefusal(
+              error,
+              cause instanceof jwt.TokenExpiredError
+                ? 'token_expired'
+                : 'token_invalid',
+            );
+          });
         req.tokenPayload = decoded;
         req.verifiedToken = token;
 
@@ -379,8 +422,11 @@ export class AuthMiddleware {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
             const activityTimestamp = userActivity.createdAt?.getTime() || 0;
             if (activityTimestamp > tokenIssuedAt) {
-              throw new UnauthorizedError(
-                'Password reset link expired, please request for a new link',
+              throw authRefusal(
+                new UnauthorizedError(
+                  'Password reset link expired, please request for a new link',
+                ),
+                'link_used',
               );
             }
           }
@@ -402,6 +448,8 @@ export class AuthMiddleware {
           next();
         }
       } catch (error) {
+        const event = AUDITED_SCOPES[scope];
+        if (event) auditAuthRefusal(event, error);
         next(error);
       }
     };

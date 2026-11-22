@@ -12,10 +12,7 @@
  * request via a shared `refreshPromise`.
  */
 
-import {
-  REFRESH_TOKEN_STORAGE_KEY,
-} from '@/lib/store/auth-store';
-import { useAuthStore, logoutAndRedirect } from '@/config';
+import { useAuthStore, logoutAndRedirect, readStoredRefreshToken } from '@/config';
 import { onSessionEnd, captureSession } from '@/lib/api/session-cache';
 
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
@@ -72,10 +69,6 @@ export function isTokenExpired(
 // (timer + axios interceptors) all await the same promise, so the network
 // call to /refresh/token is never duplicated within a tab.
 let refreshPromise: Promise<boolean> | null = null;
-
-function readStoredRefreshToken(): string | null {
-  return typeof window !== 'undefined' ? window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) : null;
-}
 
 /** True while a refresh network call is in flight. Used by the axios response interceptor. */
 export function isRefreshInProgress(): boolean {

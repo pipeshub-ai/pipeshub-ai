@@ -3,7 +3,9 @@ listing is being read; resuming after an interruption."""
 
 import contextlib
 
+from app.utils.logger import log_record_fields
 from tests.integration.gitlab_simulated.helpers import ends, fail, hook, pid
+from tests.integration.gitlab_simulated.world import World
 
 
 async def test_incremental_picks_up_new_edited_and_commented_issues(world, org) -> None:
@@ -31,6 +33,39 @@ async def test_unchanged_sync_writes_nothing(world, org) -> None:
     await world.sync(index=False)
     updates = [m for m in world.producer.events if m[1].get("eventType") in ("newRecord", "updateRecord")]
     assert not updates, updates
+
+
+def _end_counts(world: World) -> dict[str, object]:
+    """The counts and the backoff wait on the last ``sync_run.end`` line."""
+    end = [r for r in world.logs.records if r.getMessage() == "sync_run.end"][-1]
+    return {k: v for k, v in log_record_fields(end).items()
+            if k.startswith(("records_", "skipped_", "backoff_wait"))}
+
+
+async def test_sync_run_end_counts_agree_with_the_graph(world, org) -> None:
+    """The counts are checked against the graph and the edits made on GitLab, not the processor.
+    No backoff_wait_ms: python-gitlab retries by itself, outside ResiliencePolicy."""
+    gl, p = world.gl, org["project"]
+    issues = [gl.add_issue(p, f"Issue {n:02}", author=org["dev"]) for n in range(60)]
+    for n in range(10):
+        gl.add_mr(p, f"MR {n}", author=org["dev"])
+    await world.sync(full=True)
+    stored = len(await world.record_docs())
+    assert stored == 75  # 60 issues, 10 MRs and the project's 5 code records
+    assert _end_counts(world) == {"records_new": stored}
+
+    for issue in issues[:2]:
+        issue.deleted = True
+    for issue in issues[2:5]:
+        issue.title += " (edited)"
+        gl.touch(issue)
+    await world.sync()
+    left = len(await world.record_docs())
+    resaved = len(await world.by_type("TICKET")) + len(await world.by_type("PULL_REQUEST"))
+    assert (left, resaved) == (73, 68)
+    assert _end_counts(world) == {
+        "records_deleted": stored - left, "records_updated": 3, "records_unchanged": resaved - 3,
+    }
 
 
 async def test_more_than_one_page_of_everything(world, org) -> None:

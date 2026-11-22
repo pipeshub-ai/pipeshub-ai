@@ -66,6 +66,7 @@ describe('MigrationService', () => {
       }
       // Stub migrations so they don't make real HTTP calls or DB queries
       const signInStub = sinon.stub(service, 'signInMethodsRemovalMigration' as any).resolves()
+      const webSearchStub = sinon.stub(service, 'webSearchDuckDuckGoDefaultMigration' as any).resolves()
       const connectorStub = sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
       const chatStub = sinon.stub(service, 'chatKbFiltersMigration' as any).resolves()
       const chatSessionsStub = sinon.stub(service, 'chatSessionsMigration' as any).resolves()
@@ -74,12 +75,20 @@ describe('MigrationService', () => {
       const groupNameIndexStub = sinon.stub(service, 'userGroupNameIndexMigration' as any).resolves()
       const delegationTtlStub = sinon.stub(service, 'delegationLogRetentionMigration' as any).resolves()
       const serviceAccountKindStub = sinon.stub(service, 'serviceAccountKindBackfillMigration' as any).resolves()
+      const instanceAppStub = sinon.stub(service, 'instanceAppOwnerMigration' as any).resolves()
+      const dynamicClientOrg = async () => 'org-1'
 
-      await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
+      await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any, dynamicClientOrg })
+
+      // Before anything that waits: a metadata document client consented to before it runs would lose its creator.
+      expect(instanceAppStub.calledOnceWithExactly(dynamicClientOrg)).to.be.true
+      expect(instanceAppStub.calledBefore(signInStub)).to.be.true
 
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
       expect(signInStub.calledOnce).to.be.true
       expect(signInStub.calledBefore(connectorStub)).to.be.true
+      expect(webSearchStub.calledOnce).to.be.true
+      expect(webSearchStub.calledBefore(connectorStub)).to.be.true
       expect(serviceAccountKindStub.calledBefore(connectorStub)).to.be.true
       expect(connectorStub.calledOnce).to.be.true
       expect(chatStub.calledOnce).to.be.true
@@ -190,6 +199,47 @@ describe('MigrationService', () => {
       await new MigrationService(mockLogger, mockKeyValueStore).signInMethodsRemovalMigration()
 
       expect(mockLogger.error.calledWith('Sign-in methods removal failed', sinon.match.object)).to.be.true
+    })
+  })
+
+  describe('webSearchDuckDuckGoDefaultMigration', () => {
+    let runStub: sinon.SinonStub
+
+    beforeEach(() => {
+      const { WebSearchDuckDuckGoDefaultMigration } = require('../../../../src/modules/configuration_manager/services/migrations/web_search_duckduckgo_default.migration')
+      runStub = sinon.stub(WebSearchDuckDuckGoDefaultMigration.prototype, 'run')
+    })
+
+    afterEach(() => {
+      runStub.restore()
+    })
+
+    it('logs success', async () => {
+      runStub.resolves({ seeded: true, errored: 0 })
+
+      await new MigrationService(mockLogger, mockKeyValueStore).webSearchDuckDuckGoDefaultMigration()
+
+      expect(runStub.calledOnce).to.be.true
+      expect(mockLogger.info.calledWith('✅ Web search default handled', sinon.match.object)).to.be.true
+    })
+
+    it('warns, so the next boot retries, when it errored', async () => {
+      runStub.resolves({ seeded: false, errored: 1 })
+
+      await new MigrationService(mockLogger, mockKeyValueStore).webSearchDuckDuckGoDefaultMigration()
+
+      expect(mockLogger.warn.calledWith(
+        '⚠️  Web search default migration finished with errors — will retry on next boot',
+        sinon.match.object,
+      )).to.be.true
+    })
+
+    it('logs and swallows an unexpected failure', async () => {
+      runStub.rejects(new Error('boom'))
+
+      await new MigrationService(mockLogger, mockKeyValueStore).webSearchDuckDuckGoDefaultMigration()
+
+      expect(mockLogger.error.calledWith('Web search default migration failed', sinon.match.object)).to.be.true
     })
   })
 

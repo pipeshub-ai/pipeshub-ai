@@ -1,4 +1,5 @@
-"""Callers and impact of an override: what reaches the methods it overrides reaches it too."""
+"""Callers of an override: what calls the methods it overrides reaches it too (impact walks through them
+itself: test_impact_overrides.py)."""
 import pytest
 
 from app.agents.actions.code_graph import code_graph as cg
@@ -23,32 +24,13 @@ async def test_an_overrides_callers_include_the_callers_of_the_method_it_overrid
     monkeypatch.setattr(cg, "get_neighbour_impl", neighbours)
     tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
                          "graph_provider": FakeGraphProvider(), "blob_store": object()})
-    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak", None,
+    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak",
                                     include_tests=False)
     assert asked == [("method:Dog.speak", "outbound", ("OVERRIDES",)),
                      ("method:Animal.speak", "inbound", ("CALLS",))]
     assert out["through_overridden_methods"]["by_base"] == {
         "src/animal.py::method:Animal.speak": [{"file_path": "src/zoo.py", "qualified_name": "function:feed",
                                                 "line": 9}]}
-
-
-async def test_an_overrides_impact_includes_the_impact_of_the_method_it_overrides(monkeypatch) -> None:
-    async def neighbours(**_kwargs) -> dict:
-        return {"neighbors": [{"file_path": "src/animal.py", "qualified_name": "method:Animal.speak",
-                               "relation": "OVERRIDES"}]}
-
-    async def impact(**kwargs) -> dict:
-        assert kwargs["qualified_name"] == "method:Animal.speak" and kwargs["depth"] == 3
-        return {"impacted_files": [{"file_path": "src/zoo.py", "symbols": ["function:feed"]}]}
-
-    monkeypatch.setattr(cg, "get_neighbour_impl", neighbours)
-    monkeypatch.setattr(cg, "impact_impl", impact)
-    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
-                         "graph_provider": FakeGraphProvider(), "blob_store": object()})
-    out = await tool._with_dispatch({"impacted_files": []}, CONN, "src/dog.py", None, "method:Dog.speak", 3,
-                                    include_tests=False, edge_types=["CALLS"])
-    assert out["through_overridden_methods"]["by_base"]["src/animal.py::method:Animal.speak"] == [
-        {"file_path": "src/zoo.py", "symbols": ["function:feed"]}]
 
 
 async def test_a_method_that_overrides_nothing_gets_no_section(monkeypatch) -> None:
@@ -58,7 +40,7 @@ async def test_a_method_that_overrides_nothing_gets_no_section(monkeypatch) -> N
     monkeypatch.setattr(cg, "get_neighbour_impl", neighbours)
     tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
                          "graph_provider": FakeGraphProvider(), "blob_store": object()})
-    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.bark", None,
+    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.bark",
                                     include_tests=False)
     assert out == {"neighbors": []}
 
@@ -70,7 +52,7 @@ async def test_the_answer_stands_when_the_overridden_methods_cannot_be_walked(mo
     monkeypatch.setattr(cg, "get_neighbour_impl", neighbours)
     tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
                          "graph_provider": FakeGraphProvider(), "blob_store": object()})
-    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak", None,
+    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak",
                                     include_tests=False)
     assert out == {"neighbors": []}
 
@@ -89,7 +71,7 @@ async def test_a_base_whose_walk_fails_is_left_out_not_reported_empty(monkeypatc
     monkeypatch.setattr(cg, "get_neighbour_impl", neighbours)
     tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
                          "graph_provider": FakeGraphProvider(), "blob_store": object()})
-    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak", None,
+    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak",
                                     include_tests=False)
     assert list(out["through_overridden_methods"]["by_base"]) == ["src/pet.py::method:Pet.speak"]
 
@@ -102,6 +84,6 @@ async def test_the_answer_stands_when_the_override_walk_returns_an_error(monkeyp
     monkeypatch.setattr(cg, "get_neighbour_impl", neighbours)
     tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
                          "graph_provider": FakeGraphProvider(), "blob_store": object()})
-    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak", None,
+    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak",
                                     include_tests=False)
     assert out == {"neighbors": []}

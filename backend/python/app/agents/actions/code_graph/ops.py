@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.modules.code_graph.synced_commit import LAST_SYNCED_COMMIT
 from app.modules.parsers.code_parser.lang_config import LANGUAGES
+from app.utils.error_class import log_failure
 
 from .results import saw_commit
 
@@ -39,6 +40,7 @@ __all__ = [
     "SymbolRef",
     "attach_file_paths",
     "get_record_roles",
+    "nodes_in_org",
     "repo_names",
     "resolve_symbol",
 ]
@@ -533,7 +535,7 @@ async def _user_can_read(
             user_id=user_id, org_id=org_id, record_id=record_id
         )
     except Exception as exc:
-        logger.warning("Access check failed for record %s: %s", record_id, exc)
+        log_failure(logger, "code_graph.access_check.failed", exc, record_id=record_id, include_error_text=False)
         return False
     return bool(access)
 
@@ -608,6 +610,14 @@ async def _readable_block_records(
     return {key: r["recordId"] for key, r in rows.items()}
 
 
+async def _readable_kinds(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
+) -> dict[str, str | None]:
+    """Block key -> kind, for the blocks among ``keys`` the caller may read (see ``_readable_block_rows``)."""
+    rows = await _readable_block_rows(graph_provider, org_id, access, keys, extra_fields=["kind"])
+    return {key: r.get("kind") for key, r in rows.items()}
+
+
 async def _readable_keys(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
 ) -> set[str]:
@@ -653,9 +663,10 @@ async def _readable_neighbour_rows(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess | None, keys: list[str],
     relations: list[str], direction: str, *, page: int, budget: int, want: int | None = None,
     connector_id: str | None = None, include_tests: bool = True,
-    accept: "Callable[[dict[str, Any]], bool] | None" = None,
+    accept: "Callable[[dict[str, Any]], bool] | None" = None, node_collection: str = _BLOCKS,
 ) -> tuple[list[dict[str, Any]], bool, bool]:
-    """Edge rows from ``keys`` whose far end the caller can read: ``(rows, over, incomplete)``.
+    """Edge rows from ``keys`` (nodes of ``node_collection``) whose far end the caller can read:
+    ``(rows, over, incomplete)``.
 
     Pages the store in a fixed order and filters each page before counting, so
     rows the caller cannot read, rows ``accept`` refuses, blocks outside
@@ -674,11 +685,10 @@ async def _readable_neighbour_rows(
     while True:
         try:
             raw = list(await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-                node_keys=keys, node_collection=_BLOCKS, relationship_types=relations,
+                node_keys=keys, node_collection=node_collection, relationship_types=relations,
                 direction=direction, limit=page, after=after, raise_on_error=True,
             ) or [])
         except Exception as exc:
-            logger.exception("Neighbour walk failed")
             raise _WalkFailed("Failed to walk the code graph") from exc
         first = scanned
         scanned += len(raw)
@@ -714,8 +724,7 @@ async def _readable_neighbour_rows(
             return counted + [t for _, t in tests], False, True
         # A provider that ignores `after` would repeat a page for ever (equality only: the store's collation is not ours).
         if not (nxt := raw[-1].get("cursor")) or nxt == after:
-            logger.error("Neighbour query did not advance its cursor")
-            raise _WalkFailed("Failed to walk the code graph")
+            raise _WalkFailed("Neighbour query did not advance its cursor")
         after = nxt
         # Rows the caller cannot read don't fill the page, so each further read is larger: a hub of hidden
         # rows costs a few reads, not one per page. Where the pages break changes nothing returned, and no
@@ -749,7 +758,7 @@ async def _degrees(
             page=_DEGREE_PAGE, budget=_DEGREE_ROW_LIMIT,
         )
     except _WalkFailed as exc:
-        logger.warning("Degree lookup failed: %s", exc.__cause__ or exc)
+        log_failure(logger, "code_graph.degrees.failed", exc, include_error_text=False)
         return {}, False
     counts: Counter = Counter(r["anchorKey"] for r in rows if r.get("anchorKey"))
     # Capped only when the scan budget ran out: hidden edges below it change nothing.
@@ -772,7 +781,7 @@ async def path_for_record(
             org_id=org_id, record_ids=[record_id]
         )
     except Exception as exc:
-        logger.warning("Path lookup failed for record %s: %s", record_id, exc)
+        log_failure(logger, "code_graph.path_lookup.failed", exc, record_id=record_id, include_error_text=False)
         return None
     info = (file_info or {}).get(record_id)
     return info.file_path if info else None

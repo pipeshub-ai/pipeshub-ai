@@ -14,7 +14,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 from app.connectors.sources.localKB.push import contract as C
@@ -29,6 +29,11 @@ from app.services.storage_documents import StorageUploadError, parse_document_in
 
 from .bodies import envelope, raw
 from .fake_storage import FakeStorage, etag_of
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from app.connectors.sources.localKB.push.ledger import PushLedger
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 ORG, KB, USER = "org1", "kb1", "user1"
@@ -63,6 +68,7 @@ class Doc:
     awaiting: bool = False
     artifact_set: bool = False
     object_url: str | None = None
+    tags: dict[str, str] = field(default_factory=dict)
 
     def body(self, doc_id: str) -> dict[str, Any]:
         document = {"_id": doc_id, "isDeleted": self.deleted, "sizeInBytes": len(self.data), "storageVendor": self.vendor,
@@ -73,6 +79,8 @@ class Doc:
             document["retiredAt"] = "2026-01-01T00:00:00Z"
         if self.object_url:
             document["s3" if self.vendor == "s3" else "azureBlob"] = {"url": self.object_url}
+        if self.tags:
+            document["customMetadata"] = [{"key": k, "value": v} for k, v in self.tags.items()]
         out: dict[str, Any] = dict(document)  # the route answers the row itself plus storageFingerprint (storage.controller.ts:549-552)
         if self.fp_version is not None:
             value = hashlib.sha256(f"{doc_id}:{self.counter}:{etag_of(self.data)}".encode()).hexdigest()[:32]
@@ -95,6 +103,10 @@ class FakeDocs:
         self.uploads: list[bytes] = []
         self.limit_reads: list[bool] = []
         self.create_error: StorageUploadError | None = None
+        self.created: dict[str, dict[str, str]] = {}  # documents made by ``create``: id -> tags
+        self.purged: set[str] = set()
+        self.single_infos: list[str] = []
+        self.single_info_error: Exception | None = None
 
     def put(self, n: int, data: bytes = PNG, **kw: object) -> Doc:
         doc = Doc(data, **kw)
@@ -118,7 +130,23 @@ class FakeDocs:
         if self.create_error:
             raise self.create_error
         self.uploads.append(open(file_path, "rb").read())
-        return f"doc{len(self.uploads):021x}"
+        doc_id = f"doc{len(self.uploads):021x}"
+        self.created[doc_id] = dict(tags)
+        return doc_id
+
+    async def info(self, org_id, doc_id, *, verify=False) -> object:
+        """``StorageDocuments.info``: one document through the real parser; None once it is purged or unknown."""
+        self.single_infos.append(doc_id)
+        if self.single_info_error:
+            raise self.single_info_error
+        if doc_id in self.purged:
+            return None
+        if doc_id in self.created:
+            body = {"_id": doc_id, "isDeleted": False, "customMetadata": [{"key": k, "value": v} for k, v in self.created[doc_id].items()]}
+            return parse_document_info(body, verify=verify)
+        if doc_id in self.docs:
+            return parse_document_info(self.docs[doc_id].body(doc_id), verify=verify)
+        return None
 
     async def mint_token(self, org_id, *, ttl_s) -> object:
         return "token"
@@ -136,6 +164,8 @@ class InProcMaterialiser:
     def __init__(self) -> None:
         self.runs = 0
         self.tasks: list[dict[str, Any]] = []
+        self.accounts: list[Any] = []
+        self.script: list[tuple[list[str], Exception | None]] = []
 
     def make_dir(self, spool_dir: str) -> str:
         import os
@@ -147,10 +177,18 @@ class InProcMaterialiser:
         import shutil
         shutil.rmtree(path or "", ignore_errors=True)
 
-    async def run(self, task: dict[str, Any]) -> Materialised:
+    async def run(self, task: dict[str, Any], account: Callable[[str, float], None] | None = None) -> Materialised:
         from app.connectors.sources.localKB.push.contract import PushRefusal
         self.runs += 1
         self.tasks.append(task)
+        if account is not None:
+            self.accounts.append(account)
+        if self.script:  # a scripted outcome: events to report, then a refusal
+            events, refusal = self.script.pop(0)
+            for event in events:
+                account and account(event, 0.0)
+            if refusal is not None:
+                raise refusal
         try:
             out = await child.run_task({**task, "allow_loopback": True, "listed_origins": [], "request_timeout_s": task.get("request_timeout_s", 3)})
         except child.Refused as r:
@@ -206,16 +244,16 @@ class Harness:
         return json.loads(self.docs.uploads[-1])
 
 
-async def make_harness(tmp_path, *, materialiser: bool = True) -> Harness:
+async def make_harness(tmp_path, *, materialiser: bool = True, ledger: PushLedger | None = None) -> Harness:
     store = await FakeStorage().start()
     docs, graph, mat = FakeDocs(store), FakeGraph(), InProcMaterialiser()
     spool = Spool(str(tmp_path))
-    worker = SimpleNamespace(validate=AsyncMock(side_effect=lambda i, o, schema_id, schema: W.validate_body(open(i, "rb").read(), schema_id=schema_id, schema=schema, out_path=o)))
+    worker = SimpleNamespace(validate=AsyncMock(side_effect=lambda i, o, schema_id, schema, account=None: W.validate_body(open(i, "rb").read(), schema_id=schema_id, schema=schema, out_path=o)))
     admission = ImageAdmission()
     svc = KbPushService(
         graph_provider=graph, kb_service=MagicMock(), processor_for_kb=AsyncMock(), schema_registry=MagicMock(),
         storage=docs, worker=worker, spool=spool, publish_event=AsyncMock(return_value=True), sleep=AsyncMock(),
-        materialiser=mat if materialiser else None, image_admission=admission if materialiser else None,
+        materialiser=mat if materialiser else None, image_admission=admission if materialiser else None, ledger=ledger,
     )
     h = Harness(svc, docs, graph, store, mat, admission)
 

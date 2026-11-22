@@ -80,6 +80,7 @@ CALLS = [
     ("delete_edges_by_source_keys", (["blocks/b1"], "nodeRelations")), ("delete_edges_touching_nodes", (["b1"], "blocks", "nodeRelations")),
     ("get_edge_rollup_by_file_prefix", ("o", "src/", ["CALLS"], "outbound", "c")), ("get_file_paths_for_records", ("o", ["r1"])),
     ("find_blocks_by_external_ref_prefix", ("o", "c", ["time:"], 10)),
+    ("find_uncalled_blocks", ("o", "c", ["r1"], ["function"], ["CALLS"], 10)),
     ("delete_blocks_for_records", (["r1"],)), ("backfill_block_name_folded", ()), ("compare_and_set_record_fields", (["r1"], "1", {"a": 1})),
     ("stage_state_get", ("s",)), ("stage_states_for_revision", ("v", "1")), ("stage_state_create", ({"id": "s"},)),
     ("stage_state_compare_and_set", ("s", "A", "B", {})), ("get_stage_states_with_records", ("o", "c", "entities", "PENDING")),
@@ -199,6 +200,33 @@ async def test_the_edge_rollup_by_file_prefix_counts_links_between_files_of_one_
         await p.get_edge_rollup_by_file_prefix(org, "src/", ["CALLS"], "up", "c1")
 
 
+async def test_uncalled_blocks_are_found_in_the_database_scoped_paged_and_without_uncounted_callers(pg_db) -> None:
+    p = bound(pg_db)
+    org = p.org
+    fn = {"orgId": org, "connectorId": "c1", "kind": "function"}
+    await p.batch_upsert_nodes([{"_key": r, "orgId": org, "connectorId": "c1"} for r in ("ra", "rb")], "records")
+    await p.batch_upsert_nodes([{"_key": "caller", "recordId": "ra", **fn}, {"_key": "target", "recordId": "rb", **fn},
+                                {"_key": "helper", "recordId": "rb", **fn}, {"_key": "cls", "recordId": "rb", **fn, "kind": "class"},
+                                {"_key": "other", "recordId": "rb", **fn, "connectorId": "c2"}], "blocks")
+    await p.batch_upsert_node_relations([edge("caller", "target", "CALLS"), edge("target", "helper", "CALLS"),
+                                         edge("rb", "caller", "CALLS", fc="records")])
+    kinds, calls = ["function"], ["CALLS"]
+    page, after = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, calls, 10)
+    assert page == [] and after is None                                       # caller is called from rb's record
+    page, _ = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, calls, 10, uncounted_caller_records=["rb"])
+    assert [b["_key"] for b in page] == ["caller", "helper"]                  # neither the record nor its blocks count
+    page, _ = await p.find_uncalled_blocks(org, "c1", ["rb"], kinds, calls, 10, uncounted_caller_records=["ra"])
+    assert [b["_key"] for b in page] == ["target"]                            # helper's caller is in rb, which counts
+    everything, _ = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, ["OVERRIDES"], 10)
+    assert [b["_key"] for b in everything] == ["caller", "helper", "target"]  # key order, the class and c2 left out
+    first, after = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, ["OVERRIDES"], 2)
+    rest, end = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, ["OVERRIDES"], 2, after)
+    assert [b["_key"] for b in first] == ["caller", "helper"] and after == "helper"
+    assert [b["_key"] for b in rest] == ["target"] and end is None
+    assert await p.find_uncalled_blocks(org, "c1", [], kinds, calls, 10) == ([], None)
+    assert await p.find_uncalled_blocks(_other(org), "c1", ["ra", "rb"], kinds, ["OVERRIDES"], 10) == ([], None)
+
+
 def _other(org: str) -> str:
     return new_org() if org else org
 
@@ -278,6 +306,13 @@ async def test_stage_states_by_revision_connector_age_and_what_no_record_holds(p
     assert await p.get_stage_states_with_records(p.org, "c", "entities", "PENDING", limit=1, after_key="s1") == [("s2", ["r1"])]
     assert await p.get_stage_states_with_records(p.org, "c", "entities", "PENDING", limit=10, exclude_indexing_statuses=["QUEUED"]) == [("s1", []), ("s2", [])]
     assert await p.get_stage_states_with_records(_other(p.org), "c", "entities", "PENDING", limit=10) == []
+    # r1 never served an indexed copy: it holds only its own revision
+    assert await p.stage_states_unheld_revisions(["v1"], updated_before_ms=100) == [("v1", "1"), ("v1", "3")]
+    # r1 serves an indexed copy and is QUEUED (replacing it, or failed doing so): its revision is the attempt's, so every revision of v1 is still held
+    assert await p.update_node("r1", "records", {"hasIndexedCopy": True})
+    assert await p.stage_states_unheld_revisions(["v1"], updated_before_ms=100) == []
+    assert await p.stage_states_delete_unheld_revisions([("v1", "1"), ("v1", "3")], updated_before_ms=100) == 0
+    assert await p.update_node("r1", "records", {"indexingStatus": "COMPLETED"})
     assert await p.stage_states_unheld_revisions(["v1"], updated_before_ms=100) == [("v1", "1"), ("v1", "3")]
     assert await p.stage_states_unheld_revisions(["v1"], updated_before_ms=6) == [("v1", "1")]
     assert await p.stage_states_delete_unheld_revisions([("v1", "1"), ("v1", "2")], updated_before_ms=100) == 1       # revision 2 is held again by the record

@@ -177,6 +177,21 @@ class EntityHit:
         return self.filter_name or self.name
 
 
+class EntitySearchHits(list[EntityHit]):
+    """The entities an entity search confirmed the user can reach, best first.
+
+    ``incomplete``: the deadline passed before some vector matches were
+    checked at all, so a match the user can reach may be missing. Every hit
+    listed passed the access check either way; an unchecked match is left
+    out, never guessed. Never set by what the check refused, which would
+    reveal that an entity the user cannot read matched.
+    """
+
+    def __init__(self, hits: Iterable[EntityHit] = (), *, incomplete: bool = False) -> None:
+        super().__init__(hits)
+        self.incomplete = incomplete
+
+
 @dataclass(frozen=True)
 class EntityRecordPage:
     """``capped``: the entity has more records than the provider scans, so
@@ -594,7 +609,7 @@ async def search_entities_for_user(
     kinds: list[str] | None = None,
     top_k: int = 10,
     include_named: bool = True,
-) -> list[EntityHit]:
+) -> EntitySearchHits:
     """Vector search in widening passes, keeping only entities the graph
     confirms the user can reach, best score first.
 
@@ -605,19 +620,29 @@ async def search_entities_for_user(
     access check, then naming rounds of the same shape for taxonomy hits no
     readable record spells yet, all within ``SEARCH_DEADLINE_SECONDS``, extended
     so the probes get at least ``PROBE_MIN_SECONDS`` after the vector request.
-    Raises ``EntitySearchTimedOut`` when time ran out before any match was
-    named and a match the user can reach was left undecided or unnamed: the
-    access check of the record groups the user reaches did not finish, or an
-    entity a readable record was found for was not named in time. Probe rounds
-    that ran out answer as no match, since only hits not yet found readable keep
-    them running.
+
+    Only entities the access check confirmed are returned; time running out
+    never lets an unchecked one through.
+
+    What the caller learns of a cut-short search depends on timing alone,
+    never on what the access check refused. A match is *unchecked* when the
+    deadline passed before one window of its candidates (or, for a record
+    group the user reaches, its own access check) was decided; the vector
+    search returns nearest neighbours with no score floor, so any query has
+    matches and an unchecked one says nothing about what exists. Unchecked
+    matches, or a confirmed entity left unnamed, mark the hits
+    ``incomplete``, and with nothing confirmed raise ``EntitySearchTimedOut``:
+    "no match" would be a guess. A match whose candidates were checked and
+    refused answers exactly as no match, even when later rounds did not
+    finish: flagging it would tell the caller that an entity they cannot
+    read matched.
     """
     started = time.monotonic()
     deadline = started + SEARCH_DEADLINE_SECONDS
     fetch_k = min(max(top_k * OVERFETCH_FACTOR, top_k), OVERFETCH_CAP)
     passes = _search_passes(context)
     if not passes or time.monotonic() >= deadline:
-        return []
+        return EntitySearchHits()
     try:
         per_pass = await entity_vector_store.search_entities_passes(
             query,
@@ -681,18 +706,19 @@ async def search_entities_for_user(
         if (probe.entity_type, probe.entity_id) in shown_names
     ]
     kept.sort(key=lambda h: h.score, reverse=True)
+    undecided = [p for p in probes if not _is_kept(p) and not p.exhausted] if timed_out else []
+    # Only these may change the answer: an undecided match that was walked had
+    # its candidates refused, and must read as no match (see the docstring).
+    unchecked = sum(1 for p in undecided if p.walked == 0)
     logger.info(
-        "entity search org=%s passes=[%s] evaluated=%d rounds=%d kept=%d deadline_hit=%s latency_ms=%d",
+        "entity search org=%s passes=[%s] evaluated=%d rounds=%d kept=%d deadline_hit=%s "
+        "undecided=%d unchecked=%d naming_timed_out=%s latency_ms=%d",
         context.org_id, "; ".join(stats), len(probes), rounds, len(kept), timed_out,
-        int((time.monotonic() - started) * 1000),
+        len(undecided), unchecked, naming_timed_out, int((time.monotonic() - started) * 1000),
     )
-    # No round ran: the check of the record groups the user reaches stopped first.
-    reachable_group_undecided = timed_out and rounds == 0 and any(
-        p.entity_type == RECORD_GROUP_ENTITY_TYPE and p.entity_id in context.record_group_ids for p in probes
-    )
-    if not kept and ((naming_timed_out and kept_probes) or reachable_group_undecided):
-        raise EntitySearchTimedOut("Entity search timed out before naming a match the user can reach")
-    return kept[:top_k]
+    if not kept and (unchecked or (naming_timed_out and kept_probes)):
+        raise EntitySearchTimedOut("Entity search timed out before it could check the matches the user may reach")
+    return EntitySearchHits(kept[:top_k], incomplete=bool(unchecked) or naming_timed_out)
 
 
 async def readable_spellings(
@@ -1198,6 +1224,7 @@ __all__ = [
     "EntityAccessError",
     "EntityHit",
     "EntityRecordPage",
+    "EntitySearchHits",
     "PREVIEW_RECORD_COUNT",
     "RECORD_ENTITY_TYPE",
     "ORGANIZATION_ENTITY_TYPE",

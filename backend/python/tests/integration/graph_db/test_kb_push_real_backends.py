@@ -75,6 +75,15 @@ class FakeStorage:
     async def upload_limit(self, *, use_cache: bool = False) -> int:
         return 30 << 20
 
+    async def info(self, org_id: str, document_id: str, *, verify: bool = False) -> object:
+        """What ``StorageDocuments.info`` answers: the document with its tags, or None once it is gone."""
+        from app.services.storage_documents import parse_document_info
+
+        if document_id not in self.docs or document_id in self.gone:
+            return None
+        body = {"_id": document_id, "isDeleted": False, "customMetadata": [{"key": k, "value": v} for k, v in self.tags.get(document_id, {}).items()]}
+        return parse_document_info(body, verify=verify)
+
     async def exists(self, org_id: str, document_id: str) -> bool:
         return document_id in self.docs and document_id not in self.gone
 
@@ -101,7 +110,7 @@ class FakeConfig:
         self.data: dict = {}
         self.logger = logger
 
-    async def get_config(self, key, default=None, use_cache=True, raise_on_error=False) -> object:
+    async def get_config(self, key, default=None, use_cache=True, raise_on_error=False, keep_in_cache=True) -> object:
         return self.data.get(key, default)
 
     async def create_config_if_absent(self, key, value, **_ttl) -> bool:
