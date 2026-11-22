@@ -8985,7 +8985,7 @@ components:
         approximate: { type: boolean, description: Counts may include repeats (very large runs) }
         error: { $ref: '#/components/schemas/ConnectorSyncError' }
         skipCode: { type: string }
-        startedBy: { type: string, description: User id, manual runs only }
+        startedBy: { type: string, description: "User id; set only for a run someone started by hand" }
     ConnectorSyncError:
       type: object
       properties:
