@@ -22,7 +22,7 @@ import io
 import logging
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -1709,7 +1709,9 @@ def extract_layout_regions(
     ])
     # After every grid is chosen: the choices prefer more columns, and the sign
     # columns this removes would otherwise count.
-    ordered = _split_side_by_side_tables(ordered, page, all_words, page_w, page_h)
+    ordered = _split_side_by_side_tables(
+        ordered, page, all_words, page_w, page_h, gutter_x=gutter_x,
+    )
     for region in ordered:
         if region.type == LayoutRegionType.TABLE and region.table_grid:
             _merge_table_currency_columns(region)
@@ -2442,13 +2444,14 @@ def _detect_tables(
         if not _valid_bbox(bbox):
             continue
         try:
-            grid = _table_grid_by_words(t)
+            band, body = _table_grid_and_band(t)
+            grid = [*band, *body]
         except Exception:
-            grid = None
+            band, body, grid = [], None, None
         pieces = []
-        if grid and len(grid) == len(t.rows):
+        if body and len(body) == len(t.rows):
             try:
-                pieces = _split_stacked_table(t, grid)
+                pieces = _split_stacked_table(t, body, band)
             except Exception:
                 pieces = []
         if len(pieces) > 1:
@@ -2575,12 +2578,19 @@ _PROSE_ROW_MIN_SPAN = 0.5
 _PROSE_ROW_MAX_GAP = 1.0
 
 
-def _split_stacked_table(table: "Table", grid: list[list[Optional[str]]]) -> list[Any]:
+def _split_stacked_table(
+    table: "Table",
+    grid: list[list[str | None]],
+    band: Sequence[list[str | None]] = (),
+) -> list[Any]:
     """Split a find_tables candidate at prose rows and wide vertical gaps.
 
     With columns taken from text alignment, every horizontal rule on the page
     joins one grid, so tables stacked down a page come back as a single
     candidate, with the captions and footnotes between them read as rows.
+
+    ``grid`` has one row per ``table.rows`` entry; ``band`` (the header rows
+    taken out of row 0) goes above row 0 in the piece that holds it.
     """
     rows = list(table.rows)
     heights = sorted(r.bbox[3] - r.bbox[1] for r in rows) or [0.0]
@@ -2619,7 +2629,8 @@ def _split_stacked_table(table: "Table", grid: list[list[Optional[str]]]) -> lis
             continue
         x0 = min(rows[i].bbox[0] for i in g)
         x1 = max(rows[i].bbox[2] for i in g)
-        out.append(((x0, rows[g[0]].bbox[1], x1, rows[g[-1]].bbox[3]), [grid[i] for i in g]))
+        head = list(band) if g[0] == 0 else []
+        out.append(((x0, rows[g[0]].bbox[1], x1, rows[g[-1]].bbox[3]), head + [grid[i] for i in g]))
     return out
 
 
@@ -2639,7 +2650,8 @@ def _detect_ruled_row_tables(
     pieces: list[tuple[tuple[float, float, float, float], list[list[Optional[str]]]]] = []
     for t in tables:
         try:
-            pieces.extend(_split_stacked_table(t, _table_grid_by_words(t)))
+            band, body = _table_grid_and_band(t)
+            pieces.extend(_split_stacked_table(t, body, band))
         except Exception:
             continue
     for bbox, grid in pieces:
@@ -2963,7 +2975,20 @@ def _table_grid_by_words(
     table: "Table", region: Optional["Page"] = None,
 ) -> list[list[Optional[str]]]:
     """``Table.extract()``, but with whole words assigned to the cell holding
-    their centre.
+    their centre, and the header lines of row 0 in rows of their own.
+
+    See ``_table_grid_and_band``.
+    """
+    band, grid = _table_grid_and_band(table, region)
+    return [*band, *grid]
+
+
+def _table_grid_and_band(
+    table: "Table", region: Optional["Page"] = None,
+) -> tuple[list[list[str | None]], list[list[str | None]]]:
+    """The header rows taken out of row 0, and a grid with one row per ``table.rows`` entry.
+
+    The grid holds whole words, each assigned to the cell holding its centre.
 
     ``extract()`` places each character by its own centre, so a word straddling
     a column boundary (a header spanning columns, a label wider than its cell)
@@ -2972,6 +2997,9 @@ def _table_grid_by_words(
     ``region`` (default: the table's bbox) is the area whose words the grid must
     hold; pass the cropped page when re-extracting a region whose bbox is wider
     than the grid pdfplumber finds in it, e.g. after a header was merged in.
+
+    The grid stays aligned with ``table.rows`` so that callers can still pick
+    rows by index (``_split_stacked_table``); the header rows go above row 0.
     """
     try:
         if region is None:
@@ -2986,7 +3014,7 @@ def _table_grid_by_words(
         ]
         page_order = {id(c): i for i, c in enumerate(region.chars)}
     except Exception:
-        return table.extract()
+        return [], table.extract()
 
     rows = list(table.rows)
     buckets = [[[] for _ in row.cells] for row in rows]
@@ -3003,7 +3031,7 @@ def _table_grid_by_words(
         if cell is not None
     ]
     if not cells:
-        return table.extract()
+        return [], table.extract()
     placed: list[tuple[dict[str, Any], int, int]] = []
     for w in words:
         cx = (float(w["x0"]) + float(w["x1"])) / 2.0
@@ -3033,9 +3061,12 @@ def _table_grid_by_words(
             for cell, chars in zip(cells, row_buckets)
         ])
     try:
-        return _split_merged_header_band(grid, rows, placed, region, page_order)
+        banded = _split_merged_header_band(grid, rows, placed, region, page_order)
     except Exception:
-        return grid
+        return [], grid
+    # The header rows are prepended; what follows is row-aligned.
+    added = len(banded) - len(grid)
+    return banded[:added], banded[added:]
 
 
 _MONTH_WORDS = frozenset(
@@ -3072,11 +3103,11 @@ def _line_phrases(line: list[tuple[dict[str, Any], int]]) -> list[list[dict[str,
 
 
 def _rejoin_split_phrases(
-    grid: list[list[Optional[str]]],
+    grid: list[list[str | None]],
     rows: list[Any],
     placed: list[tuple[dict[str, Any], int, int]],
     lines: list[list[tuple[dict[str, Any], int]]],
-) -> list[list[Optional[str]]]:
+) -> list[list[str | None]]:
     """Keep each phrase of a heading row in one cell.
 
     Cells are cut where the values' edges are, so a heading set over them
@@ -3090,7 +3121,7 @@ def _rejoin_split_phrases(
         len({column_of[id(w)] for w in ph}) > 1 for line in phrases for ph in line
     ):
         return grid
-    spans: list[Optional[list[float]]] = [None] * ncols
+    spans: list[list[float] | None] = [None] * ncols
     for w, ri, ci in placed:
         if ri == 0 or not str(w["text"]).strip():
             continue
@@ -3114,12 +3145,12 @@ def _rejoin_split_phrases(
 
 
 def _split_merged_header_band(
-    grid: list[list[Optional[str]]],
+    grid: list[list[str | None]],
     rows: list[Any],
     placed: list[tuple[dict[str, Any], int, int]],
     region: "Page",
     page_order: dict[int, int],
-) -> list[list[Optional[str]]]:
+) -> list[list[str | None]]:
     """Give the header lines at the top of a borderless grid their own rows.
 
     A text-aligned grid has no rule between the column headings and the first
@@ -3173,11 +3204,16 @@ def _split_merged_header_band(
     a = next((n for n in range(k) if any(ci >= 1 for _, ci in ordered[n])), None)
     if a is None:
         return grid
-    header = ordered[a:k]
+    # Label lines right above the first value line are its wrapped label, not
+    # a heading: a heading line has text over a value column.
+    b = k
+    while b > a and all(ci == 0 for _, ci in ordered[b - 1]):
+        b -= 1
+    header = ordered[a:b]
 
     # Extent of each column's values, from every line that is not a heading.
     header_ids = {id(w) for ln in header for w, _ in ln}
-    extents: list[Optional[list[float]]] = [None] * ncols
+    extents: list[list[float] | None] = [None] * ncols
     for w, _ri, ci in placed:
         if id(w) in header_ids or not str(w["text"]).strip():
             continue
@@ -3221,7 +3257,7 @@ def _split_merged_header_band(
         mid = (x0 + x1) / 2.0
         return min(range(ncols), key=lambda c: (abs(mid - (spans[c][0] + spans[c][1]) / 2.0), c))
 
-    header_rows: list[list[Optional[str]]] = []
+    header_rows: list[list[str | None]] = []
     for ln in header:
         phrases = _line_phrases(ln)
         cells: list[list[str]] = [[] for _ in range(ncols)]
@@ -3243,7 +3279,7 @@ def _split_merged_header_band(
         if not str(w["text"]).strip():
             cy = (float(w["top"]) + float(w["bottom"])) / 2.0
             near = min(range(len(centres)), key=lambda n: abs(centres[n] - cy))
-            if a <= near < k:
+            if a <= near < b:
                 continue
         keep[ci].extend(w["chars"])
     first = [
@@ -4119,7 +4155,7 @@ def _statement_cut(
     x0: float,
     x1: float,
     titles: list[tuple[float, float]],
-) -> Optional[tuple[float, float]]:
+) -> tuple[float, float] | None:
     """The blank band between two side-by-side statements, if the words show one.
 
     The band must run the full height of the words. Each side must read as a
@@ -4158,11 +4194,15 @@ def _split_side_by_side_tables(
     all_words: list[dict[str, Any]],
     page_w: float,
     page_h: float,
+    gutter_x: float | None = None,
 ) -> list[LayoutRegion]:
     """Emit two statements set side by side as two tables.
 
     One grid over both would join unrelated rows and give the right-hand
-    statement the left one's column headings.
+    statement the left one's column headings. A part's grid must keep the
+    words in its box (``_GRID_MIN_WORD_COVERAGE``), or the table stays whole.
+    Once a table is cut, the regions are put in reading order again, so each
+    statement's title is read with its own table.
     """
     if page is None or not all_words:
         return regions
@@ -4183,6 +4223,7 @@ def _split_side_by_side_tables(
         return out
 
     result: list[LayoutRegion] = []
+    cut = False
     for r in regions:
         if r.type != LayoutRegionType.TABLE or not r.table_grid or r.from_model:
             result.append(r)
@@ -4199,7 +4240,8 @@ def _split_side_by_side_tables(
         parts: list[LayoutRegion] = []
         for box in boxes:
             grid = _reextract_grid_for_bbox(page, box, page_w, page_h)
-            if not grid:
+            box_words = [w for w in all_words if _word_center_in_bbox(w, box)]
+            if not grid or _grid_char_coverage(grid, box_words) < _GRID_MIN_WORD_COVERAGE:
                 parts = []
                 break
             parts.append(LayoutRegion(
@@ -4207,7 +4249,10 @@ def _split_side_by_side_tables(
                 table_grid=grid, font_size=r.font_size, is_bold=r.is_bold,
             ))
         result.extend(parts or [r])
-    return result
+        cut = cut or bool(parts)
+    if not cut:
+        return result
+    return _reading_order(result, page_w, page_h, gutter_x=gutter_x, all_words=all_words)
 
 
 def _is_plausible_table(

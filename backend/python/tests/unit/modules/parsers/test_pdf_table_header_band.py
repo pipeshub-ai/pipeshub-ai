@@ -9,17 +9,24 @@ Every year sat one column left of its values (``2011`` over ``2,647``) and the s
 from __future__ import annotations
 
 import io
+from typing import TYPE_CHECKING
 
 import pdfplumber
 from reportlab.pdfgen import canvas
 
+from app.modules.parsers.pdf import opencv_layout_analyzer
 from app.modules.parsers.pdf.layout_pages import parse_pdf_layout
 from app.modules.parsers.pdf.opencv_layout_analyzer import (
     LayoutRegion,
     LayoutRegionType,
+    _detect_ruled_row_tables,
+    _detect_tables,
     _split_side_by_side_tables,
 )
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import _plain_row_texts
+
+if TYPE_CHECKING:
+    import pytest
 
 PAGE_H = 842.0
 FONT = ("Helvetica", 9)
@@ -107,8 +114,75 @@ class TestHeaderBand:
                 _text(c, 435, 440 + 14 * i, a, right=True)
                 _text(c, 526, 440 + 14 * i, b, right=True)
 
-        for grid in _tables(_page(draw)):
-            assert not any(not any(row[1:]) and "Deferred" in row[0] for row in grid), grid
+        (grid,) = [g for g in _tables(_page(draw)) if any("2,647" in (c or "") for row in g for c in row)]
+        (row,) = [r for r in grid if any("2,647" in (c or "") for c in r)]
+        assert "Deferred tax liabilities to be" in str(row) and "1,994" in str(row), grid
+        assert not any(not any(r[1:]) and "Deferred" in r[0] for r in grid), grid
+
+    def test_wrapped_label_over_the_first_figures_stays_in_their_row(self) -> None:
+        """Row 0 of a boxed table holds the years, then a label on two lines with the figures beside the second."""
+        with pdfplumber.open(io.BytesIO(_page(lambda c: _boxed_page(c, wrapped=True)))) as doc:
+            page = doc.pages[0]
+            grids = [r.table_grid for r in _detect_tables(page, page.width, page.height, page.extract_words())]
+        (grid,) = [g for g in grids if any("2,647" in (c or "") for row in g for c in row)]
+        (row,) = [r for r in grid if any("2,647" in (c or "") for c in r)]
+        assert "Liabilities to be settled" in str(row) and "within 12 months" in str(row), grid
+        assert _find(grid, "2012")[0] < _find(grid, "2,647")[0]
+
+
+def _boxed_page(c, *, wrapped: bool = False) -> None:
+    """A ruled table: no rule between the years and the first value line, and a sentence between two blocks."""
+    _text(c, 72, 340, "Deferred tax balances are shown below.")
+    for y in (380, 432, 448, 464, 482, 498, 514, 530):
+        _rule(c, 72, 528, y)
+    for x in (72, 360, 440, 528):
+        c.line(x, PAGE_H - 380, x, PAGE_H - 530)
+    _text(c, 389, 386 if wrapped else 392, "2012")
+    _text(c, 480, 386 if wrapped else 392, "2011")
+    if wrapped:
+        _text(c, 82, 404, "Liabilities to be settled")
+        first = [(416, "within 12 months", "2,647", "1,994")]
+    else:
+        first = [(416, "Liabilities within 12 months", "2,647", "1,994")]
+    body = [
+        *first,
+        (436, "Liabilities after 12 months", "469", "512"),
+        (452, "Total deferred tax liability", "3,116", "2,506"),
+        (486, "Assets within 12 months", "1,290", "1,519"),
+        (502, "Assets after 12 months", "396", "816"),
+        (518, "Total deferred tax asset", "1,686", "2,335"),
+    ]
+    _text(c, 82, 469, "The deferred tax assets of the group, which are expected to be recovered, are set out below in full.")
+    for top, label, a, b in body:
+        _text(c, 82, top, label)
+        _text(c, 435, top, a, right=True)
+        _text(c, 526, top, b, right=True)
+
+
+def _check_stacked(grids: list[list[list[str]]]) -> None:
+    text = [str(g) for g in grids]
+    assert not any("The deferred tax assets" in t for t in text), grids  # the sentence between the blocks is no row
+    assert any("Total deferred tax liability" in t and "Liabilities within" in t for t in text), grids
+    assert any("Total deferred tax asset" in t and "Assets within" in t for t in text), grids
+    assert not any("Liabilities within" in t and "Assets within" in t for t in text), grids
+
+
+class TestHeaderBandStackedTables:
+    """The header rows taken out of row 0 must not shift which rows each stacked table takes."""
+
+    def test_find_tables_candidate_is_still_cut_at_a_sentence(self) -> None:
+        with pdfplumber.open(io.BytesIO(_page(_boxed_page))) as doc:
+            page = doc.pages[0]
+            regions = _detect_tables(page, page.width, page.height, page.extract_words())
+        _check_stacked([r.table_grid for r in regions])
+
+    def test_ruled_rows_candidate_keeps_every_row(self) -> None:
+        with pdfplumber.open(io.BytesIO(_page(_boxed_page))) as doc:
+            page = doc.pages[0]
+            boxed = page.find_tables()
+            page.find_tables = lambda *_a, **_k: boxed  # the ruled-rows pass sees the same candidate
+            regions = _detect_ruled_row_tables(page, page.width, page.height, [], [], lambda _b: False)
+        _check_stacked([r.table_grid for r in regions])
 
 
 def _statement(c, x: float, rows: list[tuple[str, str, str]], top: float, step: float) -> None:
@@ -137,7 +211,7 @@ CASH_FLOW = [
 ]
 
 
-def _split(right_top: float, right_step: float) -> list[LayoutRegion]:
+def _split(right_top: float, right_step: float, gutter_x: float | None = None) -> list[LayoutRegion]:
     """Run the side-by-side step on a page of two statements, each with a title text region above it.
 
     The regions are built by hand: with the table model off (as in unit tests) the titles are read into the grid,
@@ -159,7 +233,9 @@ def _split(right_top: float, right_step: float) -> list[LayoutRegion]:
             LayoutRegion(type=LayoutRegionType.TEXT, bbox=(308, 115, 502, 131), text="Condensed Cash Flow Statement"),
             LayoutRegion(type=LayoutRegionType.TABLE, bbox=(37, 145, 533, 240), text="x", table_grid=[["x", "y"]]),
         ]
-        return _split_side_by_side_tables(regions, page, page.extract_words(), page.width, page.height)
+        return _split_side_by_side_tables(
+            regions, page, page.extract_words(), page.width, page.height, gutter_x=gutter_x,
+        )
 
 
 class TestSideBySideStatements:
@@ -170,6 +246,20 @@ class TestSideBySideStatements:
         left, right = sorted(tables, key=lambda r: r.bbox[0])
         assert "Trading" in str(left.table_grid) and "Purchases" not in str(left.table_grid) and "372,168" in str(left.table_grid)
         assert "Purchases" in str(right.table_grid) and "Total assets" not in str(right.table_grid) and "24,914" in str(right.table_grid)
+
+    def test_each_title_is_read_with_its_own_table(self) -> None:
+        # Two columns: the left title, then its table, then the right title and its table.
+        regions = _split(right_top=153, right_step=12.5, gutter_x=285.0)
+        assert [(r.type, r.bbox[0] < 285.0) for r in regions] == [
+            (LayoutRegionType.TEXT, True), (LayoutRegionType.TABLE, True),
+            (LayoutRegionType.TEXT, False), (LayoutRegionType.TABLE, False),
+        ], [(r.type, r.bbox) for r in regions]
+
+    def test_a_part_that_loses_words_keeps_the_table_whole(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A part whose grid holds under 90% of the words in its box would drop text the whole table kept.
+        monkeypatch.setattr(opencv_layout_analyzer, "_reextract_grid_for_bbox", lambda *_a: [["Cash", "1"], ["Total", "2"]])
+        tables = [r for r in _split(right_top=153, right_step=12.5) if r.type == LayoutRegionType.TABLE]
+        assert [r.table_grid for r in tables] == [[["x", "y"]]]
 
     def test_rows_that_line_up_across_the_gutter_are_one_table(self) -> None:
         tables = [r for r in _split(right_top=150, right_step=14) if r.type == LayoutRegionType.TABLE]
@@ -235,7 +325,7 @@ class TestSideBySideStatements:
                 _text(c, 420, t, a, right=True)
                 _text(c, 500, t, b, right=True)
 
-        assert len(_tables(_page(draw))) <= 1
+        assert len(_tables(_page(draw))) == 1
 
 
 def _two_label_columns_page(c) -> None:
