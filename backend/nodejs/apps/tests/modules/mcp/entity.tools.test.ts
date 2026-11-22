@@ -19,6 +19,8 @@ import {
   withoutDisabledEntityTools,
 } from '../../../src/modules/mcp/entity.tools'
 import { ToolRegistrar } from '../../../src/modules/mcp/code-graph.tools'
+import { registerUpstreams } from '../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config'
 
 type Registered = { config: any; handler: (args: any) => Promise<any> }
 
@@ -78,6 +80,9 @@ const DEPLOYMENTS: Array<{ name: string; caps: EntityCapabilities; entities: str
 ]
 
 describe('MCP entity tools', () => {
+  beforeEach(() => registerAppUpstreams({ aiBackend: 'http://query:8000' }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {

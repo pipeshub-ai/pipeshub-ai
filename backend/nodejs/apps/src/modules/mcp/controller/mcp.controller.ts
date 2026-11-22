@@ -257,16 +257,16 @@ function auditToolCall(
   },
 ): void {
   const user: Record<string, unknown> | undefined = req.user;
-  logger.info('MCP tool call', {
-    audit: 'mcp_tool_call',
-    orgId: getCurrentOrgId(),
-    userId: user?.userId,
-    clientId: user?.oauthClientId,
+  // org and user fill the line only when the request's context has none.
+  logger.info('mcp.tool_call.end', {
+    org_id: getCurrentOrgId(),
+    user_id: typeof user?.userId === 'string' ? user.userId : undefined,
     tool: call.tool,
-    durationMs: call.durationMs,
-    isError: call.isError,
-    argumentNames: call.argumentNames,
-    requestId: req.context?.requestId,
+    duration_ms: Math.round(call.durationMs),
+    outcome: call.isError ? 'failure' : 'success',
+    client_id: user?.oauthClientId,
+    argument_names: call.argumentNames,
+    event_name: 'mcp.tool_call.end',
   });
 }
 
@@ -496,17 +496,10 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       const body = req.body as { method?: unknown } | undefined;
       const jsonRpcMethod =
         typeof body?.method === 'string' ? body.method : undefined;
-      logger.info('MCP request completed', {
-        method: jsonRpcMethod,
-        requestId: req.context?.requestId,
-      });
+      // The access line is the request's line; it lacks the JSON-RPC method.
+      logger.debug('MCP request completed', { jsonrpc_method: jsonRpcMethod });
     } catch (error: any) {
-      logger.error('MCP request failed', {
-        error: error.message,
-        method: req.method,
-        userId: req.user?.userId,
-        requestId: req.context?.requestId,
-      });
+      // Logged once, by the error middleware.
       next(error);
     }
   };

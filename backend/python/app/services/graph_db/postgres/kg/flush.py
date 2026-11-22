@@ -18,7 +18,7 @@ import time
 from typing import TYPE_CHECKING
 
 from app.core.org_context import OrgContext, bind, spawn_detached
-from app.services.graph_db.postgres.kg import guard, modes
+from app.services.graph_db.postgres.kg import guard, modes, stamp
 from app.services.graph_db.postgres.kg.project import decode, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
@@ -31,7 +31,8 @@ FLUSH_FAILED = METRICS_BACKEND.counter("pipeshub_kg_flush_failed_total", "Projec
 FLUSHED = METRICS_BACKEND.counter("pipeshub_kg_flushed_nodes_total", "Nodes projected by a writer's own transaction", ["where"])
 
 
-_CHOICES = {"PG_KG_PROJECT": ("0", "1"), "PG_KG_READ": ("0", "1"), "PG_KG_FLUSH": ("async", "inline"), "PG_KG_STRICT": ("0", "1"), "PG_KG_GUARD": ("strict",)}
+_CHOICES = {"PG_KG_PROJECT": ("0", "1"), "PG_KG_READ": ("0", "1"), "PG_KG_COUNTERS": ("0", "1"), "PG_KG_FLUSH": ("async", "inline"), "PG_KG_STRICT": ("0", "1"),
+            "PG_KG_GUARD": ("strict",)}
 
 
 def check_env() -> None:
@@ -41,6 +42,7 @@ def check_env() -> None:
         value = os.environ.get(name, "")
         if value and value not in allowed:
             raise ValueError(f"{name}={value!r} is not understood: set it to one of {', '.join(allowed)}, or leave it unset")
+    stamp.inline_max()
     from app.services.graph_db.postgres.kg import (
         net,  # imports backfill, which imports this module
     )
@@ -48,7 +50,8 @@ def check_env() -> None:
 
 
 def mode() -> str:
-    """``off`` (PG_KG_PROJECT=0, the off switch; nothing projects and no worker runs; the connectors service takes back its own log rows at commit and sweeps the others'),
+    """``off`` (PG_KG_PROJECT=0: nothing projects and no worker runs; the connectors service takes back its own log rows at commit and sweeps the others'. The connectors service
+    refuses to start so on a PostgreSQL graph (``worker.start_for``): its knowledge hub could list nothing),
     ``async`` (the default: the writer only logs, the worker projects in large batches off its critical path) or ``inline`` (PG_KG_FLUSH=inline: the writer also
     projects its own changes before COMMIT; tests). Another value of these settings raises (:func:`check_env`)."""
     check_env()

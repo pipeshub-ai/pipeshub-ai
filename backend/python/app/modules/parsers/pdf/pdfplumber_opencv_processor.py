@@ -34,7 +34,7 @@ from app.services.messaging.config import messaging_env
 from app.services.paid_cache.access import remember_cache
 from app.services.resource_governor.kinds import ParseKind
 from app.utils.aimodels import INDEXING_SDK_RETRIES
-from app.utils.indexing_helpers import generate_simple_row_text
+from app.utils.indexing_helpers import generate_simple_row_text, unique_column_keys
 from app.utils.indexing_metrics import track_indexing_enrichment
 from app.utils.llm import get_llm_for_role
 from app.utils.table_enrichment import (
@@ -164,11 +164,13 @@ async def _run_sized(fn: Callable[..., T], n_rows: int, *args: object) -> T:
 def _plain_row_texts(raw_headers: list[str], data_rows: list[list]) -> list[str]:
     """``column: value`` text for each row, with the first row's cells as column names."""
     texts: list[str] = []
+    keys_by_width: dict[int, list[str]] = {}
     for row in data_rows:
+        keys = keys_by_width.get(len(row))
+        if keys is None:
+            keys = keys_by_width[len(row)] = unique_column_keys(raw_headers, len(row))
         row_dict = {
-            (raw_headers[i] if i < len(raw_headers) else f"Column_{i + 1}"): (
-                cell.get("text", "") if isinstance(cell, dict) else str(cell or "")
-            )
+            keys[i]: (cell.get("text", "") if isinstance(cell, dict) else str(cell or ""))
             for i, cell in enumerate(row)
         }
         texts.append(generate_simple_row_text(row_dict))

@@ -4,6 +4,7 @@ import asyncio
 import functools
 import logging
 import os
+import time
 import traceback
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -27,7 +28,9 @@ from app.core.org_jobs import for_each_org, of_org
 from app.api.middlewares.request_log import install_request_logging, mark_request_failure
 from app.api.validation_errors import input_free_422
 from app.modules.demo_data.router import demo_data_router
+from app.utils import error_class
 from app.utils.logger import install_log_redaction
+from app.utils.loop_lag_monitor import loop_lag_monitor_from_env
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
@@ -919,12 +922,14 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
         try:
             # Counted in the database: a tenant can have thousands of collection
             # Apps, and reading every App here stalled the event loop for seconds.
-            counts = await graph_provider.count_active_apps_by_type()
+            # A count of every org's Apps; PostgreSQL counts them org by org only under a system context.
+            with system("connector_metrics"):
+                counts = await graph_provider.count_active_apps_by_type()
             set_connector_active(counts)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning(f"Failed to refresh connector_active gauge: {e}")
+            error_class.log_failure(logger, "connector_metrics.refresh_failed", e, level=logging.WARNING, include_error_text=False)
         await asyncio.sleep(interval_s)
 
 
@@ -1270,13 +1275,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         app.state.kg_worker = start_kg_worker(graph_provider, logger)
+    except ValueError:          # a setting the worker cannot run with (the message names it, e.g. PG_KG_PROJECT=0): refuse to start rather than serve a knowledge hub that never lists
+        raise
     except Exception as e:      # the service runs without it: reads stay on the walk, and the change log is drained at the next start
         logger.error(f"Failed to start the kg worker: {e}", exc_info=True)
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
 
-    yield
+    # Syncs, indexing's content fetches and /health share this one loop. A
+    # stall warns after 1s and logs the blocking stack after 5s (the
+    # INDEXING_LOOP_* settings, as on the indexing worker loop).
+    loop_lag_monitor = loop_lag_monitor_from_env(logger, "connector-main")
+    if loop_lag_monitor is not None:
+        loop_lag_monitor.start()
+
+    try:
+        yield
+    finally:
+        # Also on cancellation: the monitor's task is detached and its watchdog is a thread.
+        if loop_lag_monitor is not None:
+            loop_lag_monitor.stop()
 
     # Ensure background startup work has settled before tearing things down.
     if not post_startup_task.done():
@@ -1670,6 +1689,12 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
         )
 
 
+# The memory report reads every collection's configuration and Qdrant's
+# telemetry (about 12s on a loaded instance) and index sizes move slowly, so it
+# is reused for a few minutes. Failures are not cached.
+VECTOR_DB_MEMORY_REPORT_TTL_SEC = 300.0
+
+
 @app.get("/health/vector-db/memory")
 async def vector_db_memory_check(request: Request) -> JSONResponse:
     """Whether the vector database has the memory to keep search fast.
@@ -1689,20 +1714,31 @@ async def vector_db_memory_check(request: Request) -> JSONResponse:
     if not is_request_admin(request):
         return JSONResponse(status_code=403, content={"detail": "Admin access required"})
 
+    state = request.app.state
+    lock = getattr(state, "_vector_db_memory_lock", None)
+    if lock is None:
+        lock = state._vector_db_memory_lock = asyncio.Lock()
     try:
-        provider = getattr(request.app.state, "_vector_db_health_provider", None)
-        if provider is None:
-            container = request.app.container  # type: ignore[attr-defined]
-            provider = await VectorDBProviderFactory.create_provider(
-                logger=create_logger("vector_db_health"),
-                config_service=container.config_service(),
-            )
-            request.app.state._vector_db_health_provider = provider
+        # One report at a time: it reads every collection, and concurrent page
+        # loads would each start their own. Whoever waited gets the fresh copy.
+        async with lock:
+            cached = getattr(state, "_vector_db_memory_report", None)
+            if cached is not None and time.monotonic() - cached[0] < VECTOR_DB_MEMORY_REPORT_TTL_SEC:
+                return JSONResponse(status_code=200, content=cached[1])
 
-        report = await provider.memory_report()
-        if report is None:
-            return JSONResponse(status_code=200, content={"status": "unsupported"})
-        return JSONResponse(status_code=200, content=report.to_dict())
+            provider = getattr(state, "_vector_db_health_provider", None)
+            if provider is None:
+                container = request.app.container  # type: ignore[attr-defined]
+                provider = await VectorDBProviderFactory.create_provider(
+                    logger=create_logger("vector_db_health"),
+                    config_service=container.config_service(),
+                )
+                state._vector_db_health_provider = provider
+
+            report = await provider.memory_report()
+            content = {"status": "unsupported"} if report is None else report.to_dict()
+            state._vector_db_memory_report = (time.monotonic(), content)
+            return JSONResponse(status_code=200, content=content)
     except Exception:
         request.app.container.logger().warning(
             "Vector DB memory report failed", exc_info=True

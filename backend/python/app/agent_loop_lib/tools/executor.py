@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
@@ -42,7 +42,9 @@ from app.agent_loop_lib.tools.base import ToolOutput
 from app.agent_loop_lib.tools.errors import ToolNotFoundError, ToolValidationError
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.utils.error_class import already_logged, classify_error, level_for, log_failure
+from app.utils.log_redaction import REDACTED, redact_secrets_in_text
 from app.utils.logging_fields import log_event, log_fields
+from app.utils.sensitive_names import is_credential_name
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.scope import ToolScope
@@ -348,7 +350,7 @@ class ToolExecutor:
         ) as span:
             started = time.perf_counter()
             try:
-                tool_result = await self._run(call, resolved_name, pre_ctx.tool_input, override_execute)
+                tool_result = _without_secrets(await self._run(call, resolved_name, pre_ctx.tool_input, override_execute))
             finally:
                 ended.duration_ms = round((time.perf_counter() - started) * 1000)
             record_tool_span_output(span, result=tool_result)
@@ -477,3 +479,29 @@ class ToolExecutor:
     async def execute(self, call: ToolCall) -> CoreToolResult:
         """Backward-compatible alias for `call_tool` with no session/override."""
         return await self.call_tool(call)
+
+
+def _without_secrets(output: ToolOutput) -> ToolOutput:
+    """A failed call's text as the model, the tool card, the saved transcript and the trace get it: an API's own words
+    stay (the model needs them to correct its call), a key, token or password in them is masked."""
+    if output.success:
+        return output
+    return replace(output, error=_masked(output.error), data=_masked(output.data))
+
+
+def _masked(value: object) -> object:
+    if isinstance(value, str):
+        return redact_secrets_in_text(value)
+    if isinstance(value, Mapping):
+        return {key: _masked_field(key, item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_masked(item) for item in value]
+    return value
+
+
+def _masked_field(key: object, value: object) -> object:
+    # An opaque value has no shape the text masker knows (`{"password": "hunter2"}`): its key says what it is, by the
+    # same name rule the log redactor uses. Booleans, numbers and None describe a credential; they stay.
+    if isinstance(key, str) and is_credential_name(key) and not isinstance(value, (bool, int, float, type(None))):
+        return REDACTED
+    return _masked(value)

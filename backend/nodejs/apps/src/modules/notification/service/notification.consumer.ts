@@ -7,7 +7,8 @@ import { injectable, inject, optional } from 'inversify';
 import { isRetryableStoreError } from '../../../libs/repositories/errors';
 import { NotificationService } from './notification.service';
 import { toBrokerMessage } from '../utils/notification-payload.resolver';
-import { deliverToOrg } from './notification.delivery';
+import { ValidationError } from '../../../libs/errors/validation.error';
+import { deliverToOrg, messageFacts } from './notification.delivery';
 import {
   PlatformAlertHandler,
   isPlatformAudience,
@@ -75,9 +76,7 @@ export class NotificationConsumer {
             if (!event) {
               this.logger.warn(
                 'Notification event skipped: invalid orgId or type',
-                {
-                  value: message.value,
-                },
+                messageFacts(message.value),
               );
               return;
             }
@@ -89,9 +88,11 @@ export class NotificationConsumer {
               redeliver = true;
               throw error;
             }
-            this.logger.error('Failed to process notification message', {
-              error: error instanceof Error ? error.message : String(error),
-              messageValue: message.value,
+            // A refused event is the producer's fault (WARNING); anything else is ours.
+            const level = error instanceof ValidationError ? 'warn' : 'error';
+            this.logger[level]('Failed to process notification message', {
+              ...messageFacts(message.value),
+              error,
             });
           } finally {
             if (!redeliver) await handler(message);

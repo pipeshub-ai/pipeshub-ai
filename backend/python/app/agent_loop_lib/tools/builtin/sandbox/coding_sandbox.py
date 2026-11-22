@@ -28,6 +28,7 @@ from app.agent_loop_lib.tools.base import (
     Tool,
     ToolOutput,
     ToolParameter,
+    error_data,
 )
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     PARENT_RESULTS_INPUT_PATH,
@@ -900,9 +901,9 @@ class ReadSandboxFileTool(Tool):
             content, truncated = await _read_head(backend, path, max_bytes)
         except ValueError as e:
             # Path traversal — a rejected request, not an infra failure.
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
         except (FileNotFoundError, IsADirectoryError) as e:
-            return ToolOutput(success=True, data={"error": str(e)})
+            return ToolOutput(success=True, data=error_data(e))
 
         try:
             return ToolOutput(success=True, data={

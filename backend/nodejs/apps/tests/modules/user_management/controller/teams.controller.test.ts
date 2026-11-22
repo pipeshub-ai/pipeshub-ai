@@ -128,7 +128,8 @@ describe('TeamsController', () => {
       await controller.createTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(mockLogger.error.called).to.be.true;
+      // The error middleware logs it once; the controller no longer does.
+      expect(mockLogger.error.called).to.be.false;
     });
   });
 

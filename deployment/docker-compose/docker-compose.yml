@@ -684,10 +684,15 @@ services:
         reservations:
           memory: ${MONGO_MEMORY_RESERVATION:-512M}
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      # mongosh boots a whole Node.js runtime per check. Under load that alone
+      # can outlast a 3s timeout while mongod keeps serving, so give each check
+      # 10s and tolerate about a minute of slow checks before calling it
+      # unhealthy. (start_interval would shorten the first wait but needs
+      # Docker Engine 25+.)
+      test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 10s
+      retries: 4
 
   redis:
     image: redis:7.4-bookworm
@@ -934,10 +939,11 @@ services:
     networks:
       - pipeshub
     healthcheck:
+      # arangosh is a full JavaScript shell; same budget as mongodb's check.
       test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-}' --javascript.execute-string 'db._version()' || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      interval: 15s
+      timeout: 10s
+      retries: 4
 
   # ---------------------------------------------------------------------------
   # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j)

@@ -311,7 +311,7 @@ export const handleBackendError = (
  * only an Error, never a payload object, and never JSON.parse's message, which
  * quotes the start of the body it could not read.
  */
-const safeCause = (error: unknown): Error | undefined => {
+export const safeCause = (error: unknown): Error | undefined => {
   if (error instanceof SyntaxError) {
     return new SyntaxError('response was not valid JSON');
   }

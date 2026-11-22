@@ -102,7 +102,8 @@ _DEAD = "named in config_node_constants, read by no code"
 _LIST = "listed in encrypted_store.py as stored unencrypted, not read there"
 # Reachable from a service's entry module but never read by it at run time, with why.
 _COMMON_NOT_READ = {
-    "/services/connectors/*": _CONN, "/services/oauth/*": _CONN, "/services/oauths/*": _TOOLS, "/services/toolset*": _TOOLS,
+    "/services/connectors/*": _CONN, "/services/oauth/*": _CONN, "/services/oauth-code-claims/*": _CONN,
+    "/services/oauths/*": _TOOLS, "/services/toolset*": _TOOLS,
     "/services/api-toolsets*": _TOOLS, "/services/mcp*": _TOOLS, "/services/agents/*": _QUERY, "/services/webSearch": _QUERY,
     "/services/aiModelApiModes": "read only by query, which creates the store at start (query_main.py::initialize_container); elsewhere get_llm_api_mode_store() is None",
     "/services/systemPrompts": _QUERY, "/services/demoData/*": "demo data markers: the connectors service and query's retrieval",

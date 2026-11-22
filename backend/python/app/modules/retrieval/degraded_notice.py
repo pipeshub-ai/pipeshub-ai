@@ -7,7 +7,7 @@ request spawns, so a search made by a tool in another task is seen too; outside 
 """
 import contextlib
 import functools
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Iterator
 from contextvars import ContextVar
 from typing import Any, ParamSpec, TypeVar
 
@@ -17,6 +17,7 @@ _T = TypeVar("_T")
 _seen: ContextVar[list[str] | None] = ContextVar("search_degraded", default=None)
 _access: ContextVar[list[dict[str, str]] | None] = ContextVar("access_notices", default=None)
 _apps: ContextVar[dict[str, dict[str, Any] | None] | None] = ContextVar("access_notice_apps", default=None)
+_search: ContextVar[tuple[list[str], ...] | None] = ContextVar("search_degraded_own", default=None)      # the open ``collect`` blocks of this context
 
 
 def track() -> None:
@@ -25,6 +26,18 @@ def track() -> None:
         _seen.set([])
         _access.set([])
         _apps.set({})
+
+
+@contextlib.contextmanager
+def tracking() -> Iterator[None]:
+    """Track the block on its own (every list of this module new), and leave the context as it was after it: ``scoped`` for code that is not a stream."""
+    tokens = (_seen.set([]), _access.set([]), _apps.set({}))
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError):
+            for var, token in zip((_seen, _access, _apps), tokens, strict=True):
+                var.reset(token)
 
 
 def scoped(stream: Callable[_P, AsyncGenerator[_T, None]]) -> Callable[_P, AsyncGenerator[_T, None]]:
@@ -55,6 +68,8 @@ def scoped(stream: Callable[_P, AsyncGenerator[_T, None]]) -> Callable[_P, Async
 def note(reason: str = "partial") -> None:
     if (seen := _seen.get()) is not None:
         seen.append(reason)
+    for mine in _search.get() or ():
+        mine.append(reason)
 
 
 def note_access(notices: list[dict[str, str]]) -> None:
@@ -76,6 +91,46 @@ def access_notices() -> list[dict[str, str]]:
 def count() -> int:
     """How many times this request has been noted, so a caller can tell whether its own search was."""
     return len(_seen.get() or ())
+
+
+@contextlib.contextmanager
+def collect() -> Iterator[list[str]]:
+    """The reasons noted while the block runs, by it and the tasks it starts, and not by other searches of the request running beside it (the request's
+    list, ``_seen``, holds them all). Nested blocks each get the reasons noted inside them."""
+    mine: list[str] = []
+    token = _search.set((*(_search.get() or ()), mine))
+    try:
+        yield mine
+    finally:
+        with contextlib.suppress(ValueError):
+            _search.reset(token)
+
+
+@contextlib.contextmanager
+def held() -> Iterator[list[str]]:
+    """Hold what the block notes (an attempt that may be cancelled or retried): it reaches neither the request nor an open ``collect`` block until the
+    caller publishes it (``note`` each reason) once the attempt has answered."""
+    mine: list[str] = []
+    seen, search = _seen.set(None), _search.set((mine,))
+    try:
+        yield mine
+    finally:
+        with contextlib.suppress(ValueError):
+            _seen.reset(seen)
+            _search.reset(search)
+
+
+@contextlib.contextmanager
+def isolated() -> Iterator[None]:
+    """A search that is not part of the request's answer (the shadow comparison, in a task of its own): what it notes reaches neither the request
+    (``was_degraded``) nor any ``collect`` block open where it was started; its own ``collect`` blocks still see it."""
+    seen, search = _seen.set(None), _search.set(None)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError):
+            _seen.reset(seen)
+            _search.reset(search)
 
 
 def was_degraded() -> bool:

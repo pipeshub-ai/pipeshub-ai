@@ -42,7 +42,10 @@ from app.agents.agent_loop.clarification import (
 )
 from app.agents.agent_loop.confidence import normalize as normalize_confidence
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.error_classification import classify_exception
+from app.agents.agent_loop.error_classification import (
+    classify_exception,
+    run_error_text,
+)
 from app.agents.agent_loop.factory import PipesHubAgentFactory, card_already_answered
 from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
@@ -487,7 +490,7 @@ async def run_agent_loop_stream(
                 )
                 run_timer.start("finish", "finish")
                 await finalizer.run(
-                    agent_success=result.success, agent_error=result.error,
+                    agent_success=result.success, agent_error=run_error_text(result),
                     agent_output=result.output, event_sink=context.event_sink,
                     streamed_answer=streamer.streamed_answer,
                     reasoning_turns=streamer.reasoning_turns,

@@ -83,11 +83,6 @@ function panel(editingInstance: Instance) {
     customStdioAllowed: true,
     onOpenChange: vi.fn(),
     onSaved: vi.fn(),
-    onRequestDelete: vi.fn(),
-    busyInstanceId: null,
-    onAuthenticate: vi.fn(),
-    onReauthenticate: vi.fn(),
-    onDisconnect: vi.fn(),
   } as PanelProps;
   return (
     <Theme>

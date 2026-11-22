@@ -53,6 +53,9 @@ Exit codes: 0 done, 1 a migration failed, 2 configuration, 3 lock wait timed out
 (`PG_MIGRATE_LOCK_TIMEOUT_S`, default 600), 4 `kernel.rls_violations` not empty. Downgrade is development
 only (`PG_MIGRATE_ALLOW_DOWNGRADE=1 python -m db.migrate downgrade <rev>`).
 
+## Health check (`python -m db.doctor`)
+`PG_MIGRATE_URL=... python -m db.doctor` (from `backend/`) checks a database without changing it: one read-only transaction, no migrate lock, so it can run beside the services and through a pooler. It reports every branch whose epoch is below this build's head (migrations pending: run `db.migrate`) or whose `min_code_epoch` is above it (this build is older than the schema), then runs the checks the migrate job runs after an upgrade: `kernel.rls_violations` (which includes invalid indexes and extensions that are not in `kernel.settings.extensions`), its warnings, the vetted function manifests against the registry, and the security surface snapshot (the two layers below). `PG_MIGRATE_SURFACE_CHECK=skip` is ignored: the doctor always compares the surface. Exit codes: 0 healthy, 1 the check itself failed, 2 configuration (no URL, cannot connect), 4 a problem was found (each one is printed).
+
 ## Moving the key-value store from Redis (`python -m app.scripts.kv_redis_to_postgres`)
 Run once, from `backend/python`, **before** switching `KV_STORE_TYPE` from `redis` to `postgres`; otherwise the install starts with an empty store (config, credentials and pending-delete records stay behind in Redis). Stop the PipesHub services first. It reads the Redis settings the services use (`REDIS_*`, `REDIS_KV_PREFIX`, `REDIS_KEY_NAMESPACE`) and `PG_CORE_URL`, copies only the config key-value keys into `platform.kv_entries` exactly as stored (ciphertext, never decoded or printed) with their remaining TTL, and never writes to Redis. `--dry-run` prints key counts per top-level prefix and writes nothing. A key PostgreSQL holds with a different value, or a configuration key (a `/...` path) it holds that Redis does not, stops the run before any write (exit 1) unless `--overwrite` is given, which replaces or removes them; runtime rows in the same table are never touched; re-running after a successful copy changes nothing. Check: the JSON summary shows `different_after: 0` and `conflicts: []`; a second run reports `changed: 0`. With `PG_KV_ACCESS=enforce` it must run with the Node API's login (`PG_CORE_URL=<node login> PG_RUNTIME_SERVICE=node`): it writes every configuration key. Rollback is setting `KV_STORE_TYPE` back to `redis`, before the services have written to PostgreSQL: changes made while on `postgres` are not copied back, so after that a rollback returns to the older Redis values.
 
@@ -163,7 +166,7 @@ line and whose `remove:` lists the old one. A body that reads the location's own
 any other schema; the grant is a snapshot line the allowlist must list).
 
 Two layers decide whether a database is acceptable, and both must be empty (the migrate job exits 4 otherwise, CI runs both on an empty
-database, and the doctor command should too):
+database, and `python -m db.doctor` runs both on a live one):
 
 1. **The surface snapshot, deny by default** (`surface.py`, expected text in `surface.snapshot.txt` and any `surface*.txt` next to a
    module, plus an `allowlist.yaml` in each directory of `EXTRA_MIGRATION_LOCATIONS` (a `surface:` key, one `- "<line>"` item per line, merged into
