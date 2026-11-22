@@ -517,15 +517,20 @@ def _cypher_kh_has_children(
     # the row's own declared scope admits a child as the rule's declared arm does: held to the same hiding test
     hide_arm = f" AND NOT {hidden('kh_ch', v)}" if hidden else ""
     stub_kept = " OR coalesce(kh_ch.isPlaceholder, false)" if stub_arm else ""
-    body = (
-        f"({holds} OR "
-        f"EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
-        f"WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
+    # The child's inheritance edge is read once per child and bound (`kh_inh`): the cheap reject and the rule
+    # each spelled it, and Neo4j plans every spelling as a subquery of its own.
+    inherits = f"EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}"
+    child_test = (
+        f"kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
         # Cheap reject first: a child no arm of the rule can open is skipped before the full rule.
         f"AND ({filed} OR size($declaredScope) > 0 OR kh_ch.id IN $grantedIds OR {declared} "
-        f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}{stub_kept}) "
+        f"OR {inherits}{stub_kept}) "
         f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
-        f"{stub('kh_ch')} AND ({rule} OR ({in_scope}{hide_arm}){stub_arm}) }} "
+        f"{stub('kh_ch')} AND ({rule} OR ({in_scope}{hide_arm}){stub_arm})"
+    ).replace(inherits, "kh_inh")
+    body = (
+        f"({holds} OR "
+        f"EXISTS {{ MATCH ({v})-[kh_hr:NODE_RELATION]->(kh_ch) WITH *, {inherits} AS kh_inh WHERE {child_test} }} "
         f"OR ({filed} AND {'NOT coalesce(' + container + ', false)' if exact else 'true'} AND {held('kh_bc')}))"
     )
     if exact:
