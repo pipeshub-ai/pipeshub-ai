@@ -143,7 +143,7 @@ class QueuedCopies:
                     # Only costs one redundant reconcile later.
                     self._logger.warning("Could not clear the reconcile flag on record %s: %s", record_id, exc)
                 return
-        await rearm_failed_reconcile(self._graph, self._logger, record_id)
-        self._logger.warning(
-            "Duplicates of record %s still need reconciling; left pending for the recovery retry", record_id
-        )
+        if await rearm_failed_reconcile(self._graph, self._logger, record_id):
+            self._logger.warning(
+                "Duplicates of record %s still need reconciling; left pending for the recovery retry", record_id
+            )

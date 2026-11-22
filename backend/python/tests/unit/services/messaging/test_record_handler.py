@@ -4979,6 +4979,20 @@ class TestReconcilePendingFlag:
         assert gp.update_node_fields_if_match.await_args.args[2][DUPLICATE_RECONCILE_PENDING_FIELD] is True
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("rearmed", [True, False])
+    async def test_the_recovery_line_is_logged_only_when_the_marker_was_rearmed(self, monkeypatch, rearmed) -> None:
+        monkeypatch.setattr(record_module, "RECONCILE_RETRY_DELAY_SECONDS", 0)
+        monkeypatch.setattr(record_module, "rearm_failed_reconcile", AsyncMock(return_value=rearmed))
+        handler = _make_handler()
+        handler.event_processor.graph_provider.update_node = AsyncMock()
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=False)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        logged = any("left pending for the recovery retry" in str(c.args[0]) for c in handler.logger.warning.call_args_list)
+        assert logged is rearmed
+
+    @pytest.mark.asyncio
     async def test_a_successful_reconcile_is_not_rearmed(self) -> None:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider

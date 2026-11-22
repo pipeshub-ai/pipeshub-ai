@@ -217,3 +217,44 @@ async def test_a_successful_reconcile_leaves_the_marker_cleared_and_writes_nothi
     assert graph.doc[PENDING] is False
     assert graph.fenced_writes == 0
     assert graph.doc[ATTEMPTS] == 0
+
+
+class _ProviderThatAnswersNoneOnAFailedRead(FakeGraph):
+    """The stores' behaviour: a failed read answers None unless asked to raise."""
+
+    async def get_document(self, key: str, collection: str, **kw: object) -> dict | None:
+        if kw.get("raise_on_error") is not True:
+            return None
+        raise ConnectionError("graph unavailable")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_that_a_store_answers_with_none_is_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
+    graph = _ProviderThatAnswersNoneOnAFailedRead(_swept_clear_doc())
+    with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+        assert not await rearm_failed_reconcile(graph, LOGGER, "p1", lambda: NOW)  # type: ignore[arg-type]
+    assert "Could not re-arm the reconcile of record p1" in caplog.text
+    assert graph.doc[PENDING] is False
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_record_is_left_alone_without_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    graph = FakeGraph(_swept_clear_doc())
+    graph.get_document = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+        assert not await rearm_failed_reconcile(graph, LOGGER, "p1", lambda: NOW)  # type: ignore[arg-type]
+    assert "Could not re-arm" not in caplog.text
+    assert graph.fenced_writes == 0
+    assert graph.get_document.await_args.kwargs["raise_on_error"] is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rearmed", [True, False])
+async def test_the_recovery_line_is_logged_only_when_the_marker_was_rearmed(
+    rearmed: bool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    copies = _failing_copies(FakeGraph(_swept_clear_doc()), monkeypatch)
+    monkeypatch.setattr("app.modules.pipeline.duplicates.rearm_failed_reconcile", AsyncMock(return_value=rearmed))
+    with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+        await copies._reconcile("p1", "vr1")
+    assert ("left pending for the recovery retry" in caplog.text) is rearmed

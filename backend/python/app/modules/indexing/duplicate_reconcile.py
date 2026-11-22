@@ -278,10 +278,13 @@ async def rearm_failed_reconcile(
     time and attempt count, which the sweep owns. The write is fenced on the
     flag, due time and indexing status that were read, so a promotion made meanwhile keeps its
     own flag. A record the sweep gave up on (attempt count at the limit) is not
-    re-armed, so the retries stay bounded. Returns whether the flag was set.
+    re-armed, so the retries stay bounded. Returns whether the flag was set; a failed read or write is logged and
+    answers False.
     """
     try:
-        record = await graph_provider.get_document(record_id, _RECORDS)
+        # A failed read must raise (and be logged below), not answer None: here
+        # None means the record is gone, and an unread record keeps no flag.
+        record = await graph_provider.get_document(record_id, _RECORDS, raise_on_error=True)
         if not isinstance(record, dict):
             return False
         if record.get(DUPLICATE_RECONCILE_PENDING_FIELD) is True:
