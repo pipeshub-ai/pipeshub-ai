@@ -44222,8 +44222,8 @@ paths:
                 $ref: '#/components/schemas/StreamRecordErrorResponse'
         '500':
           description: |
-            Internal streaming failure, downstream conversion failure, or connector/backend
-            error proxied by the gateway.
+            Internal streaming failure, downstream conversion failure, or a 500 answered by the
+            connector service and relayed by the gateway.
 
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
@@ -44246,6 +44246,16 @@ paths:
             The record, its organization or its connector could not be read because the database
             was unreachable. The record may well exist. The response carries `Retry-After` (seconds,
             usually 5); retry after that long.
+
+            Also answered, without `Retry-After`, when the connector service gave no answer
+            (unreachable or the connection dropped): `{"error": "Failed to retrieve record data"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '504':
+          description: |
+            The connector service did not answer in time: `{"error": "Failed to retrieve record data"}`.
           content:
             application/json:
               schema:
