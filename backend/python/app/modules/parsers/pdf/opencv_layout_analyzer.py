@@ -4230,7 +4230,10 @@ def _split_side_by_side_tables(
         return out
 
     result: list[LayoutRegion] = []
+    placed: set[int] = set()  # titles already put before their part
     for r in regions:
+        if id(r) in placed:
+            continue
         if r.type != LayoutRegionType.TABLE or not r.table_grid or r.from_model:
             result.append(r)
             continue
@@ -4266,6 +4269,7 @@ def _split_side_by_side_tables(
 
         moved = [o for o in title_regions if any(_over(o, p.bbox) for p in parts)]
         result = [o for o in result if not any(o is m for m in moved)]
+        placed.update(id(o) for o in moved)
         for p in parts:
             result.extend(o for o in moved if _over(o, p.bbox))
             result.append(p)

@@ -272,7 +272,9 @@ CASH_FLOW = [
 ]
 
 
-def _split(right_top: float, right_step: float, around: bool = False) -> list[LayoutRegion]:
+def _split(
+    right_top: float, right_step: float, around: bool = False, titles_after: bool = False,
+) -> list[LayoutRegion]:
     """Run the side-by-side step on a page of two statements, each with a title text region above it.
 
     The regions are built by hand: with the table model off (as in unit tests) the titles are read into the grid,
@@ -303,6 +305,9 @@ def _split(right_top: float, right_step: float, around: bool = False) -> list[La
                      LayoutRegion(type=LayoutRegionType.TEXT, bbox=(308, 260, 530, 300), text="below right")]
             left_title, right_title, table = regions
             regions = [above_left, left_title, above_right, right_title, table, *below]
+        if titles_after:
+            # A reading order that put the table before its titles.
+            regions = [regions[2], regions[0], regions[1]]
         return _split_side_by_side_tables(regions, page, page.extract_words(), page.width, page.height)
 
 
@@ -328,6 +333,12 @@ class TestSideBySideStatements:
             "above left", "above right", "Condensed Balance Sheet", "Condensed Cash Flow Statement",
             "below left", "below right",
         ]
+
+    def test_a_title_read_after_the_table_is_emitted_once(self) -> None:
+        regions = _split(right_top=153, right_step=12.5, titles_after=True)
+        assert [r.text if r.type == LayoutRegionType.TEXT else (r.bbox[0] < 285.0) for r in regions] == [
+            "Condensed Balance Sheet", True, "Condensed Cash Flow Statement", False,
+        ], [(r.type, r.bbox) for r in regions]
 
     def test_a_part_that_loses_words_keeps_the_table_whole(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A part whose grid holds under 90% of the words in its box would drop text the whole table kept.
