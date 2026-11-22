@@ -44,3 +44,23 @@ async def test_without_a_limit_every_repository_of_the_agent_stays_open() -> Non
     })
 
     assert tool._in_scope("repo-in") is None and tool._in_scope("repo-out") is None
+
+
+async def test_a_strict_scope_with_no_repository_reaches_none() -> None:
+    """A service-account agent or a project with no sources left: strictScope makes the empty scope mean nothing."""
+    tool = cg.CodeGraph({
+        "org_id": ORG, "user_id": USER, "graph_provider": FakeGraphProvider(), "blob_store": object(),
+        "apps": [], "kb": [], "filters": {"strictScope": True},
+    })
+
+    assert "error" in (tool._in_scope("repo-in") or {})
+
+
+async def test_a_strict_scope_keeps_its_own_repositories_open() -> None:
+    tool = cg.CodeGraph({
+        "org_id": ORG, "user_id": USER, "graph_provider": FakeGraphProvider(), "blob_store": object(),
+        "apps": ["repo-in"], "kb": [], "filters": {"strictScope": True},
+    })
+
+    assert tool._in_scope("repo-in") is None
+    assert "error" in (tool._in_scope("repo-out") or {})
