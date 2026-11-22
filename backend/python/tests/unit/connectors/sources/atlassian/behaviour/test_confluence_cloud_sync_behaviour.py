@@ -2387,7 +2387,9 @@ class TestAttachmentsGoneFromAPage:
         assert "att1" not in db.records and "10" in db.records
 
     @pytest.mark.parametrize("omitted", ["expansion", "results"])
-    async def test_an_omitted_attachment_expansion_removes_nothing(self, api, db, checkpoints, search, omitted) -> None:
+    async def test_an_omitted_expansion_and_an_empty_v2_list_remove_the_stored_files(
+        self, api, db, checkpoints, search, omitted
+    ) -> None:
         self._page_with(api, search, "att1")
         connector, _ = await ready_connector(db, checkpoints)
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
@@ -2399,10 +2401,33 @@ class TestAttachmentsGoneFromAPage:
         else:
             page["children"]["attachment"] = {"size": 0}
         search.by_cursor = {None: search_page([page])}
-        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "busy"}, status=503))
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": [], "_links": {"base": WIKI}})
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" not in db.records, "a v2 list read to its end is the inventory, an empty one included"
+        assert "10" in db.records
+
+    @pytest.mark.parametrize("status", [503, 403])
+    @pytest.mark.parametrize("omitted", ["expansion", "results"])
+    async def test_an_omitted_attachment_expansion_removes_nothing(
+        self, api, db, checkpoints, search, omitted, status
+    ) -> None:
+        self._page_with(api, search, "att1")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert "att1" in db.records
+
+        page = v1_page("10", version=2)
+        if omitted == "expansion":
+            del page["children"]
+        else:
+            page["children"]["attachment"] = {"size": 0}
+        search.by_cursor = {None: search_page([page])}
+        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "no"}, status=status))
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         assert "att1" in db.records, "not an empty inventory: the stored file stays"
+        assert connector.full_sync_coverage().complete is False, "neither list was read: unread, not none"
 
     async def test_an_attachment_list_read_in_part_removes_nothing(self, api, db, checkpoints, search) -> None:
         self._page_with(api, search, "att1", "att2")
