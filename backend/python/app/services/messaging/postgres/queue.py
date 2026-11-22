@@ -181,7 +181,12 @@ class PgQueue:
         if not items:
             return
         if (run := _JOINED.get()) is not None:
-            await run(lambda tx: self.publish_in(tx, topic, items))
+            async def at_commit(tx: Any) -> None:  # noqa: ANN401 - the unit of work
+                # Written last, right before COMMIT: the group read's FOR SHARE, which a group being created waits for (ensure_group),
+                # is then held no longer than by a publish in a transaction of its own, not for the rest of the joined write.
+                tx.before_commit.append(lambda t: self.publish_in(t, topic, items))
+
+            await run(at_commit)
             return
         async with await self._write() as tx:
             await self.publish_in(tx, topic, items)

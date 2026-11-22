@@ -147,6 +147,7 @@ class Tx:
         self.org_id = ""  # the org the unit is bound to
         self.role = ""  # the database role the unit runs as
         self.kg_dirty = False  # a statement of this unit that the guard recognised writes graph.nodes or graph.edges (the capture trigger's mark is the authority)
+        self.before_commit: list[Callable[[Tx], Awaitable[None]]] = []  # run last, right before COMMIT (after the pre-commit hook)
         self._open = True
 
     @staticmethod
@@ -547,6 +548,8 @@ class KernelDB:
             yield tx
             if write and self.pre_commit_hook is not None and not tx.failed:
                 await self.pre_commit_hook(tx)
+            for step in tx.before_commit:
+                await step(tx)
             await self._check_alive(con, tx, write=write)
             tx.commit_sent = True
             t_commit = time.perf_counter()

@@ -24,6 +24,11 @@ class _Tx:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
         self.statements: list[str] = []
+        self.before_commit: list = []
+
+    async def commit(self) -> None:
+        for step in self.before_commit:
+            await step(self)
 
     async def fetch(self, sql: str, *args: object) -> list[dict]:
         self.statements.append(sql)
@@ -64,6 +69,9 @@ async def test_on_postgres_the_events_are_written_by_the_graph_transaction(monke
     assert store.tracked is (scope_fields == "on")
 
     assert await store.publish_with_commit(producer, "record-events", MESSAGES) is True
+    # nothing yet: the group read (FOR SHARE) and the insert run right before COMMIT, not for the rest of the write
+    assert provider.tx.statements == []
+    await provider.tx.commit()
 
     assert provider.ran_in == ["txn-1"]
     assert any("queue.publish" in s for s in provider.tx.statements)
@@ -71,11 +79,22 @@ async def test_on_postgres_the_events_are_written_by_the_graph_transaction(monke
     runtime.db.assert_not_called()
 
 
-async def test_a_failed_insert_fails_the_block_instead_of_reading_as_not_acked(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_failed_insert_fails_the_commit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MESSAGE_BROKER", "postgres")
     producer, _ = _pg_producer()
+    provider = _PgLikeProvider(_Tx(fail=True))
+    await GraphTransactionStore(provider, "txn-1").publish_with_commit(producer, "record-events", MESSAGES)
     with pytest.raises(RuntimeError, match="serialize"):
-        await GraphTransactionStore(_PgLikeProvider(_Tx(fail=True)), "txn-1").publish_with_commit(producer, "record-events", MESSAGES)
+        await provider.tx.commit()
+
+
+async def test_a_transaction_that_is_gone_fails_the_block_instead_of_reading_as_not_acked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MESSAGE_BROKER", "postgres")
+    producer, _ = _pg_producer()
+    provider = _PgLikeProvider(_Tx())
+    provider.run_in_transaction = AsyncMock(side_effect=RuntimeError("the transaction was rolled back"))
+    with pytest.raises(RuntimeError, match="rolled back"):
+        await GraphTransactionStore(provider, "txn-1").publish_with_commit(producer, "record-events", MESSAGES)
 
 
 async def test_a_producer_that_publishes_on_its_own_fails_the_block(monkeypatch: pytest.MonkeyPatch) -> None:

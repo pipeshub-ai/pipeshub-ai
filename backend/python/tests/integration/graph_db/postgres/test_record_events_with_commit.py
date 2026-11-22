@@ -8,6 +8,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -56,11 +57,12 @@ class _World:
             connector_id=self.conn, mime_type="text/plain", is_file=True, extension="txt", path=f"{name}.txt", size_in_bytes=10,
         )
 
-    async def events(self, record_id: str) -> list[str]:
-        """The event types delivered to this test's consumer group for the record."""
-        got = await self.queue.claim(self.group, [TOPIC], "test", 1000, 30.0)
+    async def events(self, record_id: str, group: str | None = None) -> list[str]:
+        """The event types delivered to this test's consumer group (or ``group``) for the record."""
+        group = group or self.group
+        got = await self.queue.claim(group, [TOPIC], "test", 1000, 30.0)
         for d in got:
-            await self.queue.ack(self.group, d)
+            await self.queue.ack(group, d)
         return [json.loads(d.value)["eventType"] for d in got if d.key == record_id]
 
     async def stored(self, record_id: str) -> dict | None:
@@ -147,3 +149,30 @@ async def test_another_broker_keeps_publishing_after_the_commit(w: _World, monke
     await w.processor.on_new_records([(record, [])])
     assert sent == [record.id]
     assert await w.events(record.id) == []
+
+
+async def test_a_consumer_group_created_while_a_write_is_open_does_not_wait_for_it_and_gets_its_event(w: _World) -> None:
+    """Creating a group locks the group table against every publisher's group read. That read now runs right before the write's
+    COMMIT, so a consumer starting meanwhile does not wait for the rest of the write; and the group, committed before that read,
+    gets the event (exactly once: it is not in the backfill, which ran before the event existed)."""
+    record = w.record("f")
+    reached, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(_tx_store: object) -> None:  # after the event was published into the transaction, before COMMIT
+        reached.set()
+        await release.wait()
+
+    w.store._flush_scope_generation = hold
+    write = asyncio.create_task(w.processor.on_new_records([(record, [])]))
+    late = f"{w.group}-late"
+    try:
+        await asyncio.wait_for(reached.wait(), 30)
+        assert await asyncio.wait_for(w.queue.ensure_group(TOPIC, late, from_start=True), 5) is True
+        release.set()
+        await write
+        assert await w.events(record.id, late) == ["newRecord"]
+        assert await w.events(record.id) == ["newRecord"]
+    finally:
+        release.set()
+        await asyncio.gather(write, return_exceptions=True)
+        await w.queue.drop_group(TOPIC, late)
