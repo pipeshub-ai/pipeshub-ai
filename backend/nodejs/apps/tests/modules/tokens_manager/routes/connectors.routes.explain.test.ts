@@ -73,13 +73,12 @@ describe('Connector routes: why a person cannot read a record', () => {
   it('records who asked about whom and which record, with the reason code and no content', async () => {
     await call(h, 'GET', PATH + QUERY, sessionToken(h, ADMIN))
 
+    // Who asked, the org and the connector are the request context's; the line names the rest.
     expect(audits()).to.deep.equal([
       {
-        actorUserId: ADMIN._id,
-        orgId: ADMIN.orgId,
-        connectorId: CONNECTOR_ID,
-        targetUserId: MEMBER_ID,
-        recordId: RECORD_ID,
+        target_user_id: MEMBER_ID,
+        record_id: RECORD_ID,
+        outcome: 'success',
         status: 200,
         code: 'restricted_container',
         admitted: false,
@@ -94,7 +93,7 @@ describe('Connector routes: why a person cannot read a record', () => {
 
     expect(r.status).to.equal(404)
     expect(audits()).to.have.length(1)
-    expect(audits()[0]).to.include({ actorUserId: ADMIN._id, recordId: RECORD_ID, status: 404 })
+    expect(audits()[0]).to.include({ record_id: RECORD_ID, status: 404, outcome: 'failure' })
   })
 
   it('limits an admin to 30 checks a minute and counts each admin apart', async () => {

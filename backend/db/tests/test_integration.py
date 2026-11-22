@@ -1,5 +1,8 @@
 """Integration tests against real PostgreSQL (every version in MIGRATE_TEST_PG_BINS). See conftest.py."""
+import os
 import re
+import subprocess
+import sys
 import textwrap
 import time
 
@@ -12,7 +15,7 @@ from db import epoch_lint
 from db.lib import ddl
 from db.locations import version_locations
 
-from .conftest import _free_port, run_migrate, start_migrate
+from .conftest import BACKEND, _free_port, run_migrate, start_migrate
 
 MIGRATE = "pipeshub_migrate"
 
@@ -759,6 +762,46 @@ def test_skipping_the_surface_check_is_loud_and_remembered(db):
         assert c.execute("SELECT count(*) FROM kernel.surface_skips").fetchone()[0] == 1
     r = run_migrate(url)                                                               # the next run reports it
     assert r.returncode == 0 and "skipped 1 time(s)" in r.stdout, r.stdout
+
+
+def run_doctor(url: str, **env) -> subprocess.CompletedProcess:
+    e = {**os.environ, "PYTHONPATH": str(BACKEND), "PG_MIGRATE_URL": url, **env}
+    return subprocess.run([sys.executable, "-m", "db.doctor"], env=e, capture_output=True, text=True, timeout=120)
+
+
+def test_the_doctor_reports_each_layer_and_changes_nothing(db):
+    cluster, name = db
+    url = cluster.url(name, MIGRATE)
+    assert run_doctor("").returncode == 2
+    assert run_doctor(f"postgresql+psycopg://{MIGRATE}@127.0.0.1:1/{name}").returncode == 2
+    r = run_doctor(url)                                                                # nothing migrated yet
+    assert r.returncode == 4 and "PROBLEM schema kernel epoch 0 < required" in r.stdout, r.stdout
+    assert run_migrate(url).returncode == 0
+    r = run_doctor(url)
+    assert r.returncode == 0 and "doctor: healthy" in r.stdout, r.stdout
+    with connect(cluster, name) as c:                                                  # migrations pending for this build
+        c.execute("UPDATE kernel.schema_epoch SET epoch = epoch - 1 WHERE branch = 'platform'")
+    r = run_doctor(url)
+    assert r.returncode == 4 and "PROBLEM schema platform epoch" in r.stdout, r.stdout
+    with connect(cluster, name) as c:
+        c.execute("UPDATE kernel.schema_epoch SET epoch = epoch + 1 WHERE branch = 'platform'")
+        c.execute("ALTER ROLE pipeshub_node_login CONNECTION LIMIT 5")                 # a surface-only change
+    r = run_doctor(url, PG_MIGRATE_SURFACE_CHECK="skip")                               # the doctor never skips the surface
+    assert r.returncode == 4 and "50 surface" in r.stdout, r.stdout
+    with connect(cluster, name) as c:
+        c.execute("ALTER ROLE pipeshub_node_login CONNECTION LIMIT -1")
+        assert c.execute("SELECT count(*) FROM kernel.surface_skips").fetchone()[0] == 0
+        c.execute("SET ROLE pipeshub_owner")                                           # a table with org_id nobody registered
+        c.execute("CREATE SCHEMA loose; CREATE TABLE loose.t (org_id text NOT NULL, x int)")
+    r = run_doctor(url)
+    assert r.returncode == 4 and "01 unregistered" in r.stdout, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT to_regclass('loose.t') IS NOT NULL").fetchone()[0]    # reported, not repaired
+        c.execute("DROP SCHEMA loose CASCADE")
+        # every epoch current, but the semantic check is gone: the catalog, vetted and surface layers cannot run, which is not healthy
+        c.execute("ALTER VIEW kernel.rls_violations RENAME TO rls_violations_away")
+    r = run_doctor(url)
+    assert r.returncode == 4 and "kernel.rls_violations is missing" in r.stdout and "healthy" not in r.stdout, r.stdout
 
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------

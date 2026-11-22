@@ -12,7 +12,8 @@ import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middlewa
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
-import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import { AppConfig, registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import { EncryptionService } from '../../../../src/libs/encryptor/encryptor'
@@ -131,6 +132,7 @@ export const startKbHarness = async (): Promise<KbHarness> => {
     aiBackend: backend.url,
     storage: { storageType: 'local', endpoint: backend.url },
   } as unknown as AppConfig
+  registerAppUpstreams(config)
 
   const kv = new FakeKeyValueStore()
   kv.values.set(ENDPOINTS_KEY, JSON.stringify({ storage: { endpoint: backend.url } }))
@@ -193,6 +195,7 @@ export const startKbHarness = async (): Promise<KbHarness> => {
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()))
       await backend.stop()
+      registerUpstreams({})
       if (previousConnectorBackend === undefined) delete process.env.CONNECTOR_BACKEND
       else process.env.CONNECTOR_BACKEND = previousConnectorBackend
       if (previousSecretKey === undefined) delete process.env.SECRET_KEY

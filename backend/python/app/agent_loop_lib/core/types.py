@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from pydantic.json_schema import SkipJsonSchema
 
 from app.agent_loop_lib.core.messages import (
@@ -222,3 +222,18 @@ class AgentResult(BaseModel):
     end_event: str = ""
     # `app.utils.error_class` class of the failure that ended the run, if one did.
     error_class: str | None = None
+    # The provider's or the transport's machine code for that failure (`error_class.provider_code`: a plain word such
+    # as `content_filter` or `tools_unsupported`), for a caller that changes course on it.
+    error_code: str | None = None
+    # Private, not a field: Opik's encoder reads `__dict__`, which `Field(exclude=True)` doesn't keep a value out of.
+    _error_detail: str | None = PrivateAttr(default=None)
+
+    @property
+    def error_detail(self) -> str | None:
+        """The raw text behind `error` (a provider's answer, which can quote the prompt or an email), for a caller's
+        own user-facing classifier. `error` is what every other reader gets: it carries no such text."""
+        return self._error_detail
+
+    def with_error_detail(self, text: str | None) -> "AgentResult":
+        self._error_detail = text
+        return self

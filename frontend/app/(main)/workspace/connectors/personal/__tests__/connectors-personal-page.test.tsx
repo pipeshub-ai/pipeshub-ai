@@ -154,7 +154,7 @@ describe('Personal connectors page', () => {
 
     fireEvent.click(toggle);
 
-    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', undefined));
+    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', true, undefined));
     await waitFor(() => expect(toastTitles()).toContain('Connector sync enabled'));
   });
 

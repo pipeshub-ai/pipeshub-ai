@@ -30,7 +30,7 @@ def _sink(mapping: list[str], by_doc: dict) -> MagicMock:
         side_effect=[{"record_doc_id": d, "fileSizeBytes": 10} for d in mapping]
     )
 
-    async def read(org_id, vrid, doc, size, headers, endpoint) -> dict:
+    async def read(org_id, vrid, doc, size, headers, endpoint, **_kwargs) -> dict:
         outcome = by_doc[doc]
         if isinstance(outcome, Exception):
             raise outcome

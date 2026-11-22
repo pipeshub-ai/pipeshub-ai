@@ -86,3 +86,16 @@ describe('McpToolsApprovalsTab, a server set to No authentication that asks for 
     expect(handlers.onRefresh).toHaveBeenCalledOnce();
   });
 });
+
+describe('McpToolsApprovalsTab, a sign-in the server refused', () => {
+  it('says so once, in the sign-in card, not again as a failed tool list', () => {
+    renderTab({
+      instance: { ...noAuth, authMode: 'oauth', isAuthenticated: true },
+      state: 'needs_reconnect',
+      load: { status: 'error', code: 'reauth', message: 'Reconnect needed' },
+    });
+
+    expect(screen.getByText('Sign-in expired')).toBeTruthy();
+    expect(screen.queryByText("Couldn't load the tool list")).toBeNull();
+  });
+});

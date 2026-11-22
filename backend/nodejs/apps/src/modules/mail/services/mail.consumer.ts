@@ -27,6 +27,11 @@ import {
   MailEventPayload,
   MailSendResult,
 } from '../types/mail-event.types';
+import {
+  classifyError,
+  ErrorClass,
+  levelFor,
+} from '../../../libs/utils/error-class';
 
 const MAX_ATTEMPTS = 4;
 const BASE_BACKOFF_MS = 1_000;
@@ -37,6 +42,38 @@ const MIN_ATTEMPT_MS = 15_000;
 // notification per recipient, per admin.
 const FAILURE_NOTIFY_WINDOW_MS = 5 * 60_000;
 const SUPPRESSED_RECIPIENT_SAMPLE = 10;
+
+/** One mail job's progress, so whichever exit it takes writes its one `mail.send.end` line. */
+interface MailJob {
+  startedAt: number;
+  template?: string;
+  attempt: number;
+  ended: boolean;
+}
+
+interface MailEndFields {
+  reason?: string;
+  errorClass?: ErrorClass;
+  smtpCode?: number;
+  /** Only our own exceptions: an SMTP failure's text quotes the recipient. */
+  error?: unknown;
+}
+
+// A template type is a short identifier (`loginWithOTP`); anything else is not printed.
+const TEMPLATE_TYPE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+function newMailJob(payload: MailEventPayload | undefined): MailJob {
+  const template = payload?.mail?.emailTemplateType;
+  return {
+    startedAt: Date.now(),
+    template:
+      typeof template === 'string' && TEMPLATE_TYPE.test(template)
+        ? template
+        : undefined,
+    attempt: 0,
+    ended: false,
+  };
+}
 
 interface SuppressedFailures {
   count: number;
@@ -97,24 +134,32 @@ export class MailConsumer {
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
     if (!this.consumer.isConnected()) {
-      this.logger.error('Cannot consume mail events: MessageConsumer is not connected');
+      this.logger.error(
+        'Cannot consume mail events: MessageConsumer is not connected',
+      );
       throw new Error('MessageConsumer is not connected');
     }
 
     await this.consumer.consume(async (message: StreamMessage<T>) => {
+      const payload = message.value as MailEventPayload | undefined;
+      const job = newMailJob(payload);
       try {
-        const payload = message.value as MailEventPayload;
         if (!payload?.mail?.emailTemplateType) {
-          this.logger.warn('Mail event skipped: invalid payload', {
-            value: message.value,
-          });
+          // Never the value: it holds the recipients and the template data (a sign-in code, a link).
+          this.end(job, 'skipped', { reason: 'invalid_payload' });
           return;
         }
-        await this.deliver(payload);
+        await this.deliver(payload, job);
       } catch (error) {
-        this.logger.error('Failed to process mail event', {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        if (!job.ended) {
+          this.end(job, 'failure', {
+            reason: 'exception',
+            errorClass: classifyError(error),
+            error,
+          });
+        } else {
+          this.logger.error('Failed to process mail event', { error });
+        }
       } finally {
         await handler(message);
       }
@@ -125,10 +170,13 @@ export class MailConsumer {
    * Runs the delivery inside the event's org. A signed envelope already bound it; an unsigned job carries only the
    * `orgId` the producer took from the inviting user's verified request, so that is bound here (the audit write needs it).
    */
-  private deliver(payload: MailEventPayload): Promise<void> {
+  private deliver(
+    payload: MailEventPayload,
+    job: MailJob = newMailJob(payload),
+  ): Promise<void> {
     const orgId = payload.orgId;
     if (getCurrentOrgId() !== undefined || orgId === undefined || orgId === '')
-      return this.deliverInOrg(payload);
+      return this.deliverInOrg(payload, job);
     return runWithOrgContext(
       makeOrgContext({
         orgId,
@@ -136,8 +184,48 @@ export class MailConsumer {
         kind: 'service',
         source: 'legacy-payload',
       }),
-      () => this.deliverInOrg(payload),
+      () => this.deliverInOrg(payload, job),
     );
+  }
+
+  /** The job's one line: INFO when sent, else at its class's level (docs/logging.md "Mail delivery (Node)"). */
+  private end(
+    job: MailJob,
+    outcome: 'success' | 'failure' | 'skipped',
+    fields: MailEndFields = {},
+  ): void {
+    job.ended = true;
+    const level =
+      outcome === 'success'
+        ? 'info'
+        : fields.errorClass
+          ? levelFor(fields.errorClass)
+          : 'warn';
+    this.logger[level]('mail.send.end', {
+      outcome,
+      reason: fields.reason,
+      error_class: fields.errorClass,
+      attempt: job.attempt,
+      duration_ms: Date.now() - job.startedAt,
+      // Untyped keys print as metadata, so only the ones that have a value.
+      ...(job.template !== undefined && { email_template_type: job.template }),
+      ...(fields.smtpCode !== undefined && { smtp_code: fields.smtpCode }),
+      ...(fields.error !== undefined && { error: fields.error }),
+      event_name: 'mail.send.end',
+    });
+  }
+
+  private endFailure(
+    job: MailJob,
+    reason: string,
+    result: MailSendResult,
+  ): void {
+    if (result.status === 'sent') return;
+    this.end(job, 'failure', {
+      reason,
+      errorClass: result.errorClass,
+      smtpCode: result.smtpCode,
+    });
   }
 
   /** `undefined` when the stored settings could not be read: retried, unlike `null`. */
@@ -154,16 +242,25 @@ export class MailConsumer {
     }
   }
 
-  private async dropUnconfigured(payload: MailEventPayload): Promise<void> {
+  private async dropUnconfigured(
+    payload: MailEventPayload,
+    job: MailJob,
+  ): Promise<void> {
     // Not retryable until an admin configures SMTP.
-    this.logger.error('Mail event dropped: SMTP configuration not set');
+    this.end(job, 'skipped', {
+      reason: 'smtp_not_configured',
+      errorClass: 'misconfigured',
+    });
     await this.notifyFailure(payload, 'SMTP configuration not set');
   }
 
-  private async deliverInOrg(payload: MailEventPayload): Promise<void> {
+  private async deliverInOrg(
+    payload: MailEventPayload,
+    job: MailJob,
+  ): Promise<void> {
     let smtpConfig = await this.resolveSmtpConfig(payload.orgId);
     if (smtpConfig === null) {
-      await this.dropUnconfigured(payload);
+      await this.dropUnconfigured(payload, job);
       return;
     }
 
@@ -172,28 +269,34 @@ export class MailConsumer {
       mail = this.withPasswordResetLink(payload);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error('Mail event dropped: could not build reset link', {
-        error: message,
+      this.end(job, 'failure', {
+        reason: 'link_failed',
+        errorClass: 'internal',
+        error,
       });
       await this.notifyFailure(payload, message);
       return;
     }
     const giveUpAt = Date.now() + MAIL_MESSAGE_BUDGET_MS;
-    let attempt = 0;
-    let lastError = 'unknown error';
+    let last: MailSendResult | undefined;
+    let reason = 'attempts_exhausted';
 
-    while (attempt < MAX_ATTEMPTS) {
-      attempt += 1;
+    while (job.attempt < MAX_ATTEMPTS) {
+      job.attempt += 1;
       if (smtpConfig === undefined) {
         smtpConfig = await this.resolveSmtpConfig(payload.orgId);
         if (smtpConfig === null) {
-          await this.dropUnconfigured(payload);
+          await this.dropUnconfigured(payload, job);
           return;
         }
       }
       const result: MailSendResult =
         smtpConfig === undefined
-          ? { status: 'transient', error: 'Could not read the SMTP settings' }
+          ? {
+              status: 'transient',
+              error: 'Could not read the SMTP settings',
+              errorClass: 'unavailable',
+            }
           : await this.sender.send(
               mail,
               smtpConfig,
@@ -201,67 +304,52 @@ export class MailConsumer {
             );
 
       if (result.status === 'sent') {
-        this.logger.info('Mail sent', {
-          emailTemplateType: payload.mail.emailTemplateType,
-          attempt,
-        });
+        this.end(job, 'success');
         return;
       }
-
-      lastError = result.error;
+      last = result;
 
       if (result.status === 'permanent') {
-        this.logger.error('Mail permanently failed; not retrying', {
-          emailTemplateType: payload.mail.emailTemplateType,
-          error: lastError,
-          attempt,
-        });
-        await this.notifyFailure(payload, lastError);
+        this.endFailure(job, 'permanent', result);
+        await this.notifyFailure(payload, result.error);
         return;
       }
 
       // indeterminate: the original send may still complete, so a retry could
       // duplicate it. unavailable: the server is cooling down after repeated
       // connection failures; the retry ladder would only stall the partition.
-      if (result.status === 'indeterminate' || result.status === 'unavailable') {
-        this.logger.error('Mail not delivered; not retrying', {
-          emailTemplateType: payload.mail.emailTemplateType,
-          status: result.status,
-          error: lastError,
-          attempt,
-        });
-        await this.notifyFailure(payload, lastError);
+      if (
+        result.status === 'indeterminate' ||
+        result.status === 'unavailable'
+      ) {
+        this.endFailure(job, result.status, result);
+        await this.notifyFailure(payload, result.error);
         return;
       }
 
-      if (attempt < MAX_ATTEMPTS) {
+      if (job.attempt < MAX_ATTEMPTS) {
         const delay = Math.min(
-          BASE_BACKOFF_MS * 2 ** (attempt - 1),
+          BASE_BACKOFF_MS * 2 ** (job.attempt - 1),
           MAX_BACKOFF_MS,
         );
         if (giveUpAt - Date.now() - delay < MIN_ATTEMPT_MS) {
-          this.logger.warn('Mail retry budget exhausted', {
-            emailTemplateType: payload.mail.emailTemplateType,
-            attempt,
-          });
+          reason = 'budget_exhausted';
           break;
         }
-        this.logger.warn('Mail send failed; retrying', {
-          emailTemplateType: payload.mail.emailTemplateType,
-          error: lastError,
-          attempt,
-          nextRetryInMs: delay,
+        this.logger.debug('mail.send.retry', {
+          attempt: job.attempt,
+          error_class: result.errorClass,
+          ...(result.smtpCode !== undefined && { smtp_code: result.smtpCode }),
+          next_retry_ms: delay,
         });
         await this.sleep(delay);
       }
     }
 
-    this.logger.error('Mail failed after all retries', {
-      emailTemplateType: payload.mail.emailTemplateType,
-      error: lastError,
-      attempts: attempt,
-    });
-    await this.notifyFailure(payload, lastError);
+    // The loop ran at least once, and every pass that did not return left a failure in `last`.
+    const failure = last as Exclude<MailSendResult, { status: 'sent' }>;
+    this.endFailure(job, reason, failure);
+    await this.notifyFailure(payload, failure.error);
   }
 
   private withPasswordResetLink(payload: MailEventPayload): MailBody {
@@ -295,10 +383,8 @@ export class MailConsumer {
     error: string,
   ): Promise<void> {
     if (!payload.orgId) {
-      this.logger.error('Mail failure not notified: no orgId on the event', {
-        emailTemplateType: payload.mail.emailTemplateType,
-        error,
-      });
+      // The job's mail.send.end already reported the failure; a pre-sign-in mail has no org to notify.
+      this.logger.debug('Mail failure not notified: no orgId on the event');
       return;
     }
 
@@ -312,10 +398,8 @@ export class MailConsumer {
         open.recipients.push(...recipients);
       }
       open.emailTemplateType ??= payload.mail.emailTemplateType;
-      this.logger.warn('Mail failure notification suppressed', {
-        orgId,
+      this.logger.debug('Mail failure notification suppressed', {
         suppressed: open.count,
-        error,
       });
       return;
     }
@@ -391,10 +475,7 @@ export class MailConsumer {
       });
     } catch (publishError) {
       this.logger.error('Failed to publish mail failure notification', {
-        error:
-          publishError instanceof Error
-            ? publishError.message
-            : String(publishError),
+        error: publishError,
       });
     }
   }

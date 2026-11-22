@@ -420,12 +420,18 @@ def _released() -> dict[str, int]:
     return json.loads((Path(__file__).parent / "released_heads.json").read_text())["epochs"]
 
 
+def _online_names(text: str) -> set[str | None]:
+    online = _module_assign(text, "ONLINE_INDEXES")
+    return {_const_str(v) for d in (online.elts if isinstance(online, ast.List) else []) if isinstance(d, ast.Dict)
+            for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant) and k.value == "name"}
+
+
 def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
     """Index rules for a revision's .py, with or without a .sql. A revision a release shipped (epoch up to ``released``) is not read:
     it cannot change, and a database that ran it keeps what it built.
-      - ``ensure_partitioned_index(..., blocking=True)`` on a table this revision does not create, unless the index is one of the revision's
-        ``ONLINE_INDEXES`` (db.migrate builds those before the transaction) or the module sets ``blocking_index_ok = "<why>"`` (an index on a
-        column the revision adds cannot be built ahead): a blocking build keeps the table's writers waiting until the upgrade commits;
+      - ``ensure_partitioned_index(..., blocking=True)`` on a table this revision does not create, unless the index is one of the
+        ``ONLINE_INDEXES`` of the revision or of a later one of its branch (db.migrate builds those before the transaction) or the module
+        sets ``blocking_index_ok = "<why>"`` (an index on a column the revision adds cannot be built ahead): a blocking build keeps the table's writers waiting until the upgrade commits;
       - SQL in ``upgrade()`` that is, or may be, a DROP INDEX (also built at run time: an f-string, ``+``, ``%``, ``.format``) without
         ``min_code_epoch``: a drop inside the upgrade's transaction keeps every reader of the table waiting until the commit."""
     text = py.read_text(encoding="utf-8")
@@ -438,9 +444,9 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
     const_sql, _ = _upgrade_sql(text, runtime)
     created = {_key(m.group(1)) for s in [sql_file.read_text(encoding="utf-8") if sql_file.is_file() else "", *const_sql]
                for m in re.finditer(rf"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(?:IF NOT EXISTS\s+)?({_N})", s, re.I)}
-    online = _module_assign(text, "ONLINE_INDEXES")
-    online_names = {_const_str(v) for d in (online.elts if isinstance(online, ast.List) else []) if isinstance(d, ast.Dict)
-                    for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant) and k.value == "name"}
+    # a later revision of the branch is pending whenever this one is, so the online step builds its ONLINE_INDEXES ahead of this one's call too
+    later = [f.read_text(encoding="utf-8") for f in py.parent.glob("[0-9]*.py") if f.name[:4].isdigit() and int(f.name[:4]) > int(epoch)]
+    online_names = {n for t in (text, *later) for n in _online_names(t)}
     why = _module_assign(text, "blocking_index_ok")
     waived = isinstance(why, ast.Constant) and isinstance(why.value, str) and len(why.value.split()) >= 4
     tree = ast.parse(text)
@@ -464,6 +470,15 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
     return bad
 
 
+def retiring_violations() -> list[str]:
+    """Indexes a revision lists in ``ONLINE_DROPS`` are dropped by db.migrate, so no SQL of the revision shows the DROP. The revision says which
+    it is: ``min_code_epoch`` when older code plans with an index it drops, ``older_code_compatible = "<why>"`` when nothing does (a dropped
+    index changes no answer, so a rollback keeps working)."""
+    return [f"{f.name}: ONLINE_DROPS drops indexes: set min_code_epoch (older code plans with them) or older_code_compatible = \"<why nothing reads them>\""
+            for d in version_locations() for f in sorted(Path(d).glob("*.py"))
+            if _module_assign(t := f.read_text(encoding="utf-8"), "ONLINE_DROPS") is not None and not _marked(t)]
+
+
 def main(argv: list[str]) -> int:
     files = [Path(a) for a in argv] or sorted(f for d in version_locations() for g in ("*.sql", "vetted/*.sql") for f in Path(d).glob(g))
     bad = [msg for f in files if f.suffix != ".py" for msg in lint_file(f)]
@@ -471,6 +486,7 @@ def main(argv: list[str]) -> int:
     released = _released()
     bad += [msg for f in revisions for msg in lint_revision(f, released)]
     if not argv:
+        bad += retiring_violations()
         from db.lib import vetted
         bad += vetted.callers_violations(vetted.load_all(vetted.manifest_files()), Path(__file__).resolve().parents[1])
     print("\n".join(bad) or "migration lint: OK")

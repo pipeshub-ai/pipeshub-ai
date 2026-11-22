@@ -135,7 +135,7 @@ class World:
     async def stream(self, inm: str | None = None, convert_to: str | None = None, org: str = "org-1", asks: bool = True, extra: dict[str, str] | None = None) -> Any:
         with patch("app.connectors.sources.localKB.connector.StorageDocuments") as sd, \
                 patch.object(router_mod, "preview_pdf_pipeline", return_value=PIPELINE), \
-                patch.object(router_mod, "_refuse_hidden_demo_record", new=AsyncMock()), \
+                patch.object(router_mod, "refuse_hidden_demo_record", new=AsyncMock()), \
                 patch.object(router_mod, "refuse_outside_connection", new=AsyncMock()):
             sd.return_value.info = lambda org_id, doc, verify=False: self.info(None, org_id, doc, verify=verify)
             return await router_mod.stream_record(
@@ -415,7 +415,7 @@ async def test_cross_org_is_404_without_etag() -> None:
 
 def _refuse(name: str) -> Any:
     def hidden(w: World) -> Any:
-        return patch.object(router_mod, "_refuse_hidden_demo_record", new=AsyncMock(side_effect=HTTPException(404, "Record not found")))
+        return patch.object(router_mod, "refuse_hidden_demo_record", new=AsyncMock(side_effect=HTTPException(404, "Record not found")))
 
     def outside(w: World) -> Any:
         return patch.object(router_mod, "refuse_outside_connection", new=AsyncMock(side_effect=HTTPException(403, "outside")))
@@ -455,7 +455,7 @@ async def test_the_connection_refusals_refuse_a_valid_inm(which: str) -> None:
     world = World()
     with patch.object(router_mod, "preview_pdf_pipeline", return_value=PIPELINE), \
             patch("app.connectors.sources.localKB.connector.StorageDocuments") as sd, \
-            patch.object(router_mod, "_refuse_hidden_demo_record", new=AsyncMock(side_effect=HTTPException(404, "x") if which == "hidden" else None)), \
+            patch.object(router_mod, "refuse_hidden_demo_record", new=AsyncMock(side_effect=HTTPException(404, "x") if which == "hidden" else None)), \
             patch.object(router_mod, "refuse_outside_connection", new=AsyncMock(side_effect=HTTPException(403, "x") if which == "outside" else None)):
         sd.return_value.info = AsyncMock(return_value=_info())
         exc = await _refusal(router_mod.stream_record(

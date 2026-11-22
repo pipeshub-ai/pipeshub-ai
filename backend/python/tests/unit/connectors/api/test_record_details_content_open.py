@@ -42,7 +42,7 @@ async def _details(graph: MagicMock, header: str | None) -> dict[str, Any] | Non
         app=SimpleNamespace(container=container),
         headers={},
     )
-    with patch.object(router_mod, "_refuse_hidden_demo_record", new=AsyncMock()), \
+    with patch.object(router_mod, "refuse_hidden_demo_record", new=AsyncMock()), \
             patch.object(router_mod, "refuse_outside_connection", new=AsyncMock()), \
             patch.object(router_mod, "hide_record_parents_outside_connection", new=AsyncMock()), \
             patch.object(router_mod, "hide_source_paths"), \
