@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 import zlib
 from typing import TYPE_CHECKING, Any
 
@@ -124,6 +125,7 @@ class KhPgLayer(KgLayer):
         self.not_current = not_current
         self.copied = copied
         self.not_ready = 0
+        self.refused: list = []      # the worlds the listing refused as not copied, in order
         self.hide_first_app = False
         self.copies: dict = {}      # world -> (connectors promoted, connectors) of its own copy
         self.name = f"postgres-kg-{'copied' if copied else 'walk' if not_current else 'kg'}"
@@ -177,7 +179,26 @@ async def check(layer: KhPgLayer, world, scenario: str) -> list[KhFinding]:
             return found
         except KnowledgeHubListingNotReady:      # a world the projection refuses (a value the typed graph has no column for) is never copied: the listing says so, and the layer counts it
             layer.not_ready += 1
+            layer.refused.append(world)
             return []
+
+
+# The golden worlds the listing refuses as not copied, by scenario, and why. Any other refused world fails the golden tests, so a world is never
+# skipped silently: its rows, counts and browse would go unchecked on PostgreSQL while the access check still ran it.
+KNOWN_REFUSED = {
+    "RULE-H09": "an access rule no connector writes (WEIRD), which the typed graph has no value for",
+}
+
+
+def _refused_golden(layer: KhPgLayer) -> list[str]:
+    """The scenarios of the golden worlds the layer refused, reported on every run and held to ``KNOWN_REFUSED``."""
+    names: dict = {}
+    for s in load_all():
+        names.setdefault(s.final_world(), s.id)
+    refused = sorted(names.get(w, "a knowledge-hub world") for w in layer.refused)
+    if refused:
+        warnings.warn(f"{layer.name}: {len(refused)} golden worlds refused as not copied: {', '.join(refused)}", stacklevel=2)
+    return refused
 
 
 def _describe(found: list[KhFinding]) -> str:
@@ -199,8 +220,9 @@ async def test_golden_and_adversarial_worlds_list_what_the_viewer_may_read(kh_la
             bad += _bad(await check(kh_layer, world, f"golden-{start + offset}"))
         await kh_layer.release(chunk)
     assert not bad, f"{kh_layer.name}\n{_describe(bad)}"
-    print(f"{kh_layer.name}: {len(worlds)} golden worlds, {kh_layer.not_ready} refused as not copied, promoted {dict(kh_layer.promoted)}")
-    assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} worlds were refused as not copied"
+    refused = _refused_golden(kh_layer)
+    print(f"{kh_layer.name}: {len(worlds)} golden worlds, {len(refused)} refused as not copied ({', '.join(refused)}), promoted {dict(kh_layer.promoted)}")
+    assert set(refused) <= set(KNOWN_REFUSED), f"{kh_layer.name}: golden worlds refused as not copied, so never listed: {sorted(set(refused) - set(KNOWN_REFUSED))}"
 
 
 async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_viewer_may_read(pg_provider, pg_db, monkeypatch) -> None:
@@ -223,6 +245,8 @@ async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_vi
         await layer.release(list(layer._prefix))
     assert seeded, "no connector was counted whole: the counters were never read"
     assert not bad, f"{layer.name} with counters\n{_describe(bad)}"
+    refused = _refused_golden(layer)
+    assert set(refused) <= set(KNOWN_REFUSED), f"{layer.name} with counters: golden worlds refused as not copied, so never listed: {sorted(set(refused) - set(KNOWN_REFUSED))}"
 
 
 @pytest.mark.parametrize(("kind", "part"), [(kind, part) for kind in sorted(gen.GENERATORS) for part in range(GENERATED_PARTS)],
@@ -246,6 +270,8 @@ async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: st
             await kh_layer.release(chunk)
         refused = kh_layer.not_ready - refused
         print(f"{kh_layer.name} {kind} seed {seed}: worlds {first}-{first + len(worlds) - 1}, {refused} refused as not copied")
+        if refused:      # reported in the warnings summary of every run, not only under -s
+            warnings.warn(f"{kh_layer.name} {kind} seed {seed} worlds {first}-{first + len(worlds) - 1}: {refused} refused as not copied", stacklevel=2)
         assert not bad, f"{kh_layer.name} {kind} seed {seed}\n{_describe(bad)}"
         assert refused * 10 <= len(worlds), f"{refused} of {len(worlds)} {kind} worlds were refused as not copied"
 
