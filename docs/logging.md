@@ -978,7 +978,7 @@ their own HTTP clients.
   nothing; a 5xx it maps carries `{ status }` as its cause, so an upstream 500 is `upstream_5xx` (WARNING) on the request's
   lines too, and a 4xx it passes on keeps the service's words in its message. A 5xx's own detail stays in the service's log.
   A controller that passes a failure to `next` does not log it itself (see "Connector proxy (Node)"). A few catch blocks in
-  the knowledge base, toolset and MCP server controllers still log `error.response?.data`; they are being removed module by module.
+  the knowledge base controllers still log `error.response?.data`; they are being removed module by module.
 - **Request id.** A call to a PipesHub service always carries the request's sanitised root id, replacing an `x-request-id`
   copied from the client (`injectRequestHeaders`, and the axios adapter). The gateway never adds one for a third party.
 - **Streams.** The chat stream's line is written when the body ends (DEBUG), fails midway (`unavailable`, with the 200), or
@@ -999,6 +999,15 @@ their own HTTP clients.
   to a PipesHub service goes through `upstreamFetch` and adds `injectRequestHeaders`; a third party is reached with axios
   or an SDK, never `upstreamFetch`, and the request id and MCP relay header must not reach it (the axios adapter adds them
   only for registered internal targets).
+
+## Toolset and MCP server proxies (Node)
+
+The toolset (`/api/v1/toolsets`), MCP server (`/api/v1/mcp-servers`) and API toolset (`/api/v1/api-toolsets`) routes pass each
+request on to the connector service and write no line of their own for a failure they pass on: the error middleware's
+`http.request.error` is the one failure line, at its class's level, each call has its `upstream.call.end`, and a read or a
+change is told by the access line. `toolset_id` (a toolset or API toolset instance), `mcp_server_id` and `agent_id` are bound
+from the path (`bindPathLogFields`, after `guardPathParams`), the names the connector service uses, so every line of a request
+about one instance carries it. An OAuth callback's outcome is the connector service's line, under the same request id.
 
 ## Routes that answer their own errors (Node)
 
