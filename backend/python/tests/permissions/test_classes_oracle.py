@@ -53,7 +53,7 @@ async def test_a_record_below_a_seed_of_its_own_group_has_a_class_and_one_below_
 @pytest.mark.parametrize("typing", list(RETYPE))
 async def test_the_corpus_agrees_with_the_oracle(typing: str) -> None:
     tally, examples = await run(_corpus(), typings=(typing,))
-    _clean(tally, examples, min_pairs=6150)                 # observed: 6200 pairs per typing (5549 with a tenth of the worlds dropped)
+    _clean(tally, examples, min_pairs=6150)                 # observed: 6224 pairs per typing (5511 with a tenth of the worlds dropped)
     assert tally["pairs_legacy"] <= 0.02 * tally["pairs"]  # the realistic legacy share is below one in a hundred pairs (observed 0.3%)
 
 

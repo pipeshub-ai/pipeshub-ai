@@ -74,10 +74,19 @@ def compile_world(world: World, prefix: str) -> Graph:
         edges.append({"type": kind, "from": ref(src), "to": ref(dst),
                       "props": {"createdAtTimestamp": TS, **props}})
 
+    foreign_orgs: set[str] = set()
     for p in world.principals:
         nodes.append(_principal_node(ns, p, first_app))
         if p.kind == "user" and p.org_member:
             edge("BELONGS_TO", p.id, ORG_ID, entityType="ORGANIZATION")
+        for label in p.member_of if p.kind == "user" else ():
+            org_id = f"{ns.org}-{label}"  # the Organization node of a foreign org: its id is that org's id, as for the world's
+            if org_id not in foreign_orgs:
+                foreign_orgs.add(org_id)
+                nodes.append({"kind": "Organization", "id": org_id, "props": {
+                    "id": org_id, "name": label, "accountType": "enterprise", "isActive": True}})
+            edges.append({"type": "BELONGS_TO", "from": ref(p.id), "to": org_id,
+                          "props": {"createdAtTimestamp": TS, "entityType": "ORGANIZATION"}})
     for n in world.nodes:
         nodes.append(_node(ns, n, ids))
         for parent in n.parents:
@@ -102,7 +111,7 @@ def compile_world(world: World, prefix: str) -> Graph:
 def _principal_node(ns: Namespace, p: Principal, first_app: str | None) -> NodeDict:
     pid, kind = p.id, p.kind
     sid = ns.id(pid)
-    org = {"orgId": ns.org}
+    org = {"orgId": ns.org if p.org is None else f"{ns.org}-{p.org}"}  # a user's own orgId may name another org than its edges do
     if kind == "user":
         props: dict[str, Scalar] = {**org, "email": f"{pid}@{ns.prefix}.example", "fullName": pid, "userId": sid}
         if not p.active:
