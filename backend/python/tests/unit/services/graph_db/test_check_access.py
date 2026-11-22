@@ -296,10 +296,11 @@ class TestNeo4jWalksStartWhereTheyAreBound:
     such choice. A walk whose hop reads an edge between its two nodes (inheritance) is read a level at a time, with no path match at
     all: as a path match it enumerates every route, exponential where nodes have two parents at many levels. A path match is left only
     where the hop reads one step's own properties (a pruning BFS), and it ends in an unlabelled node nothing tests before its ends are
-    collected."""
+    collected. The same holds for the split browse's hop admission, which reads the check's walk from the App above the start."""
 
     @staticmethod
-    async def _statements() -> list[str]:
+    async def _statements() -> list[tuple[str, int, int]]:
+        """Each statement with the number of walks read a level at a time and of path matches it holds."""
         provider = Neo4jProvider.__new__(Neo4jProvider)
         provider.logger = MagicMock()
         texts: list[str] = []
@@ -310,19 +311,24 @@ class TestNeo4jWalksStartWhereTheyAreBound:
 
         provider._kh_query = kh_query
         access = {"grantee_ids": ["u"], "gated_app_ids": ["a"], "by_connector": {"a": ["g1"]}}
+        out: list[tuple[str, int, int]] = []
         for form in (access, {**access, "probe": {"connector_id": "a", "grantees": ["u"]}}):
             await provider._kh_v3_accessible_rows("u", "o", ["n1"], ["v1"], access=form, transaction=None)
-        return texts
+            # The walks from the App (the target's, a declared group's, a seed's and that seed's declared group's) and below a seed;
+            # the declared walks are path matches.
+            out.append((texts[-1], 5, 2))
+            await provider._kh_split_admitted_by_hop("s", ["n1"], app_id="a", org_id="o", access=form, transaction=None)
+            out.append((texts[-1], 1, 0))
+        return out
 
     @pytest.mark.asyncio
     async def test_every_walk_starts_where_it_is_bound_and_none_enumerates_routes(self) -> None:
         import re
 
-        for text in await self._statements():
-            # The walks from the App (the target's, a declared group's, a seed's and that seed's declared group's) and below a seed.
-            assert text.count("reduce(kh_w") == 5, text.count("reduce(kh_w")
+        for text, levelled, matched in await self._statements():
+            assert text.count("reduce(kh_w") == levelled, text.count("reduce(kh_w")
             walks = list(re.finditer(r"MATCH \((\w+)\) (\(\(.*?\)\)\{\d+,\d+\}) \(([^)]*)\)", text, re.S))
-            assert len(walks) == 2, len(walks)      # the declared walks
+            assert len(walks) == matched, len(walks)
             for walk in walks:
                 assert "EXISTS" not in walk.group(2), "a path match whose hop reads an edge enumerates every route"
                 end = walk.group(3)
