@@ -54,7 +54,12 @@ describe('CrawlingSchedulerService: a connector type is one type however it is s
     const { service } = schedulerOver(store)
 
     await service.scheduleJob('jira', CONNECTOR_ID, daily, ORG, USER)
-    await service.scheduleJob('Jira', CONNECTOR_ID, daily, ORG, USER)
-    expect(store.repeatables.size).to.equal(1)
+    // A different hour: the fake keys a schedule by its repeat options, so an old one left
+    // behind would show up as a second entry.
+    const later = { ...(daily as object), hour: 4 } as never
+    await service.scheduleJob('Jira', CONNECTOR_ID, later, ORG, USER)
+    const kept = [...store.repeatables.values()]
+    expect(kept).to.have.length(1)
+    expect(JSON.stringify(kept[0])).to.match(/\b0 4 \* \* \*/)
   })
 })

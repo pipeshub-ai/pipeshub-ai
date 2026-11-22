@@ -66,7 +66,6 @@ interface PausedJobInfo {
 const CLEAR_IF_UNCHANGED =
   "if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then return redis.call('HDEL', KEYS[1], ARGV[1]) end return 0";
 
-
 /**
  * A connector type as the job id spells it. The type arrives in the URL, so one schedule can be
  * asked for as `Jira` and as `jira`: both must name the same job.
@@ -432,7 +431,10 @@ export class CrawlingSchedulerService {
     const repeatableJobs = await this.queue.getRepeatableJobs();
 
     // Get all jobs to find which repeatable job belongs to our connector/org
-    const allJobs = await this.queue.getJobs([...PENDING_STATES, 'active']);
+    const allJobs = (await this.queue.getJobs([
+      ...PENDING_STATES,
+      'active',
+    ])) as Job<CrawlingJobData>[];
     const matchingJobs = allJobs.filter(
       (job) =>
         sameConnectorType(job.data.connector, connector) &&
@@ -495,7 +497,7 @@ export class CrawlingSchedulerService {
     // one-time run keeps its fixed id after it finishes or while it runs.
     const pendingIds = new Set(pendingRuns.map((job) => job.id));
     const onceIdHolders = freeOnceJobId
-      ? [...(allJobs as Job<CrawlingJobData>[]), ...history].filter(
+      ? [...allJobs, ...history].filter(
           (job) => job.id === jobId && !pendingIds.has(job.id),
         )
       : [];
@@ -789,11 +791,11 @@ export class CrawlingSchedulerService {
     // Including 'completed' would make getJobStatus return a stale history
     // record and falsely report the job as still scheduled after it has been
     // deleted.
-    const allJobs = await this.queue.getJobs([
+    const allJobs = (await this.queue.getJobs([
       ...PENDING_STATES,
       'active',
       'failed',
-    ]);
+    ])) as Job<CrawlingJobData>[];
 
     const matchingJobs = allJobs.filter(
       (job) =>
@@ -1312,15 +1314,18 @@ export class CrawlingSchedulerService {
       (job) => job.key === repeatableJobKey,
     );
 
-    const allJobs = await this.queue.getJobs([
+    const allJobs = (await this.queue.getJobs([
       'waiting',
       'active',
       'delayed',
       'completed',
       'failed',
-    ] as JobType[]);
+    ] as JobType[])) as Job<CrawlingJobData>[];
     const matchingJobs = allJobs.filter(
-      (job) => sameConnectorType(job.data.connector, connector) && job.data.connectorId === connectorId && job.data.orgId === orgId,
+      (job) =>
+        sameConnectorType(job.data.connector, connector) &&
+        job.data.connectorId === connectorId &&
+        job.data.orgId === orgId,
     );
 
     return {
