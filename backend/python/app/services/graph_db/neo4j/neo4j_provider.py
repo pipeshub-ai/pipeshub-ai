@@ -20969,6 +20969,69 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 planned.clear()
             planned.add(key)
 
+    # Neo4j discards a cached plan once the counts it was made with have moved past a threshold that shrinks as the plan
+    # ages (from 75% to about 7% at its 7-hour target): a few hours on, the records one sync adds send the next request
+    # to plan again, seconds of a person's click. The plan keeper (`kh_refresh_plans`) plans again, off the request path,
+    # each listing statement in use whose plan is older than this, so that the plans stay young enough for a sync to
+    # leave them. 0 turns it off.
+    _KH_PLAN_REFRESH_S = env_seconds("NEO4J_KH_PLAN_REFRESH", 3600.0)
+    # A statement no request has run for this long is forgotten.
+    _KH_PLAN_IDLE_S = 86400.0
+
+    def _kh_statements(self) -> dict[str, list[Any]]:
+        """Each listing statement this process ran: ``key -> [text, parameters as typed for the plan cache, planned at, last run]``."""
+        return vars(self).setdefault("_kh_statements_seen", {})
+
+    @staticmethod
+    def _kh_plan_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+        """``parameters`` as the plan cache tells them apart, by name and type: every list emptied, in a map as well, so a
+        statement kept for planning again does not hold a request's grant lists."""
+        def typed(value: Any) -> Any:
+            if isinstance(value, list):
+                return []
+            if isinstance(value, dict):
+                return {k: typed(v) for k, v in value.items()}
+            return value
+        return {k: typed(v) for k, v in parameters.items()}
+
+    def _kh_seen(self, key: str, query: str, parameters: dict[str, Any]) -> None:
+        seen, now = self._kh_statements(), time.monotonic()
+        entry = seen.get(key)
+        if entry is not None:
+            entry[3] = now
+            return
+        if len(seen) >= self._KH_PLANNED_MAX:
+            del seen[min(seen, key=lambda k: seen[k][3])]
+        seen[key] = [query, self._kh_plan_parameters(parameters), now, now]
+
+    async def kh_refresh_plans(self, max_age: float | None = None) -> int:
+        """Plan again (``EXPLAIN``, ``replan=force``) each listing statement run since its plan was made, once that plan
+        is older than ``max_age`` (``NEO4J_KH_PLAN_REFRESH``), one at a time so that it takes one planner thread. Returns
+        how many were planned."""
+        max_age = self._KH_PLAN_REFRESH_S if max_age is None else max_age
+        if max_age <= 0:
+            return 0
+        seen, done = self._kh_statements(), 0
+        for key, entry in list(seen.items()):
+            query, typed, planned_at, ran_at = entry
+            now = time.monotonic()
+            if now - ran_at > self._KH_PLAN_IDLE_S:
+                seen.pop(key, None)
+                continue
+            # A plan no request has used since it was made is left to age: planning it again would serve nobody.
+            if now - planned_at < max_age or ran_at <= planned_at:
+                continue
+            try:
+                await self.client.execute_query(
+                    "CYPHER replan=force EXPLAIN " + query.lstrip(), parameters=typed, plain=True, timeout=self._KH_QUERY_TIMEOUT_S)
+            except Exception as e:
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="kh_refresh_plans", step="explain")
+                continue
+            entry[2] = time.monotonic()
+            done += 1
+        return done
+
     async def _kh_run(self, query: str, parameters: dict[str, Any], txn_id: str | None) -> list[dict]:
         if txn_id is not None:
             # Inside a transaction the statement shares that transaction's session and limit.
@@ -20979,6 +21042,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # Neo4j keys a cached plan on the text and on the type of each parameter (a null sort key is another plan).
         types = sorted((k, type(v).__name__) for k, v in parameters.items())
         key = hashlib.sha1(f"{query}\n{types}".encode()).hexdigest()
+        self._kh_seen(key, query, parameters)
         # One wait budget per request, even when a failed planner hands the planning on.
         deadline = time.monotonic() + self._KH_PLAN_WAIT_S
         # shortcut: a text is trusted as planned for the life of the process; a plan Neo4j evicts later is planned again
