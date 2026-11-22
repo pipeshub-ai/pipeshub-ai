@@ -78,7 +78,7 @@ def team() -> DropboxConnector:
     conn.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
     p = conn.data_entities_processor
     p.org_id = "org-1"
-    p.permission_sync_gated = AsyncMock(return_value=False)
+    p.skips_permission_writes = AsyncMock(return_value=False)
     for name in ("on_new_records", "on_record_metadata_update", "on_record_content_update", "on_new_app_users",
                  "withdraw_app_user_access", "on_record_group_deleted", "batch_update_nodes"):
         setattr(p, name, AsyncMock())
@@ -466,6 +466,27 @@ class TestTeamListing:
             await team._sync_steps()
 
         team._owed.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unlicensed", [True, False])
+    async def test_a_first_group_sync_takes_no_cursor_while_unlicensed(self, team, unlicensed: bool) -> None:
+        """Unlicensed, no group is read; a cursor taken anyway would make the first licensed run read only the changes
+        after it, so the groups that already exist would never be stored."""
+        team.data_entities_processor.skips_permission_writes = AsyncMock(return_value=unlicensed)
+        team._owed.load = AsyncMock(return_value=[])
+        team._owed.save = AsyncMock()
+        team._process_users_in_batches = AsyncMock(side_effect=RuntimeError("stop after the group step"))
+        for name in ("_register_authenticated_identity", "_sync_members", "_initialize_event_cursor",
+                     "_sync_user_groups", "sync_personal_record_groups"):
+            setattr(team, name, AsyncMock(return_value=[]))
+
+        with patch("app.connectors.sources.dropbox.connector.load_connector_filters",
+                   AsyncMock(return_value=(FilterCollection(), FilterCollection()))), pytest.raises(RuntimeError):
+            await team._sync_steps()
+
+        group_cursor = [c for c in team._initialize_event_cursor.await_args_list if c.args[1] == EventCategory.groups]
+        assert len(group_cursor) == (0 if unlicensed else 1)
+        assert team._sync_user_groups.await_count == (0 if unlicensed else 1)
 
     @pytest.mark.asyncio
     async def test_a_failed_page_is_recorded_and_nothing_is_reconciled(self, team) -> None:

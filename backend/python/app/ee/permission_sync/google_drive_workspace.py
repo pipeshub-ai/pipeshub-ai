@@ -99,7 +99,7 @@ class GoogleDriveWorkspacePermissionsMixin:
 
     async def _copies_no_source_access(self) -> bool:
         """Without a licence key a company-wide connector reads no access from Google Workspace."""
-        return await self.data_entities_processor.permission_sync_gated(self.connector_id)
+        return await self.data_entities_processor.skips_permission_writes(self.connector_id)
 
     async def _write_audience_groups(self) -> None:
         """The groups a discoverable share grants: every enabled person ("anyone" shares), and one group per domain

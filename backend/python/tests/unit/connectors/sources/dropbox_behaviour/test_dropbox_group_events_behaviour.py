@@ -237,7 +237,7 @@ class TestWithoutALicenceKey:
 
     async def test_a_gated_run_reads_no_group_events_and_keeps_the_cursor(self, connector, api, db) -> None:
         api.page("c1", [member_removed(ENG, BEN)], next_cursor="c2")
-        db.permission_sync_gated = _no_licence
+        db.skips_permission_writes = _no_licence
 
         await sync(connector)
 

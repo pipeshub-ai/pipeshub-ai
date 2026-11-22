@@ -1515,11 +1515,14 @@ class DropboxConnector(DropboxPermissionsMixin, BaseConnector):
         group_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(group_sync_key)
 
         if not group_sync_point.get('cursor'):
-            self.logger.info("Running a FULL sync for user groups...")
-            # The cursor is taken before the groups are read, so a change made while they are read is
-            # listed by the next run.
-            activity_log_missing = await self._initialize_event_cursor(group_sync_key, EventCategory.groups)
-            await self._sync_user_groups()
+            # Unlicensed, no group is read and no cursor taken: one taken now would leave the first licensed run
+            # reading changes only, and the groups that already exist would never be stored.
+            if not await self._copies_no_source_access():
+                self.logger.info("Running a FULL sync for user groups...")
+                # The cursor is taken before the groups are read, so a change made while they are read is
+                # listed by the next run.
+                activity_log_missing = await self._initialize_event_cursor(group_sync_key, EventCategory.groups)
+                await self._sync_user_groups()
         else:
             self.logger.info("Running an INCREMENTAL sync for user groups...")
             await self._sync_group_changes_with_cursor()

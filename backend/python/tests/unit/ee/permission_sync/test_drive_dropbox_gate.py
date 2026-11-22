@@ -22,7 +22,7 @@ def _connector(mixin: type, *, gated: bool) -> object:
     connector.connector_id = "connector-1"
     connector.logger = MagicMock()
     connector.data_entities_processor = MagicMock()
-    connector.data_entities_processor.permission_sync_gated = AsyncMock(return_value=gated)
+    connector.data_entities_processor.skips_permission_writes = AsyncMock(return_value=gated)
     connector.data_source = MagicMock()
     connector.admin_data_source = MagicMock()
     connector.dropbox_cursor_sync_point = MagicMock()
@@ -33,13 +33,13 @@ def _connector(mixin: type, *, gated: bool) -> object:
 
 
 def _assert_nothing_read(connector: object) -> None:
-    connector.data_entities_processor.permission_sync_gated.assert_awaited_with("connector-1")
+    connector.data_entities_processor.skips_permission_writes.assert_awaited_with("connector-1")
     assert connector.data_source.method_calls == []
     assert connector.admin_data_source.method_calls == []
     assert connector.dropbox_cursor_sync_point.method_calls == []
     connector._load_limited_pending.assert_not_awaited()
     # Only the gate was asked: nothing was written either.
-    assert [call[0] for call in connector.data_entities_processor.mock_calls] == ["permission_sync_gated"]
+    assert [call[0] for call in connector.data_entities_processor.mock_calls] == ["skips_permission_writes"]
 
 
 # Every gated method the free connector calls, and what it gets back when the gate holds.

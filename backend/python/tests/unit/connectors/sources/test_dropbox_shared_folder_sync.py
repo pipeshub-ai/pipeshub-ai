@@ -40,7 +40,7 @@ def connector() -> DropboxConnector:
     processor = conn.data_entities_processor
     processor.org_id = "org-1"
     processor.on_new_record_groups = AsyncMock()
-    processor.permission_sync_gated = AsyncMock(return_value=False)
+    processor.skips_permission_writes = AsyncMock(return_value=False)
     processor.get_record_group_by_external_id = AsyncMock(return_value=None)
     processor.get_users_with_permission_to_node = AsyncMock(return_value=[])
     processor.get_app_user_by_email = AsyncMock(return_value=None)

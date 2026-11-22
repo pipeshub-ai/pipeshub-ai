@@ -63,7 +63,7 @@ def connector() -> DropboxConnector:
     conn.data_source = AsyncMock()
     conn.dropbox_cursor_sync_point = MagicMock()
     conn.dropbox_cursor_sync_point.update_sync_point = AsyncMock()
-    conn.data_entities_processor.permission_sync_gated = AsyncMock(return_value=False)
+    conn.data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     return conn
 
 
