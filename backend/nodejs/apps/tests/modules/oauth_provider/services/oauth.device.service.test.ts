@@ -80,6 +80,7 @@ describe('OAuthDeviceService', () => {
     }
     mockFirstPartyDeviceAppService = {
       getOrCreate: sinon.stub().resolves('pipeshub-agent'),
+      resolveScopes: sinon.stub().returns(['user:read']),
     }
     mockLogger = createMockLogger()
     service = new OAuthDeviceService(
@@ -395,6 +396,29 @@ describe('OAuthDeviceService', () => {
     expect(mockFirstPartyDeviceAppService.getOrCreate.calledOnce).to.be.true
     expect(mockOAuthAppService.getAppByClientId.calledWith('pipeshub-agent')).to.be
       .true
+  })
+
+  it('should cap first-party device logins to the current scopes, not the list the app stored', async () => {
+    // Created while MCP_SCOPES allowed code:write; the cap has narrowed since, and the stored list only grows.
+    mockOAuthAppService.getAppByClientId.resolves({
+      ...app, clientId: 'pipeshub-agent', allowedScopes: ['user:read', 'code:write'],
+    })
+    const create = sinon.stub(OAuthDeviceCode, 'create').resolves({} as any)
+    const realService = new OAuthDeviceService(
+      mockLogger as any,
+      mockOAuthAppService,
+      mockOAuthTokenService,
+      new ScopeValidatorService(),
+      mockFirstPartyDeviceAppService,
+    )
+    await realService.createAuthorization('pipeshub-agent', 'user:read code:write', 'http://localhost:3000')
+    await realService.createAuthorization('pipeshub-agent', undefined, 'http://localhost:3000')
+    expect(create.firstCall.args[0].scopes).to.deep.equal(['user:read'])
+    expect(create.secondCall.args[0].scopes).to.deep.equal(['user:read'])
+    // Another app keeps its own list.
+    mockOAuthAppService.getAppByClientId.resolves({ ...app, allowedScopes: ['user:read', 'code:write'] })
+    await realService.createAuthorization('cid', 'user:read code:write', 'http://localhost:3000')
+    expect(create.thirdCall.args[0].scopes).to.deep.equal(['user:read', 'code:write'])
   })
 
   it('should not ensure the first-party app for other client_ids', async () => {

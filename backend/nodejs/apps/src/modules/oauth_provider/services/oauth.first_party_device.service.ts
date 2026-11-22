@@ -143,7 +143,8 @@ export class FirstPartyDeviceAppService {
     }
   }
 
-  private resolveScopes(): string[] {
+  /** The agent preset a member may hold, under the current MCP_SCOPES. */
+  resolveScopes(): string[] {
     const mcp = new Set(this.appConfig.mcpScopes || [])
     const memberAllowed = new Set(
       this.scopeValidatorService.getAllowedScopeNamesForRole(false),

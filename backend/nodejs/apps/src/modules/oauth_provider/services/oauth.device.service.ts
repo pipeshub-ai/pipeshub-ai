@@ -82,12 +82,18 @@ export class OAuthDeviceService {
       )
     }
 
+    let allowedScopes = app.allowedScopes;
+    if (clientId === FIRST_PARTY_DEVICE_CLIENT_ID) {
+      // Its stored list only ever grows, so a narrower MCP_SCOPES since the app was created must still bind here.
+      const cap = new Set(this.firstPartyDeviceAppService.resolveScopes());
+      allowedScopes = allowedScopes.filter((s) => cap.has(s));
+    }
     const requested = scope
       ? this.scopeValidatorService.parseScopes(scope)
-      : app.allowedScopes
+      : allowedScopes
     const { granted } = this.scopeValidatorService.resolveGrantedScopes(
       requested,
-      app.allowedScopes,
+      allowedScopes,
     )
 
     const deviceCode = crypto.randomBytes(DEVICE_CODE_BYTES).toString('hex')
