@@ -55,9 +55,9 @@ def test_a_source_with_no_known_identity_promotes_as_before_and_writes_none(src:
     assert pi.plan_promotions(src, [MD], MD_FILES, at=1, vrid="v") == {"q": {}}
 
 
-def test_a_duplicate_that_is_not_tracked_is_promoted_as_before() -> None:
+def test_a_duplicate_that_is_not_tracked_stays_queued_for_its_own_event() -> None:
     blob = {"_key": "q", "mimeType": "application/octet-stream", "recordName": "q", "recordType": "FILE"}
-    assert pi.plan_promotions(source(), [blob], {"q": None}, at=1, vrid="v") == {"q": {}}
+    assert pi.plan_promotions(source(), [blob], {"q": None}, at=1, vrid="v") == {}
 
 
 @pytest.mark.asyncio
@@ -79,3 +79,14 @@ def test_a_source_that_moved_to_another_copy_leaves_the_duplicate_queued(monkeyp
     queued = {"_key": "q", "mimeType": "text/plain", "recordName": "q.txt"}
     assert pi.promotion_fields(source, queued, {"extension": "txt"}, at=9, vrid="v-written") is None
     assert pi.promotion_fields(source, queued, {"extension": "txt"}, at=9, vrid="v-moved") is not None
+
+
+def test_a_queued_duplicate_nothing_tracked_reads_stays_queued(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECORD_PARSER_IDENTITY_WRITE", "true")
+    source = {
+        "virtualRecordId": "v", "lastIndexTimestamp": 5, pi.IDENTITY_FIELD: "inproc:txt@1", pi.IDENTITY_AT_FIELD: 5,
+        pi.IDENTITY_VRID_FIELD: "v", pi.IDENTITY_SOURCE_FIELD: pi.SOURCE_PARSED,
+    }
+    code = {"_key": "q", "mimeType": "text/plain", "recordName": "q.py", "recordType": "CODE_FILE"}
+    assert pi.promotion_fields(source, code, {"extension": "py"}, at=9, vrid="v") is None
+    assert pi.plan_promotions(source, [code], {"q": {"extension": "py"}}, at=9, vrid="v") == {}

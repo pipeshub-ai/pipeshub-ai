@@ -301,7 +301,9 @@ def promotion_fields(
     queued_key = graph_parser_key(queued, queued_file)
     source_known = known_identity(source)
     if queued_key is None:
-        return {}
+        # The graph cannot say which parser this duplicate's labels mean (the same rule as the twin attach): it is indexed
+        # by its own event, which labels its copy.
+        return None
     if source_known is not None:
         source_key = key_of(source_known)
         if source_key is not None and source_key != queued_key:

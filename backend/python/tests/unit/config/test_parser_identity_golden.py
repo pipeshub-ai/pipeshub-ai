@@ -49,7 +49,7 @@ def test_the_route_map_is_pinned(mime: str, ext: str | None, name: str, record_t
 @pytest.mark.parametrize("pipeline", [pi.PIPELINE_IN_PROCESS, pi.PIPELINE_SERVICE])
 def test_the_identity_is_the_pipeline_and_the_key(pipeline: str) -> None:
     assert pi.parser_identity("text/plain", "txt", "a.txt", "FILE", pipeline=pipeline) == f"{pipeline}:txt@1"
-    assert pi.parser_identity("text/plain", "py", "a.py", "FILE", pipeline=pipeline) is None
+    assert pi.parser_identity("text/plain", "py", "a.py", "FILE", pipeline=pipeline) == f"{pipeline}:{pi.UNTRACKED_KEY}"
 
 
 def test_the_pipeline_is_not_part_of_what_is_compared() -> None:
@@ -81,7 +81,8 @@ def test_the_payload_and_the_graph_give_the_same_identity(name: str, extension: 
         payload["mimeType"], payload["extension"], payload["recordName"], payload["recordType"], pipeline="inproc",
     )
     from_graph = pi.graph_parser_key(node, file_doc)
-    assert pi.key_of(from_payload) == from_graph
+    # A type nothing tracks reads as None on the graph side and is labelled ``untracked`` by the run that parsed it.
+    assert pi.key_of(from_payload) == (from_graph if from_graph is not None else pi.UNTRACKED_KEY)
 
 
 def test_a_graph_read_without_the_files_document_differs_from_the_payload_for_octet_stream() -> None:
