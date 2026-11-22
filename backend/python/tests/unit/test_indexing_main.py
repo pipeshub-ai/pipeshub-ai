@@ -5173,3 +5173,74 @@ class TestMappingsThatNameNoOrganisation:
         logger = MagicMock()
         assert await m._clean_mappings_without_org(graph_provider=graph, pipeline=pipeline, logger=logger, page_size=10) == 0
         assert cleaned == [] and logger.warning.call_count == 0 and logger.error.call_count == 0
+
+
+class TestRefreshIntentRecovery:
+    """Stale recovery and a Force reindex request held on the record (``modules/indexing/refresh_intent``)."""
+
+    @staticmethod
+    def _request() -> dict:
+        from app.modules.indexing import refresh_intent as ri
+        from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+        return ri.intent_fields("req-1", get_epoch_timestamp_in_ms() - 1000)
+
+    async def test_a_recovered_record_that_holds_a_request_is_sent_as_that_refresh(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(return_value=[
+            {"_key": "r1", "recordName": "a.pdf", "version": 2, "virtualRecordId": "v1", "orgId": "org1", **self._request()},
+        ])
+        await recover_in_progress_records(container, gp)
+        payload = container.kafka_consumers[0][2].send_event.await_args.kwargs["payload"]
+        assert (payload["forceReindex"], payload["refreshPaidOutputs"], payload["refreshIntentId"]) == (True, True, "req-1")
+        assert payload["refreshFromIntent"] is True
+
+    async def test_a_recovered_record_without_a_request_is_sent_plain(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "r1", "recordName": "a.pdf", "version": 2, "orgId": "org1"}])
+        await recover_in_progress_records(container, gp)
+        payload = container.kafka_consumers[0][2].send_event.await_args.kwargs["payload"]
+        assert "refreshPaidOutputs" not in payload and "refreshIntentId" not in payload
+
+    async def _connector_off(self, connector: dict | None, **fields: object) -> MagicMock:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp = _make_graph_provider()
+        gp.update_node_fields_if_match = AsyncMock(return_value=True)
+        gp.get_nodes_by_filters = AsyncMock(return_value=[
+            {"_key": "r1", "recordName": "a.pdf", "connectorId": "c1", "origin": "CONNECTOR", **fields},
+        ])
+        gp.get_document = AsyncMock(side_effect=_document_lookup(gp, connector=connector))
+        await recover_in_progress_records(container, gp)
+        return gp
+
+    @pytest.mark.parametrize("connector", [{"isActive": False}, None], ids=["off", "removed"])
+    async def test_a_connector_off_ends_the_request_without_writing_the_fields_into_the_status_write(
+        self, connector: dict | None,
+    ) -> None:
+        from app.modules.indexing import refresh_intent as ri
+
+        gp = await self._connector_off(connector, **self._request())
+        updates = gp.update_node.await_args_list[0].args[2]
+        assert updates["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+        assert ri.ID_FIELD not in updates and ri.AT_FIELD not in updates      # never nulls: a closed schema refuses them
+        call = gp.update_node_fields_if_match.await_args_list[0]
+        assert call.args[3] == {ri.ID_FIELD: "req-1"} and tuple(call.kwargs["unset"]) == ri.CLEARED_FIELDS
+
+    @pytest.mark.parametrize("connector", [{"isActive": False}, None], ids=["off", "removed"])
+    async def test_a_connector_off_for_a_record_with_no_request_adds_no_field_and_no_clear(
+        self, connector: dict | None,
+    ) -> None:
+        from app.modules.indexing import refresh_intent as ri
+
+        gp = await self._connector_off(connector)
+        updates = gp.update_node.await_args_list[0].args[2]
+        assert ri.ID_FIELD not in updates and ri.AT_FIELD not in updates
+        gp.update_node_fields_if_match.assert_not_awaited()

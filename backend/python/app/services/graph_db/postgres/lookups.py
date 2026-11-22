@@ -996,7 +996,7 @@ class LookupsMixin(PgBase):
         try:
             d = await self._one("""/* pipeshub:graph.find_next_queued_duplicate */ SELECT n.doc FROM graph.nodes r JOIN graph.nodes n ON n.org_id = r.org_id AND n.coll = 'records'
                 AND n.doc->>'md5Checksum' = r.doc->>'md5Checksum' AND n.doc->>'orgId' = r.doc->>'orgId' AND n.id <> r.id AND n.doc->>'indexingStatus' = 'QUEUED'
-                AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND (r.doc->>'sizeInBytes' IS NULL OR n.doc->>'sizeInBytes' = r.doc->>'sizeInBytes')
+                AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND n.doc->>'refreshIntentId' IS NULL AND (r.doc->>'sizeInBytes' IS NULL OR n.doc->>'sizeInBytes' = r.doc->>'sizeInBytes')
                 WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2 ORDER BY n.id LIMIT 1""", org, record_id, transaction=transaction)
             return _arango(d, "records") if d else None
         except Exception as e:

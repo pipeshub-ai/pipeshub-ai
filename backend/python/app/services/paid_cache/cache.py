@@ -31,6 +31,7 @@ from app.services.paid_cache.locks import (
     deleted_name,
     lock_name,
     manifest_lock_name,
+    refresh_done_name,
     refresh_name,
 )
 from app.services.paid_cache.orphan import STOPPED, RecordGone, current_guard
@@ -345,6 +346,28 @@ class PaidResultCache:
         if held is not None and (held.lost or not await held.still_owned()):
             raise RefreshPurgeInProgress("the purge lease was lost before the delete; another delivery owns it")
         await self.purge_record(org_id, record_id, before_ms=cutoff)
+
+    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
+        """Records that the refresh run under ``event_id`` has ended, for ``DELETED_TTL_MS``. True when the marker is written; False when
+        it could not be. This is the second copy of a fact the record carries (``refreshDoneId``, written with the clear of the request):
+        the backend may be this process's own (Redis unreachable), where no other worker sees it, which the record's copy covers."""
+        try:
+            backend = await self._backend()
+            await backend.mark(refresh_done_name(org_id, record_id, event_id), DELETED_TTL_MS)
+            return True
+        except Exception:
+            self.logger.debug("Paid-result refresh-done marker not written", exc_info=True)
+            return False
+
+    async def refresh_state(self, org_id: str, record_id: str, event_id: str) -> str:
+        """``"done"`` when the refresh under ``event_id`` ran, ``"open"`` when the marker can be read and is not set, ``"unavailable"``
+        when it could not be read (not the same as a miss: the caller must not start a refresh on it without bound). By identity only."""
+        try:
+            backend = await self._backend()
+            return "done" if await backend.is_marked(refresh_done_name(org_id, record_id, event_id)) else "open"
+        except Exception:
+            self.logger.debug("Paid-result refresh-done marker not read", exc_info=True)
+            return "unavailable"
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         """Claims the refresh named ``event_id`` for its first request, atomically (``SET NX`` with a TTL on Redis).
@@ -901,6 +924,12 @@ class NullPaidResultCache:
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         return "unclaimed"
+
+    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
+        return True                  # no marker store to keep a record in: nothing is lost by clearing
+
+    async def refresh_state(self, org_id: str, record_id: str, event_id: str) -> str:
+        return "open"
 
     @contextlib.asynccontextmanager
     async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:

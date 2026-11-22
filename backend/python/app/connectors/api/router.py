@@ -236,6 +236,7 @@ from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
+from app.modules.indexing import refresh_intent
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import (
     check_record_access_or_503,
@@ -2807,6 +2808,10 @@ def mark_user_forced_reindex(event_data: dict) -> None:
     if event_data.get("topic") == "record-events":
         payload["forceReindex"] = True
         payload["refreshPaidOutputs"] = True
+        # The refresh's identity: stored on the record before the publish (below) and copied by every re-send. Only while the writes are
+        # on: the consumer keys a refresh's purge on it, and an older worker keys that on the delivery id.
+        if refresh_intent.write_enabled():
+            payload["refreshIntentId"] = uuid4().hex
     else:
         payload["force"] = True
 
@@ -2924,6 +2929,18 @@ async def reindex_single_record(
             event_published = False
             if event_data and request_body and request_body.get("force") is True:
                 mark_user_forced_reindex(event_data)
+                forced_payload = event_data.get("payload")
+                if (
+                    event_data.get("topic") == "record-events"
+                    and isinstance(forced_payload, dict)
+                    and forced_payload.get("refreshIntentId")
+                    and refresh_intent.write_enabled()
+                ):
+                    # Before the publish: a publish that fails, or a message that is lost, leaves the request on the record.
+                    await graph_provider.update_record_fields_for_ids(
+                        [record_id],
+                        refresh_intent.intent_fields(forced_payload["refreshIntentId"], get_epoch_timestamp_in_ms()),
+                    )
             if event_data:
                 try:
                     timestamp = get_epoch_timestamp_in_ms()
