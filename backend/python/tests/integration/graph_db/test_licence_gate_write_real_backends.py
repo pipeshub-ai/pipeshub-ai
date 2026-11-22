@@ -51,6 +51,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 logger = logging.getLogger("licence-gate-write-it")
 
 RECORDS = CollectionNames.RECORDS.value
+RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
+DAY_MS = 86_400_000
 NAMES = ("m1", "m2", "m3")
 
 
@@ -708,3 +710,124 @@ async def test_on_postgres_concurrent_slices_whose_licence_lapses_limit_without_
             assert await _limit(s) == "CREATOR"
             assert await _readable(s, s.bob, ("m1", "m2")) == set()
             assert await _readable(s, s.alice, ("m1", "m2")) == {"m1", "m2"}
+
+
+# --- 13. inherit edges, source-account links and empty grants written while limited ----------------------------
+
+def _groups(s: _Sync, *, channel_inherits: bool, thread_inherits: bool, readers: tuple[str, ...]):  # noqa: ANN202
+    """The channel (top level, under the app) and a thread under it, with whether each inherits from above."""
+    channel, grants = s.channel(readers=readers)
+    channel.inherit_permissions = channel_inherits
+    thread, _ = s.thread("t", created=s.now - DAY_MS)
+    thread.inherit_permissions = thread_inherits
+    return [(channel, grants), (thread, [s.grant(s.alice)])]
+
+
+async def test_inherit_edges_written_while_limited_admit_nobody_after_the_lift_once_the_source_breaks_them(
+    sync: _Sync,
+) -> None:
+    """Group inherit edges are structure, not grants, so they are written while unlicensed: the channel comes to
+    inherit from the app (everyone linked to it) and the thread from the channel. Licensed again, the source has
+    broken both: after the lift bob reads nothing, the edges written while limited included."""
+    def source(channel_inherits: bool, thread_inherits: bool):  # noqa: ANN202
+        async def script(s: _Sync) -> None:
+            await s.processor.on_new_record_groups(_groups(
+                s, channel_inherits=channel_inherits, thread_inherits=thread_inherits, readers=(s.alice,),
+            ))
+            await s.processor.on_new_records([
+                s.message("mc", readers=(), inherit=True),
+                s.message("mt", thread="t", readers=(), inherit=True),
+            ])
+        return script
+
+    await source(False, False)(sync)
+    assert await _readable(sync, sync.bob, ("mc", "mt")) == set()
+
+    _licence(sync.processor, UNLICENSED)
+    await _run(sync, source(True, True))
+    channel_id = (await sync.graph.get_record_group_by_external_id(sync.connector_id, f"C-{sync.connector_id}")).id
+    assert (await sync.links(RECORD_GROUPS, channel_id))["inherits"] == 1, "the channel's edge to the app, written"
+    assert (await sync.links(RECORD_GROUPS, await sync.group_id("t")))["inherits"] == 1
+    assert await _readable(sync, sync.bob, ("mc", "mt")) == set(), "the limit holds"
+
+    _licence(sync.processor, LICENSED)
+    await _run(sync, source(False, False))
+    assert await _limit(sync) is None
+    assert (await sync.links(RECORD_GROUPS, channel_id))["inherits"] == 0
+    assert (await sync.links(RECORD_GROUPS, await sync.group_id("t")))["inherits"] == 0
+    assert await _readable(sync, sync.bob, ("mc", "mt")) == set(), "no inherit edge from the limited time admits bob"
+    assert await _readable(sync, sync.alice, ("mc", "mt")) == {"mc", "mt"}
+
+
+async def test_a_source_account_link_is_not_written_while_unlicensed_and_a_stale_one_admits_nobody_after_the_lift(
+    sync: _Sync,
+) -> None:
+    """bob authenticated the connector as a source account (svc) that reads m1, so he reads m1 through it. Unlicensed,
+    the source says he is now authenticated as himself (the link should go) and later as another account: neither
+    write happens, and the limit hides m1. The licensed full sync removes the link: after the lift bob reads nothing."""
+    svc = f"svc-{sync.connector_id}"
+    await sync.graph.batch_upsert_nodes(
+        [{"id": svc, "userId": svc, "orgId": sync.org_id, "email": f"{svc}@example.com", "isActive": True,
+          "createdAtTimestamp": sync.now, "updatedAtTimestamp": sync.now}],
+        collection=CollectionNames.USERS.value,
+    )
+    links = CollectionNames.AUTHENTICATED_AS.value
+
+    async def stored_links() -> int:
+        return len(await sync.graph.get_edges_from_node(f"{CollectionNames.USERS.value}/{sync.bob}", links) or [])
+
+    def source(authenticated_as: str):  # noqa: ANN202
+        async def script(s: _Sync) -> None:
+            await s.processor.link_authenticator_to_source_user(
+                s.connector_id, s.bob, f"{authenticated_as}@example.com", authenticated_as, Connectors.SLACK_WORKSPACE,
+            )
+            await _source({n: (s.alice, svc) for n in NAMES})(s)
+        return script
+
+    await source(svc)(sync)
+    assert await stored_links() == 1
+    assert await _readable(sync, sync.bob) == set(NAMES), "through the source account's grants"
+
+    _licence(sync.processor, UNLICENSED)
+    await _run(sync, source(sync.bob))
+    assert await stored_links() == 1, "not removed while unlicensed: left as stored"
+    assert await _readable(sync, sync.bob) == set(), "and the limit hides what it reaches"
+    await sync.processor.link_authenticator_to_source_user(
+        sync.connector_id, sync.bob, f"{sync.alice}@example.com", sync.alice, Connectors.SLACK_WORKSPACE,
+    )
+    assert await stored_links() == 1, "no new link while unlicensed"
+
+    _licence(sync.processor, LICENSED)
+    await _run(sync, source(sync.bob))
+    assert await _limit(sync) is None
+    assert await stored_links() == 0
+    assert await _readable(sync, sync.bob) == set(), "the stale link admits nobody after the lift"
+    await sync.graph.delete_nodes_and_edges([svc], CollectionNames.USERS.value)
+
+
+async def test_a_gated_connectors_empty_grants_keep_the_stored_ones_and_the_limit_still_hides_them(sync: _Sync) -> None:
+    """The connector PRs answer a gated read with empty grants (None means "could not read" there); unlicensed, the
+    processor keeps what is stored for both a group and a record, and the limit hides it. Licensed, the source's
+    real grants replace them at the lift."""
+    async def first(s: _Sync) -> None:
+        await s.processor.on_new_record_groups([s.channel(readers=(s.alice, s.bob))])
+        await s.processor.on_new_records([s.message(n, readers=(s.alice, s.bob), inherit=False) for n in NAMES])
+
+    await first(sync)
+    assert await _readable(sync, sync.bob) == set(NAMES)
+    channel_id = (await sync.graph.get_record_group_by_external_id(sync.connector_id, f"C-{sync.connector_id}")).id
+
+    async def gated_answers(s: _Sync) -> None:
+        await s.processor.on_new_record_groups([(s.channel(readers=())[0], [])])
+        await s.processor.on_new_records([s.message(n, readers=(), inherit=False) for n in NAMES])
+
+    _licence(sync.processor, UNLICENSED)
+    await _run(sync, gated_answers)
+    assert (await sync.links(RECORD_GROUPS, channel_id))["grants"] == 2, "the group's grants, kept"
+    assert (await sync.links(RECORDS, await sync.record_id("m1")))["grants"] == 2, "the record's grants, kept"
+    assert await _readable(sync, sync.bob) == set(), "and hidden by the limit"
+
+    _licence(sync.processor, LICENSED)
+    await _run(sync, _source({"m1": (sync.alice,), "m2": (sync.alice, sync.bob), "m3": (sync.alice,)}))
+    assert await _limit(sync) is None
+    assert await _readable(sync, sync.bob) == {"m2"}
