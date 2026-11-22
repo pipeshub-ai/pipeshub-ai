@@ -3701,7 +3701,7 @@ class DataSourceEntitiesProcessor:
                 moved_virtual_record_ids,
                 narrowed_connectors=narrowed_connectors,
                 replace_permissions=replace,
-                content_changed=True,
+                content_changed=content_changed,
                 title_changes=title_changes,
             )
 
