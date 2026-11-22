@@ -1125,6 +1125,46 @@ async def test_a_browse_total_older_than_five_minutes_is_counted_again_without_t
     assert (whole["after"], whole["include_total"]) == (None, True)
 
 
+@pytest.mark.asyncio
+async def test_counts_asked_for_on_a_later_browse_page_describe_the_whole_folder(service, provider) -> None:
+    """A first page without counts issues a cursor carrying the total alone; a later page asking for counts counts the folder again, then carries them."""
+    browse = {"user_id": "u1", "org_id": "o1", "parent_id": "p1", "parent_type": "recordGroup", "limit": 1}
+    provider.get_knowledge_hub_connector_page_v3.side_effect = lambda **kw: page_of(
+        [row("r2" if kw["after"] else "r1", "Record")], has_more=True, scope=admitted_scope(),
+        total=5 if kw["include_total"] else None, counts={"record": 3, "folder": 2} if kw["include_total"] else None)
+    first = await service.get_nodes(**browse)
+    assert first.counts is None
+
+    second = await service.get_nodes(**browse, cursor=first.pagination.nextCursor, include=["counts"])
+    assert [item.id for item in second.items] == ["r2"]
+    assert {item.label: item.count for item in second.counts.items} == {"records": 3, "folders": 2}
+    assert sum(item.count for item in second.counts.items) == second.counts.total == second.pagination.totalItems == 5
+    whole = provider.get_knowledge_hub_connector_page_v3.call_args_list[-1].kwargs
+    assert (whole["after"], whole["include_total"]) == (None, True)
+
+    provider.get_knowledge_hub_connector_page_v3.reset_mock()
+    third = await service.get_nodes(**browse, cursor=second.pagination.nextCursor, include=["counts"])
+    assert provider.get_knowledge_hub_connector_page_v3.await_count == 1, "the counts now travel in the cursor"
+    assert sum(item.count for item in third.counts.items) == third.counts.total == 5
+
+
+@pytest.mark.asyncio
+async def test_counts_asked_for_on_a_later_root_page_describe_the_whole_listing(service, provider) -> None:
+    ids = [{"id": "app1", "nodeType": "app"}, {"id": "kb-1", "nodeType": "app"}, {"id": "f1", "nodeType": "folder"}]
+    provider.get_knowledge_hub_root_nodes_v2.side_effect = lambda **kw: envelope(
+        [row("kb-1" if kw["after"] else "app1", "App", node_type="app")], total=3, has_more=True,
+        ids=ids if kw["include_ids"] else None)
+    first = await service.get_nodes(user_id="u1", org_id="o1", limit=1)
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["include_ids"] is False
+
+    second = await service.get_nodes(user_id="u1", org_id="o1", limit=1, cursor=first.pagination.nextCursor, include=["counts"])
+    assert [item.id for item in second.items] == ["kb-1"]
+    assert {item.label: item.count for item in second.counts.items} == {"apps": 2, "folders": 1}
+    assert sum(item.count for item in second.counts.items) == second.counts.total == second.pagination.totalItems == 3
+    whole = provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs
+    assert (whole["after"], whole["include_ids"]) == (None, True)
+
+
 def test_only_postgresql_reads_the_rows_before_a_numbered_page_in_large_reads() -> None:
     """Neo4j's and ArangoDB's page reads hold every row they keep in memory against a pool (a 1,000-row read ran Neo4j's transaction pool out of memory):
     they read a page at a time. PostgreSQL's cost is per read, not per row."""

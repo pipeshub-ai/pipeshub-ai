@@ -200,6 +200,37 @@ async def test_a_folder_lists_each_stub_once_over_its_pages(graph_layers) -> Non
             await layer.release([FOLDERSTUB])
 
 
+async def test_counts_asked_for_from_the_second_page_on_describe_the_whole_folder(graph_layers) -> None:
+    """A first page asked without counts issues a cursor carrying the total alone; every later page that asks for counts gets counts by type that add
+    up to its total, as the rows of the whole folder do (they came back empty beside a total until the carried total aged out)."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+
+    labels = {"record": "records", "folder": "folders", "recordGroup": "groups", "app": "apps"}
+    for layer in graph_layers:
+        await layer.preload([FOLDERSTUB])
+        try:
+            ns = await layer._ns(FOLDERSTUB)
+            service = KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config())
+            args = {"user_id": ns.id("u"), "org_id": ns.org, "parent_id": ns.id("f"), "parent_type": "folder", "limit": 4,
+                    "sort_by": "name", "sort_order": "asc"}
+            first = await service.get_nodes(**args)
+            assert first.success and first.counts is None and first.pagination.nextCursor, layer.name
+            items, cursor, pages = list(first.items), first.pagination.nextCursor, 0
+            while cursor:
+                page = await service.get_nodes(**args, cursor=cursor, include=["counts"])
+                assert page.success, layer.name
+                items += page.items
+                pages += 1
+                assert sum(c.count for c in page.counts.items) == page.counts.total == page.pagination.totalItems == 9, (layer.name, page.counts)
+                cursor = page.pagination.nextCursor
+            assert pages == 2 and len(items) == 9, (layer.name, pages, len(items))
+            assert {c.label: c.count for c in page.counts.items} == {labels[k]: v for k, v in Counter(i.nodeType for i in items).items()}, layer.name
+        finally:
+            await layer.release([FOLDERSTUB])
+
+
 async def test_a_node_the_oracle_admits_past_the_cap_is_listed_under_its_parent(graph_layers) -> None:
     """A seed, and a member of an App that opens everything, are admitted with no hop cap: below depth 50 each link is listed under its parent,
     with an arrow, and the layer never excuses one as the cap's (`refused_by_cap` reads the verdict, not the depth)."""
