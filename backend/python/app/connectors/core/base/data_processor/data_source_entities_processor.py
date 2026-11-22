@@ -5905,7 +5905,7 @@ class DataSourceEntitiesProcessor:
         marker: list[str] = []
         if check_listing:
             try:
-                stored = await self.config_service.get_config(marker_key, use_cache=False)
+                stored = await self.config_service.get_config(marker_key, use_cache=False, raise_on_error=True)
                 marker = [str(k) for k in stored] if isinstance(stored, list) else []
             except Exception as e:
                 self.logger.warning(

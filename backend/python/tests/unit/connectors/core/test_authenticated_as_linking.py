@@ -180,7 +180,13 @@ class TestListedAuthenticator:
     async def test_a_failed_marker_read_changes_nothing(self) -> None:
         tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
         proc = _processor(tx)
-        proc.config_service.get_config = AsyncMock(side_effect=RuntimeError("kv down"))
+
+        async def get_config(key, use_cache=True, default=None, raise_on_error=False):
+            if raise_on_error:
+                raise RuntimeError("kv down")
+            return default
+
+        proc.config_service.get_config = AsyncMock(side_effect=get_config)
         result = await _link(proc)
 
         tx.remove_authenticated_as.assert_not_called()
