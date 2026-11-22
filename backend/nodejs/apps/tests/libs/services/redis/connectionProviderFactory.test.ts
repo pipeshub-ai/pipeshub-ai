@@ -349,6 +349,40 @@ describe('checkRedisEvictionPolicy', () => {
     );
   });
 
+  for (const [policies, refused] of [
+    [['noeviction', 'allkeys-lru'], true],
+    [['allkeys-lru', 'noeviction'], true],
+    [['noeviction', 'volatile-lru'], false],
+  ] as const) {
+    it(`checks every cluster primary: ${policies.join(' + ')}`, async () => {
+      // An untargeted INFO on a cluster client reads one node; a primary with allkeys-* elsewhere would pass.
+      const asked: string[] = [];
+      const provider = new FakeProvider(config());
+      (provider as { isCluster: boolean }).isCluster = true;
+      provider.getClient = () =>
+        ({
+          info: async () => {
+            throw new Error('untargeted INFO');
+          },
+          nodes: () =>
+            policies.map((policy) => ({
+              info: async () => {
+                asked.push(policy);
+                return `maxmemory_policy:${policy}\r\n`;
+              },
+            })),
+        }) as unknown as RedisClient;
+      let thrown: Error | undefined;
+      try {
+        await checkRedisEvictionPolicy(provider);
+      } catch (error) {
+        thrown = error as Error;
+      }
+      expect(Boolean(thrown)).to.equal(refused);
+      expect(asked).to.have.length(policies.length);
+    });
+  }
+
   it('skips a deployment with no Redis server', async () => {
     await checkRedisEvictionPolicy(new NoRedisProvider(config(), 'postgres'));
   });

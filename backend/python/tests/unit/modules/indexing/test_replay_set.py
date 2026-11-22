@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis.aioredis
 import pytest
+from redis.asyncio.cluster import RedisCluster
 
 from app.modules.indexing import replay_set
 from app.modules.indexing.replay_set import REPLAY_SET_SIZE, covers, flags_of
@@ -165,6 +167,28 @@ class TestEvictionPolicy:
         # The key-value store and broker streams have no TTL: allkeys-* can drop them.
         with pytest.raises(replay_set.UnsafeEvictionPolicyError, match="REDIS_CACHE_URL"):
             await replay_set.check_eviction_policy(_Info(policy))
+
+    @pytest.mark.parametrize(("policies", "refused"), [
+        (["noeviction", "allkeys-lru"], True),
+        (["allkeys-lru", "noeviction"], True),
+        (["noeviction", "volatile-lru"], False),
+        (["noeviction", "noeviction"], False),
+    ])
+    async def test_a_cluster_checks_every_primary(self, policies: list[str], refused: bool) -> None:  # noqa: FBT001
+        # An untargeted INFO on a cluster client reads one node; a primary with allkeys-* elsewhere would pass.
+        nodes = [MagicMock(name=f"primary-{i}") for i in range(len(policies))]
+        cluster = MagicMock(spec=RedisCluster)
+        cluster.get_primaries.return_value = nodes
+        cluster.info = AsyncMock(side_effect=lambda _section, target_nodes: {
+            "maxmemory_policy": policies[nodes.index(target_nodes)]})
+
+        if refused:
+            with pytest.raises(replay_set.UnsafeEvictionPolicyError):
+                await replay_set.check_eviction_policy(cluster)
+        else:
+            warning = await replay_set.check_eviction_policy(cluster)
+            assert ("volatile-lru" in (warning or "")) == ("volatile-lru" in policies)
+        assert cluster.info.await_count == len(policies)
 
     async def test_noeviction_is_safe_and_clears_an_earlier_warning(self) -> None:
         await replay_set.check_eviction_policy(_Info("volatile-lru"))

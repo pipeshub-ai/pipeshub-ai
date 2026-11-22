@@ -14,6 +14,7 @@ import {
   RedisConnectionConfig,
   redisConnectionConfigFromEnv,
 } from './connectionConfig';
+import type { Cluster } from 'ioredis';
 import { ClusterRedisProvider } from './clusterRedisProvider';
 import { IRedisConnectionProvider } from './connectionProvider.interface';
 import { StandaloneRedisProvider } from './standaloneRedisProvider';
@@ -251,16 +252,23 @@ export async function checkRedisEvictionPolicy(
   if (provider instanceof NoRedisProvider) {
     return;
   }
-  let policy: string;
+  let policies: string[];
   try {
-    const info: string = await provider.getClient().info('memory');
-    policy = /^maxmemory_policy:(\S+)/m.exec(info)?.[1]?.toLowerCase() ?? '';
+    const client = provider.getClient();
+    // A cluster client sends an untargeted INFO to one node; any primary can hold any key.
+    const nodes = provider.isCluster ? (client as Cluster).nodes('master') : [client];
+    const infos: string[] = await Promise.all(nodes.map((node) => node.info('memory')));
+    policies = infos.map(
+      (info) => /^maxmemory_policy:(\S+)/m.exec(info)?.[1]?.toLowerCase() ?? '',
+    );
   } catch (error) {
     logger.warn('Redis eviction policy not read', {
       error: (error as Error).name,
     });
     return;
   }
+  const unsafe = policies.filter((p) => p && p !== 'noeviction');
+  const policy = unsafe.find((p) => p.startsWith('allkeys-')) ?? unsafe[0] ?? '';
   if (policy.startsWith('allkeys-')) {
     throw new Error(
       `Redis maxmemory-policy is '${policy}' on the Redis that holds the ` +
@@ -270,7 +278,7 @@ export async function checkRedisEvictionPolicy(
         'REDIS_CACHE_URL if they need an evicting policy.',
     );
   }
-  if (policy && policy !== 'noeviction') {
+  if (policy) {
     logger.warn(
       `Redis maxmemory-policy is '${policy}': Redis may evict leases and ` +
         "other expiring keys under memory pressure. Use 'noeviction'.",
