@@ -167,7 +167,7 @@ class ViewerScopeCache:
             if any(p is None for p in parts):
                 for key, part in zip(keys, parts, strict=True):
                     if part is None:
-                        await client.set(key, str(time.time_ns() // 1000), nx=True)
+                        await client.set(key, _epoch_base(), nx=True)
                 parts = await client.mget(keys)
                 if any(p is None for p in parts):
                     return None
@@ -247,7 +247,7 @@ class ViewerScopeCache:
         """Move the counter here and, without a shared Redis, in every other process. A publish that fails raises, so the bump
         counts as lost: this process stops serving cached scopes and retries it, as for a Redis bump that failed."""
         assert self._client is not None
-        await self._client().incr(self._ver_key(target))
+        await _incr_from_base(self._client(), self._ver_key(target))
         if self._bus is not None:
             await self._bus.publish("v", target, "")
 
@@ -257,7 +257,7 @@ class ViewerScopeCache:
             await self._flush_local()
             return
         try:
-            await self._client().incr(self._ver_key(org_id))
+            await _incr_from_base(self._client(), self._ver_key(org_id))
         except Exception as exc:
             self._trip("remote bump", exc)
 
@@ -267,7 +267,7 @@ class ViewerScopeCache:
         if self._client is None:
             return
         try:
-            await self._client().incr(self._ver_key(_GLOBAL))
+            await _incr_from_base(self._client(), self._ver_key(_GLOBAL))
         except Exception as exc:
             self._trip("flush", exc)
 
@@ -277,6 +277,18 @@ class ViewerScopeCache:
         bus, self._bus = self._bus, None
         if bus is not None:
             await bus.stop()
+
+
+def _epoch_base() -> str:
+    return str(time.time_ns() // 1000)
+
+
+async def _incr_from_base(client: RedisLike, key: str) -> None:
+    """INCR a version counter that may have been lost (eviction, failover, restore). A bare INCR would restart it at 1, and a
+    second loss within one entry TTL would make an old version current again; from the epoch base it only ever moves past
+    every value it had (one bump per microsecond would be needed to catch up)."""
+    await client.set(key, _epoch_base(), nx=True)
+    await client.incr(key)
 
 
 def count(result: str) -> None:

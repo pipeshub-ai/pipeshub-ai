@@ -336,25 +336,6 @@ describe('RedisService', () => {
     it('leaves TLS off when the stored config does not ask for it', () => {
       expect(capturedConnectionConfig.tls).to.not.equal(true);
     });
-
-    it('connects to REDIS_CACHE_URL when set, not to the main Redis', () => {
-      const saved = process.env.REDIS_CACHE_URL;
-      process.env.REDIS_CACHE_URL = 'redis://:cache-secret@cache-redis:6390';
-      try {
-        new RedisService(
-          { host: 'main-redis', port: 6379, password: 'main-secret', keyPrefix: 'c:' },
-          createMockLogger(),
-        );
-      } finally {
-        if (saved === undefined) delete process.env.REDIS_CACHE_URL;
-        else process.env.REDIS_CACHE_URL = saved;
-      }
-      expect([
-        capturedConnectionConfig.host,
-        capturedConnectionConfig.port,
-        capturedConnectionConfig.password,
-      ]).to.deep.equal(['cache-redis', 6390, 'cache-secret']);
-    });
   });
 });
 

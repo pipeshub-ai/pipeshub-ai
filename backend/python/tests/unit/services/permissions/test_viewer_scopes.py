@@ -146,6 +146,28 @@ async def test_a_revoke_is_visible_on_the_next_call() -> None:
     assert "s2" in before.readable_scopes and "s2" not in after.readable_scopes and after.version == before.version + 1
 
 
+async def test_a_revoke_is_visible_after_the_version_counter_was_evicted_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    # On an evicting cache Redis a counter is lost often. A bare INCR restarts it at 1, so a second loss within the entry
+    # TTL made the version of an entry from before the revoke current again.
+    clock = iter(range(1_700_000_000_000_000_000, 1_800_000_000_000_000_000, 1_000_000_000))
+    monkeypatch.setattr("app.services.permissions.cache.time.time_ns", lambda: next(clock))
+    server = fakeredis.FakeServer()
+    client = fakeredis.FakeAsyncRedis(server=server, decode_responses=True)
+    graph, cache = Graph({"g1", "s2"}), ViewerScopeCache(lambda: client)
+    service = graph.service(cache)
+    ver_key = cache._ver_key(ORG)
+
+    await client.delete(ver_key)  # evicted
+    await cache.bump(ORG)
+    before = await service.resolve_now(ORG, USER)
+    graph.admitted.discard("s2")
+    await client.delete(ver_key)  # evicted again
+    await cache.bump(ORG)  # the revoke's bump
+    after = await service.resolve_now(ORG, USER)
+
+    assert "s2" in before.readable_scopes and "s2" not in after.readable_scopes and after.version != before.version
+
+
 async def test_a_bump_of_one_organisation_leaves_another_cached_and_a_global_bump_drops_all() -> None:
     graph, cache = Graph({"g1"}), _cache()
     service = graph.service(cache)

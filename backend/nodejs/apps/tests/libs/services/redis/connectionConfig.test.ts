@@ -2,7 +2,6 @@ import { expect } from 'chai';
 
 import {
   DEFAULT_CLIENT_OPTIONS,
-  redisCacheConnectionConfig,
   redisConnectionConfigFromEnv,
   redisConnectionConfigFromHostPort,
 } from '../../../../src/libs/services/redis/connectionConfig';
@@ -157,80 +156,4 @@ describe('REDIS_TLS_* boolean spellings', () => {
     expect(config.tls).to.equal(false);
     expect(config.tlsRejectUnauthorized).to.equal(true);
   });
-});
-
-describe('redisCacheConnectionConfig (REDIS_CACHE_URL)', () => {
-  const savedEnv = { ...process.env };
-  const MAIN = { host: 'main-redis', port: 6379, password: 'main-secret', db: 0 };
-
-  beforeEach(() => {
-    for (const name of [
-      'REDIS_CACHE_URL',
-      'REDIS_PASSWORD',
-      'REDIS_USERNAME',
-      'REDIS_TLS_ENABLED',
-      'REDIS_TLS',
-      'REDIS_CLUSTER_ENDPOINTS',
-    ]) {
-      delete process.env[name];
-    }
-    process.env.REDIS_KEY_NAMESPACE = 'ns';
-  });
-
-  afterEach(() => {
-    process.env = { ...savedEnv };
-  });
-
-  it('is the main Redis, unchanged, when unset or blank', () => {
-    expect(redisCacheConnectionConfig(MAIN)).to.deep.equal(
-      redisConnectionConfigFromHostPort(MAIN),
-    );
-    process.env.REDIS_CACHE_URL = '  ';
-    expect(redisCacheConnectionConfig(MAIN).host).to.equal('main-redis');
-  });
-
-  it('takes the whole connection from the URL', () => {
-    process.env.REDIS_CACHE_URL =
-      'rediss://cacheuser:p%40ss%3Aw@cache-redis:6390/3';
-    process.env.REDIS_PASSWORD = 'main-secret';
-    process.env.REDIS_CLUSTER_ENDPOINTS = 'main-a:6379,main-b:6379';
-    const cfg = redisCacheConnectionConfig(MAIN);
-    expect([cfg.host, cfg.port, cfg.username, cfg.password, cfg.db, cfg.tls]).to.deep.equal(
-      ['cache-redis', 6390, 'cacheuser', 'p@ss:w', 3, true],
-    );
-    // On cluster the URL's host is the seed, not the main cluster's endpoints.
-    expect(cfg.clusterEndpoints).to.deep.equal([]);
-    expect(cfg.keyNamespace).to.equal('ns');
-  });
-
-  it('never borrows the main credentials or TLS flag', () => {
-    process.env.REDIS_CACHE_URL = 'redis://cache-redis';
-    process.env.REDIS_PASSWORD = 'main-secret';
-    process.env.REDIS_USERNAME = 'main-user';
-    process.env.REDIS_TLS_ENABLED = 'true';
-    const cfg = redisCacheConnectionConfig(MAIN);
-    expect([cfg.port, cfg.username, cfg.password, cfg.db, cfg.tls]).to.deep.equal(
-      [6379, undefined, undefined, 0, false],
-    );
-  });
-
-  it('accepts an IPv6 host', () => {
-    process.env.REDIS_CACHE_URL = 'redis://[::1]:6391';
-    const cfg = redisCacheConnectionConfig(MAIN);
-    expect([cfg.host, cfg.port]).to.deep.equal(['::1', 6391]);
-  });
-
-  for (const url of [
-    'cache-redis:6379',
-    'http://cache-redis',
-    'redis://',
-    'redis://cache-redis:notaport',
-    'redis://cache-redis/x',
-    'redis://cache-redis:70000',
-  ]) {
-    it(`refuses the malformed URL '${url}'`, () => {
-      process.env.REDIS_CACHE_URL = url;
-      expect(() => redisCacheConnectionConfig(MAIN)).to.throw(/REDIS_CACHE_URL/);
-    });
-  }
 });

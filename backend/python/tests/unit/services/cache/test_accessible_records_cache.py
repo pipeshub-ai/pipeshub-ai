@@ -46,6 +46,10 @@ class _FakePipeline:
         self._ops.append(("incr", key))
         return self
 
+    def set(self, key, value, ex=None, nx=False) -> "_FakePipeline":
+        self._ops.append(("set", key, value, ex, nx))
+        return self
+
     def expire(self, key: str, ttl: int) -> "_FakePipeline":
         self._ops.append(("expire", key, ttl))
         return self
@@ -77,8 +81,10 @@ class FakeRedis:
         self.calls.append(("get", key))
         return self.strings.get(key)
 
-    async def set(self, key, value, ex=None):
+    async def set(self, key, value, ex=None, nx=False):
         self.calls.append(("set", key, ex))
+        if nx and key in self.strings:
+            return None
         self.strings[key] = value
         if ex is not None:
             self.expires[key] = ex
@@ -132,7 +138,7 @@ class BrokenRedis(FakeRedis):
     async def get(self, key):
         raise ConnectionError("redis down")
 
-    async def set(self, key, value, ex=None):
+    async def set(self, key, value, ex=None, nx=False):
         raise ConnectionError("redis down")
 
     async def hget(self, key, field):
@@ -619,6 +625,7 @@ class TestPermissionChangeDropsEveryAffectedUser:
         await cache.get_or_compute_user_connector(ORG, "conn-other", "user-a", _loader({"v": "r"}))
         await cache.get_or_compute_user_connector("org-2", CONNECTOR, "user-z", _loader({"v": "r"}))
         await cache.get_or_compute_kb(ORG, KB, _loader({"k": "r"}))
+        other_org_epoch = redis.strings.get(cache._connector_epoch_key("org-2", CONNECTOR))
         invalidator = AccessibleRecordsInvalidator(MagicMock(), cache, MagicMock())
         invalidator.PERMISSION_CHANGE_SETTLE_SECONDS = 0.01
 
@@ -633,7 +640,7 @@ class TestPermissionChangeDropsEveryAffectedUser:
         assert cache._user_connector_key(ORG, "conn-other") in redis.hashes
         assert cache._user_connector_key("org-2", CONNECTOR) in redis.hashes
         assert cache._kb_key(ORG, KB) in redis.strings
-        assert cache._connector_epoch_key("org-2", CONNECTOR) not in redis.strings
+        assert redis.strings.get(cache._connector_epoch_key("org-2", CONNECTOR)) == other_org_epoch
         await asyncio.sleep(0.05)
         assert cache._user_connector_key("org-2", CONNECTOR) in redis.hashes
 
@@ -699,6 +706,27 @@ class TestFillFromBeforeAChangeIsNeverWritten:
         release.set()
 
         assert await fill == {"old": "r"}, "the search itself is still answered"
+        assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
+
+    @pytest.mark.parametrize("evicted", [False, True])
+    async def test_a_lost_epoch_does_not_let_an_earlier_fill_write(self, evicted: bool) -> None:  # noqa: FBT001
+        # On an evicting cache Redis the epoch can vanish between a change's bump and the fill's write. A missing epoch
+        # read as "" on both sides, so a fill that started before the change put the revoked map back.
+        redis = FakeRedis()
+        cache = _cache(redis)
+        epoch_key = cache._connector_epoch_key(ORG, CONNECTOR)
+        if evicted:
+            redis.strings.pop(epoch_key, None)  # never bumped, or evicted before the fill
+        load, started, release = _held_loader({"old": "r"})
+        fill = asyncio.create_task(cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, load))
+        await started.wait()
+
+        await cache.invalidate_connector(ORG, CONNECTOR)
+        if evicted:
+            redis.strings.pop(epoch_key, None)  # the bump is lost to eviction
+        release.set()
+
+        assert await fill == {"old": "r"}
         assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
 
     async def test_second_change_just_before_the_settle_fires(self) -> None:
@@ -781,9 +809,10 @@ class TestFillFromBeforeAChangeIsNeverWritten:
         epoch = cache._connector_epoch_key(ORG, CONNECTOR)
 
         await cache.invalidate_connector(ORG, CONNECTOR)
+        first = int(redis.strings[epoch])
         await cache.invalidate_connector(ORG, CONNECTOR)
 
-        assert redis.strings[epoch] == "2"
+        assert int(redis.strings[epoch]) == first + 1
         assert redis.expires[epoch] == AccessibleRecordsCache.EPOCH_TTL_SECONDS
 
 

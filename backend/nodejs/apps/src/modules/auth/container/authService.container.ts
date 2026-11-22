@@ -72,9 +72,9 @@ export class AuthServiceContainer {
         .bind<ICacheService>('RedisService')
         .toConstantValue(redisService);
 
-      // The main Redis: the same cached provider `RedisService` resolved
-      // (Phase 5, R11) unless REDIS_CACHE_URL moved the cache elsewhere.
-      // Bound so any service in this container can depend on
+      // Same fingerprint `RedisService` just resolved internally (Phase 5,
+      // R11), so this returns the already-cached singleton -- not a second
+      // connection. Bound so any service in this container can depend on
       // `IRedisConnectionProvider` directly instead of importing the
       // factory module itself.
       container

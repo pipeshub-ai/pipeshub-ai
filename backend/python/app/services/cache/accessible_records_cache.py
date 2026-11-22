@@ -79,6 +79,10 @@ def _ttl_from_env(default: int) -> int:
         return default
 
 
+def _epoch_base() -> str:
+    return str(time.time_ns() // 1000)
+
+
 class AccessibleRecordsCache(IAccessibleRecordsCache):
     """Read-through cache of accessible-record maps, shared across workers."""
 
@@ -99,8 +103,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
     # Waits between background attempts at a delete that failed; the last
     # repeats until the delete lands or the entries' TTL has passed.
     INVALIDATION_RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0, 5.0, 10.0)
-    # A connector's epoch must outlive any fill that read it, or an expired
-    # epoch reads as unchanged; a day is far beyond any search.
+    # An epoch that expired or was evicted only rejects the fills that read it
+    # (see `_read_epoch`); a day keeps that rare.
     EPOCH_TTL_SECONDS = 86400
 
     def __init__(
@@ -363,10 +367,19 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         return stored
 
     async def _read_epoch(self, epoch_key: str) -> str | None:
-        """The epoch, ``""`` when never bumped; None (and the breaker tripped)
-        when Redis could not answer."""
+        """The epoch, created from an epoch-microsecond base when missing; None (and
+        the breaker tripped) when Redis could not answer.
+
+        The epoch can be lost (an evicting cache Redis, an expiry, a failover).
+        A missing epoch must never read the same as the one a fill started from,
+        or a fill that read the graph before a change could write the old map back
+        after the change's bump was lost. So it is created from a base above any
+        value it had, bumps do the same (`_delete_now`), and `_write` refuses
+        when the epoch is missing."""
         try:
-            return await self._client().get(epoch_key) or ""
+            client = self._client()
+            await client.set(epoch_key, _epoch_base(), nx=True, ex=self.EPOCH_TTL_SECONDS)
+            return await client.get(epoch_key) or ""
         except Exception as e:
             self._mark_down("read", e)
             return None
@@ -387,7 +400,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         written = False
         try:
             client = self._client()
-            if epoch_key is not None and (await client.get(epoch_key) or "") != epoch:
+            # A missing epoch (None) never equals the one read: lost means changed.
+            if epoch_key is not None and await client.get(epoch_key) != epoch:
                 return
             if field is None:
                 await client.set(key, json.dumps(value, separators=(",", ":")), ex=self._ttl)
@@ -396,7 +410,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
                 await client.hset(key, field, envelope)
                 await client.expire(key, self._ttl)
             written = True
-            if epoch_key is not None and (await client.get(epoch_key) or "") != epoch:
+            if epoch_key is not None and await client.get(epoch_key) != epoch:
                 await (client.delete(key) if field is None else client.hdel(key, field))
         except Exception as e:
             self._mark_down("write", e)
@@ -519,6 +533,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         if epochs:
             async with client.pipeline(transaction=False) as pipe:
                 for key in epochs:
+                    # From the base when lost, so a bump never lands on a value a fill already read.
+                    pipe.set(key, _epoch_base(), nx=True, ex=self.EPOCH_TTL_SECONDS)
                     pipe.incr(key)
                     pipe.expire(key, self.EPOCH_TTL_SECONDS)
                 await pipe.execute()
