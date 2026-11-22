@@ -25,12 +25,16 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    AuthenticatorLink,
+    AuthenticatorLinkResult,
+)
 from app.models.entities import MessageRecord, Record, RecordGroup
 from app.models.permission import EntityType
 from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Collection
     from urllib.request import Request
 
 TEAM_ID = "T0ACME"
@@ -457,8 +461,10 @@ class FakeSlackStore:
 
     async def link_authenticator_to_source_user(
         self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object,
-    ) -> None:
+        *, may_link: bool = True, check_listing: bool = True, extra_present_emails: Collection[str] = (),
+    ) -> AuthenticatorLinkResult:
         self.links.append((email, source_user_id))
+        return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
 
     async def unlink_authenticator(self, connector_id: str) -> None:
         self.unlinks += 1

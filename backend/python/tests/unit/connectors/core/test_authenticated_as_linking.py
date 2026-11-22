@@ -11,6 +11,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.models.entities import User
+from app.services.notification.types import NotificationSeverity, NotificationType
 
 CONNECTOR = "jira-1"
 CREATED_BY = "creator-user-id"
@@ -382,7 +383,7 @@ class TestWhoTheLinkHangsOff:
 
 
 class TestRegisterAuthenticatedSourceUser:
-    def _connector(self) -> MagicMock:
+    def _connector(self, outcome=AuthenticatorLink.UNCHANGED, scope="team") -> MagicMock:
         from app.connectors.core.base.connector.connector_service import BaseConnector
 
         conn = MagicMock(spec=BaseConnector)
@@ -390,37 +391,115 @@ class TestRegisterAuthenticatedSourceUser:
         conn.connector_id = CONNECTOR
         conn.created_by = CREATED_BY
         conn.connector_name = Connectors.JIRA
+        conn.scope = scope
+        conn.notify = AsyncMock()
+        conn._link_authenticator = lambda *a, **kw: BaseConnector._link_authenticator(conn, *a, **kw)
+        conn._notification_title = lambda event: f"Jira: {event}"
         conn.data_entities_processor = MagicMock()
-        conn.data_entities_processor.link_authenticator_to_source_user = AsyncMock()
+        conn.data_entities_processor.link_authenticator_to_source_user = AsyncMock(
+            return_value=AuthenticatorLinkResult(outcome, CREATED_BY, "darshan@pipeshub.com")
+        )
         return conn
+
+    def _processor_call(self, conn: MagicMock) -> AsyncMock:
+        return conn.data_entities_processor.link_authenticator_to_source_user
 
     async def test_delegates_email_source_id_and_connector_identity(self) -> None:
         from app.connectors.core.base.connector.connector_service import BaseConnector
 
         conn = self._connector()
         await BaseConnector.register_authenticated_source_user(conn, "darshan@pipeshub.com", "acct-123")
-        conn.data_entities_processor.link_authenticator_to_source_user.assert_awaited_once_with(
-            CONNECTOR, CREATED_BY, "darshan@pipeshub.com", "acct-123", Connectors.JIRA
+        self._processor_call(conn).assert_awaited_once_with(
+            CONNECTOR, CREATED_BY, "darshan@pipeshub.com", "acct-123", Connectors.JIRA,
+            may_link=True, check_listing=True, extra_present_emails=(),
         )
+
+    async def test_incomplete_listing_runs_removal_only(self) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector()
+        await BaseConnector.register_authenticated_source_user(
+            conn, "darshan@pipeshub.com", "acct-123", listing_complete=False
+        )
+        assert self._processor_call(conn).await_args.kwargs["may_link"] is False
 
     @pytest.mark.parametrize(
         ("email", "source_user_id"),
         [(None, "acct-123"), ("", "acct-123"), ("darshan@pipeshub.com", None), ("darshan@pipeshub.com", "")],
     )
-    async def test_skips_without_an_email_or_source_id(self, email, source_user_id) -> None:
+    async def test_missing_email_still_lets_a_listed_creator_be_unlinked(self, email, source_user_id) -> None:
         from app.connectors.core.base.connector.connector_service import BaseConnector
 
         conn = self._connector()
         await BaseConnector.register_authenticated_source_user(conn, email, source_user_id)
-        conn.data_entities_processor.link_authenticator_to_source_user.assert_not_called()
+        self._processor_call(conn).assert_awaited_once()
+        assert self._processor_call(conn).await_args.kwargs["may_link"] is False
+        conn.logger.warning.assert_called_once()
 
-    async def test_failure_is_logged_not_raised(self) -> None:
+    async def test_personal_scope_skips_the_listing_check(self) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector(scope="personal")
+        await BaseConnector.register_authenticated_source_user(conn, "darshan@pipeshub.com", "acct-123")
+        assert self._processor_call(conn).await_args.kwargs["check_listing"] is False
+
+    async def test_a_new_link_notifies_only_the_authenticator(self) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector(AuthenticatorLink.LINKED)
+        await BaseConnector.register_authenticated_source_user(conn, "darshan@pipeshub.com", "acct-123")
+        conn.notify.assert_awaited_once_with(
+            type=NotificationType.CONNECTOR_INFO,
+            severity=NotificationSeverity.INFO,
+            title="Jira: You see what the connector's account sees",
+            message="You can see what darshan@pipeshub.com can see in this connector, because it signs in as that account.",
+            recipient_user_ids=[CREATED_BY],
+        )
+
+    @pytest.mark.parametrize("outcome", [AuthenticatorLink.UNCHANGED, AuthenticatorLink.UNLINKED])
+    async def test_unchanged_or_unlinked_sends_no_notice(self, outcome) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector(outcome)
+        await BaseConnector.register_authenticated_source_user(conn, "darshan@pipeshub.com", "acct-123")
+        conn.notify.assert_not_awaited()
+
+    async def test_removal_pass_never_links(self) -> None:
         from app.connectors.core.base.connector.connector_service import BaseConnector
 
         conn = self._connector()
-        conn.data_entities_processor.link_authenticator_to_source_user.side_effect = RuntimeError("graph down")
-        await BaseConnector.register_authenticated_source_user(conn, "darshan@pipeshub.com", "acct-123")
-        conn.logger.warning.assert_called_once()
+        await BaseConnector.drop_authenticator_link_if_listed(conn)
+        self._processor_call(conn).assert_awaited_once_with(
+            CONNECTOR, CREATED_BY, None, None, None,
+            may_link=False, check_listing=True, extra_present_emails=(),
+        )
+
+    @pytest.mark.parametrize(("scope", "created_by"), [("personal", CREATED_BY), ("team", None)])
+    async def test_removal_pass_is_skipped_when_there_is_nothing_to_drop(self, scope, created_by) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector(scope=scope)
+        conn.created_by = created_by
+        await BaseConnector.drop_authenticator_link_if_listed(conn)
+        self._processor_call(conn).assert_not_awaited()
+
+    async def test_unknown_authenticator_never_aborts_the_sync(self) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector()
+        self._processor_call(conn).side_effect = RuntimeError("authenticator deleted")
+        assert await BaseConnector.register_authenticated_source_user(conn, "darshan@pipeshub.com", "acct-123") is None
+        assert await BaseConnector.drop_authenticator_link_if_listed(conn) is None
+        assert conn.logger.warning.call_count == 2
+
+    async def test_extra_present_emails_reach_the_processor(self) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector()
+        await BaseConnector.register_authenticated_source_user(
+            conn, "darshan@pipeshub.com", "acct-123", extra_present_emails=("a@x.com",)
+        )
+        assert self._processor_call(conn).await_args.kwargs["extra_present_emails"] == ("a@x.com",)
 
 
 class TestAuthenticatorUser:

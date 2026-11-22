@@ -20,7 +20,7 @@ import copy
 import itertools
 import json
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -29,6 +29,10 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
 
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    AuthenticatorLink,
+    AuthenticatorLinkResult,
+)
 from app.models.entities import Record
 from app.models.permission import EntityType, PermissionType
 from app.services.graph_db.common.record_visibility import (
@@ -455,9 +459,11 @@ class FakeEntitiesProcessor:
         return True
 
     async def link_authenticator_to_source_user(
-        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object
-    ) -> None:
+        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object,
+        *, may_link: bool = True, check_listing: bool = True, extra_present_emails: Collection[str] = (),
+    ) -> AuthenticatorLinkResult:
         self.linked_authenticators.append((connector_id, created_by, email, source_user_id))
+        return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
 
     async def get_placeholder_records(self, connector_id: str, *_: object, **__: object) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]

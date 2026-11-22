@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 import copy
 import json
@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    AuthenticatorLink,
+    AuthenticatorLinkResult,
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
@@ -816,15 +818,19 @@ class BaseConnector(ABC):
         return self._connector_group_permission
 
     async def register_authenticated_source_user(
-        self, email: str | None, source_user_id: str | None
+        self,
+        email: str | None,
+        source_user_id: str | None,
+        *,
+        listing_complete: bool = True,
+        extra_present_emails: Collection[str] = (),
     ) -> None:
         """Record which source account this connector is authenticated as, so the user who
         authenticated it resolves that account's permissions for this connector instance.
         Connectors call this at the start of ``run_sync`` with the email and id of the
         source "me" account; the id must be the one their user sync stores as sourceUserId.
-        Never aborts the sync."""
-        if not self.created_by:
-            return
+        ``listing_complete`` is False when the user listing is partial or failed: the link is
+        then only ever removed, never made. Never aborts the sync."""
         if not email or not source_user_id:
             self.logger.warning(
                 "Connector %s: the authenticated source account's email or id could not be read "
@@ -832,21 +838,62 @@ class BaseConnector(ABC):
                 "email is granted",
                 self.connector_id, email, source_user_id,
             )
+        result = await self._link_authenticator(
+            email, source_user_id,
+            may_link=listing_complete and bool(email) and bool(source_user_id),
+            extra_present_emails=extra_present_emails,
+        )
+        if result is None or result.outcome is not AuthenticatorLink.LINKED:
             return
+        await self.notify(
+            type=NotificationType.CONNECTOR_INFO,
+            severity=NotificationSeverity.INFO,
+            title=self._notification_title("You see what the connector's account sees"),
+            message=(
+                f"You can see what {result.source_email} can see in this connector, "
+                "because it signs in as that account."
+            ),
+            recipient_user_ids=[result.authenticator_user_id],
+        )
+
+    async def drop_authenticator_link_if_listed(self) -> None:
+        """Remove the authenticator's link when the connector lists them as a source user.
+        Runs before a sync reads anything, so a sync that fails early cannot leave a stale
+        link. Never links and never aborts the sync."""
+        if self.scope == ConnectorScope.PERSONAL.value:
+            return
+        await self._link_authenticator(None, None, may_link=False)
+
+    async def _link_authenticator(
+        self,
+        email: str | None,
+        source_user_id: str | None,
+        *,
+        may_link: bool,
+        extra_present_emails: Collection[str] = (),
+    ) -> AuthenticatorLinkResult | None:
+        if not self.created_by:
+            return None
         try:
             app_name = (
-                self.connector_name
+                None
+                if email is None and source_user_id is None
+                else self.connector_name
                 if isinstance(self.connector_name, Connectors)
                 else Connectors(self.connector_name)
             )
-            await self.data_entities_processor.link_authenticator_to_source_user(
-                self.connector_id, self.created_by, email, source_user_id, app_name
+            return await self.data_entities_processor.link_authenticator_to_source_user(
+                self.connector_id, self.created_by, email, source_user_id, app_name,
+                may_link=may_link,
+                check_listing=self.scope != ConnectorScope.PERSONAL.value,
+                extra_present_emails=extra_present_emails,
             )
         except Exception as e:
             self.logger.warning(
-                "Could not link the user who authenticated connector %s to source account %s: %s",
-                self.connector_id, email, e,
+                "Could not update the link from the user who authenticated connector %s to its source account: %s",
+                self.connector_id, e,
             )
+            return None
 
     async def authenticator_email(self) -> str | None:
         """Email of the PipesHub user whose credentials this connector runs with: the app's
