@@ -18,7 +18,11 @@ export function useCollectionGroupPermissions(): CollectionGroupPermissions {
   return { canEdit, canDelete, canManageSync };
 }
 
-/** Reindex locks on the permission its route checks: connector sync for a collection, edit for anything inside one. */
+/**
+ * Reindex locks on the permission its route checks. A whole collection goes through the connector
+ * reindex route (connector sync); everything else, including connector apps and record groups,
+ * goes through the record or record-group reindex route (edit collection).
+ */
 export function isReindexPermissionLocked(
   node: ReindexNode,
   permissions: CollectionGroupPermissions | undefined,
