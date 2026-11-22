@@ -2074,6 +2074,7 @@ class TestFetchProjectPermissionScheme:
     @pytest.mark.asyncio
     async def test_user_permission(self):
         connector = _make_connector()
+        connector.data_entities_processor.source_accounts.return_value.before_grants = AsyncMock(return_value=True)  # checked in its own tests
         connector._user_read_unfinished = True  # no user map: the grant's own email is only used after a cut-short user read
         connector._licensed_account_ids = {"acc-1"}  # a licensed account the cut-short read did not show
         mock_ds = MagicMock()

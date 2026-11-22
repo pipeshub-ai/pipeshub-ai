@@ -6823,8 +6823,11 @@ class DataSourceEntitiesProcessor:
         external_group_id: str,
         user_email: str,
         permission_type: PermissionType,
-        connector_id: str
+        connector_id: str,
+        source_user_id: str | None = None,
     ) -> bool:
+        """``source_user_id`` is the source account the event names, so a re-used address's new holder is added and
+        the earlier account is not."""
         try:
             # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
             async with self._drop_access_after({connector_id}), grant_fence().shared(), \
@@ -6837,7 +6840,7 @@ class DataSourceEntitiesProcessor:
                         f"User with email {user_email} not found in database"
                     )
                     return False
-                if not await self._holds_address(connector_id, user_email, None, user.id):
+                if not await self._holds_address(connector_id, user_email, source_user_id, user.id):
                     return False
 
                 # 2. Look up the user group by external ID

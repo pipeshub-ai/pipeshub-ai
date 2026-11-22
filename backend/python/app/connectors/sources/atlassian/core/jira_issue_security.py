@@ -44,6 +44,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import AccessRule
+from app.connectors.core.base.data_processor.source_accounts import NOT_SOURCE_ACCOUNTS
 from app.models.permission import EntityType, Permission, PermissionType
 
 if TYPE_CHECKING:
@@ -667,10 +668,16 @@ def _permissions_for_holder(
 
 
 def _account_of(person: object) -> str | None:
-    """The id a user field names its person by, as the user holder reads it (Cloud ``accountId``, Data Center ``key``)."""
+    """The id a Jira user object names its account by: the id the connectors list users with. Cloud's user
+    objects carry accountId ("`id` (for account ID) used instead of `name` for user fields, such as `reporter`
+    and `assignee`", https://developer.atlassian.com/cloud/jira/platform/deprecation-notice-user-privacy-api-migration-guide/);
+    Data Center's carry the user key (UserJsonBean `key`, in the 8.20, 9.12, 10.0 and 11.0 REST references,
+    https://docs.atlassian.com/software/jira/docs/api/REST/8.20.0/ and
+    https://developer.atlassian.com/server/jira/platform/jira_software_dc_11000_swagger.v3.json), and a legacy
+    user only its ``name``, which the Data Center user sync then lists it by."""
     if not isinstance(person, dict):
         return None
-    account = person.get("accountId") or person.get("key")
+    account = person.get("accountId") or person.get("key") or person.get("name")
     return str(account) if account else None
 
 
@@ -1035,6 +1042,22 @@ def apply_issue_access(
         unchanged_stored_rule=unchanged_stored_rule,
     )
     return grants, skipped
+
+
+async def check_unlisted_holders(connector: Any, permissions: list[Permission], listed: dict[str, Any]) -> None:  # noqa: ANN401
+    """A holder resolved from the issue payload, an account the user listing does not hold, goes through the account
+    check before its grant is written, so its address passing to another account takes the earlier account's grants
+    away. It is named by accountId on Cloud and by the user key on Data Center (``_account_of``). A listed person is never
+    passed: their account is checked by the listing, under the id it lists them by."""
+    if connector.connector_name in NOT_SOURCE_ACCOUNTS:
+        return      # a personal connector links the person who set it up: its addresses are not checked
+    listed_emails = {(getattr(u, "email", None) or "").lower() for u in listed.values()}
+    pairs = [(p.email, p.external_id) for p in permissions
+             if p.entity_type == EntityType.USER and p.email and p.external_id
+             and p.external_id not in listed and p.email.lower() not in listed_emails]
+    accounts = connector.data_entities_processor.source_accounts(connector.connector_id)
+    if pairs and not await accounts.before_grants(pairs):
+        raise RuntimeError("The stored users could not be read; the issue's grants are not written this run")
 
 
 def apply_attachment_access(record: Record) -> list[Permission]:

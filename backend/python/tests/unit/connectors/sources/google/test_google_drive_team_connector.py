@@ -102,7 +102,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 # ===========================================================================
 # Helpers
@@ -202,6 +202,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
             scope="personal",
             created_by="test-user-id",
         )
+        stub_source_accounts(conn)
         conn.connector_name = Connectors.GOOGLE_DRIVE_WORKSPACE
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()

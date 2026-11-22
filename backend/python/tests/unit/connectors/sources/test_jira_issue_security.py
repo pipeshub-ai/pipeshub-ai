@@ -1017,6 +1017,60 @@ class TestPagingWithTotalOnly:
         assert values is None
 
 
+def _listed(email: str) -> object:
+    return type("U", (), {"email": email})()
+
+
+# The synced directory: the reporter and assignee resolve through it like any other person the payload names.
+_DIRECTORY = {"acc-r": _listed("rep@ex.com"), "acc-a": _listed("asg@ex.com"), "acc-f": _listed("fld@ex.com"),
+              "JIRAUSER10100": _listed("rep@ex.com"), "JIRAUSER10200": _listed("asg@ex.com"), "rep": _listed("rep@ex.com")}
+
+
+class TestPerIssueHoldersNameTheAccount:
+    """A grant to a re-used address is written only when it names the account that holds it now, so the reporter,
+    assignee and user-field holders carry the id the connectors list users with: accountId on Cloud, the user key
+    on Data Center."""
+
+    @staticmethod
+    def _level(holders: list[dict], fields: dict) -> set:
+        grants, _ = apply_issue_access(
+            _record(), {"security": {"id": "20"}, **fields}, is_subtask=False, project_key="PROJ",
+            context=_present(members={"20": holders}), reporter_email="rep@ex.com", assignee_email="asg@ex.com",
+            user_by_account_id=_DIRECTORY,
+        )
+        return {(p.email, p.external_id) for p in grants}
+
+    def test_cloud_reporter_assignee_and_user_field_carry_the_account_id(self) -> None:
+        got = self._level(
+            [{"type": "reporter"}, {"type": "assignee"}, {"type": "userCustomField", "parameter": "customfield_1"}],
+            {"reporter": {"accountId": "acc-r"}, "assignee": {"accountId": "acc-a"},
+             "customfield_1": [{"accountId": "acc-f"}]},
+        )
+        assert got == {("rep@ex.com", "acc-r"), ("asg@ex.com", "acc-a"), ("fld@ex.com", "acc-f")}
+
+    def test_data_center_holders_carry_the_user_key(self) -> None:
+        got = self._level(
+            [{"type": "reporter"}, {"type": "assignee"}],
+            {"reporter": {"key": "JIRAUSER10100", "name": "rep"}, "assignee": {"key": "JIRAUSER10200", "name": "asg"}},
+        )
+        assert got == {("rep@ex.com", "JIRAUSER10100"), ("asg@ex.com", "JIRAUSER10200")}
+
+    def test_a_browse_reporter_grant_carries_the_account_id(self) -> None:
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=[{"type": "reporter"}])
+        grants, _ = apply_issue_access(
+            _record(), {"security": None, "reporter": {"accountId": "acc-r"}}, is_subtask=False, project_key="PROJ",
+            context=context, reporter_email="rep@ex.com", user_by_account_id=_DIRECTORY,
+        )
+        assert {(p.email, p.external_id) for p in grants} == {("rep@ex.com", "acc-r")}
+
+    def test_a_legacy_data_center_holder_carries_its_name(self) -> None:
+        """A legacy Data Center user object has only ``name``, which the user sync lists it by."""
+        assert self._level([{"type": "reporter"}], {"reporter": {"name": "rep"}}) == {("rep@ex.com", "rep")}
+
+    def test_a_holder_whose_field_names_no_account_carries_none(self) -> None:
+        assert self._level([{"type": "reporter"}], {}) == {("rep@ex.com", None)}
+
+
 class TestOneGrantPerPerson:
     def test_a_grant_naming_the_account_is_kept_over_an_address_only_one_seen_first(self) -> None:
         """The reporter field names no account here, the user holder does: the named grant must stay, as the processor

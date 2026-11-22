@@ -17,6 +17,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     PermissionModel,
     Connectors,
     MimeTypes,
@@ -293,6 +294,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(connector_id)
 
         # Batch processing configuration
         self.batch_size = 100
@@ -460,15 +462,27 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
 
-    @staticmethod
-    def _mailbox_external_group_id(user_email: str, label_ids: Optional[List[str]]) -> str:
+    async def _mailbox_external_group_id(self, user_email: str, label_ids: Optional[List[str]]) -> str:
         """Mailbox record-group external id from Gmail labelIds (same rule as MailRecord)."""
+        owner = await self._mailbox_owner(user_email)
         labels = label_ids or []
         if "SENT" in labels:
-            return f"{user_email}:SENT"
+            return f"{owner}:SENT"
         if "INBOX" in labels:
-            return f"{user_email}:INBOX"
-        return f"{user_email}:OTHERS"
+            return f"{owner}:INBOX"
+        return f"{owner}:OTHERS"
+
+    async def _mailbox_owner(self, user_email: str) -> str:
+        """What a mailbox's groups and sync point are keyed by: the address, or, for an address another account
+        held before, the address and the Directory id of the account that holds it now. The earlier account's mail
+        stays in the address's groups, which grant nobody once the address changed hands, so the new holder reads
+        only its own mail. Groups written before an address changed hands keep their keys."""
+        if not user_email:
+            return user_email
+        accounts = self.source_accounts
+        await accounts.ensure_loaded([user_email])
+        holder = accounts.holder(user_email)
+        return f"{user_email}#{holder}" if holder else user_email
 
     async def _process_gmail_message(
         self,
@@ -500,7 +514,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             internal_date = message.get('internalDate')  # Epoch milliseconds as string
 
             # Determine external_record_group_id based on labelIds (SENT or INBOX)
-            external_record_group_id = self._mailbox_external_group_id(user_email, label_ids)
+            external_record_group_id = await self._mailbox_external_group_id(user_email, label_ids)
 
             # Parse headers
             payload = message.get('payload', {})
@@ -1038,14 +1052,15 @@ class GoogleGmailTeamConnector(BaseConnector):
         async def build_records(message: Dict, thread_id: str) -> list[tuple[Record, list[Permission]]]:
             return await self._records_for_message(user_email, message, thread_id)
 
+        owner = await self._mailbox_owner(user_email)
         mailbox = GmailMailboxSync(
-            mailbox=user_email,
+            mailbox=owner,
             api=GmailMailboxApi(datasource, user_email, GmailCallPolicy(self.logger)),
             build_records=build_records,
             processor=self.data_entities_processor,
             connector_id=self.connector_id,
             sync_point=self.gmail_delta_sync_point,
-            sync_point_key=generate_record_sync_point_key(RecordType.MAIL.value, "user", user_email),
+            sync_point_key=generate_record_sync_point_key(RecordType.MAIL.value, "user", owner),
             health=self._sync_health,
             logger=self.logger,
             window=window,
@@ -1308,18 +1323,20 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         return parsed_headers
 
-    def _create_owner_permission(self, user_email: str) -> Permission:
+    def _create_owner_permission(self, user_email: str, source_user_id: str | None = None) -> Permission:
         """
         Create owner permission for the user.
 
         Args:
             user_email: Email of the user
+            source_user_id: The Directory id of the account, so the holder of a re-used address gets its grant
 
         Returns:
             Permission object with OWNER type
         """
         return Permission(
             email=user_email,
+            external_id=source_user_id,
             type=PermissionType.OWNER,
             entity_type=EntityType.USER
         )
@@ -1740,19 +1757,22 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         return members
 
-    def _mailbox_record_group_id(self, user_email: str) -> str:
-        return f"mailbox:{user_email}"
+    async def _mailbox_record_group_id(self, user_email: str) -> str:
+        return f"mailbox:{await self._mailbox_owner(user_email)}"
 
     @staticmethod
     def _owner_email_from_group(external_group_id: str | None) -> str | None:
         """The mailbox owner encoded in a label or mailbox record-group id."""
         group_id = external_group_id or ""
         if group_id.startswith("mailbox:"):
-            return group_id.removeprefix("mailbox:") or None
-        email, sep, label = group_id.rpartition(":")
-        if sep and label in {"INBOX", "SENT", "OTHERS"} and "@" in email:
-            return email
-        return None
+            owner = group_id.removeprefix("mailbox:")
+        else:
+            owner, sep, label = group_id.rpartition(":")
+            if not (sep and label in {"INBOX", "SENT", "OTHERS"} and "@" in owner):
+                return None
+        # A domain has no "#": one after the last "@" starts the account id of a re-used address (_mailbox_owner).
+        local, at, domain = owner.rpartition("@")
+        return f"{local}{at}{domain.partition('#')[0]}" or None
 
     async def _sync_record_groups(self, users: List[AppUser]) -> None:
         """One mailbox record group per user, with Inbox, Sent and Others under it.
@@ -1775,7 +1795,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                         continue
 
                     self.logger.debug(f"Creating record groups for user: {user.email}")
-                    mailbox_id = self._mailbox_record_group_id(user.email)
+                    owner = await self._mailbox_owner(user.email)
+                    mailbox_id = f"mailbox:{owner}"
                     mailbox = RecordGroup(
                         name=user.full_name or user.email,
                         org_id=self.data_entities_processor.org_id,
@@ -1792,7 +1813,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                         RecordGroup(
                             name=f"{user.full_name} - {label_name}",
                             org_id=self.data_entities_processor.org_id,
-                            external_group_id=f"{user.email}:{label_name}",
+                            external_group_id=f"{owner}:{label_name}",
                             parent_external_group_id=mailbox_id,
                             description=f"Gmail label: {label_name}",
                             connector_name=self.connector_name,
@@ -1806,7 +1827,9 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                     # A suspended or archived account cannot read its mail in Gmail: its grant is taken off the
                     # mailbox (the records stay, and the grant comes back when the account is reinstated).
-                    owner_grant = [self._create_owner_permission(user.email)] if user.is_active is not False else []
+                    owner_grant = (
+                        [self._create_owner_permission(user.email, user.source_user_id)] if user.is_active is not False else []
+                    )
                     await self.data_entities_processor.on_new_record_groups(
                         [(mailbox, owner_grant)]
                         + [(label, []) for label in labels]
@@ -1838,6 +1861,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         current = sorted({user.email.lower() for user in users if user.email})
         if not current:
             return
+        await self._remove_earlier_mailboxes(users)
         known = (await self.user_sync_point.read_sync_point(_MAILBOXES_SYNC_POINT_KEY) or {}).get("emails") or []
         for email in sorted(set(known) - set(current)):
             self.logger.info(f"{email} is no longer in the Workspace directory; removing their mailbox grant")
@@ -1845,7 +1869,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 RecordGroup(
                     name=email,
                     org_id=self.data_entities_processor.org_id,
-                    external_group_id=self._mailbox_record_group_id(email),
+                    external_group_id=await self._mailbox_record_group_id(email),
                     description=f"Mailbox for {email}",
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
@@ -1856,6 +1880,36 @@ class GoogleGmailTeamConnector(BaseConnector):
                 [],
             )])
         await self.user_sync_point.update_sync_point(_MAILBOXES_SYNC_POINT_KEY, {"emails": current})
+
+    async def _remove_earlier_mailboxes(self, users: list[AppUser]) -> None:
+        """Once an address passed to a new account, every earlier account's mailbox goes with its labels and mail:
+        nobody can read them, and Google deletes a deleted user's "Gmail messages and attachments"
+        (https://knowledge.workspace.google.com/admin/users/delete-or-remove-a-user-from-your-organization).
+        The mailboxes are found in the graph, so no lost or partial saved state leaves one behind. Only a re-used
+        address removes anything, and never the mailbox of the account that holds it now. A mailbox that could not be
+        removed is found and tried again on the next run."""
+        current = {u.email.lower(): key for u in users if u.email
+                   and (key := await self._mailbox_record_group_id(u.email)) != f"mailbox:{u.email}"}
+        if not current:
+            return          # no address reads as re-used: nothing to look for
+        stored = await self.data_entities_processor.get_nodes_by_filters(
+            CollectionNames.RECORD_GROUPS.value,
+            {"connectorId": self.connector_id, "groupType": RecordGroupType.MAILBOX.value},
+            ["externalGroupId"], raise_on_error=True,
+        )
+        by_address: dict[str, set[str]] = {}
+        for group in stored:
+            external_id = group.get("externalGroupId") or ""
+            if external_id.startswith("mailbox:") and (owner := self._owner_email_from_group(external_id)):
+                by_address.setdefault(owner.lower(), set()).add(external_id)
+        for address, holder_group in sorted(current.items()):
+            for group_id in sorted(by_address.get(address, set())):
+                if group_id.lower() == holder_group.lower():
+                    continue
+                if await self.data_entities_processor.on_record_group_deleted(group_id, self.connector_id):
+                    self.logger.info("Removed the mailbox of an earlier account of a re-used address")
+                else:
+                    self.logger.warning("Could not remove the mailbox of an earlier account of a re-used address; retrying next run")
 
     async def test_connection_and_access(self) -> bool:
         """Reads the admin's directory entry and mailbox. Raises ConnectorInitError with what to fix when Google
@@ -2677,7 +2731,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 if parent_mail_update and parent_mail_update.record:
                     external_record_group_id = parent_mail_update.record.external_record_group_id
                 else:
-                    external_record_group_id = self._mailbox_external_group_id(
+                    external_record_group_id = await self._mailbox_external_group_id(
                         user_email, parent_message.get("labelIds")
                     )
                 # Process Drive attachment
@@ -2775,7 +2829,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             if parent_mail_update and parent_mail_update.record:
                 external_record_group_id = parent_mail_update.record.external_record_group_id
             else:
-                external_record_group_id = self._mailbox_external_group_id(
+                external_record_group_id = await self._mailbox_external_group_id(
                     user_email, parent_message.get("labelIds")
                 )
             # Process attachment using existing function

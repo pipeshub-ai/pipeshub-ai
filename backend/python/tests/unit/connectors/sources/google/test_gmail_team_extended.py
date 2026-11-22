@@ -31,7 +31,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -188,6 +188,7 @@ def connector():
             scope="personal",
             created_by="test-user-id",
         )
+        stub_source_accounts(conn)
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()
         conn.admin_client = MagicMock()
@@ -1068,7 +1069,9 @@ class TestRunIncrementalSync:
 class TestCreateConnector:
     @patch("app.connectors.sources.google.gmail.team.connector.SyncPoint")
     async def test_create_connector(self, mock_sp, connector):
-        from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
+        from app.connectors.sources.google.gmail.team.connector import (
+            GoogleGmailTeamConnector,
+        )
 
         mock_sp.return_value = AsyncMock()
         processor = MagicMock()

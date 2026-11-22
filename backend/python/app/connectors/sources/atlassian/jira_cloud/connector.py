@@ -104,6 +104,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access,
     apply_issue_access_settled,
     browse_issue_holders,
+    check_unlisted_holders,
     classify_scheme_response,
     closed_level_groups,
     collect_paged_values,
@@ -3323,9 +3324,11 @@ class JiraConnector(BaseConnector):
                     "redirect_link": f"{self.site_url}/plugins/servlet/project-config/{project_key}/permissions",
                 },
             )
+            # The account id (from /myself) lets the processor tell a re-used address's new holder from the old one.
             return [Permission(
                 entity_type=EntityType.USER,
                 email=jira_email,
+                external_id=self._authenticated_jira_account_id,
                 type=PermissionType.READ,
             )]
 
@@ -3443,6 +3446,9 @@ class JiraConnector(BaseConnector):
                     )
                     continue
 
+            # A user list cut short still grants a licensed account it did not show (_permissions_for_browse_grant):
+            # an account outside the listing, so its address goes through the account check here.
+            await check_unlisted_holders(self, permissions, user_by_account_id or {})
             return permissions
 
         except Exception as e:
@@ -3585,6 +3591,7 @@ class JiraConnector(BaseConnector):
                     grant_permissions.append(Permission(
                         entity_type=EntityType.USER,
                         email=jira_email,
+                        external_id=self._authenticated_jira_account_id,
                         type=PermissionType.READ,
                     ))
                     self.logger.info(

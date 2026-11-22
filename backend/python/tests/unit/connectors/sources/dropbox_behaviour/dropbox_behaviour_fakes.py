@@ -10,14 +10,18 @@ sync points live in memory so a second sync sees what the first one wrote.
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 from urllib.parse import urlparse
 
 import requests
 from dropbox import stone_serializers, team, team_log, users
+
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -33,7 +37,9 @@ def _event(event_type: team_log.EventType, details: team_log.EventDetails, group
     group_id, group_name = group
     participants = [team_log.ParticipantLogInfo.group(team_log.GroupLogInfo(display_name=group_name, group_id=group_id))]
     if user:
-        participants.append(team_log.ParticipantLogInfo.user(team_log.TeamMemberLogInfo(email=user, display_name=user)))
+        participants.append(team_log.ParticipantLogInfo.user(
+            team_log.TeamMemberLogInfo(email=user, display_name=user, team_member_id=f"dbmid:{user}")
+        ))
     return team_log.TeamEvent(
         timestamp=_WHEN, event_category=team_log.EventCategory.groups, event_type=event_type, details=details,
         participants=participants,
@@ -178,6 +184,12 @@ class FakeGroupsDb:
         self.fail_group_delete: set[str] = set()
         self.fail_group_write: set[str] = set()
         self.fail_rename: set[str] = set()
+        self.added_by: list[tuple[str, str | None]] = []
+
+    def source_accounts(self, connector_id: str) -> SourceAccounts:
+        """The real per-address account state with nothing saved: no address has changed hands."""
+        config = SimpleNamespace(get_config=AsyncMock(return_value=None), set_config=AsyncMock(return_value=True))
+        return SourceAccounts(self, connector_id, config, logging.getLogger("fake"))
 
     def add_group(self, group: tuple[str, str], *members: str) -> None:
         self.groups[group[0]] = {"name": group[1], "members": list(members)}
@@ -197,7 +209,8 @@ class FakeGroupsDb:
         return True
 
     async def on_user_group_member_added(self, external_group_id: str, user_email: str, permission_type: object,
-                                         connector_id: str) -> bool:
+                                         connector_id: str, source_user_id: str | None = None) -> bool:
+        self.added_by.append((user_email, source_user_id))
         group = self.groups.get(external_group_id)
         if group is None or user_email in group["members"]:
             return False

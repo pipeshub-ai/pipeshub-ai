@@ -103,6 +103,36 @@ def parents_first(folders: dict[str, SharedFolder]) -> list[SharedFolder]:
     return sorted(folders.values(), key=lambda folder: (depth(folder), folder.folder_id))
 
 
+def member_grant_id(user: object) -> str:
+    """The id a member's grant names: the team member id users are listed with, so the account that holds a
+    re-used address now gets its own grants. Sharing's UserInfo carries it beside account_id: "team_member_id
+    String? The team member ID of the shared folder member. Only present if same_team is true."
+    (https://github.com/dropbox/dropbox-api-spec/blob/master/sharing_folders.stone, struct UserInfo)."""
+    team_member_id = getattr(user, "team_member_id", None)
+    return team_member_id if isinstance(team_member_id, str) and team_member_id else user.account_id
+
+
+def outside_members(memberships: Iterable) -> list[tuple[str, str]]:
+    """(address, account_id) of the members outside the team: never listed, so the grants that name them pass them
+    through the account check (``UserInfo.account_id``, "The account ID of the user.", sharing_folders.stone)."""
+    out = []
+    for membership in memberships:
+        user = getattr(membership, "user", None)
+        email = getattr(user, "email", None)
+        if email and not email.endswith("#") and isinstance(getattr(user, "account_id", None), str) \
+                and member_grant_id(user) == user.account_id:
+            out.append((email, user.account_id))
+    return out
+
+
+def event_member_id(user: object) -> str | None:
+    """The team member an event-log user names, when it is one: "team_member_id ... Team member ID. Might be missing
+    due to historical data gap." (https://github.com/dropbox/dropbox-api-spec/blob/master/team_log_generated.stone,
+    struct TeamMemberLogInfo). Missing, a grant to a re-used address fails closed."""
+    team_member_id = getattr(user, "team_member_id", None)
+    return team_member_id if isinstance(team_member_id, str) and team_member_id else None
+
+
 def folder_grants(users: Iterable, groups: Iterable, invitees: Iterable) -> list[Permission]:
     """A shared folder's own members as grants. Members it inherits stay on the parent folder."""
     grants: list[Permission] = []
@@ -112,7 +142,7 @@ def folder_grants(users: Iterable, groups: Iterable, invitees: Iterable) -> list
         level = _permission(membership)
         if getattr(membership, "is_inherited", False) is True or not email or email.endswith("#") or level is None:
             continue
-        grants.append(Permission(external_id=user.account_id, email=email, type=level, entity_type=EntityType.USER))
+        grants.append(Permission(external_id=member_grant_id(user), email=email, type=level, entity_type=EntityType.USER))
     for membership in groups:
         level = _permission(membership)
         if getattr(membership, "is_inherited", False) is True or level is None:

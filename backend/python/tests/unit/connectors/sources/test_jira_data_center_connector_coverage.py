@@ -911,6 +911,7 @@ def _perm_resp():
 @pytest.mark.asyncio
 async def test_fetch_project_permission_scheme_dc_branches():
     conn = _make_connector()
+    conn.data_entities_processor.source_accounts.return_value.before_grants = AsyncMock(return_value=True)  # checked in its own tests
     conn.data_source = MagicMock()
     sch, grants = _perm_resp()
     ds = MagicMock()
@@ -929,7 +930,7 @@ async def test_fetch_project_permission_scheme_dc_branches():
     types = {(p.entity_type, p.email, p.external_id) for p in perms}
     assert (EntityType.GROUP, None, "gid1") in types
     assert (EntityType.GROUP, None, "expanded-g") in types
-    assert (EntityType.USER, "u@example.com", None) in types
+    assert (EntityType.USER, "u@example.com", "acc") in types   # the user key names the account
     assert (EntityType.ORG, None, "anyone_authenticated") in types
     assert (EntityType.ROLE, None, "PROJ_10400") in types
     assert (EntityType.ROLE, None, "PROJ_projectLead") in types
@@ -4686,12 +4687,14 @@ class TestFetchProjectPermissionScheme401403DC:
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.creator_email = "admin@example.com"
+        conn._authenticated_user_key = "JIRAUSER10000"
         ds = MagicMock()
         ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_err_resp(403, '{"errorMessages":["You cannot edit..."]}'))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             perms = await conn._fetch_project_permission_scheme("PROJ", {})
         assert len(perms) == 1
         assert perms[0].email == "admin@example.com"
+        assert perms[0].external_id == "JIRAUSER10000"
 
     @pytest.mark.asyncio
     async def test_scheme_401_no_email_returns_none(self):

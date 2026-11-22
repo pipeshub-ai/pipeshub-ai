@@ -600,6 +600,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_refused: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
+        self._authenticated_user_key: str | None = None
         self._stored_app_users: list[AppUser] = []  # read by _fetch_users
         self._newly_listed_user_keys: set[str] = set()
         self._own_key: str | None = None  # the account the connector authenticates as
@@ -1011,6 +1012,10 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.debug("Could not read the authenticated Jira account: %s", e)
             return
         email = data.get("emailAddress")
+        # The user key users are listed with (UserBean `key`): it names the account on the configuring user's grants.
+        # shortcut: while /myself cannot be read the key is unknown, and for a re-used address those grants fail
+        # closed; upgrade by reading it before the permission schemes.
+        self._authenticated_user_key = data.get("key") if isinstance(data.get("key"), str) else None
         self._own_key = data.get("accountId") or data.get("key") or data.get("name")
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None, self._own_key,
@@ -2272,6 +2277,7 @@ class JiraDataCenterConnector(BaseConnector):
             return [Permission(
                 entity_type=EntityType.USER,
                 email=self.creator_email,
+                external_id=self._authenticated_user_key,
                 type=PermissionType.READ,
             )]
 
@@ -2463,6 +2469,7 @@ class JiraDataCenterConnector(BaseConnector):
                             permissions.append(Permission(
                                 entity_type=EntityType.USER,
                                 email=self.creator_email,
+                                external_id=self._authenticated_user_key,
                                 type=PermissionType.READ,
                             ))
                             self.logger.info(
@@ -2497,9 +2504,11 @@ class JiraDataCenterConnector(BaseConnector):
                     listed = (user_by_key or {}).get(holder_param)
                     resolved_email = listed.email if listed else None
                     if resolved_email:
+                        # The user key lets the processor tell a re-used address's new holder from the old account.
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
                             email=resolved_email,
+                            external_id=holder_param,
                             type=PermissionType.READ
                         ))
                     else:

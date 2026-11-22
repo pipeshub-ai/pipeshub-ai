@@ -102,6 +102,14 @@ async def refused_removal_of_ben(connector: DropboxConnector, api: DropboxApiStu
 
 
 class TestGroupEvents:
+    async def test_an_added_member_is_named_by_its_team_member_id(self, connector, api, db) -> None:
+        """A membership to a re-used address is written only for the account the event names (TeamMemberLogInfo)."""
+        api.page("c1", [member_added(ENG, CAL)], next_cursor="c2")
+
+        await sync(connector)
+
+        assert db.added_by == [(CAL, f"dbmid:{CAL}")]
+
     async def test_a_removed_member_loses_group_membership_and_the_cursor_moves_on(self, connector, api, db) -> None:
         api.page("c1", [member_removed(ENG, BEN), group_deleted(OLD)], next_cursor="c2")
 

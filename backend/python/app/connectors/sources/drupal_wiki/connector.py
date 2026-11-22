@@ -1159,6 +1159,9 @@ class DrupalWikiConnector(BaseConnector):
             email = (user.get("email") or "").strip()
             if not email or email.lower() in disabled:
                 continue
+            # shortcut: the member's GraphQL id is not documented to be the REST user id users are listed with, so
+            # after an address passes to a new account this grant fails closed for the new holder; upgrade once the
+            # vendor documents the two ids as one.
             permissions.setdefault(("user", email.lower()), Permission(
                 external_id=None,
                 email=email,

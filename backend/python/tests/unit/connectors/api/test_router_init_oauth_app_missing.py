@@ -20,6 +20,7 @@ from app.connectors.sources.google.drive.individual.connector import (
 )
 from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 from fastapi import HTTPException
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 CONNECTOR_ID = "drive-conn-1"
 ORG_ID = "org-1"
@@ -182,6 +183,7 @@ async def test_gmail_workspace_without_delegation_answers_400_naming_delegation(
             scope="team",
             created_by="user-1",
         )
+        stub_source_accounts(connector)
     connector.init = AsyncMock(return_value=True)
     connector.cleanup = AsyncMock()
     connector.config = {"credentials": {"auth": auth}}

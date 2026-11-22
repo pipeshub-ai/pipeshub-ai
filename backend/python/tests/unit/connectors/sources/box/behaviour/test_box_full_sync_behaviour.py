@@ -183,6 +183,32 @@ class TestSharingAndPermissions:
         assert "PUBLIC" not in db.access("file-2")
         assert "g-eng" in db.user_groups
 
+    async def test_an_outside_collaborators_address_handed_to_another_box_account_loses_the_earlier_grants(
+        self, box_api, db, checkpoints
+    ) -> None:
+        """A collaborator outside the enterprise is never listed; a collaboration naming its address under another
+        user id takes the earlier account's grants away, even on items not read again."""
+        def guest(user_id: str) -> dict:
+            return {"type": "collaboration", "id": f"collab-{user_id}", "role": "viewer", "status": "accepted",
+                    "accessible_by": {"type": "user", "id": user_id, "login": "guest@example.org", "name": "Guest"}}
+
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        box_api.add_file("file-2", "notes.pdf", ALICE)
+        box_api.collaborations["file-1"] = [guest("ext-1")]
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        assert "guest@example.org" in db.access("file-1")
+
+        box_api.collaborations["file-2"] = [guest("ext-2")]
+        await connector.data_source.set_as_user_context(ALICE)      # the owner reads its collaborators
+        grants = await connector._get_permissions("file-2", "file")
+
+        assert ("guest@example.org", "ext-2") in {(p.email, p.external_id) for p in grants}
+        assert "guest@example.org" not in db.access("file-1")
+        accounts = db.source_accounts(connector.connector_id)
+        assert accounts.holds("guest@example.org", "ext-2") and not accounts.holds("guest@example.org", "ext-1")
+
     async def test_a_shared_folder_keeps_its_owner_and_place_in_the_owners_tree(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         box_api.add_folder("fold-p", "Projects", ALICE)

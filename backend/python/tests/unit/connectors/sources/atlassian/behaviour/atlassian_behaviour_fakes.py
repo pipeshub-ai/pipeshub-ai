@@ -138,6 +138,12 @@ class FakeRecordsDb:
     the Atlassian connectors call are implemented; anything else raises.
     """
 
+    def source_accounts(self, connector_id: str) -> SimpleNamespace:
+        """The per-address account check is tested on its own; here every account it is given is accepted."""
+        async def before_grants(_accounts: object) -> bool:
+            return True
+        return SimpleNamespace(before_grants=before_grants)
+
     def __init__(self, org_id: str = "org-1", creator_email: Optional[str] = "owner@example.com") -> None:
         self.org_id = org_id
         self.creator_email = creator_email

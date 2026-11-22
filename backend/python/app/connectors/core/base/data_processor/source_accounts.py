@@ -21,6 +21,7 @@ import hashlib
 import time
 import uuid
 import weakref
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import Connectors
@@ -195,6 +196,7 @@ class SourceAccounts:
         self._epoch = 0                       # bumped when the marker changes: a load begun before marks nothing read
         self._linked: dict[int, dict[str, str]] = {}
         self._reused: dict[int, dict[str, str]] = {}
+        self._other: dict[int, dict[str, list[str]]] = {}
         self._legacy: dict[str, str] = {}     # re-used addresses an earlier version saved in one value
         self._stored: dict[int, dict | None] = {}     # each bucket's value as read, for the compare-and-set
         self._deleted: dict[int, dict[str, str]] = {}  # deleted-account evidence no listing has reconciled yet
@@ -239,6 +241,7 @@ class SourceAccounts:
             stored = _mapping(raw or {}, self.connector_id)
             self._stored[bucket] = raw or None
             self._linked[bucket], self._reused[bucket] = _lower(stored.get("linked")), _lower(stored.get("reused"))
+            self._other[bucket] = {e.lower(): ids for e, ids in (stored.get("other") or {}).items()}
             deleted[bucket] = self._deleted[bucket] = _lower(stored.get("deleted"))
             if self._epoch == epoch:   # else read before a change this process has seen: read again when wanted
                 self._read.add(bucket)
@@ -295,6 +298,8 @@ class SourceAccounts:
         """Save each bucket only if it still holds what this run read (another process may have saved it since)."""
         for bucket in sorted(set(buckets)):
             value = {"linked": dict(self._linked.get(bucket, {})), "reused": dict(self._reused.get(bucket, {}))}
+            if self._other.get(bucket):
+                value["other"] = {email: list(ids) for email, ids in self._other[bucket].items()}
             if deleted.get(bucket):
                 value["deleted"] = dict(deleted[bucket])
             if not await self.config_service.compare_and_set_config(
@@ -310,6 +315,22 @@ class SourceAccounts:
         except Exception as e:
             self.logger.warning(f"Could not read the deleted users of connector {self.connector_id}; trying again next run: {e}")
             return None
+
+    async def before_grants(self, accounts: Iterable[tuple[str | None, str | None]]) -> bool:
+        """The check ``before_link`` makes, for accounts a connector grants but does not list (an external
+        collaborator, an end user): ``(address, source id)`` pairs from the data the grant comes from, passed before
+        the grants are written. Only pairs this process has not seen as they are go through, so a page of grants
+        repeating known accounts costs nothing. False as ``before_link``: the stored links could not be read."""
+        fresh = []
+        for address, source_id in accounts:
+            if not address or not (account := _account_id(source_id)):
+                continue
+            email = address.lower()
+            bucket = _bucket(email)
+            if bucket in self._read and self._linked.get(bucket, {}).get(email) == account:
+                continue
+            fresh.append(SimpleNamespace(email=email, source_user_id=account))
+        return await self.before_link(fresh) if fresh else True
 
     async def _update_marker(
         self, *, changed: bool, deleted_checked: bool | None, fresh: Iterable[int], saving: bool = False,
@@ -457,7 +478,11 @@ class SourceAccounts:
             # Each address is compared with the accounts it was linked to: the one this connector remembers, the one
             # its stored link names (another writer may have rewritten it already), and a deleted account the source
             # still lists with it. The listed id being linked to some other address says nothing about this one.
-            before = {linked.get(email), by_address.get(email), None if email in reused else old}
+            # Once the address went to this account, a stored link still naming the earlier one (a deleted staff
+            # account stays linked; an end user is never linked) was already acted on: compared again, it would remove
+            # this account's grants on every page and every run.
+            link = None if reused.get(email) == account else by_address.get(email)
+            before = {linked.get(email), link, None if email in reused else old}
             if before - {None, account} and not fenced:
                 raise _NeedsFence
             # shortcut: two live accounts listed with one address (Jira Data Center and Salesforce allow it) read as
@@ -466,6 +491,7 @@ class SourceAccounts:
             if before - {None, account}:
                 removed = await self.processor.remove_user_access_to_connector(self.connector_id, email)
                 reused[email] = account
+                self._other.get(bucket, {}).pop(email, None)
                 changed.add(bucket)
                 self.logger.info(
                     "An address of connector %s belongs to a new account now; removed %d grant(s) of the previous one",
@@ -495,7 +521,7 @@ class SourceAccounts:
         bucket = _bucket(email)
         if (not self.loaded and bucket not in self._read) or (self.admission_failed and object_id is not None):
             return False
-        if self._holder(email) is not None:
+        if self.holder(email) is not None:
             return self.holds(email, object_id)
         if not self._evidence_allows(email, object_id):
             return False
@@ -511,9 +537,21 @@ class SourceAccounts:
 
     def holds(self, email: str, source_id: str | None) -> bool:
         """For a loaded state: whether a grant naming ``email`` and ``source_id`` reaches the account holding the
-        address. Only a re-used address is checked; there the grant must name the current account by id."""
-        holder = self._holder(email.lower())
-        return holder is None or (source_id is not None and source_id == holder)
+        address. Only a re-used address is checked; there the grant must name the current account by id, either
+        the id users are listed with or the other id noted for that account (``note_other_ids``)."""
+        email = email.lower()
+        holder = self.holder(email)
+        if holder is None:
+            # shortcut: an address never seen to change hands takes any id; failing closed here would drop every grant
+            # to an account a connector does not list. Connectors pass the unlisted accounts their grants name with an
+            # id through before_grants (Drive, Dropbox, Box and Zoom outsiders, Zendesk end users, Jira holders outside
+            # the user listing); still unchecked: Microsoft guests outside the listing, Google group members outside
+            # the Workspace (a second id space beside Drive's permissionId), and grantees named by address alone
+            # (Dropbox invitees, Zoom alternative hosts and invitees). Upgrade each the same way.
+            return True
+        return source_id is not None and (
+            source_id == holder or self._other.get(_bucket(email), {}).get(email) == [holder, source_id]
+        )
 
     def admits(self, email: str, source_id: str | None) -> bool:
         """For a loaded state: ``holds``, and an address with unreconciled deleted-account evidence takes only a grant
@@ -530,6 +568,37 @@ class SourceAccounts:
         # The linked account may be the deleted one itself (not listed again yet): refused until a listing shows it.
         return source_id is not None and source_id == linked and source_id != deleted[email]
 
-    def _holder(self, email: str) -> str | None:
+    def holder(self, email: str) -> str | None:
+        """For a loaded bucket: the listed id of the account that took over ``email``, or None for an address no
+        other account held before."""
+        email = email.lower()
         part = self._reused.get(_bucket(email), {})
         return part[email] if email in part else self._legacy.get(email)
+
+    async def note_other_ids(self, ids: dict[str, tuple[str, str]]) -> None:
+        """Per address, ``(account, other_id)``: the account listed as ``account`` appears on grants as
+        ``other_id``, an id from another part of the source's API (Google Drive names a grantee by its
+        permissionId, not its Directory id). Kept only for a re-used address held by ``account``, and taken by
+        ``holds`` only while ``account`` holds it, so it can never pass a grant of the earlier account."""
+        wanted = {e.lower(): pair for e, pair in ids.items()}
+        async with self._lock:
+            buckets = {_bucket(e) for e in wanted}
+            for _ in range(_SAVE_ATTEMPTS):
+                deleted = await self._load(buckets)     # fresh: another process may have written
+                changed: set[int] = set()
+                for email, (account, other_id) in wanted.items():
+                    bucket = _bucket(email)
+                    if self.holder(email) != account or self._other.get(bucket, {}).get(email) == [account, other_id]:
+                        continue
+                    self._other.setdefault(bucket, {})[email] = [account, other_id]
+                    changed.add(bucket)
+                if changed:
+                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets, saving=True)
+                try:
+                    await self._save(changed, deleted)
+                except _Conflict:
+                    continue        # another process saved a bucket meanwhile: read it again and decide again
+                if changed:         # a new version, so other processes read the noted ids again
+                    await self._update_marker(changed=True, deleted_checked=None, fresh=buckets)
+                return
+            raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")

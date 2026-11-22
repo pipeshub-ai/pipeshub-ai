@@ -128,3 +128,18 @@ class TestOutsideNamespace:
     def test_a_namespace_that_is_not_a_known_shared_folder_is_kept(self) -> None:
         """A team-space member's home folder carries its own namespace id; it is never in the shared list."""
         assert not outside_namespace(_file(parent="ns-home"), None, self.KNOWN)
+
+
+def test_a_team_members_grant_names_the_team_member_id_users_are_listed_with() -> None:
+    """A grant to a re-used address is written only when it names the account holding it now by the id users are
+    listed with (team_member_id); a member outside the team keeps its account_id."""
+    member = SimpleNamespace(
+        user=SimpleNamespace(email="ana@x.com", account_id="dbid:ana", team_member_id="dbmid:ana", same_team=True),
+        access_type=_tag("editor"), is_inherited=False,
+    )
+    outsider = SimpleNamespace(
+        user=SimpleNamespace(email="guest@y.com", account_id="dbid:guest", team_member_id=None, same_team=False),
+        access_type=_tag("viewer"), is_inherited=False,
+    )
+    grants = folder_grants([member, outsider], [], [])
+    assert {(g.email, g.external_id) for g in grants} == {("ana@x.com", "dbmid:ana"), ("guest@y.com", "dbid:guest")}

@@ -109,7 +109,7 @@ def _withdraw(directory: _Directory, sid: str) -> None:
 
 def _saved(config: _Config) -> dict:
     """Every bucket of the saved state, merged."""
-    merged: dict[str, dict] = {"linked": {}, "reused": {}}
+    merged: dict[str, dict] = {"linked": {}, "reused": {}, "other": {}}
     for bucket in range(BUCKETS):
         for part, values in (config.saved.get(source_accounts_key(CONNECTOR, bucket)) or {}).items():
             merged[part].update(values)
@@ -173,7 +173,7 @@ async def test_the_first_run_looks_nobody_up_and_notes_who_holds_each_address(wo
     await _admit(directory, accounts, [_user("ana@x.com", "a"), _user("bo@x.com", "b")])
     directory.processor.get_user_by_email.assert_not_awaited()
     directory.processor.remove_user_access_to_connector.assert_not_awaited()
-    assert _saved(config) == {"reused": {}, "linked": {"ana@x.com": "a", "bo@x.com": "b"}}
+    assert _saved(config) == {"reused": {}, "other": {}, "linked": {"ana@x.com": "a", "bo@x.com": "b"}}
 
 
 @pytest.mark.asyncio
@@ -1088,3 +1088,163 @@ async def test_a_marker_save_that_failed_after_the_bucket_save_is_published_by_t
     now[0] += module.STATE_MAX_AGE_SECONDS + 1
     await worker.ensure_loaded()
     assert not worker.may_grant("ana@x.com", "old-oid") and worker.may_grant("ana@x.com", "new-oid")
+
+
+@pytest.mark.asyncio
+async def test_an_other_id_noted_for_the_new_holder_passes_its_grants_and_never_the_old_accounts(world) -> None:
+    """Google Drive names a grantee by its permissionId, not the Directory id users are listed with."""
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid"), _user("bo@x.com", "bo-oid")])
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid"), _user("bo@x.com", "bo-oid")])
+
+    await accounts.note_other_ids({
+        "Ana@x.com": ("new-oid", "perm-new"),
+        "bo@x.com": ("bo-oid", "perm-bo"),          # never re-used: nothing to keep
+        "cy@x.com": ("cy-oid", "perm-cy"),          # not held by that account: ignored
+    })
+    await accounts.ensure_loaded()
+
+    assert accounts.holds("ana@x.com", "perm-new")
+    assert accounts.holds("ana@x.com", "new-oid")
+    assert not accounts.holds("ana@x.com", "perm-old")
+    assert not accounts.holds("ana@x.com", None)
+    assert _saved(config)["other"] == {"ana@x.com": ["new-oid", "perm-new"]}
+
+    restarted = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    await restarted.ensure_loaded(["ana@x.com"])
+    assert restarted.holds("ana@x.com", "perm-new")
+
+
+@pytest.mark.asyncio
+async def test_an_other_id_noted_while_a_user_sync_saves_the_same_bucket_keeps_both(world) -> None:
+    directory, accounts, config = world
+    ana = "a0@x.com"
+    bo = next(f"a{i}@x.com" for i in range(1, 10_000) if _bucket(f"a{i}@x.com") == _bucket(ana))
+    await _admit(directory, accounts, [_user(ana, "old-oid")])
+    await _admit(directory, accounts, [_user(ana, "new-oid")])
+    bucket_key = source_accounts_key(CONNECTOR, _bucket(ana))
+    real_set = config.set_config
+    saving, noted = asyncio.Event(), asyncio.Event()
+
+    async def slow_set(key: str, value: object, **kw: object) -> bool:
+        if key == bucket_key and not saving.is_set():
+            saving.set()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(noted.wait(), 0.2)
+        return await real_set(key, value, **kw)
+
+    async def note() -> None:
+        await saving.wait()
+        await accounts.note_other_ids({ana: ("new-oid", "perm-new")})
+        noted.set()
+
+    config.set_config = slow_set
+    await asyncio.gather(accounts.before_link([_user(ana, "new-oid"), _user(bo, "bo-oid")]), note())
+
+    assert _saved(config)["linked"][bo] == "bo-oid"
+    assert _saved(config)["other"] == {ana: ["new-oid", "perm-new"]}
+
+
+@pytest.mark.asyncio
+async def test_an_other_id_noted_while_another_process_saves_the_same_bucket_keeps_both(world) -> None:
+    """No shared lock across replicas: the note finds the bucket changed when it saves, reads it again and keeps the
+    other replica's entry."""
+    directory, accounts, config = world
+    other = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))     # another replica
+    ana = "a0@x.com"
+    bo = next(f"a{i}@x.com" for i in range(1, 10_000) if _bucket(f"a{i}@x.com") == _bucket(ana))
+    await _admit(directory, accounts, [_user(ana, "old-oid")])
+    await _admit(directory, accounts, [_user(ana, "new-oid")])
+    bucket_key = source_accounts_key(CONNECTOR, _bucket(ana))
+    real_cas = config.compare_and_set_config
+    saving, linked = asyncio.Event(), asyncio.Event()
+
+    async def slow_cas(key: str, expected: object, new: object) -> bool:
+        if key == bucket_key and not saving.is_set():
+            saving.set()       # the note read the bucket and is about to save it
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(linked.wait(), 0.2)
+        return await real_cas(key, expected, new)
+
+    async def other_replica() -> None:
+        await saving.wait()
+        await other.before_link([_user(bo, "bo-oid")])
+        linked.set()
+
+    config.compare_and_set_config = slow_cas
+    await asyncio.gather(accounts.note_other_ids({ana: ("new-oid", "perm-new")}), other_replica())
+
+    assert _saved(config)["linked"][bo] == "bo-oid"
+    assert _saved(config)["other"] == {ana: ["new-oid", "perm-new"]}
+
+
+@pytest.mark.asyncio
+async def test_another_process_reads_an_other_id_noted_after_it_loaded(world, monkeypatch) -> None:
+    """Noting an id is a change: a process that loaded before it reads it once its copy is old, as for a new link."""
+    from app.connectors.core.base.data_processor import source_accounts as module
+
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "old-oid")])
+    await _admit(directory, accounts, [_user("ana@x.com", "new-oid")])
+    replica = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))
+    now = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    await replica.ensure_loaded()
+    assert not replica.holds("ana@x.com", "perm-new")
+
+    await accounts.note_other_ids({"ana@x.com": ("new-oid", "perm-new")})
+    now[0] += module.STATE_MAX_AGE_SECONDS + 1
+    await replica.ensure_loaded()
+
+    assert replica.holds("ana@x.com", "perm-new")
+
+
+@pytest.mark.asyncio
+async def test_an_other_id_stops_passing_once_the_address_changes_hands_again(world) -> None:
+    directory, accounts, _ = world
+    await _admit(directory, accounts, [_user("ana@x.com", "a1")])
+    await _admit(directory, accounts, [_user("ana@x.com", "a2")])
+    await accounts.note_other_ids({"ana@x.com": ("a2", "perm-a2")})
+
+    await _admit(directory, accounts, [_user("ana@x.com", "a3")])
+    await accounts.ensure_loaded()
+
+    assert not accounts.holds("ana@x.com", "perm-a2")
+    assert accounts.holds("ana@x.com", "a3")
+
+
+@pytest.mark.asyncio
+async def test_an_unlisted_accounts_address_handed_to_another_account_is_caught_from_its_grants(world) -> None:
+    """An external collaborator is never listed; the grants that name it by address and id go through the same check."""
+    directory, accounts, _ = world
+    directory.nodes["guest@else.com"] = "node-guest"
+    assert await accounts.before_grants([("Guest@else.com", "ext-1"), ("nobody@else.com", None), (None, "x")])
+    directory.calls.clear()
+    reads = directory.processor.get_app_user_links.await_count
+
+    assert await accounts.before_grants([("guest@else.com", "ext-1")])          # known as it is: nothing read
+    assert directory.processor.get_app_user_links.await_count == reads
+
+    assert await accounts.before_grants([("guest@else.com", "ext-2")])          # the address went to another account
+    assert directory.calls == [("remove", "guest@else.com")]
+    await accounts.ensure_loaded()
+    assert accounts.holds("guest@else.com", "ext-2") and not accounts.holds("guest@else.com", "ext-1")
+
+
+@pytest.mark.asyncio
+async def test_an_unlisted_account_that_took_an_address_loses_nothing_on_later_pages_or_runs(world) -> None:
+    """The stored link can keep naming the earlier account (a deleted agent stays linked); once the address went to the
+    account a grant names, later pages and later runs must not remove that account's grants again."""
+    directory, accounts, config = world
+    await _admit(directory, accounts, [_user("ana@x.com", "agent-5")])           # the staff listing linked her
+    assert await accounts.before_grants([("ana@x.com", "end-31")])               # a ticket page names the end user
+    assert directory.calls[-1] == ("remove", "ana@x.com")
+    directory.calls.clear()
+
+    assert await accounts.before_grants([("ana@x.com", "end-31"), ("bo@x.com", "end-32")])       # the next page
+    restarted = SourceAccounts(directory.processor, CONNECTOR, config, logging.getLogger("t"))  # the next run
+    assert await restarted.before_grants([("ana@x.com", "end-31")])
+
+    assert ("remove", "ana@x.com") not in directory.calls
+    await restarted.ensure_loaded()
+    assert restarted.holds("ana@x.com", "end-31") and not restarted.holds("ana@x.com", "agent-5")

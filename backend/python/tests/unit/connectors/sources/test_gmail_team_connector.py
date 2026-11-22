@@ -41,7 +41,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -247,6 +247,7 @@ def connector():
             scope="personal",
             created_by="test-user-id",
         )
+        stub_source_accounts(conn)
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()
         conn.admin_client = MagicMock()
@@ -3184,3 +3185,39 @@ class TestPassDateFilterEdgeCases:
 # _fetch_history_changes - error in non-HttpError
 # ===========================================================================
 
+
+
+class TestRemoveEarlierMailboxes:
+    """After an address passed to a new account, every earlier mailbox the graph holds for it is removed; nothing else."""
+
+    @staticmethod
+    def _user(email: str, sid: str) -> AppUser:
+        return AppUser(app_name=Connectors.GOOGLE_MAIL_WORKSPACE, connector_id="gmail-cov-1", source_user_id=sid,
+                       email=email, full_name=email)
+
+    @pytest.mark.asyncio
+    async def test_earlier_mailboxes_go_and_a_failed_removal_is_tried_again(self, connector) -> None:
+        connector.source_accounts.reused = {"ana@x.com": "new"}
+        dep = connector.data_entities_processor
+        stored = ["mailbox:ana@x.com", "mailbox:ana@x.com#mid", "mailbox:ANA@x.com#new", "ana@x.com:INBOX",
+                  "mailbox:bo@x.com", "mailbox:bo@x.com#old", "mailbox:anabel@x.com"]
+        dep.get_nodes_by_filters = AsyncMock(return_value=[{"externalGroupId": g} for g in stored])
+        dep.on_record_group_deleted = AsyncMock(return_value=False)
+        users = [self._user("ana@x.com", "new"), self._user("bo@x.com", "b")]
+
+        await connector._remove_earlier_mailboxes(users)
+        removed = [c.args[0] for c in dep.on_record_group_deleted.await_args_list]
+        assert removed == ["mailbox:ana@x.com", "mailbox:ana@x.com#mid"], "only the re-used address's earlier mailboxes"
+
+        dep.on_record_group_deleted.reset_mock()
+        await connector._remove_earlier_mailboxes(users)              # still in the graph: tried again
+        assert dep.on_record_group_deleted.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_looked_up_while_no_address_reads_as_reused(self, connector) -> None:
+        dep = connector.data_entities_processor
+        dep.get_nodes_by_filters = AsyncMock(return_value=[{"externalGroupId": "mailbox:bo@x.com#old"}])
+        dep.on_record_group_deleted = AsyncMock(return_value=True)
+        await connector._remove_earlier_mailboxes([self._user("bo@x.com", "b")])
+        dep.get_nodes_by_filters.assert_not_awaited()
+        dep.on_record_group_deleted.assert_not_awaited()

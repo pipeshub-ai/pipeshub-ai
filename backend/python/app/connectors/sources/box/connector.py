@@ -279,6 +279,7 @@ class BoxConnector(BaseConnector):
 
         self.connector_name = Connectors.BOX
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(connector_id)
 
         # Initialize sync point for tracking record changes
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -681,6 +682,13 @@ class BoxConnector(BaseConnector):
             self._mark_read_incomplete(e)
             return None
 
+        # A collaborator outside the enterprise is never listed; the collaboration names it by user id ("The unique
+        # identifier for this user", User--Base in https://github.com/box/box-openapi), so its address passing to
+        # another Box account is caught before these grants are written.
+        outsiders = [(p.email, str(p.external_id)) for p in permissions if p.entity_type == EntityType.USER and p.email
+                     and self._synced_box_user_ids and str(p.external_id) not in self._synced_box_user_ids]
+        if outsiders and not await self.source_accounts.before_grants(outsiders):
+            raise RuntimeError(f"The stored users could not be read; {item_type} {item_id} keeps its grants")
         return permissions
 
 

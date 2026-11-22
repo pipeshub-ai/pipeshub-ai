@@ -37,6 +37,10 @@ from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import AppUser
 from app.models.permission import EntityType, Permission, PermissionType
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
+from types import SimpleNamespace
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
+from tests.support.in_memory_config import InMemoryConfigService
 
 
 # ---------------------------------------------------------------------------
@@ -972,6 +976,7 @@ def _make_dropbox_connector(mock_logger, mock_data_entities_processor,
     connector.dropbox_cursor_sync_point = MagicMock()
     connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.dropbox_cursor_sync_point.update_sync_point = AsyncMock()
+    connector.source_accounts = MagicMock(before_grants=AsyncMock(return_value=True))  # the account check has its own tests
     return connector
 
 
@@ -1317,7 +1322,9 @@ def _make_connector():
     dep.reindex_existing_records = AsyncMock()
     dsp = MagicMock()
     cs = AsyncMock()
-    return DropboxConnector(logger, dep, dsp, cs, "conn-dbx-1", "team", "test-user-id")
+    conn = DropboxConnector(logger, dep, dsp, cs, "conn-dbx-1", "team", "test-user-id")
+    conn.source_accounts = MagicMock(before_grants=AsyncMock(return_value=True))  # the account check has its own tests
+    return conn
 
 
 def _make_file_metadata(name="test.pdf"):
@@ -1801,6 +1808,7 @@ def connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
             scope="personal",
             created_by="test-user-id",
         )
+    conn.source_accounts = MagicMock(before_grants=AsyncMock(return_value=True))  # the account check has its own tests
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()
     conn.data_source = AsyncMock()
@@ -2939,6 +2947,10 @@ class TestHandleGroupChangeMemberRoleEvent:
 # _update_user_group_permission
 # ===========================================================================
 class TestUpdateUserGroupPermission:
+    @pytest.fixture(autouse=True)
+    def _accounts(self, connector) -> None:
+        stub_source_accounts(connector)
+
     async def test_user_not_found(self, connector):
         connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=None)
         result = await connector._update_user_group_permission("g1", "user@test.com", PermissionType.OWNER)
@@ -3031,7 +3043,7 @@ class TestCreateAndSyncSingleRecordGroup:
     async def test_success(self, connector):
         user_membership = MagicMock()
         user_membership.access_type = MagicMock(_tag="editor")
-        user_membership.user = MagicMock(email="u@t.com")
+        user_membership.user = MagicMock(email="u@t.com", account_id="dbid:u", team_member_id="dbmid:u")
 
         group_membership = MagicMock()
         group_membership.access_type = MagicMock(_tag="viewer")
@@ -3050,6 +3062,9 @@ class TestCreateAndSyncSingleRecordGroup:
         admin = _make_app_user(source_role="team_admin")
         await connector._create_and_sync_single_record_group("tf:1", "Folder", admin)
         connector.data_entities_processor.on_new_record_groups.assert_called_once()
+        [(_, grants)] = connector.data_entities_processor.on_new_record_groups.call_args.args[0]
+        # The team member id users are listed with, so a re-used address's grant reaches only its current holder.
+        assert [(g.email, g.external_id) for g in grants if g.email] == [("u@t.com", "dbmid:u")]
 
     async def test_members_fail(self, connector):
         connector.data_source.sharing_list_folder_members = AsyncMock(
@@ -3062,7 +3077,7 @@ class TestCreateAndSyncSingleRecordGroup:
     async def test_members_pagination(self, connector):
         user1 = MagicMock()
         user1.access_type = MagicMock(_tag="owner")
-        user1.user = MagicMock(email="u1@t.com")
+        user1.user = MagicMock(email="u1@t.com", account_id="dbid:u1", team_member_id="dbmid:u1")
 
         page1_data = MagicMock()
         page1_data.users = [user1]
@@ -3072,7 +3087,7 @@ class TestCreateAndSyncSingleRecordGroup:
 
         user2 = MagicMock()
         user2.access_type = MagicMock(_tag="editor")
-        user2.user = MagicMock(email="u2@t.com")
+        user2.user = MagicMock(email="u2@t.com", account_id="dbid:u2", team_member_id="dbmid:u2")
 
         page2_data = MagicMock()
         page2_data.users = [user2]
@@ -4111,3 +4126,39 @@ class TestExtractFolderInfoFromEvent:
 # ===========================================================================
 # run_sync
 # ===========================================================================
+
+
+class TestOutsideMembersGoThroughTheAccountCheck:
+    """A member outside the team is never listed; the grants that name it pass it through the account check."""
+
+    @staticmethod
+    def _members(account_id: str) -> MagicMock:
+        membership = MagicMock()
+        membership.access_type._tag = "viewer"
+        membership.is_inherited = False
+        membership.user = SimpleNamespace(account_id=account_id, email="guest@example.org", team_member_id=None)
+        data = MagicMock(users=[membership], groups=[], invitees=[])
+        data.cursor = None
+        return MagicMock(success=True, data=data)
+
+    async def test_an_outsiders_address_handed_to_another_account_loses_the_earlier_accounts_grants(
+        self, dropbox_connector, mock_data_entities_processor
+    ) -> None:
+        dep = mock_data_entities_processor
+        dep.get_app_user_links = AsyncMock(return_value=[])
+        dep.get_all_app_users = AsyncMock(return_value=[])
+        dep.get_user_by_email = AsyncMock(return_value=MagicMock(id="pipeshub-guest"))
+        dep.remove_user_access_to_connector = AsyncMock(return_value=1)
+        accounts = SourceAccounts(dep, "dbx-conn-1", InMemoryConfigService(), logging.getLogger("t"))
+        dropbox_connector.source_accounts = accounts
+
+        dropbox_connector.data_source.sharing_list_file_members = AsyncMock(return_value=self._members("dbid:first"))
+        await dropbox_connector._convert_dropbox_permissions_to_permissions("id:a", True, "dbmid:admin")
+        dep.remove_user_access_to_connector.assert_not_awaited()
+
+        dropbox_connector.data_source.sharing_list_file_members = AsyncMock(return_value=self._members("dbid:second"))
+        grants = await dropbox_connector._convert_dropbox_permissions_to_permissions("id:b", True, "dbmid:admin")
+
+        dep.remove_user_access_to_connector.assert_awaited_once_with("dbx-conn-1", "guest@example.org")
+        assert [(g.email, g.external_id) for g in grants] == [("guest@example.org", "dbid:second")]
+        assert accounts.holds("guest@example.org", "dbid:second") and not accounts.holds("guest@example.org", "dbid:first")
