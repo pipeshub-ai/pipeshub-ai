@@ -22,8 +22,6 @@ import type { PasswordResetFailureVariant } from './types';
 function ResetPasswordContent() {
   const splitLayout = useAuthWideLayout();
   const isHydrated = useAuthStore((s) => s.isHydrated);
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const logout = useAuthStore((s) => s.logout);
 
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<JwtUser>({});
@@ -62,8 +60,10 @@ function ResetPasswordContent() {
   // A signed-in browser still gets the form: the link in the email is the
   // credential, and redirecting would silently discard it. Once the password
   // changes, the stored session is dropped so "Sign In" reaches the login page
-  // instead of bouncing back into the app.
+  // instead of bouncing back into the app. The store is read when the request
+  // finishes: another tab may have signed in while it was pending.
   const handleSuccess = () => {
+    const { isAuthenticated, logout } = useAuthStore.getState();
     if (isAuthenticated) logout();
     setSuccess(true);
   };

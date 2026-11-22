@@ -12,8 +12,10 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('@/config', () => ({
-  useAuthStore: (selector?: (s: typeof authState) => unknown) =>
-    selector ? selector(authState) : authState,
+  useAuthStore: Object.assign(
+    (selector?: (s: typeof authState) => unknown) => (selector ? selector(authState) : authState),
+    { getState: () => authState },
+  ),
 }));
 
 vi.mock('@/lib/hooks/use-breakpoint', () => ({ useAuthWideLayout: () => false }));
@@ -111,6 +113,17 @@ describe('ResetPasswordPage', () => {
 
       expect(screen.getByText('reset-success')).toBeTruthy();
       expect(logout).not.toHaveBeenCalled();
+    });
+
+    it('drops a session that another tab stored while the request was pending', () => {
+      openLink(validResetToken());
+      render(<ResetPasswordPage />);
+
+      authState.isAuthenticated = true;
+      fireEvent.click(screen.getByText('submit-ok'));
+
+      expect(logout).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('reset-success')).toBeTruthy();
     });
   });
 
