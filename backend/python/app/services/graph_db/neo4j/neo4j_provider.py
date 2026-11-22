@@ -76,6 +76,7 @@ from app.config.constants.neo4j import (
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
 from app.core.org_context import MissingOrgContext, spawn_in_request
+from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphMemoryLimitError,
@@ -1274,9 +1275,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         constraints: list[str] = []
 
-        # dict.fromkeys preserves order while de-duplicating the two sources.
+        # dict.fromkeys preserves order while de-duplicating the sources.
         collections = dict.fromkeys(
-            [*NODE_SCHEMA_REGISTRY, *RECORD_TYPE_COLLECTION_MAPPING.values()]
+            [*NODE_SCHEMA_REGISTRY, *RECORD_TYPE_COLLECTION_MAPPING.values(), *extra_node_collections()]
         )
 
         for collection in collections:
@@ -1339,6 +1340,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             List of Cypher CREATE INDEX queries
         """
         indexes: list[str] = []
+
+        # Collections a build adds (app.edition.extra_node_collections), with the indexes it declares.
+        for collection, declared in extra_node_collections().items():
+            label = collection_to_label(collection)
+            for fields in declared:
+                name = f"{label.lower()}_{'_'.join(f.lower() for f in fields)}"
+                indexes.append(
+                    f"CREATE INDEX {name} IF NOT EXISTS FOR (n:{label}) ON ({', '.join(f'n.{f}' for f in fields)})"
+                )
 
         # ==================== TAXONOMY INDEXES ====================
         # Entity resolution looks canonical taxonomy nodes up by

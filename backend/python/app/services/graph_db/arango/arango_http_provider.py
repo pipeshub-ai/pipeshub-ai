@@ -1555,7 +1555,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise RuntimeError("ArangoDB client is not connected")
         for collection, indexes in extra_node_collections().items():
             for fields in indexes:
-                await self.http_client.ensure_persistent_index(collection, list(fields))
+                if not await self.http_client.ensure_persistent_index(collection, list(fields)):
+                    # Not fatal for the schema (it would hold every service's start for one feature's index); the next start retries it.
+                    self.logger.error("The index %s on collection '%s' was not created", list(fields), collection)
         # ==================== TAXONOMY INDEXES ====================
         # Entity resolution looks canonical category/subcategory/topic/language
         # nodes up by (orgId, normalizedName) once per record — see
