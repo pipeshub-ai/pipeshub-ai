@@ -8,10 +8,12 @@ with one warning; indexing is unaffected.
 """
 
 import asyncio
+import email.utils
+import json
 import logging
 import threading
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -73,11 +75,64 @@ class PaidResultStoreError(Exception):
     """A storage reply this client cannot use. Never carries a signed URL."""
 
 
+class GuardUnsupported(PaidResultStoreError):
+    """The storage behind the request cannot delete by version (it said so, or it has no such route: an earlier release)."""
+
+
+class PurgeCutoffNoMarker(PaidResultStoreError):
+    """The purge cutoff came from a storage service that writes no refresh marker (an earlier release)."""
+
+
 @dataclass(frozen=True, slots=True)
 class ListedFile:
     path: str
     size: int
     last_modified_ms: int
+    #: The object's version as the store lists it (ETag, unquoted); None from a storage service that lists none.
+    etag: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VersionedBytes:
+    """An object's bytes with the version and write time the store sent with them (None when it sent none)."""
+
+    data: bytes
+    etag: str | None
+    last_modified_ms: int | None
+
+
+#: What a bump PUT answered: ``bumped`` (2xx), ``gone`` (404), ``changed`` (412), ``conflict`` (409 after the retries).
+BumpOutcome = str
+BUMPED, GONE, CHANGED, CONFLICT, DEADLINE = "bumped", "gone", "changed", "conflict", "deadline"
+
+#: The path of the refresh marker the storage service writes before it takes a purge cutoff.
+REFRESH_MARKER_PATH = "refreshed/marker.json"
+
+
+def _unquote_etag(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    tag = raw.strip()
+    if tag.startswith("W/"):
+        tag = tag[2:]
+    if len(tag) >= 2 and tag.startswith('"') and tag.endswith('"'):
+        tag = tag[1:-1]
+    return tag or None
+
+
+class FinalFence(int):
+    """A refresh fence that is the cutoff the storage took: a result is stale exactly when its own store stamp is below it
+    (the purge removes what is older than the cutoff, by the same stamps). A plain ``int`` is a provisional fence (the
+    marker's own time before the cutoff was known), which is conservative: a tie counts as stale, in whole seconds."""
+
+
+def _http_date_ms(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    try:
+        return int(email.utils.parsedate_to_datetime(raw).timestamp() * 1000)
+    except (TypeError, ValueError):
+        return None
 
 
 class _Availability:
@@ -143,10 +198,19 @@ PURGE_BATCH_ROUTE = _BatchRoute()
 
 
 class NodePaidResultStore:
+    #: This client can ask that a purge cutoff came with the refresh marker written (see ``purge_cutoff``).
+    supports_cutoff_marker = True
+
     def __init__(self, blob_storage: "BlobStorage", logger: logging.Logger | None = None) -> None:
         self._blob_storage = blob_storage
         self.logger = logger or logging.getLogger(__name__)
         self._cutoff_route_warned = False
+        #: What the storage service said it honours (``conditionalDelete``, ``bump``) in its last reply. A reply that
+        #: names none (a service of an earlier release) means none; nothing is latched, the next reply decides.
+        self.capabilities: frozenset[str] = frozenset()
+        #: The same, per org: a storage service answers for the target of the request (an org's own store), and a reply
+        #: for one org says nothing about another's.
+        self._caps_by_org: dict[str, frozenset[str]] = {}
         # Reuses the artifact client's reply handling and its URL transfer helpers.
         self._artifacts = NodeArtifactStore(blob_storage, self.logger)
 
@@ -180,18 +244,39 @@ class NodePaidResultStore:
                 )
             raise
 
+    def _note_capabilities(self, org_id: str, body: Mapping[str, Any]) -> None:
+        caps = body.get("capabilities")
+        known = frozenset(c for c in caps if isinstance(c, str)) if isinstance(caps, list) else frozenset()
+        self.capabilities = known
+        if len(self._caps_by_org) > 4096:
+            self._caps_by_org.clear()
+        self._caps_by_org[org_id] = known
+
+    def honours(self, org_id: str, capability: str) -> bool:
+        """Whether the storage behind ``org_id`` said, in its last reply for that org, that it honours ``capability``."""
+        return capability in self._caps_by_org.get(org_id, frozenset())
+
+    @property
+    def supports_bump(self) -> bool:
+        return "bump" in self.capabilities
+
     async def presign(
-        self, org_id: str, record_id: str, files: Sequence[tuple[str, str]],
+        self, org_id: str, record_id: str, files: Sequence[tuple[str, str] | tuple[str, str, str]],
     ) -> dict[tuple[str, str], SignedFileUrl]:
         """Signed URLs for ``(path, mode)`` files, ``mode`` one of ``put``, ``get``, ``replace`` (a manifest),
-        ``refresh`` (a result object, overwritten)."""
+        ``refresh`` (a result object, overwritten), or ``bump`` (``(path, "bump", etag)``: a result object replaced
+        only while its ETag is that one)."""
         signed: dict[tuple[str, str], SignedFileUrl] = {}
         for start in range(0, len(files), MAX_FILES_PER_CALL):
-            chunk = files[start:start + MAX_FILES_PER_CALL]
+            chunk = [(f[0], f[1]) for f in files[start:start + MAX_FILES_PER_CALL]]
+            etags = {(f[0], f[1]): f[2] for f in files[start:start + MAX_FILES_PER_CALL] if len(f) == 3}
             body = await self._call(
                 org_id, "POST", Routes.STORAGE_PAID_RESULTS_PRESIGN.value,
-                body={"recordId": record_id, "files": [{"path": p, "mode": m} for p, m in chunk]},
+                body={"recordId": record_id, "files": [
+                    {"path": p, "mode": m, **({"etag": etags[p, m]} if (p, m) in etags else {})} for p, m in chunk
+                ]},
             )
+            self._note_capabilities(org_id, body)
             answered = body.get("files")
             if not isinstance(answered, list):
                 raise PaidResultStoreError("presign answered no files")
@@ -200,7 +285,7 @@ class NodePaidResultStore:
                     raise PaidResultStoreError("storage answered a malformed paid-result URL entry")
                 mode = entry.get("mode")
                 headers = entry.get("headers") or {}
-                if mode not in ("put", "get", "replace", "refresh") or not isinstance(headers, dict):
+                if mode not in ("put", "get", "replace", "refresh", "bump") or not isinstance(headers, dict):
                     raise PaidResultStoreError("storage answered a malformed paid-result URL entry")
                 signed[(entry["path"], str(mode))] = SignedFileUrl(
                     url=str(entry["url"]),
@@ -219,11 +304,15 @@ class NodePaidResultStore:
         while True:
             params = {k: v for k, v in (("prefix", prefix), ("after", after)) if v}
             body = await self._call(org_id, "GET", route, params=params)
+            self._note_capabilities(org_id, body)
             objects = body.get("objects")
             if not isinstance(objects, list):
                 raise PaidResultStoreError("listing answered no objects")
             files.extend(
-                ListedFile(o["path"], int(o.get("size") or 0), int(o.get("lastModifiedMs") or 0))
+                ListedFile(
+                    o["path"], int(o.get("size") or 0), int(o.get("lastModifiedMs") or 0),
+                    o["etag"] if isinstance(o.get("etag"), str) and o["etag"] else None,
+                )
                 for o in objects
                 if isinstance(o, dict) and isinstance(o.get("path"), str)
             )
@@ -233,11 +322,38 @@ class NodePaidResultStore:
             after = nxt
 
     async def delete_files(self, org_id: str, record_id: str, paths: Sequence[str]) -> None:
+        """Deletes ``paths`` unconditionally (the plain route)."""
         route = Routes.STORAGE_PAID_RESULTS_DELETE.value.format(recordId=record_id)
         for start in range(0, len(paths), MAX_FILES_PER_CALL):
             await self._call(
                 org_id, "POST", route, body={"paths": list(paths[start:start + MAX_FILES_PER_CALL])},
             )
+
+    async def delete_files_if_match(self, org_id: str, record_id: str, items: Mapping[str, str]) -> list[str]:
+        """Deletes each path only while it is still the version named, through a route of its own. Returns the paths kept
+        because the object changed. Raises ``GuardUnsupported`` when the storage cannot delete by version (it said so, or
+        it is a replica of an earlier release that has no such route, which would otherwise ignore the guard): nothing was
+        deleted then, and the caller takes its own fallback. A store whose probe was denied or could not tell answers
+        ``unsupported`` too, so a 503 here is a real outage, which raises as a transient failure for the caller to retry."""
+        route = Routes.STORAGE_PAID_RESULTS_DELETE_IF_MATCH.value.format(recordId=record_id)
+        pairs = list(items.items())
+        changed: list[str] = []
+        for start in range(0, len(pairs), MAX_FILES_PER_CALL):
+            chunk = pairs[start:start + MAX_FILES_PER_CALL]
+            try:
+                reply = await self._call(
+                    org_id, "POST", route, latch=False,
+                    body={"items": [{"path": p, "etag": e} for p, e in chunk]},
+                )
+            except ArtifactRoutesUnavailable as exc:
+                raise GuardUnsupported("the storage service has no delete-by-version route") from exc
+            if reply.get("unsupported") is True:
+                raise GuardUnsupported("the storage cannot delete by version")
+            kept = reply.get("changed")
+            if not isinstance(kept, list):
+                raise PaidResultStoreError("delete-by-version answered no list of kept paths")
+            changed.extend(p for p in kept if isinstance(p, str))
+        return changed
 
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         """Removes the record's folder. Nothing stored is a success (the route answers 200).
@@ -329,8 +445,12 @@ class NodePaidResultStore:
         await asyncio.gather(*(one(rid) for rid in chunk))
         return outcomes
 
-    async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+    async def purge_cutoff(self, org_id: str, record_id: str, *, require_marker: bool = False) -> int | None:
         """The object store's own current time (ms), as the cutoff of a purge: no caller's clock decides what goes.
+
+        ``require_marker``: the reply must say the service wrote the refresh marker before it took the cutoff
+        (``marker: true``); one from an earlier release does not, and raises ``PurgeCutoffNoMarker``: a bump of this
+        record could then carry a result past the purge, so a refresh must not go on with that cutoff.
 
         ``None`` when the storage service has no such route (one of an earlier release): that says nothing about the
         cache, so the routes are not switched off, and the caller purges without a cutoff.
@@ -347,6 +467,8 @@ class NodePaidResultStore:
                     "handed back while paid-result writes are on; update the storage service", exc.status,
                 )
             return None
+        if require_marker and body.get("marker") is not True:
+            raise PurgeCutoffNoMarker("the storage service took the cutoff without writing the refresh marker")
         return int(body["cutoff"])
 
     async def purge_org(self, org_id: str) -> None:
@@ -360,6 +482,32 @@ class NodePaidResultStore:
     async def get(self, org_id: str, record_id: str, path: str) -> bytes | None:
         signed = await self.presign(org_id, record_id, [(path, "get")])
         return await self.get_if_present(signed[(path, "get")])
+
+    async def get_versioned(self, org_id: str, record_id: str, path: str) -> VersionedBytes | None:
+        """The file with the ETag and write time the store sent with it (a bump's inputs); None when absent."""
+        signed = await self.presign(org_id, record_id, [(path, "get")])
+        return await self.get_versioned_if_present(signed[(path, "get")])
+
+    async def refresh_marker_ms(self, org_id: str, record_id: str) -> int | None:
+        """When the latest refresh of the record began, by the store's own clock (whole seconds on S3 and Azure);
+        None when no refresh was ever recorded. Absence is only a 404: any other failure raises, so a caller that
+        cannot read the marker never takes it for "no refresh"."""
+        signed = await self.presign(org_id, record_id, [(REFRESH_MARKER_PATH, "get")])
+        found = await self.get_versioned_if_present(signed[(REFRESH_MARKER_PATH, "get")], absent=frozenset({404}))
+        if found is None:
+            return None
+        if found.last_modified_ms is None:
+            raise PaidResultStoreError("the refresh marker has no write time")
+        # Once the storage service has taken the cutoff it writes it into the marker. A result written at or after the
+        # cutoff survives the purge (it removes only what is older), so the fence is the cutoff, not the marker's own time.
+        try:
+            body = json.loads(found.data)
+        except ValueError:
+            body = None
+        cutoff = body.get("cutoffMs") if isinstance(body, dict) else None
+        if isinstance(cutoff, int) and not isinstance(cutoff, bool) and cutoff > 0:
+            return FinalFence(cutoff)
+        return found.last_modified_ms
 
     async def put(self, org_id: str, record_id: str, path: str, data: bytes) -> bool:
         """Store once. False when the file is already there: the first writer's bytes are kept."""
@@ -411,6 +559,77 @@ class NodePaidResultStore:
             return False
 
         return bool(await self._blob_storage._with_storage_retry("paid-result upload", attempt))
+
+    async def bump_to(
+        self, entry: SignedFileUrl, data: bytes, charge: Callable[[int], None] | None = None,
+        eligible: Callable[[], bool] | None = None,
+    ) -> tuple[BumpOutcome, str | None]:
+        """The conditional replace a bump signs (``If-Match`` sent with exactly the signed headers). Returns the outcome
+        and the new ETag when the store sent one. The store's own status says what happened, never a route reply: 404 is
+        ``gone``, 412 ``changed``, a 409 that outlasts the retries ``conflict``."""
+        if entry.method != "PUT":
+            raise ValueError("not an upload URL")
+        headers = dict(entry.headers)
+
+        async def attempt() -> tuple[BumpOutcome, str | None]:
+            for conflict in range(_CONFLICT_ATTEMPTS):
+                if eligible is not None and not eligible():
+                    return DEADLINE, None     # checked before every attempt, retries included: nothing is written past it
+                if charge is not None:
+                    charge(len(data))        # every transfer attempt is bytes sent, whatever the answer
+                try:
+                    async with get_shared_session().put(
+                        URL(entry.url, encoded=True), data=data, headers=headers, skip_auto_headers={"Content-Type"},
+                    ) as response:
+                        await response.read()
+                        status = response.status
+                        etag = _unquote_etag(response.headers.get("ETag"))
+                except aiohttp.InvalidURL:
+                    raise PaidResultStoreError("paid-result upload URL is malformed") from None
+                if status == HttpStatusCode.CONFLICT.value:
+                    if conflict + 1 < _CONFLICT_ATTEMPTS:
+                        await asyncio.sleep(_CONFLICT_PAUSE_S * (conflict + 1))
+                        continue
+                    return CONFLICT, None
+                if status == HttpStatusCode.NOT_FOUND.value:
+                    return GONE, None
+                if status == HttpStatusCode.PRECONDITION_FAILED.value:
+                    return CHANGED, None
+                if not 200 <= status < 300:
+                    raise _storage_status_error(status, f"paid-result bump failed (HTTP {status})")
+                return BUMPED, etag
+            return CONFLICT, None
+
+        result: tuple[BumpOutcome, str | None] = await self._blob_storage._with_storage_retry("paid-result bump", attempt)
+        return result
+
+    async def get_versioned_if_present(
+        self, entry: SignedFileUrl, absent: frozenset[int] = _ABSENT,
+    ) -> VersionedBytes | None:
+        if entry.method != "GET":
+            raise ValueError("not a download URL")
+
+        async def attempt() -> VersionedBytes | None:
+            try:
+                async with get_shared_session().get(URL(entry.url, encoded=True), headers=dict(entry.headers)) as response:
+                    if response.status in absent:
+                        await response.read()
+                        return None
+                    if not 200 <= response.status < 300:
+                        await response.read()
+                        raise _storage_status_error(response.status, f"paid-result download failed (HTTP {response.status})")
+                    data = await response.read()
+                    # The local route also sends the exact stamp (its files carry milliseconds); S3 and Azure send whole seconds.
+                    exact = response.headers.get("X-Last-Modified-Ms")
+                    return VersionedBytes(
+                        data, _unquote_etag(response.headers.get("ETag")),
+                        int(exact) if exact is not None and exact.isdigit() else _http_date_ms(response.headers.get("Last-Modified")),
+                    )
+            except aiohttp.InvalidURL:
+                raise PaidResultStoreError("paid-result download URL is malformed") from None
+
+        result: Awaitable[Any] = self._blob_storage._with_storage_retry("paid-result download", attempt)
+        return await result  # type: ignore[no-any-return]
 
     async def get_if_present(self, entry: SignedFileUrl) -> bytes | None:
         if entry.method != "GET":
