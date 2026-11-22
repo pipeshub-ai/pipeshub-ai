@@ -159,14 +159,14 @@ async def test_an_attach_to_an_unknown_twin_leaves_the_records_previous_identity
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("record", [{"mimeType": "application/octet-stream", "recordName": "blob"}])
-async def test_a_record_with_nothing_tracked_is_attached_as_before(record: dict[str, Any]) -> None:
+async def test_a_record_nothing_tracked_reads_is_not_attached_to_a_twin(record: dict[str, Any]) -> None:
     world = World(node={"contentRev": "older", "virtualRecordId": TWIN_VRID, **record}, file_doc={"_key": "rec-1", "extension": "unknown"})
     _files_by_key(world)
     _attach_stubs(world)
 
     decision = await world.ep._reuse_finished_duplicate(world.state, _match(_twin("inproc:txt@1")))
 
-    assert decision.skip_indexing is True
+    assert decision.skip_indexing is False
 
 
 @pytest.mark.asyncio

@@ -200,14 +200,29 @@ async def test_what_is_not_tracked_stores_nothing_and_skips_as_before() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_stored_identity_with_nothing_tracked_on_the_graph_side_skips() -> None:
-    world = World(
-        node={"mimeType": "application/octet-stream", "recordName": "blob"},
-        file_doc={"_key": "rec-1", "extension": "unknown"},
-    )
+async def test_a_copy_a_tracked_parser_built_is_not_skipped_for_a_record_that_is_source_now() -> None:
+    from unittest.mock import MagicMock
+
+    from app.events.processor import Processor
+
+    world = World(node={"mimeType": "text/plain", "recordName": "notes.py"}, file_doc={"_key": "rec-1", "extension": "py"})
+    for name in dir(Processor):
+        if name.startswith("process_"):
+            setattr(world.processor, name, MagicMock(side_effect=world._parse))
     world.identified("inproc:txt@1")
 
-    await world.run(world.event(mime="application/octet-stream", ext="unknown", name="blob"))
+    await world.run(world.event(mime="text/plain", ext="py", name="notes.py"))
+
+    assert world.parses == 1
+    assert world.state[pi.IDENTITY_FIELD] == f"inproc:{pi.UNTRACKED_KEY}"
+
+
+@pytest.mark.asyncio
+async def test_a_copy_an_untracked_parser_built_is_skipped_for_a_record_nothing_tracked_reads() -> None:
+    world = World(node={"mimeType": "text/plain", "recordName": "notes.py"}, file_doc={"_key": "rec-1", "extension": "py"})
+    world.identified(f"inproc:{pi.UNTRACKED_KEY}")
+
+    await world.run(world.event(mime="text/plain", ext="py", name="notes.py"))
 
     assert world.parses == 0
 

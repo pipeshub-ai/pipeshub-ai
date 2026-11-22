@@ -80,7 +80,7 @@ def test_the_in_process_key_is_the_route_of_the_dispatch_for_every_label_pair() 
         if key is None:
             continue
         dispatch, _ = _route_of(mime, ext, name, rtype)
-        assert dispatch is not None and key.split("@")[0] == pi.dispatch_name(dispatch), (mime, ext, rtype, key)
+        assert dispatch is not None and key.split("@")[0] == pi.dispatch_name(dispatch, None if mime in ('', 'unknown') else mime), (mime, ext, rtype, key)
         checked += 1
     assert checked > 1000
 
@@ -132,11 +132,11 @@ async def test_the_in_process_run_identity_matches_the_dispatch_that_ran() -> No
         key = pi.parser_key(mime, ext, name, "FILE", service=False, file_path=path)
         if ident is None:
             continue  # not tracked
-        if ident == f"inproc:{pi.PATH_UNTRACKED_KEY}":
+        if ident == f"inproc:{pi.UNTRACKED_KEY}":
             assert path is not None and key is None  # the path chose a parser that is not tracked
             continue
         assert ident.startswith("inproc:") and dispatch is not None, (mime, ext, name, ident)
-        assert ident.split(":", 1)[1] == key and key.split("@")[0] == pi.dispatch_name(dispatch), (mime, ext, name, ident)
+        assert ident.split(":", 1)[1] == key and key.split("@")[0] == pi.dispatch_name(dispatch, None if mime in ('', 'unknown') else mime), (mime, ext, name, ident)
     # a path-decided run records the key of the parser the path chose, not the name's
     seen, _sent, _err = await _run("unknown", "application/octet-stream", "Report.docx", "FILE", False, "x/app.log")
     assert seen and seen[-1][1] == "inproc:plain_text@1"
@@ -152,7 +152,7 @@ async def test_the_service_run_identity_matches_the_format_the_service_resolves(
             checked += 1
             if ident is None:
                 continue
-            if ident == f"svc:{pi.PATH_UNTRACKED_KEY}":
+            if ident == f"svc:{pi.UNTRACKED_KEY}":
                 assert path is not None  # the path chose a parser that is not tracked
                 continue
             real = file_types.parse_format(s_mime, file_types.service_extension(s_mime, s_ext, name))

@@ -17,8 +17,13 @@ the event payload carries when the run starts, and the type the graph holds when
 promotion is judged. The graph keeps ``mimeType``, ``recordName`` and ``recordType`` on the ``records`` node and the
 file's ``extension`` on its ``files`` document, so callers read that document too.
 
-``None`` means "not tracked" (code, SQL, an unnamed route, anything unknown): nothing is stored and every check that
-meets it behaves as it did before the identity existed.
+``None`` as a graph key means "not tracked" (code, SQL, an unnamed route, anything unknown). A run of such a parser stores
+``<pipeline>:untracked@1``, so a rename to a tracked type does not read as a copy that was never labelled. A record whose own
+graph key is not tracked never attaches to a twin (the graph cannot say which parser its labels mean) and adopts nothing.
+
+Known limit: the graph record holds no file path. A record whose own event path decides its parser never skips, attaches or
+adopts, and a copy built that way carries the path's key. When a queued duplicate is itself path-decided and its name key equals
+the source's stored key, the promotion cannot tell; the duplicate's own event then runs in full.
 
 The fields are written only while ``RECORD_PARSER_IDENTITY_WRITE`` is on (default off in the release that adds them);
 see :func:`identity_write_enabled`.
@@ -60,8 +65,8 @@ SOURCE_ADOPTED: Final = "adopted"
 #: The copy is another record's, attached or promoted with that record's identity.
 SOURCE_TWIN: Final = "twin"
 
-#: The key of a copy whose parser the file path chose and that is not tracked; no name-derived key equals it.
-PATH_UNTRACKED_KEY: Final = "path_untracked@1"
+#: The key of a copy built by a parser that is not tracked (source, SQL, or a path-chosen one); no tracked key equals it.
+UNTRACKED_KEY: Final = "untracked@1"
 
 PIPELINE_IN_PROCESS: Final = "inproc"
 PIPELINE_SERVICE: Final = "svc"
@@ -106,15 +111,18 @@ def _known(value: object) -> str | None:
     return value if isinstance(value, str) and value not in ("", "unknown") else None
 
 
-def dispatch_name(dispatch: file_types.Dispatch) -> str:
+def dispatch_name(dispatch: file_types.Dispatch, mime_type: str | None = None) -> str:
     """The route of a dispatch, with every further input its conversion depends on.
 
-    The in-process handlers read only the bytes and the route, except the LibreOffice one, which converts from the input
-    format of the file type (an .odt and an .rtf share the route and are converted differently).
+    The in-process handlers read the bytes and the route, with two exceptions: the LibreOffice handler converts from the input
+    format of the file type (an .odt and an .rtf share the route), and the image handler reads the extension of the record's
+    mime (``data:image/<ext>``, svg to png). The record's other labels only title and place it.
     """
     name = dispatch.route.value
     if dispatch.route is Route.LIBREOFFICE_DOCX and dispatch.file_type is not None and dispatch.file_type.libreoffice_from:
         name = f"{name}.{dispatch.file_type.libreoffice_from}"
+    elif dispatch.route is Route.IMAGE:
+        name = f"{name}.{file_types.extension_for_mime(mime_type) or 'unknown'}"
     return name
 
 
@@ -159,22 +167,23 @@ def parser_key(
         sent_ext, sent_mime = prepared_labels(dispatch.file_type, extension, mime)  # the raw extension: "unknown" is sent as it is
         fmt = file_types.parse_format(sent_mime, file_types.service_extension(sent_mime, sent_ext, name))
         return None if not fmt or fmt == "code" else f"{fmt}@{PARSER_ROUTE_REV.get(fmt, 1)}"
-    return f"{dispatch_name(dispatch)}@{PARSER_ROUTE_REV.get(dispatch.route, 1)}"
+    return f"{dispatch_name(dispatch, mime)}@{PARSER_ROUTE_REV.get(dispatch.route, 1)}"
 
 
 def parser_identity(
     mime_type: str | None, extension: str | None, record_name: str | None, record_type: str | None, *, pipeline: str,
     file_path: str | None = None,
-) -> str | None:
-    """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or None when not tracked."""
-    # With the file path the dispatch used: when the path decided the parser, the identity is that parser's key, which the
-    # name-derived key of any graph record then differs from (such a copy is never taken for the name's parser).
+) -> str:
+    """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or ``<pipeline>:untracked@1``.
+
+    Built with the file path the dispatch used: when the path decided the parser, the identity is that parser's key, which the
+    name-derived key of any graph record then differs from (such a copy is never taken for the name's parser).
+    """
     service = pipeline == PIPELINE_SERVICE
     key = parser_key(mime_type, extension, record_name, record_type, service=service, file_path=file_path)
-    if key is None and path_decides(mime_type, extension, record_name, record_type, file_path, service=service):
-        # The path chose a parser that is not tracked (source, SQL): the copy still must not read as the name's parser.
-        key = PATH_UNTRACKED_KEY
-    return None if key is None else f"{pipeline}:{key}"
+    # A parser that is not tracked (source, SQL) still labels its copy, so that a rename to a tracked type does not read as
+    # a never-identified copy and a record of another parser does not take it.
+    return f"{pipeline}:{key or UNTRACKED_KEY}"
 
 
 def path_decides(
@@ -259,13 +268,14 @@ def copied_identity_fields(source_record: Mapping[str, Any], *, at: int, vrid: s
 def twin_may_share(
     record_key: str | None, twin: Mapping[str, Any], twin_key: str | None,
 ) -> bool:
-    """Whether a record may take (or wait behind) a twin's copy, given both graph keys; True when either is not tracked.
+    """Whether a record may take (or wait behind) a twin's copy, given both graph keys.
 
-    A twin whose identity is known must equal the record's key. A twin with no known identity is judged by its own graph
-    type: equal keys share (the dedup saving stays), different keys do not. Not tracked on either side: as before.
+    A record whose own key is not tracked never shares: the graph cannot say which parser its labels mean. Otherwise a twin
+    whose identity is known must equal the record's key, and a twin with no known identity is judged by its own graph type:
+    equal keys share (the dedup saving stays), different keys do not; a twin that is not tracked is as before.
     """
     if record_key is None:
-        return True
+        return False
     known = known_identity(twin)
     if known is not None:
         known_key = key_of(known)

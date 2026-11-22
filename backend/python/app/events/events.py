@@ -305,7 +305,11 @@ class EventProcessor:
             )
             return False, None
         if key is None:
-            return True, None
+            # Not tracked now: nothing to adopt. A copy a tracked parser built (an identity is stored) is not this one's.
+            if not has_stored:
+                return True, None
+            known = parser_identity.known_identity(record)
+            return (known is not None and parser_identity.key_of(known) == parser_identity.UNTRACKED_KEY), None
         if not has_stored:
             return True, f"{self._pipeline_label()}:{key}"
         known = parser_identity.known_identity(record)
@@ -349,7 +353,7 @@ class EventProcessor:
             doc, await self._files_document(_record_key(doc)), service=self._use_service_pipeline(),
         )
         if record_key is None:
-            return True
+            return False
         twin_key = None
         if parser_identity.known_identity(twin) is None:
             twin_key = parser_identity.graph_parser_key(

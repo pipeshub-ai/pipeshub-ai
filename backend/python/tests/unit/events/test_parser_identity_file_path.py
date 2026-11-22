@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.events.dedup import DedupDecision
 from app.events.processor import Processor
 from app.modules.pipeline import parser_identity as pi
 from tests.support.parser_identity_world import World
@@ -151,7 +152,7 @@ async def test_a_path_decided_record_never_skips_even_when_a_stored_key_equals_i
 async def test_a_text_record_is_not_attached_to_a_copy_the_path_made_by_the_source_parser() -> None:
     """text/plain named ``notes`` at ``src/x.py`` is read as source, which is not tracked; its copy must not read as text."""
     identity = pi.parser_identity("text/plain", None, "notes", "FILE", pipeline=pi.PIPELINE_IN_PROCESS, file_path="src/x.py")
-    assert identity == f"inproc:{pi.PATH_UNTRACKED_KEY}"
+    assert identity == f"inproc:{pi.UNTRACKED_KEY}"
     world = World()
     world.files = {"_key": "rec-1", "extension": "txt"}
     doc = {"_key": "rec-1", "mimeType": "text/plain", "recordName": "notes.txt", "recordType": "FILE"}
@@ -164,3 +165,51 @@ async def test_a_text_record_is_not_attached_to_a_copy_the_path_made_by_the_sour
     assert await world.ep._twin_shares_parser(doc, twin) is False
     queued = {"_key": "q", "mimeType": "text/plain", "recordName": "q.txt", "recordType": "FILE"}
     assert pi.promotion_fields(twin, queued, {"extension": "txt"}, at=9, vrid="v9") is None
+
+
+@pytest.mark.asyncio
+async def test_a_same_bytes_rename_from_source_to_markdown_runs_in_full_and_is_labelled_for_what_ran() -> None:
+    world = World(node={"contentRev": "older", "mimeType": "text/plain", "recordName": "notes.py"}, file_doc={"_key": "rec-1", "extension": "py"})
+    _every_handler_parses(world)
+    await world.run(world.event(mime="text/plain", ext="py", name="notes.py"))
+    assert world.parses == 1 and world.state[pi.IDENTITY_FIELD] == f"inproc:{pi.UNTRACKED_KEY}"
+    world.state.update({"mimeType": "text/markdown", "recordName": "notes.md"})
+    world.files = {"_key": "rec-1", "extension": "md"}
+
+    await world.run(world.event(mime="text/markdown", ext="md", name="notes.md"))
+
+    assert world.parses == 2
+    assert world.state[pi.IDENTITY_FIELD] == "inproc:md@1"
+
+
+@pytest.mark.asyncio
+async def test_a_record_the_graph_reads_as_nothing_tracked_never_attaches_or_adopts() -> None:
+    world = World()
+    world.files = {"_key": "rec-1", "extension": "unknown"}
+    doc = {"_key": "rec-1", "mimeType": "application/xml", "recordName": "a.b.docx", "recordType": "FILE"}
+    assert pi.graph_parser_key(doc, world.files, service=False) is None
+    twin = _path_decided_copy() | {pi.IDENTITY_FIELD: "inproc:docx@1", "mimeType": "application/xml", "recordName": "a.b.docx"}
+
+    assert await world.ep._twin_shares_parser(doc, twin) is False
+
+
+@pytest.mark.asyncio
+async def test_the_event_path_flags_a_path_decided_record_so_that_it_never_attaches_to_a_twin() -> None:
+    """Through ``on_event``: the dedup step sees a path-decided record and refuses a twin whose stored key equals its name key."""
+    world = World(node={"contentRev": "older"})
+    _every_handler_parses(world)
+    world.files = {"_key": "rec-1", "extension": "unknown"}
+    world.state.update({"mimeType": "application/octet-stream", "recordName": "Report.docx"})
+    twin = _path_decided_copy() | {pi.IDENTITY_FIELD: "inproc:docx@1"}
+    seen: list[bool] = []
+
+    async def dedup(*_a: object, **_k: object) -> DedupDecision:
+        seen.append(await world.ep._twin_shares_parser(world.state, twin))
+        return DedupDecision()
+
+    world.ep._check_duplicate_by_md5 = dedup  # type: ignore[method-assign]
+
+    await world.run(world.event(mime="application/octet-stream", ext="unknown", name="Report.docx", filePath="x/app.log"))
+    await world.run(world.event(mime="application/octet-stream", ext="unknown", name="Report.docx", filePath="x/Report.docx"))
+
+    assert seen == [False, True]

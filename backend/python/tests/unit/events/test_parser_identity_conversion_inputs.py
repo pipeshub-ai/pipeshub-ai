@@ -1,10 +1,10 @@
 """The key names every input the conversion depends on, not only the route.
 
-Audit of the in-process handlers: all read the bytes and the route only, except the LibreOffice one, which converts from the
+Audit of the in-process handlers: they read the bytes and the route, except two. The LibreOffice handler converts from the
 input format of the file type (``libreoffice_from``): an .odt and an .rtf share the route ``libreoffice_docx`` and are
-converted differently. Every other route that several file types share (docx, pptx, xlsx, html, image, plain text, code)
-reads them alike: the macro-enabled and template packages are rewritten to the plain one first, and the image handler takes
-no format.
+converted differently. The image handler reads the extension of the record's mime (``data:image/<ext>``, svg to png). Every
+other route that several file types share (docx, pptx, xlsx, html, plain text, code) reads them alike: the macro-enabled and
+template packages are rewritten to the plain one first. The record's other labels only title and place it.
 """
 from __future__ import annotations
 
@@ -78,3 +78,44 @@ def test_no_other_route_has_file_types_that_a_handler_converts_differently() -> 
             by_route[file_type.route].add(file_type.libreoffice_from)
     assert {r.value for r, values in by_route.items() if len(values) > 1} == {"libreoffice_docx"}
     assert "libreoffice_from" in {f.name for f in dataclasses.fields(file_types.FileType)}
+
+
+IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp", "image/svg+xml", "image/jpg"]
+
+
+def test_the_image_key_names_the_extension_the_handler_reads_from_the_mime() -> None:
+    from app.utils.image_utils import get_extension_from_mimetype
+
+    keys = {}
+    for mime in IMAGE_MIMES:
+        key = pi.parser_key(mime, None, "pic", "FILE", service=False)
+        assert key == f"image.{get_extension_from_mimetype(mime)}@1"
+        keys[mime] = key
+    assert len(set(keys.values())) == len(IMAGE_MIMES)
+
+
+@pytest.mark.asyncio
+async def test_a_same_bytes_image_whose_mime_changes_runs_in_full() -> None:
+    world = World(node={"mimeType": "image/png", "recordName": "pic.png"}, file_doc={"_key": "rec-1", "extension": "png"})
+    _every_handler_parses(world)
+    world.identified("inproc:image.png@1")
+    world.state.update({"mimeType": "image/jpeg", "recordName": "pic.jpeg"})
+    world.files = {"_key": "rec-1", "extension": "jpeg"}
+
+    await world.run(world.event(mime="image/jpeg", ext="jpeg", name="pic.jpeg"))
+
+    assert world.parses == 1
+    assert world.state[pi.IDENTITY_FIELD] == "inproc:image.jpeg@1"
+
+
+def test_only_the_image_handler_reads_the_record_mime() -> None:
+    """The audit of the handlers' own reads of the record: ``process_image`` is the one that takes the extension from it."""
+    import inspect
+
+    from app.events.processor import Processor
+
+    readers = [
+        name for name, fn in inspect.getmembers(Processor, inspect.isfunction)
+        if name.startswith("process_") and "mimeType" in inspect.getsource(fn)
+    ]
+    assert readers == ["process_image"]
