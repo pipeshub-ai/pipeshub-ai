@@ -452,10 +452,12 @@ _CYPHER_APP_OPENS = "(coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.typ
 
 def _cypher_limit_admits(app: str, user: str) -> str:
     """Whether a limited App (``accessLimit`` set) lets ``user`` through, whatever edges exist: CREATOR only the user
-    whose ``userId`` is the App's ``createdBy``, ORG every member of the org (the user belongs to an Organization). Any
-    other value, or a missing ``createdBy``, lets nobody through (a null comparison filters the row out)."""
+    whose ``userId`` is the App's ``createdBy``, ORG every member of the App's own org (a BELONGS_TO of entityType
+    ORGANIZATION to the Organization whose id is the App's ``orgId``, as ``get_users`` reads membership). Any other
+    value, or a missing ``createdBy``, lets nobody through (a null comparison filters the row out)."""
     return (f"(({app}.accessLimit = '{AccessLimit.CREATOR.value}' AND {app}.createdBy = {user}.userId)"
-            f" OR ({app}.accessLimit = '{AccessLimit.ORG.value}' AND EXISTS {{ MATCH ({user})-[:BELONGS_TO]->(:Organization) }}))")
+            f" OR ({app}.accessLimit = '{AccessLimit.ORG.value}'"
+            f" AND EXISTS {{ MATCH ({user})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(kh_o:Organization) WHERE kh_o.id = {app}.orgId }}))")
 
 
 def _cypher_read_by_app(v: str) -> str:
@@ -8870,7 +8872,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE ((size($source_ids) = 0 AND coalesce(app.isHidden, false) = false)
                    OR app.id IN $source_ids)
               AND NOT app.id IN $exclude_app_ids
-              AND (app.accessLimit IS NULL OR __LIMIT_ADMITS__)
+              AND (app.accessLimit IS NULL OR (app.orgId = $org_id AND __LIMIT_ADMITS__))
             RETURN collect(app {.id, .name, .type, .permissionModel}) AS apps
         }
 

@@ -42,8 +42,9 @@ class Namespace:
 
     def __init__(self, prefix: str) -> None:
         self.prefix = prefix
-        self.org = f"org-{prefix}"
-        self.org_node = f"{prefix}-orgnode"
+        # The Organization node's id is the org id the nodes carry, as in production (organizations/{orgId}); it starts with the prefix, so a world unloads whole.
+        self.org = f"{prefix}-org"
+        self.org_node = self.org
 
     def id(self, local: str) -> str:
         return self.org_node if local == ORG_ID else f"{self.prefix}-{local}"

@@ -91,15 +91,17 @@ def principals(s: Store, user: str) -> set[str]:
     return ps
 
 
-def _limit_admits(s: Store, user: str, ps: set[str], app: str) -> bool:
+def _limit_admits(s: Store, user: str, app: str) -> bool:
     """R4, a limited app (accessLimit set): CREATOR admits the user whose userId is the app's createdBy, ORG every member
-    of the org (a user with the organization among their principals). Any other value admits nobody."""
-    limit = s.p(app).get("accessLimit")
+    of the app's own org (a BELONGS_TO edge of entityType ORGANIZATION to the Organization whose id is the app's orgId).
+    Any other value admits nobody."""
+    limit, org = s.p(app).get("accessLimit"), s.p(app).get("orgId")
     if limit == "CREATOR":
         creator = s.p(app).get("createdBy")
         return creator is not None and s.kind(user) == "User" and creator == s.p(user).get("userId")
     if limit == "ORG":
-        return any(s.kind(p) == "Organization" for p in ps)
+        return any(e["to"] == org and s.kind(e["to"]) == "Organization" and e["props"].get("entityType") == "ORGANIZATION"
+                   for e in s.out[("BELONGS_TO", user)])
     return False
 
 
@@ -120,7 +122,7 @@ def gate(s: Store, user: str, org: str, ps: set[str]) -> set[str]:
             apps.add(a)
     limited = {n["id"] for n in s.nodes if n["kind"] == "App" and n["props"].get("orgId") == org
                and n["props"].get("accessLimit") is not None}
-    return (apps - limited) | {a for a in limited if _limit_admits(s, user, ps, a)}
+    return (apps - limited) | {a for a in limited if _limit_admits(s, user, a)}
 
 
 def _grant_edge(s: Store, grantee: str, e: EdgeDict) -> bool:
