@@ -167,6 +167,34 @@ def _check_stacked(grids: list[list[list[str]]]) -> None:
     assert not any("Liabilities within" in t and "Assets within" in t for t in text), grids
 
 
+def _two_line_band_page(c) -> None:
+    """A boxed table whose row 0 holds a heading over both years, the years, then the first values."""
+    for y in (380, 432, 448, 464):
+        _rule(c, 72, 528, y)
+    for x in (72, 360, 440, 528):
+        c.line(x, PAGE_H - 380, x, PAGE_H - 464)
+    _text(c, 408, 384, "As at 31 December")
+    _text(c, 389, 398, "2012")
+    _text(c, 480, 398, "2011")
+    for top, label, a, b in [(416, "Liabilities within 12 months", "2,647", "1,994"),
+                             (436, "Liabilities after 12 months", "469", "512"),
+                             (452, "Total deferred tax liability", "3,116", "2,506")]:
+        _text(c, 82, top, label)
+        _text(c, 435, top, a, right=True)
+        _text(c, 526, top, b, right=True)
+
+
+class TestHeaderBandIsOneRow:
+    def test_heading_and_years_are_one_header_row(self) -> None:
+        """Readers take row 0 as the header: a year row under it would be read as data."""
+        with pdfplumber.open(io.BytesIO(_page(_two_line_band_page))) as doc:
+            page = doc.pages[0]
+            grids = [r.table_grid for r in _detect_tables(page, page.width, page.height, page.extract_words())]
+        (grid,) = [g for g in grids if any("2,647" in (c or "") for row in g for c in row)]
+        assert "As at 31 December" in str(grid[0]) and "2012" in str(grid[0]) and "2011" in str(grid[0]), grid
+        assert _find(grid, "2012")[1] == _find(grid, "2,647")[1] and _find(grid, "2,647")[0] == 1, grid
+
+
 class TestHeaderBandStackedTables:
     """The header rows taken out of row 0 must not shift which rows each stacked table takes."""
 
@@ -211,7 +239,7 @@ CASH_FLOW = [
 ]
 
 
-def _split(right_top: float, right_step: float, gutter_x: float | None = None) -> list[LayoutRegion]:
+def _split(right_top: float, right_step: float, around: bool = False) -> list[LayoutRegion]:
     """Run the side-by-side step on a page of two statements, each with a title text region above it.
 
     The regions are built by hand: with the table model off (as in unit tests) the titles are read into the grid,
@@ -233,9 +261,14 @@ def _split(right_top: float, right_step: float, gutter_x: float | None = None) -
             LayoutRegion(type=LayoutRegionType.TEXT, bbox=(308, 115, 502, 131), text="Condensed Cash Flow Statement"),
             LayoutRegion(type=LayoutRegionType.TABLE, bbox=(37, 145, 533, 240), text="x", table_grid=[["x", "y"]]),
         ]
-        return _split_side_by_side_tables(
-            regions, page, page.extract_words(), page.width, page.height, gutter_x=gutter_x,
-        )
+        if around:
+            # Two-column text above and below, in the page's reading order: the table cuts a band.
+            above = [LayoutRegion(type=LayoutRegionType.TEXT, bbox=(38, 60, 260, 100), text="above left"),
+                     LayoutRegion(type=LayoutRegionType.TEXT, bbox=(308, 60, 530, 100), text="above right")]
+            below = [LayoutRegion(type=LayoutRegionType.TEXT, bbox=(38, 260, 260, 300), text="below left"),
+                     LayoutRegion(type=LayoutRegionType.TEXT, bbox=(308, 260, 530, 300), text="below right")]
+            regions = [*above, *regions, *below]
+        return _split_side_by_side_tables(regions, page, page.extract_words(), page.width, page.height)
 
 
 class TestSideBySideStatements:
@@ -248,12 +281,15 @@ class TestSideBySideStatements:
         assert "Purchases" in str(right.table_grid) and "Total assets" not in str(right.table_grid) and "24,914" in str(right.table_grid)
 
     def test_each_title_is_read_with_its_own_table(self) -> None:
-        # Two columns: the left title, then its table, then the right title and its table.
-        regions = _split(right_top=153, right_step=12.5, gutter_x=285.0)
+        # The left title, then its table, then the right title and its table; the text around keeps its place.
+        regions = _split(right_top=153, right_step=12.5, around=True)
         assert [(r.type, r.bbox[0] < 285.0) for r in regions] == [
+            (LayoutRegionType.TEXT, True), (LayoutRegionType.TEXT, False),
             (LayoutRegionType.TEXT, True), (LayoutRegionType.TABLE, True),
             (LayoutRegionType.TEXT, False), (LayoutRegionType.TABLE, False),
+            (LayoutRegionType.TEXT, True), (LayoutRegionType.TEXT, False),
         ], [(r.type, r.bbox) for r in regions]
+        assert [r.text for r in regions[:2]] == ["above left", "above right"]
 
     def test_a_part_that_loses_words_keeps_the_table_whole(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A part whose grid holds under 90% of the words in its box would drop text the whole table kept.

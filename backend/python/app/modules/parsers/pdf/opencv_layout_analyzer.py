@@ -1709,9 +1709,7 @@ def extract_layout_regions(
     ])
     # After every grid is chosen: the choices prefer more columns, and the sign
     # columns this removes would otherwise count.
-    ordered = _split_side_by_side_tables(
-        ordered, page, all_words, page_w, page_h, gutter_x=gutter_x,
-    )
+    ordered = _split_side_by_side_tables(ordered, page, all_words, page_w, page_h)
     for region in ordered:
         if region.type == LayoutRegionType.TABLE and region.table_grid:
             _merge_table_currency_columns(region)
@@ -3266,6 +3264,11 @@ def _split_merged_header_band(
                 _phrase_text(ph)
             )
         header_rows.append([" ".join(c) for c in cells])
+    # Readers take one header row, so the band is one row: a cell's heading
+    # lines stay on their own lines ("As at 31 December\n2012").
+    header_rows = [[
+        "\n".join(r[c] for r in header_rows if r[c]) for c in range(ncols)
+    ]]
 
     # Row 0 keeps the lines that are not headings, split by cell as before.
     centres = [
@@ -4194,15 +4197,14 @@ def _split_side_by_side_tables(
     all_words: list[dict[str, Any]],
     page_w: float,
     page_h: float,
-    gutter_x: float | None = None,
 ) -> list[LayoutRegion]:
     """Emit two statements set side by side as two tables.
 
     One grid over both would join unrelated rows and give the right-hand
     statement the left one's column headings. A part's grid must keep the
     words in its box (``_GRID_MIN_WORD_COVERAGE``), or the table stays whole.
-    Once a table is cut, the regions are put in reading order again, so each
-    statement's title is read with its own table.
+    Once a table is cut, each statement's title is read right before its own
+    table; no other region moves, so the page's reading order is kept.
     """
     if page is None or not all_words:
         return regions
@@ -4223,16 +4225,16 @@ def _split_side_by_side_tables(
         return out
 
     result: list[LayoutRegion] = []
-    cut = False
     for r in regions:
         if r.type != LayoutRegionType.TABLE or not r.table_grid or r.from_model:
             result.append(r)
             continue
-        titles = [
-            (float(o.bbox[0]), float(o.bbox[2])) for o in regions
+        title_regions = [
+            o for o in regions
             if o.type == LayoutRegionType.TEXT and r.bbox[1] - _STATEMENT_TITLE_REACH <= o.bbox[3] <= r.bbox[1] + 2.0
             and o.bbox[0] < r.bbox[2] and o.bbox[2] > r.bbox[0]
         ]
+        titles = [(float(o.bbox[0]), float(o.bbox[2])) for o in title_regions]
         boxes = _pieces(tuple(r.bbox), titles)  # type: ignore[arg-type]
         if len(boxes) < 2:
             result.append(r)
@@ -4248,11 +4250,22 @@ def _split_side_by_side_tables(
                 type=LayoutRegionType.TABLE, bbox=box, text=_grid_to_text(grid),
                 table_grid=grid, font_size=r.font_size, is_bold=r.is_bold,
             ))
-        result.extend(parts or [r])
-        cut = cut or bool(parts)
-    if not cut:
-        return result
-    return _reading_order(result, page_w, page_h, gutter_x=gutter_x, all_words=all_words)
+        if not parts:
+            result.append(r)
+            continue
+        # The titles read just before the table go each right before its part.
+        pending: list[LayoutRegion] = []
+        while result and any(result[-1] is o for o in title_regions):
+            pending.insert(0, result.pop())
+
+        def _over(o: LayoutRegion, box: tuple[float, float, float, float]) -> bool:
+            return box[0] <= (o.bbox[0] + o.bbox[2]) / 2.0 <= box[2]
+
+        result.extend(o for o in pending if not any(_over(o, p.bbox) for p in parts))
+        for p in parts:
+            result.extend(o for o in pending if _over(o, p.bbox))
+            result.append(p)
+    return result
 
 
 def _is_plausible_table(
