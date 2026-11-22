@@ -20,6 +20,7 @@ from app.services.graph_db.neo4j.neo4j_provider import (
     BLOCK_DELETE_BATCH_SIZE,
     Neo4jProvider,
 )
+from tests.support.log_capture import failure_line
 
 
 @pytest.fixture
@@ -2726,12 +2727,12 @@ class TestUserAndOrganizationLookups:
         assert kwargs["parameters"] == {"org_id": "org-9", "provider": "tavily"}
 
     @pytest.mark.asyncio
-    async def test_web_search_agents_return_empty_on_query_error(self, neo4j_provider: Neo4jProvider):
+    async def test_web_search_agents_raise_on_query_error(self, neo4j_provider: Neo4jProvider):
+        # a delete is refused on this answer: a failed read must never read as no agents
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("query failed"))
 
-        result = await neo4j_provider.get_agents_by_web_search_provider("org-1", "serper")
-
-        assert result == []
+        with pytest.raises(RuntimeError, match="query failed"):
+            await neo4j_provider.get_agents_by_web_search_provider("org-1", "serper")
 
     @pytest.mark.asyncio
     async def test_dedupes_rows_by_agent_key(self, neo4j_provider: Neo4jProvider):
@@ -2794,12 +2795,12 @@ class TestUserAndOrganizationLookups:
         assert kwargs["parameters"] == {"org_id": "org-9", "model_key": "model-x"}
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_query_error(self, neo4j_provider: Neo4jProvider):
+    async def test_raises_on_query_error(self, neo4j_provider: Neo4jProvider):
+        # a delete is refused on this answer: a failed read must never read as no agents
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("query failed"))
 
-        result = await neo4j_provider.get_agents_by_model_key("org-1", "model-key-1")
-
-        assert result == []
+        with pytest.raises(RuntimeError, match="query failed"):
+            await neo4j_provider.get_agents_by_model_key("org-1", "model-key-1")
 
 
 class TestDuplicateAndSyncOperations:
@@ -4126,8 +4127,9 @@ class TestNeo4jGetFilteredConnectorInstances:
         assert neo4j_provider.client.execute_query.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_tuple(self, neo4j_provider: Neo4jProvider):
-        """DB exception returns ([], 0) and logs the error."""
+    async def test_exception_returns_empty_tuple(self, neo4j_provider: Neo4jProvider, caplog):
+        """DB exception returns ([], 0) and logs the error once, without its text."""
+        neo4j_provider.logger = logging.getLogger("tests.neo4j_provider.swallowed")
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("Neo4j down"))
         docs, total = await neo4j_provider.get_filtered_connector_instances(
             collection="App", edge_collection="orgAppRelation",
@@ -4135,7 +4137,8 @@ class TestNeo4jGetFilteredConnectorInstances:
         )
         assert docs == []
         assert total == 0
-        neo4j_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Neo4j down")
+        assert fields["op"] == "get_filtered_connector_instances"
 
     @pytest.mark.asyncio
     async def test_empty_count_result_returns_zero_total(self, neo4j_provider: Neo4jProvider):
@@ -4696,7 +4699,8 @@ class TestBatchUpdateConnectorStatus:
         assert call_kwargs["parameters"]["is_agent_active"] is True
 
     @pytest.mark.asyncio
-    async def test_exception_returns_zero(self, neo4j_provider: Neo4jProvider):
+    async def test_exception_returns_zero(self, neo4j_provider: Neo4jProvider, caplog):
+        neo4j_provider.logger = logging.getLogger("tests.neo4j_provider.swallowed")
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=Exception("neo4j error")
         )
@@ -4709,7 +4713,8 @@ class TestBatchUpdateConnectorStatus:
         )
 
         assert result == 0
-        neo4j_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "neo4j error")
+        assert fields["op"] == "batch_update_connector_status"
 
 
 class TestListUserKnowledgeBases:

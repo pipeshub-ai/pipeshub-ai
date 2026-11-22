@@ -28,6 +28,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.records import _vis
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
@@ -55,7 +56,7 @@ class SyncStateMixin(PgBase):
                 WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.to_coll = 'apps' ORDER BY e.from_id, e.to_id LIMIT 1""",
                                                       org, user_email, service_type), transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get user sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_user_sync_state")
             return None
         return _relation(r["doc"], r["from_id"], r["to_id"]) if r else None
 
@@ -75,7 +76,8 @@ class SyncStateMixin(PgBase):
                 RETURNING e.doc, e.from_id, e.to_id""",
                                                      org, user_email, service_type, _j(change)), transaction, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Update user sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_user_sync_state")
             return None
         if not rows:
             return None
@@ -88,7 +90,7 @@ class SyncStateMixin(PgBase):
         try:
             d = await self._one("/* pipeshub:graph.get_drive_sync_state */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'drives' AND id = $2", org, drive_id, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get drive sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_drive_sync_state")
             return None
         return _arango(d, _DRIVES) if d else None
 
@@ -99,7 +101,8 @@ class SyncStateMixin(PgBase):
                 WHERE org_id = $1 AND coll = 'drives' AND id = $2 RETURNING doc""",
                                                       org, drive_id, _j({"sync_state": state, "last_sync_update": get_epoch_timestamp_in_ms()})), transaction, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Update drive sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_drive_sync_state")
             return None
         return _arango(_doc(r["doc"]), _DRIVES) if r else None
 
@@ -114,7 +117,7 @@ class SyncStateMixin(PgBase):
                                             "createdAtTimestamp": get_epoch_timestamp_in_ms(), "expiration": expiration}], _TOKENS, transaction=transaction)
             return await self.get_document(key, _TOKENS, transaction=transaction, raise_on_error=True)
         except Exception as e:
-            self.logger.error(f"❌ Store page token failed: {type(e).__name__}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="store_page_token")
             return None
 
     async def get_page_token_db(self, channel_id: str | None = None, resource_id: str | None = None, user_email: str | None = None,
@@ -126,7 +129,7 @@ class SyncStateMixin(PgBase):
                 AND ($2::text IS NULL OR doc->>'channelId' = $2) AND ($3::text IS NULL OR doc->>'resourceId' = $3) AND ($4::text IS NULL OR doc->>'userEmail' = $4)
                 ORDER BY doc->'createdAtTimestamp' DESC, id LIMIT 1""", org, channel_id or None, resource_id or None, user_email or None, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get page token failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_page_token_db")
             return None
         return _arango(d, _TOKENS) if d else None
 
@@ -206,5 +209,6 @@ class SyncStateMixin(PgBase):
             await self.batch_update_nodes(updates, "records", transaction)
             return len(rows)
         except Exception as e:
-            self.logger.error(f"❌ Failed to update queued duplicates status: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_queued_duplicates_status")
             return -1

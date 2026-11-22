@@ -1586,6 +1586,13 @@ _EXCHANGE_REFUSALS: dict[str, str] = {
 }
 
 
+# The provider answered, but with a token we can't use: every new attempt gets the same answer.
+_MALFORMED_TOKEN_MESSAGE = (
+    "The sign-in provider sent an invalid token, so connecting again won't help. "
+    "Ask your administrator to check this server's OAuth app with the provider."
+)
+
+
 def _token_exchange_failure_message(error_code: Optional[str], *, registered_client: bool) -> str:
     """What the sign-in window says when the provider refuses the code exchange.
     `registered_client`: PipesHub's own registration or client document, which the next sign-in
@@ -1756,7 +1763,10 @@ async def handle_oauth_callback(
         return _callback_failure(request, {
             "success": False,
             "error": "token_exchange_failed",
-            "errorMessage": _token_exchange_failure_message(e.error_code, registered_client=is_dcr or metadata_document),
+            "errorMessage": (
+                _MALFORMED_TOKEN_MESSAGE if isinstance(e, oauth_client_module.MCPMalformedTokenError)
+                else _token_exchange_failure_message(e.error_code, registered_client=is_dcr or metadata_document)
+            ),
         }, e, error_class=mcp_error_class(e))
     tokens = tokens.model_copy(update={"client_id": client_id})
 

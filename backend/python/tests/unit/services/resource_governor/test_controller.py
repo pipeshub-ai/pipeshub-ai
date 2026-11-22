@@ -5,8 +5,10 @@ import contextlib
 import logging
 import time
 
+import httpx
 import pytest
 
+from app.services.docling.client import DoclingClient, DoclingUnavailableError
 from app.services.resource_governor.controller import ResourceGovernor
 from app.services.resource_governor.feedback import (
     DownstreamFeedback,
@@ -351,6 +353,40 @@ class TestDownstreamFeedbackWiring:
         assert governor.stats()["downstream_feedback"] == {
             "throttles": {}, "timeouts": {}, "pool_exhaustions": {}, "unavailable": {},
         }
+
+    @pytest.mark.asyncio
+    async def test_a_docling_outage_shrinks_only_the_heavy_index_pool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The real client's exhausted retries reach the governor; only the pool whose records call Docling is braked."""
+        monkeypatch.delenv("PARSE_ADMISSION", raising=False)  # classes mode would build the shared Docling engine
+
+        class RefusingDocling(DoclingClient):
+            def _make_client(self) -> httpx.AsyncClient:
+                def refuse(request: httpx.Request) -> httpx.Response:
+                    raise httpx.ConnectError("connection refused", request=request)
+
+                return httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+
+        feedback = DownstreamFeedback()
+        set_default_downstream_feedback(feedback)  # where BaseServiceClient reports
+        try:
+            governor = ResourceGovernor(
+                logger=logging.getLogger("test.downstream"),
+                probe=ScriptedProbe([_snap(8.0, mem_limit_gb=64.0, cpu_quota=16.0)]),
+                feedback=feedback,
+                clock=ManualClock(),
+            )
+            heavy, light = governor.limit(Pool.INDEX_HEAVY), governor.limit(Pool.INDEX_LIGHT)
+            docling = RefusingDocling(service_url="http://docling.invalid:8081", retry_delay=0.0)
+            with pytest.raises(DoclingUnavailableError):
+                await docling.parse_pdf("report.pdf", b"%PDF-1.7")
+            await governor._sample_once()
+        finally:
+            set_default_downstream_feedback(None)
+
+        assert governor.stats()["downstream_feedback"]["unavailable"] == {"DoclingService": 1}
+        assert governor.limit(Pool.INDEX_HEAVY) == max(pressure_floor(Pool.INDEX_HEAVY, governor.ceilings.index_heavy), heavy // 2)
+        assert governor.limit(Pool.INDEX_LIGHT) == light
+        assert light // 2 >= pressure_floor(Pool.INDEX_LIGHT, governor.ceilings.index_light)  # a halving would show
 
     def test_limit_reads_the_live_registry(self) -> None:
         governor = self._governor(DownstreamFeedback(), ManualClock())

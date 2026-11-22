@@ -3218,11 +3218,13 @@ class TestConsumeLoop:
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
             with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
-                with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                with patch.object(
+                    consumer, "_IndexingRedisStreamsConsumer__wait_for_finish", new_callable=AsyncMock
+                ) as wait_for_finish:
                     await consumer._consume_loop()
 
-        # Backpressure engaged on first iteration -> sleep(0.5)
-        mock_sleep.assert_any_call(0.5)
+        # Backpressure engaged on the first iteration -> it waits for a finish, at most the backpressure wait
+        wait_for_finish.assert_awaited_once_with(indexing_consumer_module._BACKPRESSURE_WAIT_SECONDS)
 
     @pytest.mark.asyncio
     async def test_backpressure_flag_toggles(self, consumer):
@@ -3251,7 +3253,12 @@ class TestConsumeLoop:
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
             with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
-                with patch("asyncio.sleep", new_callable=AsyncMock):
+                with (
+                    patch("asyncio.sleep", new_callable=AsyncMock),
+                    patch.object(
+                        consumer, "_IndexingRedisStreamsConsumer__wait_for_finish", AsyncMock(return_value=False)
+                    ),
+                ):
                     await consumer._consume_loop()
 
     @pytest.mark.asyncio
@@ -3439,7 +3446,7 @@ class TestWaitOutBackpressure:
     @pytest.mark.asyncio
     async def test_not_paused_returns_immediately(self, consumer):
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = False
+        coordinator.pause_remaining.return_value = 0.0
         consumer.backpressure_coordinator = coordinator
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -3453,13 +3460,12 @@ class TestWaitOutBackpressure:
         returning — this is what actually stops XREADGROUP from running."""
         coordinator = MagicMock()
         coordinator.paused_services = frozenset({"ParsingService"})
-        coordinator.pause_remaining.return_value = 3.0
-        paused_calls = [True, True, False]
-        coordinator.is_paused.side_effect = lambda: paused_calls.pop(0)
+        slept: list[float] = []
+        coordinator.pause_remaining.side_effect = lambda **_: 0.0 if len(slept) >= 2 else 3.0
         consumer.backpressure_coordinator = coordinator
         consumer.running = True
 
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("asyncio.sleep", new_callable=AsyncMock, side_effect=slept.append) as mock_sleep:
             await consumer._wait_out_backpressure()
 
         assert mock_sleep.await_count == 2
@@ -3473,7 +3479,6 @@ class TestWaitOutBackpressure:
         coordinator = MagicMock()
         coordinator.paused_services = frozenset({"ParsingService"})
         coordinator.pause_remaining.return_value = 300.0
-        coordinator.is_paused.return_value = True
         consumer.backpressure_coordinator = coordinator
         consumer.running = True
 

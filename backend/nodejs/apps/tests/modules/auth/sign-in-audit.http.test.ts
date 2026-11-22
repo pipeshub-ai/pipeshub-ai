@@ -65,6 +65,8 @@ import { createMockRedisService } from '../../helpers/mock-redis';
 import { useCommunitySignInLists } from '../../helpers/sign-in-lists';
 import { stubGoogleIdTokenCheck } from '../../helpers/google-id-token';
 import { GOOGLE_SIGN_IN_FAILED } from '../../../src/modules/auth/utils/googleIdTokenValidation';
+import { registerUpstreams } from '../../../src/libs/http/upstream-call';
+import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
 
 const JWT_SECRET = 'sign-in-audit-jwt-secret';
 const SCOPED_SECRET = 'sign-in-audit-scoped-secret';
@@ -262,6 +264,7 @@ describe('auth audit lines (HTTP)', function () {
     };
     const events = { start: async () => undefined, stop: async () => undefined, publishEvent: async () => undefined };
     const config = { jwtSecret: JWT_SECRET, scopedJwtSecret: SCOPED_SECRET, cmBackend: 'http://cm', connectorBackend: 'http://connector.test', frontendUrl: 'http://app', iamBackend: IAM_BACKEND, maxAuthRequestsPerMinute, rsAvailable: 'false' };
+    registerAppUpstreams(config as never);
     const logger = Logger.getInstance({ service: 'UserAccountController' });
     const controller = new UserAccountController(
       ...([config, iamProxy, mailService, sessionService, configService, logger, new JitProvisioningService(logger, events as any), events] as unknown as ConstructorParameters<typeof UserAccountController>),
@@ -392,6 +395,7 @@ describe('auth audit lines (HTTP)', function () {
 
   afterEach(async () => {
     sinon.restore();
+    registerUpstreams({});
     nock.cleanAll();
     root().level = savedLevel;
     delete process.env.TURNSTILE_SECRET_KEY;

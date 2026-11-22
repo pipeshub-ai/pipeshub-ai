@@ -220,8 +220,11 @@ describe('notification/service/notification.consumer', () => {
           await mockConsumer.consume.firstCall.args[0]({ value: { ...event, _id: 'fixed-id', recipientUserIds: [user, other] } });
           expect(insertMany.called).to.be.false;
           expect(mockNotificationService.sendToUser.called).to.be.false;
-          expect(mockLogger.error.calledOnce).to.be.true;
-          expect(mockLogger.error.firstCall.args[1].error).to.equal('Notification event refused');
+          // the producer's fault: one WARNING with the error, never the event's value
+          expect(mockLogger.error.called).to.be.false;
+          expect(mockLogger.warn.calledOnce).to.be.true;
+          expect(mockLogger.warn.firstCall.args[1].error.message).to.equal('Notification event refused');
+          expect(mockLogger.warn.firstCall.args[1]).to.not.have.property('messageValue');
           expect(handler.calledOnce).to.be.true;
           expect(refused.calledOnceWithExactly({ reason: 'id_with_many_recipients' })).to.be.true;
         });

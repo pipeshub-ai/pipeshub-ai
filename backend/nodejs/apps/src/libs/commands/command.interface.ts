@@ -4,6 +4,7 @@ import {
   HEADER_REQUEST_ID,
   HEADER_MCP_RELAY,
 } from "../context/request-context";
+import { checkUpstreamUrl, isUpstreamRefusal } from '../http/upstream-call';
 
 export interface ICommand<T> {
   execute(): Promise<T>;
@@ -41,15 +42,9 @@ export abstract class BaseCommand<T> implements ICommand<T> {
   }
 
   /**
-   * Build the full URL including query parameters, with SSRF validation.
-   *
-   * User-controlled path segments (e.g. `agentKey`, `conversationId`) are
-   * interpolated into the URI string by callers.  This method validates the
-   * result before it reaches `fetch()`:
-   *
-   *  - Must be a valid, absolute URL (`new URL()` will throw otherwise).
-   *  - Protocol must be `http:` or `https:`.
-   *  - Must not contain embedded credentials (blocks `http://x@evil.com/` tricks).
+   * The full URL including query parameters, refused unless it may be sent (`checkUpstreamUrl`: http(s),
+   * no credentials, a registered PipesHub service). Checked here too, so a refusal fails before the retry
+   * loop instead of being retried.
    */
   protected buildUrl(): string {
     let raw = this.uri;
@@ -65,19 +60,7 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       ).toString();
       raw = `${this.uri}?${queryString}`;
     }
-
-    const parsed = new URL(raw);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new InternalServerError(
-        `Blocked request with disallowed protocol: ${parsed.protocol}`,
-      );
-    }
-    if (parsed.username || parsed.password) {
-      throw new InternalServerError(
-        'Blocked request: URL must not contain embedded credentials',
-      );
-    }
-    return parsed.href;
+    return checkUpstreamUrl(raw);
   }
 
   protected sanitizeBody(body: any): any {
@@ -147,6 +130,10 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       } catch (error) {
         // A caller that aborted a request is not waiting for another try.
         if ((error as { name?: string } | null)?.name === 'AbortError') {
+          throw error;
+        }
+        // A refused destination answers the same every time, and a refused redirect follows a request that was sent.
+        if (isUpstreamRefusal(error)) {
           throw error;
         }
         attempt++;
