@@ -3606,6 +3606,22 @@ class TestGroupMembersAreHeldByGroupId:
         assert await written({"type": "group", "parameter": "Nobody"}) == {(EntityType.GROUP, "unresolved-group-name:Nobody")}
 
     @pytest.mark.asyncio
+    async def test_an_empty_group_list_read_in_full_writes_the_level_group_of_a_name_only_holder(self) -> None:
+        """Jira lists no group at all: the name names no group, so the stored level group is written without that grant."""
+        c = _connector()
+        c._fetch_groups = AsyncMock(return_value=([], False))
+        c.notify = AsyncMock()
+        assert await c._sync_user_groups([self.REP]) == {}
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        c.data_entities_processor.note_kept_record_group = AsyncMock()
+        await c._write_level_groups(PROJECT_ID, "PROJ", _present({"10102": [{"type": "group", "parameter": "Alpha"}]}),
+                                    ["10102"], {})
+        c.data_entities_processor.note_kept_record_group.assert_not_awaited()
+        (group, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert group.external_group_id == "level:p-1:10102"
+        assert {(p.entity_type, p.external_id) for p in grants} == {(EntityType.GROUP, "unresolved-group-name:Alpha")}
+
+    @pytest.mark.asyncio
     async def test_a_group_list_not_read_in_full_keeps_the_stored_level_group_of_a_name_only_holder(self) -> None:
         """No name resolves while the group list is cut short: the stored record group keeps its grant to the real group, rather
         than being written with a grant to no group."""

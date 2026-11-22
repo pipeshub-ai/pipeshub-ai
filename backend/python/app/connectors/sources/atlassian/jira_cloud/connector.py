@@ -3842,6 +3842,7 @@ class JiraConnector(BaseConnector):
                 return None
             if not groups:
                 self.logger.info("ℹ️ No groups found in Jira")
+                self._group_names_read = True  # read in full: no name resolves because there is no group
                 return {}
 
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
