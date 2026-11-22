@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.output_parsers import PydanticOutputParser
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.modules.parsers.excel.prompt_template import (
     TableEnrichment,
@@ -607,3 +607,66 @@ def test_a_typed_dict_schema_goes_out_as_given() -> None:
     llm.__class__ = type(_openai(model="gpt-4.1"))
     streaming._apply_structured_output(llm, _Typed)
     assert llm.with_structured_output.call_args.args[0] is _Typed
+
+
+# --- A runaway number that also used up the cap is a runaway, not a cut-off ---------------
+
+_CAPPED_DIGITS = "1" * 5000
+
+
+@pytest.mark.asyncio
+async def test_a_capped_runaway_first_reply_is_not_followed_up() -> None:
+    sent: list[object] = []
+    body = '{"summary": "", "headers": [], "header_row_count": ' + _CAPPED_DIGITS
+    with _cut_off_model(sent, body):
+        result = await enrich_table_grid(_gemini(model="gemini-3.8-flash"), GRID, logger=logging.getLogger("t"))
+    assert len(sent) == 1
+    assert result.failed and result.degraded
+
+
+@pytest.mark.asyncio
+async def test_a_capped_runaway_row_batch_is_not_split(caplog: pytest.LogCaptureFixture) -> None:
+    rows = [{"Name": f"n{i}", "Age": str(i)} for i in range(4 * table_enrichment.MIN_SPLIT_ROWS)]
+    sent: list[object] = []
+    body = '{"descriptions": [{"key": "' + row_keys(rows)[0] + '", "description": "x"}], "n": ' + _CAPPED_DIGITS
+    with _cut_off_model(sent, body), caplog.at_level(logging.WARNING):
+        texts = await table_enrichment.describe_row_dicts(
+            _gemini(model="gemini-3.8-flash"), rows, "s", logging.getLogger("t")
+        )
+    assert len(sent) == 1
+    assert texts == [f"Name: n{i}, Age: {i}" for i in range(len(rows))]
+
+
+@pytest.mark.asyncio
+async def test_a_capped_runaway_without_the_structured_wrapper_is_a_runaway(monkeypatch: pytest.MonkeyPatch) -> None:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    def _no_wrapper(*_a: object, **_kw: object):  # noqa: ANN202
+        raise NotImplementedError
+
+    monkeypatch.setattr(ChatGoogleGenerativeAI, "with_structured_output", _no_wrapper)
+    sent: list[object] = []
+    with _cut_off_model(sent, '{"summary": "s", "header_row_count": ' + _CAPPED_DIGITS), pytest.raises(
+        streaming.OversizedNumberError
+    ):
+        await streaming.invoke_with_structured_output_and_reflection(
+            _gemini(model="gemini-3.8-flash"), [("user", "x")], TableSummaryHeaders, 1,
+            max_output_tokens=900, raise_oversized_number=True,
+        )
+    assert len(sent) == 1
+
+
+# --- Stripping number bounds keeps property names ------------------------------------------
+
+
+class _NamedLikeBounds(BaseModel):
+    maximum: int = Field(ge=0, le=9)
+    minimum: int = 0
+    multipleOf: int = 0  # a field named like the keyword
+
+
+def test_bounds_are_dropped_but_fields_named_like_them_stay() -> None:
+    sent = streaming._without_number_bounds(_NamedLikeBounds).model_json_schema()
+    assert set(sent["properties"]) == {"maximum", "minimum", "multipleOf"}
+    assert sent["required"] == ["maximum"]
+    assert not {"minimum", "maximum"} & set(sent["properties"]["maximum"])

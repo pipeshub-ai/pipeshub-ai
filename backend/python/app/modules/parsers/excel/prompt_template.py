@@ -35,9 +35,11 @@ table_summary_prompt = ChatPromptTemplate.from_messages(
 )
 
 # A model can run a field on until its output limit: an integer tens of thousands of digits
-# long has been seen in ``header_row_count``. Its range goes out in the schema as
-# minimum/maximum, which Gemini, OpenAI and Anthropic structured output all accept, and is
-# enforced here leniently, so one bad field never costs the whole answer. Strings are bounded
+# long has been seen in ``header_row_count``. Its range is in the schema as minimum/maximum:
+# Gemini gets them as they are, and Anthropic's SDK moves them into the field's description.
+# OpenAI and Azure OpenAI requests go without them (``_without_number_bounds`` in
+# ``app/utils/streaming.py``), because a strict schema for a fine-tuned model refuses them.
+# The range is enforced here leniently either way, so one bad field never costs the whole answer. Strings are bounded
 # by the callers' output-token cap, not here: strict OpenAI schemas do not document maxLength,
 # and cutting a long row description would lose real content.
 MAX_HEADER_ROW_COUNT = 1

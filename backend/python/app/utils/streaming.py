@@ -1050,14 +1050,26 @@ async def call_aiter_llm_stream_simple(
 _NUMBER_BOUNDS = ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf")
 
 
+#: Keys whose value maps names to schemas: a name there is a field, never a keyword.
+_SCHEMA_NAME_MAPS = ("properties", "$defs", "definitions", "patternProperties")
+
+
 def _drop_number_bounds(node: Any) -> None:  # noqa: ANN401 - any JSON schema node
-    if isinstance(node, dict):
-        for key in _NUMBER_BOUNDS:
-            node.pop(key, None)
-        for value in node.values():
-            _drop_number_bounds(value)
-    elif isinstance(node, list):
+    """Removes number-bound keywords from every schema object in *node*, keeping field names."""
+    if isinstance(node, list):
         for value in node:
+            _drop_number_bounds(value)
+        return
+    if not isinstance(node, dict):
+        return
+    for key in _NUMBER_BOUNDS:
+        if isinstance(node.get(key), (int, float)) and not isinstance(node.get(key), bool):
+            del node[key]
+    for key, value in node.items():
+        if key in _SCHEMA_NAME_MAPS and isinstance(value, dict):
+            for schema in value.values():
+                _drop_number_bounds(schema)
+        else:
             _drop_number_bounds(value)
 
 
@@ -1287,15 +1299,30 @@ def _capped_reply(result: Any, *, check_message: bool) -> Any:  # noqa: ANN401 -
     """
     if not (isinstance(result, dict) and "raw" in result and "parsed" in result):
         if check_message and isinstance(result, BaseMessage) and is_truncated(result):
+            _raise_oversized_number(result)
             raise TruncatedReplyError("the reply reached its output-token limit")
         return result
+    error = result.get("parsing_error")
+    # A runaway number often runs on until the cap: it is a runaway, not an ordinary cut-off.
+    if error is not None and _is_oversized_number(error):
+        raise error
     if is_truncated(result.get("raw")):
         raise TruncatedReplyError("the reply reached its output-token limit")
-    error = result.get("parsing_error")
     if error is not None:
         raise error
     parsed = result.get("parsed")
     return parsed if parsed is not None else result.get("raw")
+
+
+def _raise_oversized_number(message: BaseMessage) -> None:
+    """Raises the parser's ``ValueError`` when a cut-off message's JSON stops inside a number too long to read."""
+    try:
+        json.loads(cleanup_content(coerce_message_content_to_text(message.content)))
+    except ValueError as exc:
+        if _is_oversized_number(exc):
+            raise
+    except Exception:  # any other failure is an ordinary cut-off reply
+        pass
 
 
 def answer_error_class(exc: BaseException) -> str | None:
