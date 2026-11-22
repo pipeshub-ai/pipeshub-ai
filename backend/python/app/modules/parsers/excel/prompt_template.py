@@ -34,6 +34,33 @@ table_summary_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
+# A model can run a field on until its output limit: an integer tens of thousands of digits
+# long has been seen in ``header_row_count``. Its range goes out in the schema as
+# minimum/maximum, which Gemini, OpenAI and Anthropic structured output all accept, and is
+# enforced here leniently, so one bad field never costs the whole answer. Strings are bounded
+# by the callers' output-token cap, not here: strict OpenAI schemas do not document maxLength,
+# and cutting a long row description would lose real content.
+MAX_HEADER_ROW_COUNT = 1
+
+
+def _header_row_count(value: Any) -> Any:  # noqa: ANN401
+    """0 or 1. Any other answer reads as 0 (no header row), as the callers already read it.
+
+    A string is converted only when it is a few digits long: ``int()`` of a model's string
+    is never unbounded.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        value = int(text) if text.isascii() and text.isdigit() and len(text) <= 3 else 0
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if not isinstance(value, int) or not 0 <= value <= MAX_HEADER_ROW_COUNT:
+        return 0
+    return value
+
+
 class KeyedRowDescription(BaseModel):
     """One description, addressed by the opaque key the row carried in the prompt."""
 
@@ -81,10 +108,11 @@ class TableEnrichment(BaseModel):
 
     summary: str = ""
     headers: list[str] = Field(default_factory=list)
-    header_row_count: int = 0
+    header_row_count: int = Field(default=0, ge=0, le=MAX_HEADER_ROW_COUNT)
     descriptions: list[KeyedRowDescription] = Field(default_factory=list)
 
     _tolerant = field_validator("descriptions", mode="before")(_keep_well_formed_descriptions)
+    _header_rows = field_validator("header_row_count", mode="before")(_header_row_count)
 
 
 class TableSummaryHeaders(BaseModel):
@@ -92,7 +120,9 @@ class TableSummaryHeaders(BaseModel):
 
     summary: str = ""
     headers: list[str] = Field(default_factory=list)
-    header_row_count: int = 0
+    header_row_count: int = Field(default=0, ge=0, le=MAX_HEADER_ROW_COUNT)
+
+    _header_rows = field_validator("header_row_count", mode="before")(_header_row_count)
 
 
 class TableHeaders(BaseModel):

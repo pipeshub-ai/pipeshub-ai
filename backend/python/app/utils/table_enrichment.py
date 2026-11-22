@@ -95,6 +95,24 @@ MIN_RETRY_CALLS = 4
 #: One reflection per call, for an answer that did not parse; the old count reflection is gone
 #: because keys make a wrong count harmless.
 _REFLECTIONS = 1
+#: Output-token caps of the first call and the summary-only call. A reply needs a summary, one
+#: short name per column and (first call only) one description per row; a model that runs a
+#: field on would otherwise write until the provider's own limit, tens of thousands of tokens.
+#: A cut-off first reply only means its rows are described in batches; a cut-off summary reply
+#: leaves the plain summary. Row batches are not capped here.
+_CAP_BASE_TOKENS = 768
+_CAP_TOKENS_PER_COLUMN = 24
+_CAP_TOKENS_PER_ROW = 96
+FIRST_CALL_MAX_OUTPUT_TOKENS = 8192
+SUMMARY_CALL_MAX_OUTPUT_TOKENS = 2048
+
+
+def _output_cap(rows: int, columns: int, ceiling: int) -> int:
+    return min(ceiling, _CAP_BASE_TOKENS + _CAP_TOKENS_PER_COLUMN * columns + _CAP_TOKENS_PER_ROW * rows)
+
+
+def _width(rows: Sequence[Sequence[str]]) -> int:
+    return max((len(row) for row in rows), default=0)
 
 
 class _ModelCallFailed(Exception):
@@ -644,7 +662,8 @@ async def _first_call(
         rendered=_rendered(messages),
         params={"flow": _FLOW_COMBINED, "count": len(send_batch)},
         call=lambda: invoke_with_structured_output_and_reflection(
-            llm, messages, TableEnrichment, _REFLECTIONS, raise_call_errors=True
+            llm, messages, TableEnrichment, _REFLECTIONS, raise_call_errors=True,
+            max_output_tokens=_output_cap(len(send_batch), _width(send_batch), FIRST_CALL_MAX_OUTPUT_TOKENS),
         ),
         encode=lambda enrichment: enrichment.model_dump(),
         decode=_strict_decode_keyed(TableEnrichment),
@@ -670,7 +689,8 @@ async def _summary_and_headers_call(
         rendered=_rendered(messages),
         params={"flow": _FLOW_SUMMARY, "count": len(sample)},
         call=lambda: invoke_with_structured_output_and_reflection(
-            llm, messages, TableSummaryHeaders, _REFLECTIONS, raise_call_errors=True
+            llm, messages, TableSummaryHeaders, _REFLECTIONS, raise_call_errors=True,
+            max_output_tokens=_output_cap(0, _width(sample), SUMMARY_CALL_MAX_OUTPUT_TOKENS),
         ),
         encode=lambda answer: answer.model_dump(),
         decode=TableSummaryHeaders.model_validate,

@@ -118,3 +118,98 @@ async def test_a_table_keeps_its_rows_when_the_summary_reply_runs_away(
     # Reported once, as an unusable reply, not as a failed call.
     assert not [r for r in caplog.records if "call failed" in r.getMessage()]
     assert len([r for r in caplog.records if "too long" in r.getMessage()]) == 1
+
+
+# --- The runaway itself: a bounded schema and a capped reply -----------------------------
+
+
+@pytest.mark.parametrize("schema", [TableSummaryHeaders, TableEnrichment])
+def test_the_header_row_count_goes_out_bounded(schema: type[BaseModel]) -> None:
+    field = schema.model_json_schema()["properties"]["header_row_count"]
+    assert (field["minimum"], field["maximum"]) == (0, 1)
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [(1, 1), (0, 0), (True, 1), ("1", 1), (1.0, 1), (7, 0), (-1, 0), pytest.param("1" * 5000, 0, id="runaway-digits"), pytest.param("²", 0, id="non-ascii-digit"), (None, 0)],
+)
+def test_an_out_of_range_count_reads_as_no_header_row(answer: object, expected: int) -> None:
+    for schema in (TableSummaryHeaders, TableEnrichment):
+        assert schema.model_validate({"header_row_count": answer}).header_row_count == expected
+
+
+def _gemini(**kwargs: object):  # noqa: ANN202
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    return ChatGoogleGenerativeAI(model="gemini-test", google_api_key="offline", **kwargs)
+
+
+def test_the_cap_is_set_on_a_copy_of_the_model() -> None:
+    from langchain_anthropic import ChatAnthropic
+    from langchain_openai import ChatOpenAI
+
+    gemini = _gemini()
+    capped = streaming.with_output_cap(gemini, 2048)
+    assert capped.max_output_tokens == 2048
+    assert gemini.max_output_tokens is None
+    # Reasoning counts against the same limit, so a reasoning model gets an allowance on top.
+    assert streaming.with_output_cap(_gemini(reasoning_effort="low"), 2048).max_output_tokens == (
+        2048 + streaming.REASONING_OUTPUT_RESERVE
+    )
+    assert streaming.with_output_cap(ChatOpenAI(model="m", api_key="offline"), 2048).max_tokens == 2048
+    thinking = ChatAnthropic(
+        model="m", api_key="offline", max_tokens=64000, thinking={"type": "enabled", "budget_tokens": 3000}
+    )
+    # Anthropic requires max_tokens above the thinking budget.
+    assert streaming.with_output_cap(thinking, 2048).max_tokens == 5048
+    # A lower limit of the model's own stands; an unknown model is left alone.
+    assert streaming.with_output_cap(_gemini(max_output_tokens=1000), 2048) is None
+    assert streaming.with_output_cap(MagicMock(), 2048) is None
+    assert streaming.with_output_cap(gemini, None) is None
+
+
+@pytest.mark.asyncio
+async def test_table_calls_carry_an_output_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    caps: list[object] = []
+
+    async def _invoke(_llm: object, _messages: object, schema: type[BaseModel], *_a: object, **kw: object):  # noqa: ANN202
+        caps.append(kw.get("max_output_tokens"))
+
+    monkeypatch.setattr(table_enrichment, "invoke_with_structured_output_and_reflection", _invoke)
+    await enrich_table_grid(MagicMock(), GRID, logger=logging.getLogger("t"))
+    assert len(caps) == 2
+    first, summary = caps
+    assert isinstance(first, int) and 0 < first <= table_enrichment.FIRST_CALL_MAX_OUTPUT_TOKENS
+    assert isinstance(summary, int) and 0 < summary <= table_enrichment.SUMMARY_CALL_MAX_OUTPUT_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_a_reply_cut_off_at_the_cap_degrades_once_and_is_not_asked_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A real Gemini model with its transport stubbed: every reply stops at the cap mid-JSON."""
+    from unittest.mock import patch
+
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    sent_caps: list[object] = []
+
+    async def _cut_off(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN202
+        sent_caps.append(self.max_output_tokens)
+        # LangChain's partial JSON parser would repair this into {"summary": "Ages of"}.
+        message = AIMessage(content='{"summary": "Ages of', response_metadata={"finish_reason": "MAX_TOKENS"})
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+    with patch.object(ChatGoogleGenerativeAI, "_agenerate", _cut_off), caplog.at_level(logging.WARNING):
+        result = await enrich_table_grid(_gemini(), GRID, logger=logging.getLogger("t"))
+
+    # The first call and the summary follow-up, each once, each capped.
+    assert len(sent_caps) == 2
+    assert all(isinstance(cap, int) and cap <= table_enrichment.FIRST_CALL_MAX_OUTPUT_TOKENS for cap in sent_caps)
+    assert result.failed and result.degraded
+    assert result.summary != "Ages of"
+    cut = [r for r in caplog.records if "output cap" in r.getMessage()]
+    assert len(cut) == 2
+    assert not [r for r in caplog.records if "call failed" in r.getMessage()]

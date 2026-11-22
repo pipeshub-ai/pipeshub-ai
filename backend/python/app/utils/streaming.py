@@ -46,6 +46,7 @@ from app.utils.citations import (
 )
 from app.utils.error_class import log_failure
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.is_truncated import is_truncated
 from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
@@ -1115,6 +1116,68 @@ def _is_oversized_number(exc: BaseException) -> bool:
     return isinstance(exc, ValueError) and "integer string conversion" in str(exc)
 
 
+class TruncatedReplyError(OutputParserException):
+    """The reply stopped at the per-call output cap: what parsed of it is incomplete."""
+
+
+#: Output tokens added to a per-call cap for a model set up to reason, whose reasoning counts
+#: against the same limit; without it the visible reply would be cut off before it starts.
+REASONING_OUTPUT_RESERVE = 4096
+
+
+def _reasoning_reserve(llm: BaseChatModel) -> int:
+    thinking = getattr(llm, "thinking", None)
+    if isinstance(thinking, Mapping):
+        if thinking.get("type") == "disabled":
+            thinking = None
+        elif isinstance(thinking.get("budget_tokens"), int):
+            # Anthropic requires max_tokens above the thinking budget.
+            return thinking["budget_tokens"]
+    for attr in ("reasoning_effort", "reasoning", "thinking_budget", "thinking_config"):
+        if getattr(llm, attr, None) not in (None, 0, "none", "minimal"):
+            return REASONING_OUTPUT_RESERVE
+    return REASONING_OUTPUT_RESERVE if thinking else 0
+
+
+def with_output_cap(llm: BaseChatModel, max_output_tokens: int | None) -> BaseChatModel | None:
+    """A copy of ``llm`` whose replies stop after ``max_output_tokens`` (plus any reasoning
+    allowance), or None for a model this does not know how to cap.
+
+    The model's own limit wins when it is lower. Bedrock is left alone: its thinking budget
+    lives in request fields that a cap here could fall below.
+    """
+    if not max_output_tokens or max_output_tokens <= 0:
+        return None
+    if isinstance(llm, ChatGoogleGenerativeAI):
+        field = "max_output_tokens"
+    elif isinstance(llm, (ChatOpenAI, AzureChatOpenAI, ChatAnthropic, ChatMistralAI)):
+        field = "max_tokens"
+    else:
+        return None
+    cap = max_output_tokens + _reasoning_reserve(llm)
+    current = getattr(llm, field, None)
+    if isinstance(current, int) and 0 < current <= cap:
+        return None
+    try:
+        return llm.model_copy(update={field: cap})
+    except Exception as exc:
+        logger.debug("Output cap not applied to %s: %s", type(llm).__name__, type(exc).__name__)
+        return None
+
+
+def _capped_reply(result: Any) -> Any:  # noqa: ANN401 - whatever the structured model returns
+    """Unwraps an ``include_raw`` result, raising for a cut-off reply or one that did not parse."""
+    if not (isinstance(result, dict) and "raw" in result and "parsed" in result):
+        return result
+    if is_truncated(result.get("raw")):
+        raise TruncatedReplyError("the reply reached its output-token cap")
+    error = result.get("parsing_error")
+    if error is not None:
+        raise error
+    parsed = result.get("parsed")
+    return parsed if parsed is not None else result.get("raw")
+
+
 def answer_error_class(exc: BaseException) -> str | None:
     """``bad_request`` for a model answer that did not fit the schema; None lets ``classify_error`` decide."""
     return "bad_request" if isinstance(exc, _ANSWER_PARSE_ERRORS) or _is_oversized_number(exc) else None
@@ -1163,12 +1226,16 @@ async def invoke_with_structured_output_and_reflection(
     prompt_cache: CacheStrategy | None = None,
     on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
     raise_unavailable: bool = False,
+    max_output_tokens: int | None = None,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
 
     With ``raise_unavailable`` a provider outage raises ``LLMUnavailableError`` instead of
     returning None, for callers that must tell an outage from output they cannot use.
+
+    With ``max_output_tokens`` each reply is capped (``with_output_cap``); a reply cut off
+    at the cap is not usable, so the call returns None after one warning and is not retried.
 
     Args:
         llm: The LangChain chat model to use
@@ -1198,7 +1265,13 @@ async def invoke_with_structured_output_and_reflection(
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
     """
-    llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+    capped = with_output_cap(llm, max_output_tokens)
+    # The raw reply carries the stop reason, which tells a cut-off reply from a whole one.
+    llm_with_structured_output = (
+        _apply_structured_output(capped, schema=schema, include_raw=True)
+        if capped is not None
+        else _apply_structured_output(llm, schema=schema)
+    )
     provider = provider_key(llm)
     # Use the base llm: structured-output wrappers drop constructor callbacks;
     # get_llm_invoke_config reattaches them with Opik.
@@ -1214,11 +1287,11 @@ async def invoke_with_structured_output_and_reflection(
         # resend drops it, so the loop ends.
         while True:
             try:
-                return await _ainvoke_throttled(
+                return _capped_reply(await _ainvoke_throttled(
                     llm_with_structured_output, without_cache_markers(request, dropped) if dropped else request,
                     config=invoke_config, provider=provider, call_timeout=call_timeout,
                     call_kwargs={name: value for name, value in kwargs.items() if name not in dropped},
-                )
+                ))
             except Exception as exc:
                 refused = refused_cache_params(exc, sent - dropped)
                 if not refused:
@@ -1251,6 +1324,13 @@ async def invoke_with_structured_output_and_reflection(
             # again: there is no reply text to show the model, and a second runaway reply
             # costs a full output limit again. The message names only the digit count.
             logger.warning("The %s reply holds a number too long to read (%s); the reply is discarded", schema.__name__, e)
+            return None
+        if isinstance(e, TruncatedReplyError):
+            # Not retried: the same request would stop at the same cap.
+            logger.warning(
+                "The %s reply stopped at its %s-token output cap; the reply is discarded",
+                schema.__name__, max_output_tokens,
+            )
             return None
         if raise_call_errors:
             raise
@@ -1359,6 +1439,13 @@ Respond only with valid JSON that matches the schema."""
             except Exception as reflection_error:
                 if raise_unavailable and isinstance(reflection_error, LLMUnavailableError):
                     raise
+                if isinstance(reflection_error, TruncatedReplyError) or _is_oversized_number(reflection_error):
+                    # Asking again would stop at the same cap, or run away again.
+                    logger.warning(
+                        "The %s reflection reply was cut off or holds a number too long to read; giving up",
+                        schema.__name__,
+                    )
+                    return None
                 recovered = _recover_structured_json_from_exception(reflection_error, schema)
                 if recovered is not None:
                     logger.info(
