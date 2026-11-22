@@ -92,6 +92,8 @@ def _module_assign(py_text: str, name: str) -> ast.expr | None:
     for n in ast.parse(py_text).body:
         if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in n.targets):
             return n.value
+        if isinstance(n, ast.AnnAssign) and n.value is not None and isinstance(n.target, ast.Name) and n.target.id == name:
+            return n.value
     return None
 
 
