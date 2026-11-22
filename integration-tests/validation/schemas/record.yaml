@@ -105,6 +105,9 @@ fields:
   id:
     required: false
     type: string
+  incarnation_id:
+    required: false
+    type: string
   indexing_status:
     required: false
     type: string

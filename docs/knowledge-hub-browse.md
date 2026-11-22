@@ -56,7 +56,7 @@ For a browse of `N` (`flatten=false`), in `get_knowledge_hub_connector_page_v3`:
 | --- | --- | --- |
 | 1 | The viewer, the start's admission and the chain-tops placed under `N` | unchanged |
 | 2 | `N`'s live hierarchy children of `N`'s App, less a group that carries access only (a Jira security level: never a row), each with its stub flag and whether a hiding group holds it or lies above it | `_kh_split_children_cypher`, under 1.7 KB, at most 3 `EXISTS` |
-| 3 | Which of the visible real children the check admits | the batch check |
+| 3 | Which of the visible real children the check admits. A child whose own hop up to `N` passes, where the check's walk from the App reaches `N`, is admitted by that walk without asking: the walk above `N` is read once for all of them, a level at a time like the check's own walks (`_kh_v3_reached`), and only their ids are read. Only the rest are asked, and the check reads their shared ancestry once as well (below) | `_kh_split_admitted_by_hop` (3.3 KB, 6 `EXISTS`), then the batch check |
 | 4 | Which stub children list something: the same question one level down, recursively, to the walks' hop cap | steps 2–3 for the stubs |
 | 5 | The listed ids: admitted visible children, stubs that list something, chain-tops placed under `N` | Python (`_kh_split_listed`) |
 | 6 | The page | the page statement, reading `$kh_listed` by id in place of the walk, and dropping any of them deleted or moved to another App since step 2 |
@@ -83,6 +83,14 @@ It is not needed for the cost: the check is a fixed statement already.
   child past the bound.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
 - **One request asks about a row once** (a memo shared by the listing and the arrows).
+- **The check reads siblings' ancestors once.** On Neo4j, when it is asked about more than one node, the batch check first decides its walk
+  from the App and its walk below a seed once for each parent of the asked nodes, and admits each node whose own hop up to that parent passes
+  (`_kh_v3_accessible_rows`; as sent 9.3 KB / 9 `EXISTS`, 12.0 KB / 23 with grants read from the nodes, 14.9 KB / 23 with cross-connector
+  grants past the list bound). Both walks are read a level at a time from the parent, as the check's own are (`_kh_v3_reached`: the parent
+  itself, then 1 to 49 levels above it, each node once), so no plan can start one at the App or at every seed of the App, and none reads
+  every route where nodes have two parents at many levels. A route out of a node through a parent is that hop plus at most 49
+  more, so this admits exactly what those two arms admit; every node it does not admit is asked of the full check, by every arm. A
+  5,000-file folder then reads the folder's ancestry once, not 5,000 times, for every caller that asks by node id (arrows, selections, and a browse's viewer reached only through a grant on the folder).
 - **A numbered page** is reached by reading the rows before it, 1,000 at a time (`kh_browse_skip_rows`), then the page. Those reads decide
   the listing (steps 1-5) once between them and skip step 7, since none of their rows is shown (`KH_SKIP_READS`, set by
   `KnowledgeHubService._walk_pages` for that request alone and keyed by the viewer's access). The page itself decides afresh, so page 50 costs

@@ -812,7 +812,7 @@ async def test_pg_a_forged_row_is_not_admitted(pg, monkeypatch) -> None:
         return (key,)
 
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
-    envelope.configure(keys, None, key)
+    envelope.configure(keys, key)
     try:
         old_a = _old_signed(pg.topic, int(time.time()) - 10 * 900, "a")
         old_b = _old_signed(pg.topic, int(time.time()) - 10 * 900, "b")
@@ -856,7 +856,7 @@ async def test_pg_a_forged_row_is_not_admitted(pg, monkeypatch) -> None:
         (copied,) = [x for x in await pg.queue.claim("h", [pg.topic], "c", 5, 30.0) if x.message_id == genuine.message_id]
         assert copied.admission_mac == genuine.admission_mac and not await admitted(copied, "h")
     finally:
-        envelope.configure(None, None, None)
+        envelope.configure(None)
 
 
 async def test_pg_the_statements_per_delivery_are_counted(pg) -> None:
