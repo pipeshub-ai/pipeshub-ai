@@ -799,7 +799,11 @@
       "collectionExists": "你已有名为“{{name}}”的集合。请换一个名称。"
     },
     "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。",
-    "sourcePreparing": "正在准备此来源… 其中的项目稍后将显示在这里。"
+    "sourcePreparing": "正在准备此来源… 其中的项目稍后将显示在这里。",
+    "selectionActionsNotice": "优先索引",
+    "selectionActionsNoticeEnterprise": "选择先为哪些已选项目建立索引属于企业版。",
+    "uploadExtrasNotice": "优先索引这些文件",
+    "uploadExtrasNoticeEnterprise": "选择先为哪些上传文件建立索引属于企业版。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -3895,7 +3899,9 @@
           "cancelled": "你取消了登录。",
           "signInFailed": "登录未完成。请重试。"
         }
-      }
+      },
+      "indexPriorityNotice": "为此连接器优先建立索引",
+      "indexPriorityNoticeEnterprise": "索引优先级属于企业版。"
     },
     "mcpServers": {
       "searchPlaceholder": "搜索 MCP 服务器...",

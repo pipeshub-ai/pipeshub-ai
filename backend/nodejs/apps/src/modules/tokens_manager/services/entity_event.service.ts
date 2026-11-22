@@ -70,18 +70,11 @@ export class EntitiesEventProducer {
       },
     };
 
-    try {
-      await this.producer.publish(this.topic, message);
-      this.logger.debug('broker.event.published', {
-        event_type: event.eventType,
-        topic: this.topic,
-      });
-    } catch (error) {
-      this.logger.error('broker.event.publish_failed', {
-        event_type: event.eventType,
-        topic: this.topic,
-        error,
-      });
-    }
+    // A failure is raised, not logged: the caller decides what a lost event means and its request logs it once.
+    await this.producer.publish(this.topic, message);
+    this.logger.debug('broker.event.published', {
+      event_type: event.eventType,
+      topic: this.topic,
+    });
   }
 }

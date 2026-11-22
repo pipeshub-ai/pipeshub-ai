@@ -343,10 +343,11 @@ class CodeGraphMixin(PgBase):
                     WHERE n.org_id = $1 AND n.coll = $2 AND n.doc->>$3 ~>=~ $4::text AND n.doc->>$3 ~<~ ($4::text || chr(1114111))
                     AND NOT EXISTS (SELECT 1 FROM unnest($6::text[], $7::text[]) f(k, v) WHERE n.doc->f.k IS DISTINCT FROM f.v::jsonb)
                 AND NOT EXISTS (SELECT 1 FROM jsonb_each($8::jsonb) f WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(f.value) x WHERE x = n.doc->f.key)) LIMIT $5""", org, collection, _field(field_name), prefix, limit, keys, vals, ins), transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("get_nodes_by_field_prefix failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_nodes_by_field_prefix")
             return []
         docs = [_doc(r["doc"]) for r in rows]
         if return_fields is not None:      # only these fields; _key, _id and id all name the stored id, and _id gains its collection
@@ -365,10 +366,11 @@ class CodeGraphMixin(PgBase):
                 WHERE n.org_id = $1 AND n.coll = $2 AND lower(n.doc->>$3) LIKE ANY($4::text[])
                 AND NOT EXISTS (SELECT 1 FROM unnest($6::text[], $7::text[]) f(k, v) WHERE n.doc->f.k IS DISTINCT FROM f.v::jsonb)
                 AND NOT EXISTS (SELECT 1 FROM jsonb_each($8::jsonb) f WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(f.value) x WHERE x = n.doc->f.key)) LIMIT $5""", org, collection, _field(field_name), pats, limit, keys, vals, ins), transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("search_nodes_by_field_terms failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="search_nodes_by_field_terms")
             return []
         return [_arango(_doc(r["doc"]), collection) for r in rows]
 
@@ -399,10 +401,11 @@ class CodeGraphMixin(PgBase):
                 WHERE n.org_id = $1 AND n.coll = $2 AND n.doc->$3 > to_jsonb($4::bigint)
                 AND NOT EXISTS (SELECT 1 FROM unnest($5::text[], $6::text[]) f(k, v) WHERE n.doc->f.k IS DISTINCT FROM f.v::jsonb)
                 AND NOT EXISTS (SELECT 1 FROM jsonb_each($7::jsonb) f WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(f.value) x WHERE x = n.doc->f.key))""", org, collection, _field(timestamp_field), since, keys, vals, ins), transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("get_nodes_updated_since failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_nodes_updated_since")
             return []
         docs = [_arango(_doc(r["doc"]), collection) for r in rows]
         return [{f: d.get("_key" if f == "_key" else f) for f in return_fields} for d in docs] if return_fields else docs
@@ -495,8 +498,9 @@ class CodeGraphMixin(PgBase):
                 SELECT e.from_coll, e.from_id, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.doc FROM graph.edges e
                   WHERE NOT $7::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4) l
                 WHERE l.rel = ANY($5::text[]) LIMIT $6""", org, _LINK_COLLS, node_collection, node_key, relationship_types, limit, out), transaction)
-        except Exception:
-            self.logger.exception("get_neighbors_by_relationship_types failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_neighbors_by_relationship_types")
             return []
         return [_neighbour(r, r["key"], r["coll"]) for r in rows]
 
@@ -524,10 +528,11 @@ class CodeGraphMixin(PgBase):
                         AND NOT ($9::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)) e
                     WHERE coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($5::text[]) LIMIT $6""",
                                                           org, _LINK_COLLS, node_collection, node_keys, relationship_types, limit, out, inn, both), transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("get_neighbors_for_nodes_by_relationship_types failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_neighbors_for_nodes_by_relationship_types")
             return []
         return [{"anchorKey": r["anchor"], "direction": r["dir"], **_neighbour(r, r["key"], r["coll"]),
                  **({"cursor": r["page_key"]} if paged else {})} for r in rows]
@@ -545,10 +550,11 @@ class CodeGraphMixin(PgBase):
                 AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(n.doc->'externalRefs') = 'array'
                     THEN n.doc->'externalRefs' END) r(v), unnest($6::text[]) p(v) WHERE starts_with(r.v, p.v))
                 ORDER BY n.id LIMIT $7""", org, _BLOCKS, org_id, connector_id, record_group_ids, prefixes, limit), transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("find_blocks_by_external_ref_prefix failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_blocks_by_external_ref_prefix")
             return []
         return [_arango(_doc(r["doc"]), _BLOCKS) for r in rows]
 
@@ -570,10 +576,11 @@ class CodeGraphMixin(PgBase):
                 AND (t.c = '' OR e.to_coll = t.c) AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))
                 AND NOT EXISTS (SELECT 1 FROM unnest($6::text[], $7::text[]) f(k, v) WHERE e.doc->f.k IS DISTINCT FROM f.v::jsonb)
                 AND NOT EXISTS (SELECT 1 FROM jsonb_each($8::jsonb) f WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(f.value) x WHERE x = e.doc->f.key))""", org, pcolls, ends, ids, kind, keys, vals, ins, want_from), transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("get_edges_by_target_keys failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_edges_by_target_keys")
             return []
         return [f"{r['coll']}/{r['key']}" for r in rows]
 
@@ -628,8 +635,9 @@ class CodeGraphMixin(PgBase):
                 LEFT JOIN graph.nodes t ON t.org_id = $1 AND t.coll = l.oc AND t.id = l.oi
               WHERE coalesce(l.doc->>'relationshipType', nullif(l.ekey, '')) = ANY($6::text[])
               GROUP BY 1, 2, 3, 4 LIMIT $7""", org, _LINK_COLLS, org_id, file_path_prefix, connector_id, relationship_types, limit, out, inn, both), transaction)
-        except Exception:
-            self.logger.exception("get_edge_rollup_by_file_prefix failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_edge_rollup_by_file_prefix")
             return []
         return [dict(r) for r in rows]
 
@@ -643,10 +651,11 @@ class CodeGraphMixin(PgBase):
                 FROM graph.nodes r LEFT JOIN graph.nodes c ON c.org_id = r.org_id AND c.coll = 'codeFiles' AND c.id = r.id
                 WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $2 AND r.id = ANY($3::text[])""",
                                                   org, org_id, record_ids), transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("get_file_paths_for_records failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_file_paths_for_records")
             return {}
         out: dict[str, CodeFileInfo] = {}
         for r in rows:
@@ -677,10 +686,10 @@ class CodeGraphMixin(PgBase):
                             WHERE c.org_id = $1 AND c.coll = 'blocks' AND c.id = e.from_id) ELSE e.from_id END, '') = ANY($9::text[]))
                 ORDER BY b.id COLLATE "C" LIMIT $10""", org, org_id, connector_id, kinds, record_ids, after_key, _LINK_COLLS, relations,
                                                       uncounted_caller_records or [], limit), transaction)
-        except Exception:
+        except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.exception("find_uncalled_blocks failed")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="find_uncalled_blocks")
             return [], None
         page = [_arango(_doc(r["doc"]), _BLOCKS) for r in rows]
         return page, (page[-1]["_key"] if len(page) == limit else None)

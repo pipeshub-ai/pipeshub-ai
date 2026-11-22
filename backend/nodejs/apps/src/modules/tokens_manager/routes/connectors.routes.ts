@@ -19,7 +19,6 @@ import { createHash } from 'node:crypto';
 import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
-import axiosRetry, { retryAfter } from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
@@ -36,8 +35,10 @@ import {
   ForbiddenError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import { withCause } from '../../../libs/errors/base.error';
+import { markClientSafe } from '../../../libs/errors/reader-friendly';
 import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../edition';
 import { AppConfig, loadAppConfig } from '../config/config';
 import { Logger } from '../../../libs/services/logger.service';
@@ -126,6 +127,25 @@ const logger = Logger.getInstance({
 const GOOGLE_CLIENT_NOT_CONFIGURED =
   'Google Workspace client id or secret is not configured';
 
+/** The sign-in code was used up by the exchange, so the reader starts the connect again rather than resending. */
+export const SYNC_NOT_STARTED_MESSAGE =
+  "We couldn't start syncing Google Workspace because PipesHub couldn't queue it. Nothing was synced. Connect Google Workspace again in a minute; if it keeps happening, ask your admin to check the services page.";
+
+/** Asks the sync service to start; a lost event is the request's failure (503), never a silent success. */
+const publishSyncStart = async (
+  eventService: EntitiesEventProducer,
+  event: Event,
+): Promise<void> => {
+  try {
+    await eventService.publishEvent(event);
+  } catch (error) {
+    throw withCause(
+      markClientSafe(new ServiceUnavailableError(SYNC_NOT_STARTED_MESSAGE)),
+      error,
+    );
+  }
+};
+
 /**
  * A configuration-manager call that did not answer 200. A 5xx's status is the cause, so the error line
  * classes it as the service's (`upstream_5xx`, `unavailable`, `timeout`); any other answer stays our
@@ -139,29 +159,6 @@ const failedCall = (
   response.statusCode !== undefined && response.statusCode >= 500
     ? withCause(new InternalServerError(message), { status: response.statusCode })
     : new InternalServerError(message);
-
-// A 429 whose Retry-After is longer than this goes straight back to the caller
-// with its Retry-After: waiting it out would hold the request open (a preview
-// would hang for the length of a source's rate limit).
-const MAX_RETRY_AFTER_MS = 5000;
-
-// Configure axios retry logic
-axiosRetry(axios, {
-  retries: 3,
-  retryDelay: axiosRetry.exponentialDelay,
-  retryCondition: (error) => {
-    if (
-      error.response?.status === 429 &&
-      retryAfter(error) > MAX_RETRY_AFTER_MS
-    ) {
-      return false;
-    }
-    return !!(
-      axiosRetry.isNetworkOrIdempotentRequestError(error) ||
-      (error.response && error.response.status >= 500)
-    );
-  },
-});
 
 // ============================================================================
 // Validation Schemas
@@ -1450,8 +1447,8 @@ export function createConnectorRouter(
           .filter((scope) => receivedScopes.includes(scope))
           .map((scope) => scopeToAppMap[scope]);
 
-        // Prepare event for sync service
-        await eventService.start();
+        // Prepare event for sync service. The producer is the container's shared one, connected at start-up and
+        // reconnected by publish itself: it is neither started nor stopped here.
         let event: Event;
 
         if (connector) {
@@ -1470,8 +1467,7 @@ export function createConnectorRouter(
             } as AppEnabledEvent,
           };
 
-          await eventService.publishEvent(event);
-          await eventService.stop();
+          await publishSyncStart(eventService, event);
           connector =
             (await connectorsConfig.enable(
               req.user.orgId as string,
@@ -1518,8 +1514,7 @@ export function createConnectorRouter(
             } as AppEnabledEvent,
           };
 
-          await eventService.publishEvent(event);
-          await eventService.stop();
+          await publishSyncStart(eventService, event);
 
           logger.info('Google Workspace connector created and enabled', {
             connector_config_id: connector._id,

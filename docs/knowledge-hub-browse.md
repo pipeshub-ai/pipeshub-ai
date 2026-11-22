@@ -56,7 +56,7 @@ For a browse of `N` (`flatten=false`), in `get_knowledge_hub_connector_page_v3`:
 | --- | --- | --- |
 | 1 | The viewer, the start's admission and the chain-tops placed under `N` | unchanged |
 | 2 | `N`'s live hierarchy children of `N`'s App, less a group that carries access only (a Jira security level: never a row), each with its stub flag and whether a hiding group holds it or lies above it | `_kh_split_children_cypher`, under 1.7 KB, at most 3 `EXISTS` |
-| 3 | Which of the visible real children the check admits | the batch check |
+| 3 | Which of the visible real children the check admits. A child whose own hop up to `N` passes, where the check's walk from the App reaches `N`, is admitted by that walk without asking: the walk above `N` is read once for all of them, a level at a time like the check's own walks (`_kh_v3_reached`), where the check reads it again for each. Only the rest are asked | `_kh_split_admitted_by_hop` (3.3 KB, 6 `EXISTS`), then the batch check |
 | 4 | Which stub children list something: the same question one level down, recursively, to the walks' hop cap | steps 2–3 for the stubs |
 | 5 | The listed ids: admitted visible children, stubs that list something, chain-tops placed under `N` | Python (`_kh_split_listed`) |
 | 6 | The page | the page statement, reading `$kh_listed` by id in place of the walk, and dropping any of them deleted or moved to another App since step 2 |
@@ -83,6 +83,11 @@ It is not needed for the cost: the check is a fixed statement already.
   child past the bound.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
 - **One request asks about a row once** (a memo shared by the listing and the arrows).
+- **A numbered page** is reached by reading the rows before it, 1,000 at a time (`kh_browse_skip_rows`), then the page. Those reads decide
+  the listing (steps 1-5) once between them and skip step 7, since none of their rows is shown (`KH_SKIP_READS`, set by
+  `KnowledgeHubService._walk_pages` for that request alone and keyed by the viewer's access). The page itself decides afresh, so page 50 costs
+  two decisions, not fifty, and lists only what the viewer may open when it is read
+  (`tests/integration/graph_db/test_kh_split_numbered_pages_real_neo4j.py`).
 
 Shortcuts, each bounded by the above:
 

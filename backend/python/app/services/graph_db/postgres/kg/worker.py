@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -156,6 +157,7 @@ class KgWorker:
     async def _verify_loop(self) -> None:
         """The periodic verify of the enforced connectors (``net.verify_due``), in a task of its own."""
         while not self._stop.is_set():
+            t0 = time.monotonic()
             try:
                 for org in await self._orgs():
                     await net.verify_due(self._db, org, self._verify_states, self._stop)
@@ -163,7 +165,7 @@ class KgWorker:
                 LOOP_FAILED.inc("verify")
                 logger.exception("kg verify iteration failed; continuing")
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self._stop.wait(), net.VERIFY_TICK_S)
+                await asyncio.wait_for(self._stop.wait(), net.verify_rest(time.monotonic() - t0))
 
     def _died(self, task: asyncio.Task) -> None:
         if not task.cancelled() and task.exception() is not None:

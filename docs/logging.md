@@ -592,6 +592,10 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   the error can quote the token URL's query or the provider's answer), a provider's `error=`, and an unknown connector
   (`reason=instance_not_found`). Once the caller is allowed the connector, the line carries `connector_id` and `connector_type`;
   a missing or unreadable OAuth configuration is then `misconfigured` (`reason=config_not_found`, `oauth_config_fetch_error`).
+  A callback that is not for the sign-in in progress (a stale or replayed state, a used code, or a code another callback
+  claimed: `OAuthStateError`) is `bad_request` at WARNING on both the connector and the toolset callback, as on the MCP
+  one; so are the connector callback's missing `code` or `state` (`reason=missing_parameters`) and a state it cannot
+  decode (`reason=invalid_state`, no text).
   A successful sign-in is that line with `outcome=success` and `has_refresh_token`. No field of the provider's token answer
   (scopes, `uid`, `account_id`, `team_id`, `token_type`) is logged: the route serves every connector and can't tell an opaque
   id from a login.
@@ -619,7 +623,12 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   shared exception (a shared MCP listing, a memoised lookup) each keep their line at their own level, and the stack prints once:
   when `error_class.logged_level(exc)` says it was already written at that level, the line is a `log_event` with the error fields.
 - Tool, MCP, OpenAPI and OAuth failures never log the error's text (`include_error_text=False`): a server's answer can quote the
-  arguments. A refused redirect logs only the target's host, and an ended MCP session only the cause's type. Nor a STDIO server's stderr: it can echo earlier calls' arguments and its environment. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field.
+  arguments. A refused redirect logs only the target's host, and an ended MCP session only the cause's type. Nor a STDIO server's stderr: it can echo earlier calls' arguments and its environment. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field. That text keeps the API's own words, which the model needs to correct its call. Before the model, the tool card, the
+  transcript and the trace get a failed output, `ToolExecutor` masks what it can recognise as a credential, on a best-effort
+  basis: known token shapes and `name: value` pairs in its text (`redact_secrets_in_text`), and the value under a
+  credential-named key in its data (`password`, `apiKey`: the same name rule). A credential with no known shape, outside
+  such a name, is not caught. A tool that answers a soft failure as a success builds its payload with `error_data(exc)`, which
+  masks its text the same way.
 - `mcp.connect.end` (like `llm_call.end`) is an operation record: it stays at INFO when it failed, and the layer that retries or
   gives up (`mcp.retry`, `mcp.discover.end`, `tool_call.end`) logs the severity.
 - `app.agents.mcp.failure.mcp_error_class` maps an MCP failure: `classify_error` first, then what its `MCPFailureReason` means; a
@@ -754,7 +763,7 @@ which every Postgres graph provider runs through) write one record per call that
 | `db.query.retry` | WARNING | `backend=neo4j`, `op`, `reason=connection_lost`, `error_type` |
 | `db.connect.failed`, `db.disconnect.failed`, `db.schema.failed`, `db.edge.failed` | `log_failure` | `backend`, `op` (schema or edge) |
 | `graph.provider.step_failed` | `log_failure` with `include_error_text=False`; an explicit level where the step says so (DEBUG for an expected fallback such as full-text search being unavailable); the PostgreSQL code-graph sweep's per-org line is a `log_event` at WARNING, with `error_class` and `error_type` and no stack, because the pass raises its first failure after the loop and that handler logs it | `op` (the provider method), `step` (snake_case: `departments_seed`, `kh_scope_page_enrichment`, `rollback`, `batch_delete`, ...; Neo4j schema setup names the statement group, such as `unique id constraints`, and adds `statement`, our own DDL), and the step's id fields (`connector_id`, `record_id`, `agent_id`, `kb_id`, `collection`, `target_org_id`, `attempt`) |
-| `graph.provider.failed` | `log_failure` with `include_error_text=False` | `op` (the provider method that answered its default instead of raising) |
+| `graph.provider.failed` | `log_failure` with `include_error_text=False`; DEBUG for Neo4j's edition read (`op=_supports_existence_constraints`: an edition that cannot be read is tried as Enterprise) | `op` (the provider method that answered its default instead of raising), and the id fields its old message named (`connector_id`, `record_id`, `agent_id`, `kb_id`, `collection`); `service_type` on ArangoDB `update_user_sync_state` |
 | `graph.provider.duplicates_removed` | WARNING | `op=ensure_pipeline_schema`, `removed` (stage states removed so their unique constraint could be created) |
 
 - **A graph provider that re-raises writes nothing.** A Neo4j, ArangoDB or PostgreSQL provider method whose handler re-raises
@@ -768,6 +777,14 @@ which every Postgres graph provider runs through) write one record per call that
   not the driver's (a row's validation, a `KeyError` naming a value), so the text is left out even when nothing stamped it.
   Where such a handler can also re-raise (`if raise_on_error: raise`), the raise comes first, so a re-raised failure is logged
   once, by the handler that catches it. A public method whose whole body is the `try` writes `graph.provider.failed`.
+- **A graph provider that answers a default writes one text-free line.** A handler that answers `None`, `[]`, `False`, `0` or a
+  failure dict instead of raising writes `graph.provider.failed` with `op` through `log_failure(..., include_error_text=False)`.
+  Where it can also re-raise (`if raise_on_error: raise`, ArangoDB's `if transaction: raise`), the raise comes first. No other
+  log call sits in a provider `except` handler. A handler that falls back and answers anyway is a step, not the method's
+  failure: a cached or batched read that falls back to the live or per-record query (`step=cache_lookup`, `batch_query`), a
+  Neo4j knowledge-hub shadow or verify read that fails (`shadow_split`, `scope_query`), and a Neo4j hinted read whose index is
+  still being built (`op=_execute_hinted`, `step=unhinted_fallback`, `index`, WARNING, once per index). A shadow browse that
+  split cannot decide writes `kh.browse.shadow_skipped` (INFO, `reason=split_undecided`).
 
 - **One record per call, outside the client's own retries.** A write conflict the ArangoDB or Neo4j client retries and wins
   writes nothing; one it gives up on writes one record. Retries above the client (`KernelDB.run`, the KB push, a provider
@@ -792,10 +809,13 @@ which every Postgres graph provider runs through) write one record per call that
   (log with `exc_info=True` instead), `%s` of the error, and asyncio's "Task exception was never retrieved", whose message holds
   the task's `repr` with the exception's text.
 - **A PostgreSQL connection the pool could not open writes no record**: no statement exists yet. Its error is stamped text-hidden
-  all the same: `ConnectionLost("cannot connect")` for an OS error, and the asyncpg server error itself otherwise (28P01 names the
-  database user, 57P03, 53300). Diagnose from `cause_type`: `ConnectionRefusedError` (the host answered, the port is closed),
-  `gaierror` (DNS), `OSError` (no route), `InvalidPasswordError`, `CannotConnectNowError`, `TooManyConnectionsError`. The
-  configured DSN names the host. What is lost is a plain `OSError`'s errno and which host of a multi-host DSN failed.
+  all the same. An outage is `ConnectionLost("cannot connect")`, class `unavailable`: an OS error, a connection exception
+  (08xxx, PgBouncer's own refusals included, even a permanent one such as its auth misconfiguration), a shutdown or start-up
+  (57P01-57P03) or a full server (53300). `KernelDB.run` retries it, except 53300 (`TooManyConnections`), which neither `run` nor the
+  vector search retries (every attempt would fork a backend on a full server). Any other server refusal is the asyncpg error itself (28P01 names the database user). Diagnose from `cause_type`:
+  `ConnectionRefusedError` (the host answered, the port is closed), `gaierror` (DNS), `OSError` (no route),
+  `InvalidPasswordError`, `CannotConnectNowError`, `TooManyConnectionsError`. The configured DSN names the host. What is lost
+  is a plain `OSError`'s errno and which host of a multi-host DSN failed.
 - **Classes.** Only our bugs and our configuration are ERROR classes. Conflicts and lost races (ArangoDB 1200, 1210, 29, 1654,
   1655; Neo4j constraint, deadlock, entity lost to a delete; Postgres 23xxx, 40001, 40P01) are `conflict`; ArangoDB 18 and 1500,
   Neo4j transaction timeouts and Postgres 57014/55P03 are `timeout`; Postgres 22xxx, 54xxx, 23502 and 23514, and Neo4j data
@@ -928,7 +948,9 @@ saved changes get no line here; the team service's own log has them.
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
 from `backend/nodejs/apps/src/libs/http/upstream-call.ts`: the service commands in `libs/commands` (through `upstreamFetch`)
 and every call on the default axios instance (instrumented in `index.ts`) or the knowledge base's own instance. A retry,
-`fetchWithRetry`'s or axios-retry's, is a new line. Not covered, so they write no line: the raw `fetch` to a signed upload URL
+`fetchWithRetry`'s or axios-retry's, is a new line. The default instance's retries (`libs/http/retry-policy.ts`,
+installed in `index.ts`) cover reads only (GET, HEAD, OPTIONS): a write (POST, PATCH, PUT, DELETE) is sent once, and a
+call we cancelled is not retried. Not covered, so they write no line: the raw `fetch` to a signed upload URL
 (`knowledge_base/utils/utils.ts`, `uploadFileToSignedUrl`), the S3 health check's signed GET
 (`storage/utils/s3-health-check.util.ts`), the Slack events proxy in `app.ts` (an `http.request` to the local Slack bot that
 passes the client's headers, its `x-request-id` included, on as they came), and the cloud SDKs (AWS, Azure, Google), which use
@@ -1121,7 +1143,9 @@ error's cause, so it is the service's class (`upstream_5xx`, `unavailable`, `tim
 stays `internal` (ERROR). Its body is never logged (it can hold stored credentials). A Google
 client id or secret that is not configured is ours: 500 `internal` (ERROR). A refresh that succeeds writes `Access token refreshed
 successfully` (INFO); a config reload writes `Connector configuration updated successfully`. The `appEnabled` event the code
-exchange publishes is `broker.event.published` (DEBUG) or `broker.event.publish_failed` (ERROR), with `event_type` and `topic`.
+exchange publishes is `broker.event.published` (DEBUG, with `event_type` and `topic`). When it cannot be published, the request
+answers 503 and its one `http.request.error` (`unavailable`, WARNING) carries the broker error as the cause; the producer writes no
+line of its own.
 
 ### Health probe (Node)
 

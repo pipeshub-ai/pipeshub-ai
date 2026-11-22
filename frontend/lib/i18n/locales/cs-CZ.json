@@ -846,7 +846,11 @@
       "collectionExists": "Kolekci s názvem \"{{name}}\" už máte. Zvolte jiný název."
     },
     "sourcesNotReady": "Některé zdroje se ještě připravují a zatím nejsou uvedeny ({{count}}). Zkuste to za chvíli znovu.",
-    "sourcePreparing": "Připravujeme tento zdroj… Jeho položky se tu za chvíli zobrazí."
+    "sourcePreparing": "Připravujeme tento zdroj… Jeho položky se tu za chvíli zobrazí.",
+    "selectionActionsNotice": "Indexovat jako první",
+    "selectionActionsNoticeEnterprise": "Výběr, které vybrané položky se indexují jako první, je součástí edice Enterprise.",
+    "uploadExtrasNotice": "Indexovat tyto soubory jako první",
+    "uploadExtrasNoticeEnterprise": "Výběr, které nahrané soubory se indexují jako první, je součástí edice Enterprise."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -4031,7 +4035,9 @@
           "cancelled": "Přihlášení jste zrušili.",
           "signInFailed": "Přihlášení nebylo dokončeno. Zkuste to znovu."
         }
-      }
+      },
+      "indexPriorityNotice": "Upřednostnit indexování pro tento konektor",
+      "indexPriorityNoticeEnterprise": "Priorita indexování je součástí edice Enterprise."
     },
     "mcpServers": {
       "searchPlaceholder": "Hledat MCP servery...",

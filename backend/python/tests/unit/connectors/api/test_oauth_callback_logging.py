@@ -289,6 +289,31 @@ async def test_a_state_of_the_wrong_shape_is_internal_and_text_free(
     assert_not_logged(caplog.records, STATE_TEXT)
 
 
+@pytest.mark.parametrize(("params", "reason"), [
+    ({"code": "auth-code"}, "missing_parameters"),
+    ({"state": "x"}, "missing_parameters"),
+    # Not base64 JSON: the decoder's error, which the route used to log, is kept off every line.
+    ({"code": "auth-code", "state": "not-a-state-" + STATE_TEXT}, "invalid_state"),
+], ids=["no-state", "no-code", "undecodable-state"])
+async def test_a_callback_the_client_sent_wrong_is_a_bad_request_line_and_writes_nothing(
+    client: httpx.AsyncClient, store: InMemoryConfigService, registry: MagicMock, caplog: pytest.LogCaptureFixture,
+    params: dict[str, str], reason: str,
+) -> None:
+    saved = copy.deepcopy(store.values)
+
+    body = await _callback(client, **params)
+
+    assert (body["success"], body["error"]) == (False, reason)  # the body is unchanged
+    assert body["redirect_url"] == f"https://app.example/connectors/oauth/callback?oauth_error={reason}"
+    fields = failure_line(caplog.records, EVENT, "bad_request", logging.WARNING, STATE_TEXT)
+    assert fields["reason"] == reason
+    (end,) = [r for r in caplog.records if r.getMessage() == EVENT]
+    assert _loud(caplog) == [end]  # the route writes no line of its own
+    assert_not_logged(caplog.records, STATE_TEXT)
+    registry.get_connector_instance.assert_not_awaited()
+    assert store.values == saved
+
+
 def _personal_not_creator(registry: MagicMock, _monkeypatch: pytest.MonkeyPatch) -> None:
     registry.get_connector_instance.return_value = {
         "_key": CONNECTOR_ID, "type": "Custom OAuth", "scope": "personal", "createdBy": "u1", "authType": "OAUTH"}
@@ -356,6 +381,8 @@ NOT_THIS_SIGN_IN = {
     "stale-tab-after-a-newer-sign-in": ({"used_codes": ["newer-code"]}, SAVED, "The authentication session has expired"),
     "sign-in-restarted": ({"state": "newer", "used_codes": []}, SAVED, "The authentication session has expired"),
     "used-code-replayed-without-credentials": ({"state": "orig", "used_codes": ["auth-code"]}, None, "already been used"),
+    # Another tab claimed this code first (oauth_service._claim_code).
+    "code-claimed-by-another-callback": ({"state": "orig", "used_codes": []}, None, "already submitted"),
 }
 
 
@@ -368,13 +395,18 @@ async def test_a_callback_for_another_sign_in_changes_nothing(
     store.values[CONFIG_PATH]["oauth"] = oauth
     if credentials:
         store.values[CONFIG_PATH]["credentials"] = credentials
+    if case == "code-claimed-by-another-callback":
+        store.values[oauth_service._code_claim_path(CONFIG_PATH, "auth-code")] = {"claimed": True}
     saved = copy.deepcopy(store.values)
 
     body = await _callback(client, code="auth-code", state=_state())
 
     assert (body["success"], body["error"]) == (False, "server_error")  # main's answer
     assert message in body["error_message"]
-    fields = failure_line(caplog.records, EVENT, "internal", logging.ERROR)
+    # The client's stale or spent state or code, not our failure: a client class, and no stack.
+    fields = failure_line(caplog.records, EVENT, "bad_request", logging.WARNING)
+    (end,) = [r for r in caplog.records if r.getMessage() == EVENT]
+    assert not end.exc_text
     registry.update_connector_instance.assert_not_awaited()
     assert store.values == saved
     assert (fields["reason"], fields["connector_id"], fields["error_type"]) == ("server_error", CONNECTOR_ID, "OAuthStateError")

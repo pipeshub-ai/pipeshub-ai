@@ -104,6 +104,7 @@ from app.sandbox.package_policy import (
 from app.sandbox.redact import redact_sandbox_paths
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.utils.conversation_tasks import register_task
+from app.utils.log_redaction import redact_secrets_in_text
 
 # run_code's ONE user-facing deliverable directory, backed by $OUTPUT_DIR
 # (see `sanitized_subprocess_env()` / DockerCodingSandbox's container env) on
@@ -1201,7 +1202,9 @@ async def _register_and_deliver(
             )
         except Exception as exc:
             logger.exception("coding sandbox artifact registration failed for %s", rel_path)
-            failures.append({"file": file_name, "error": f"{type(exc).__name__}: {exc}"})
+            # A successful run result carries it, which the executor does not mask: a storage driver's error can quote a
+            # signed URL or a DSN.
+            failures.append({"file": file_name, "error": redact_secrets_in_text(f"{type(exc).__name__}: {exc}")})
             continue
 
         if code_artifact_id:
