@@ -1167,9 +1167,21 @@ def _is_oversized_number(exc: BaseException) -> bool:
 
     A model can run an integer field on until its output limit. The JSON parser behind
     ``with_structured_output`` lets the resulting ``ValueError`` out as is, so without this
-    check the reply reads as a failed call.
+    check the reply reads as a failed call. Pydantic's own JSON parser, which reads a plain
+    model's reply, reports the same number as ``json_invalid``: "number out of range".
     """
+    if isinstance(exc, ValidationError):
+        try:
+            errors = exc.errors(include_input=False)
+        except Exception:  # an error list that cannot be read is not this reply
+            return False
+        return any(e.get("type") == "json_invalid" and "number out of range" in str(e.get("msg")) for e in errors)
     return isinstance(exc, ValueError) and "integer string conversion" in str(exc)
+
+
+def _oversized_detail(exc: BaseException) -> str:
+    """What a log line may say of an oversized number: the digit count, never the reply."""
+    return "a JSON number out of range" if isinstance(exc, ValidationError) else str(exc)
 
 
 class OversizedNumberError(OutputParserException):
@@ -1489,7 +1501,10 @@ async def invoke_with_structured_output_and_reflection(
             # A reply that does not fit the schema, not a failed call. It is not asked for
             # again: there is no reply text to show the model, and a second runaway reply
             # costs a full output limit again. The message names only the digit count.
-            logger.warning("The %s reply holds a number too long to read (%s); the reply is discarded", schema.__name__, e)
+            logger.warning(
+                "The %s reply holds a number too long to read (%s); the reply is discarded",
+                schema.__name__, _oversized_detail(e),
+            )
             if raise_oversized_number:
                 raise OversizedNumberError(f"the {schema.__name__} reply holds a number too long to read") from e
             return None
@@ -1549,6 +1564,15 @@ async def invoke_with_structured_output_and_reflection(
         return parsed_response
 
     except Exception as parse_error:
+        if _is_oversized_number(parse_error):
+            # Not reflected: the reflection would resend the runaway digits and ask for them again.
+            logger.warning(
+                "The %s reply holds a number too long to read (%s); the reply is discarded",
+                schema.__name__, _oversized_detail(parse_error),
+            )
+            if raise_oversized_number:
+                raise OversizedNumberError(f"the {schema.__name__} reply holds a number too long to read") from parse_error
+            return None
         # Attempt reflection: ask LLM to correct its response
         logger.warning(f"Initial parse failed: {parse_error}. Attempting reflection...")
 

@@ -670,3 +670,69 @@ def test_bounds_are_dropped_but_fields_named_like_them_stay() -> None:
     assert set(sent["properties"]) == {"maximum", "minimum", "multipleOf"}
     assert sent["required"] == ["maximum"]
     assert not {"minimum", "maximum"} & set(sent["properties"]["maximum"])
+
+
+# --- A plain chat model's runaway: pydantic reads it, and says "number out of range" -----
+
+
+def _plain_runaway(body: str):  # noqa: ANN202
+    from langchain_core.messages import AIMessage
+
+    calls: list[int] = []
+
+    async def _invoke(*_args: object, **_kwargs: object) -> AIMessage:
+        calls.append(1)
+        return AIMessage(content=body)
+
+    return _invoke, calls
+
+
+def test_pydantic_reports_the_runaway_as_a_number_out_of_range() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as caught:
+        TableSummaryHeaders.model_validate_json('{"header_row_count": ' + _CAPPED_DIGITS + "}")
+    assert streaming._is_oversized_number(caught.value)
+    assert not streaming._is_oversized_number(ValidationError.from_exception_data("x", []))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raise_oversized_number", [False, True])
+async def test_a_plain_models_runaway_is_not_reflected(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, raise_oversized_number: bool
+) -> None:
+    invoke, calls = _plain_runaway('{"summary": "secret row text", "header_row_count": ' + _CAPPED_DIGITS + "}")
+    monkeypatch.setattr(streaming, "_ainvoke_throttled", invoke)
+    with caplog.at_level(logging.DEBUG, logger=streaming.logger.name):
+        if raise_oversized_number:
+            with pytest.raises(streaming.OversizedNumberError):
+                await streaming.invoke_with_structured_output_and_reflection(
+                    MagicMock(), [], TableSummaryHeaders, 1, raise_call_errors=True, raise_oversized_number=True
+                )
+        else:
+            assert await streaming.invoke_with_structured_output_and_reflection(
+                MagicMock(), [], TableSummaryHeaders, 1
+            ) is None
+    assert len(calls) == 1
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "secret row text" not in text and "1" * 100 not in text
+    assert len([r for r in caplog.records if "too long" in r.getMessage()]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_plain_models_runaway_first_reply_is_not_followed_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    invoke, calls = _plain_runaway('{"summary": "", "headers": [], "header_row_count": ' + _CAPPED_DIGITS + "}")
+    monkeypatch.setattr(streaming, "_ainvoke_throttled", invoke)
+    result = await enrich_table_grid(MagicMock(), GRID, logger=logging.getLogger("t"))
+    assert len(calls) == 1
+    assert result.failed and result.degraded
+
+
+@pytest.mark.asyncio
+async def test_a_plain_models_runaway_row_batch_is_not_split(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [{"Name": f"n{i}", "Age": str(i)} for i in range(4 * table_enrichment.MIN_SPLIT_ROWS)]
+    invoke, calls = _plain_runaway(_runaway_rows(rows)[: -len("1" * _DIGITS) - 1] + _CAPPED_DIGITS + "}")
+    monkeypatch.setattr(streaming, "_ainvoke_throttled", invoke)
+    texts = await table_enrichment.describe_row_dicts(MagicMock(), rows, "s", logging.getLogger("t"))
+    assert len(calls) == 1
+    assert texts == [f"Name: n{i}, Age: {i}" for i in range(len(rows))]
