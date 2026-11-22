@@ -11,6 +11,8 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiokafka import TopicPartition
+from aiokafka.errors import CommitFailedError
 
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -22,6 +24,7 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.messaging.kafka.consumer.indexing_consumer import _InFlightOffset
 from app.services.messaging.postgres.consumer import PgMessagingConsumer
 from app.services.messaging.redis_streams.indexing_consumer import (
     RedisAcknowledgementError,
@@ -148,11 +151,15 @@ async def test_a_damaged_file_is_one_warning_without_its_name(broker, caplog) ->
 
 @BROKERS
 async def test_a_transient_failure_with_attempts_left_is_one_warning(broker, caplog) -> None:
-    await _run(broker, _handler(ConnectionError("down")), retry_manager=_Tracker())
+    consumers: list = []
+    await _run(broker, _handler(ConnectionError("down")), retry_manager=_Tracker(), setup=consumers.append)
     end = _end(caplog)
     assert (end.levelno, end.outcome, end.disposition, end.attempt, end.error_class) == (
         logging.WARNING, "failure", "retry", 1, "unavailable")
     assert _others_at(caplog, logging.INFO) == []
+    consumers[0]._requeue_message.assert_awaited_once()  # settled once
+    if broker == "kafka":
+        consumers[0].consumer.commit.assert_awaited_once()
 
 
 @BROKERS
@@ -799,3 +806,177 @@ async def test_a_handler_failure_after_indexing_complete_stays_a_failure_when_se
         await _run(broker, _tail_failure(), retry_manager=_Tracker(), setup=setup)
     end = _end(caplog)
     assert (end.outcome, end.disposition, end.reason, end.error_type) == ("failure", "retry", reason, "ConnectionError")
+
+
+# Kafka: an error raised by the settlement is not the handler's. It propagates (FIFO seeks back, and the redelivery is
+# deduped); nothing settles the delivery a second time, which would charge an attempt and publish a copy.
+
+
+class _ChargeCounter(_Tracker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.charged = 0
+
+    async def increment_and_check(self, message_id: str, max_attempts: int) -> tuple[int, bool]:
+        self.charged += 1
+        return await super().increment_and_check(message_id, max_attempts)
+
+
+class _CrashLooping(_ChargeCounter):
+    """Two earlier attempts never finished: the delivery is given up on before the handler runs."""
+
+    async def start_attempt(self, work_key: str) -> int:
+        return concurrency.MAX_UNFINISHED_ATTEMPTS
+
+
+async def _incomplete(message) -> AsyncGenerator[PipelineEvent, None]:
+    """Ends without INDEXING_COMPLETE: a failed attempt with no exception."""
+    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+
+
+def _settled(c, tracker: _ChargeCounter) -> tuple[int, int, int]:
+    return tracker.charged, c._requeue_message.await_count, c.consumer.commit.await_count
+
+
+def _text_free(caplog) -> bool:
+    return not any(hasattr(r, "error_message") for r in _ours(caplog))
+
+
+def _commit_fails_once(error: Exception, consumers: list, then=None) -> object:
+    def setup(c) -> None:
+        consumers.append(c)
+        c.consumer.commit = AsyncMock(side_effect=[error, None])
+        if then is not None:
+            then(c)
+
+    return setup
+
+
+def _with_sink(c) -> None:
+    c.disposition_sink = MagicMock()
+    c.disposition_sink.on_message_abandoned = AsyncMock()
+
+
+async def _run_fair(tracker: _ChargeCounter, setup=None) -> tuple[object, _InFlightOffset]:
+    """A clean run under fair scheduling: the claim is marked before the commit, which fails."""
+    c = _kafka()
+    c.retry_manager = tracker
+    c._requeue_message = AsyncMock()
+    c.message_handler = _handler()
+    c._offset_tracker = MagicMock()
+    c._offset_tracker.mark_done.return_value = 4
+    c._offset_tracker.mark_redeliver.return_value = 3
+    c.consumer.commit = AsyncMock(side_effect=ConnectionError("broker down"))
+    if setup is not None:
+        setup(c)
+    in_flight = _InFlightOffset(TopicPartition("record-events", 0), 3)
+    with pytest.raises(ConnectionError):
+        await c._IndexingKafkaConsumer__process_message_wrapper(
+            _kafka_message(_value().encode()), None, None, in_flight
+        )
+    return c, in_flight
+
+
+@pytest.mark.parametrize("error", [ConnectionError("broker down"), CommitFailedError("rebalanced")],
+                         ids=["unavailable", "commit_failed_error"])
+async def test_kafka_an_indexed_record_whose_commit_fails_is_not_charged_or_requeued(error, caplog) -> None:
+    consumers: list = []
+    tracker = _ChargeCounter()
+    with pytest.raises(type(error)):
+        await _run("kafka", _handler(), retry_manager=tracker, setup=_commit_fails_once(error, consumers))
+    assert _settled(consumers[0], tracker) == (0, 0, 1)
+    end = _end(caplog)
+    assert (end.levelno, end.outcome, end.disposition, end.reason) == (logging.WARNING, "success", "retry", "commit_failed")
+    assert end.error_type == type(error).__name__  # the commit's class is kept, without its text
+    assert len([r for r in _ours(caplog) if r.getMessage() == "index.commit_failed"]) == 1
+    assert _text_free(caplog)
+
+
+async def test_kafka_fair_an_indexed_record_whose_commit_fails_is_not_charged_or_requeued(caplog) -> None:
+    tracker = _ChargeCounter()
+    c, in_flight = await _run_fair(tracker)
+    assert _settled(c, tracker) == (0, 0, 1)
+    c._offset_tracker.mark_done.assert_called_once_with(TopicPartition("record-events", 0), 3)
+    assert in_flight.resolved
+    assert (_end(caplog).outcome, _end(caplog).reason, _end(caplog).error_type) == ("success", "commit_failed", "ConnectionError")
+
+
+async def test_kafka_an_incomplete_run_whose_commit_fails_is_charged_once(caplog) -> None:
+    consumers: list = []
+    tracker = _ChargeCounter()
+    with pytest.raises(ConnectionError):
+        await _run("kafka", _incomplete, retry_manager=tracker,
+                   setup=_commit_fails_once(ConnectionError("broker down"), consumers))
+    assert _settled(consumers[0], tracker) == (1, 1, 1)
+    end = _end(caplog)
+    assert (end.outcome, end.disposition, end.reason, end.attempt) == ("failure", "retry", "commit_failed", 1)
+
+
+async def test_kafka_a_settlement_whose_requeue_fails_is_not_settled_again(caplog) -> None:
+    consumers: list = []
+    tracker = _ChargeCounter()
+
+    def setup(c) -> None:
+        consumers.append(c)
+        c._requeue_message = AsyncMock(side_effect=ConnectionError("broker down"))
+
+    with pytest.raises(ConnectionError):
+        await _run("kafka", _incomplete, retry_manager=tracker, setup=setup)
+    assert _settled(consumers[0], tracker) == (1, 1, 0)
+    assert _end(caplog).reason == "requeue_failed"
+
+
+async def test_kafka_a_dead_letter_with_no_handler_whose_commit_fails_is_not_requeued(caplog) -> None:
+    consumers: list = []
+    tracker = _ChargeCounter()
+
+    def no_handler(c) -> None:
+        c.message_handler = None
+        _with_sink(c)
+
+    with pytest.raises(ConnectionError):
+        await _run("kafka", None, retry_manager=tracker,
+                   setup=_commit_fails_once(ConnectionError("broker down"), consumers, then=no_handler))
+    c = consumers[0]
+    assert (c.disposition_sink.on_message_abandoned.await_count, *_settled(c, tracker)) == (1, 0, 0, 1)
+
+
+async def test_kafka_a_give_up_whose_commit_fails_is_not_requeued_and_says_commit_failed(caplog) -> None:
+    consumers: list = []
+    tracker = _CrashLooping()
+    with pytest.raises(ConnectionError):
+        await _run("kafka", _handler(), retry_manager=tracker,
+                   setup=_commit_fails_once(ConnectionError(f"broker down {NAME}"), consumers, then=_with_sink))
+    c = consumers[0]
+    assert (c.disposition_sink.on_message_abandoned.await_count, *_settled(c, tracker)) == (1, 0, 0, 1)
+    end = _end(caplog)
+    assert (end.disposition, end.reason) == ("retry", "commit_failed")
+    assert len([r for r in _ours(caplog) if r.getMessage() == "index.commit_failed"]) == 1
+    assert _text_free(caplog)
+    assert all(NAME not in r.getMessage() + str(vars(r)) for r in _ours(caplog))
+
+
+async def _asks_to_parse(message) -> AsyncGenerator[PipelineEvent, None]:
+    yield PipelineEvent(event=IndexingEvent.START_PARSING, data=PipelineEventData(record_id="rec-1"))
+
+
+# The leases taken in order (index, record, parse); a False while stopping is that floor.
+@pytest.mark.parametrize(("leases", "handler"), [
+    ([False], _handler()),
+    ([True, False], _handler()),
+    ([True, True, False], _asks_to_parse),
+], ids=["index_lease", "record_lease", "parse_lease"])
+async def test_kafka_fair_a_shutdown_floor_whose_commit_fails_is_not_charged_or_requeued(leases, handler, caplog) -> None:
+    def stopping(c) -> None:
+        c.running = False
+        c.message_handler = handler
+        c.concurrency_manager = MagicMock()
+        c._acquire_distributed_slot = AsyncMock(side_effect=leases)
+
+    tracker = _ChargeCounter()
+    c, in_flight = await _run_fair(tracker, stopping)
+    assert c._acquire_distributed_slot.await_count == len(leases)  # stopped at this floor, not an earlier one
+    assert _settled(c, tracker) == (0, 0, 1)
+    c._offset_tracker.mark_redeliver.assert_called_once()
+    assert in_flight.resolved
+    assert _end(caplog).reason == "shutdown"

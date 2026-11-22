@@ -97,7 +97,8 @@ class TestRetrievalFailureModes:
         assert isinstance(result, PrefetchResult)
         assert result.is_empty is True
         assert result.final_results == []
-        assert "qdrant unavailable" in (result.error_message or "")
+        # The client's retrieval frame carries only why: a search error can quote the query.
+        assert result.error_message == "internal (RuntimeError)"
 
     async def test_a_search_that_raises_is_one_line_without_the_query(self, caplog: pytest.LogCaptureFixture) -> None:
         import logging

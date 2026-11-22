@@ -10,7 +10,6 @@
 
 import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   UnauthorizedError,
@@ -20,10 +19,6 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
 import { buildProxyHeaders } from './connector.controllers';
 import { isSecretRevealRequested } from '../../configuration_manager/utils/secretReveal';
-
-const logger = Logger.getInstance({
-  service: 'OAuth Controller',
-});
 
 // ============================================================================
 // Helper Functions
@@ -69,8 +64,6 @@ const createOAuthApiHandler = (
       // Build URL
       const url = buildUrl(req);
 
-      logger.info(`${operationName} for user ${userId}`);
-
       const headers = buildProxyHeaders(req);
 
       // Build payload (if applicable)
@@ -92,13 +85,6 @@ const createOAuthApiHandler = (
         notFoundMessage,
       );
     } catch (error: any) {
-      logger.error(`Error ${operationName.toLowerCase()}`, {
-        error: error.message,
-        userId: req.user?.userId,
-        params: req.params,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(error, operationName.toLowerCase());
       next(handledError);
     }

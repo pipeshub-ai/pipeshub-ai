@@ -31,10 +31,12 @@ from app.api.middlewares.request_log import (
     path_log_fields,
 )
 from app.core.org_context import OrgContext, set_request_context
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.telemetry.middleware import MetricsMiddleware
 from app.utils import error_class
 from app.utils.logger import RedactingFormatter, log_record_fields
 from app.utils.request_context import get_context, set_context_org
+from tests.support.graph_read_errors import DRIVER_TEXT, marked_internal
 from tests.unit.api.test_framework_behaviour import (  # noqa: F401 - autouse fixture
     Recorder,
     _drive,
@@ -531,6 +533,35 @@ async def test_a_crash_is_answered_by_the_middleware_which_returns_so_the_connec
 
 async def test_positive_control_an_unlogged_exception_still_reaches_uvicorn() -> None:
     assert _uvicorn_keeps(RuntimeError("never logged"))
+
+
+def _pvue_over_a_stamped_error() -> PermissionVerificationUnavailableError:
+    try:
+        try:
+            raise marked_internal()
+        except RuntimeError as exc:
+            raise PermissionVerificationUnavailableError() from exc
+    except PermissionVerificationUnavailableError as pvue:
+        return pvue
+
+
+async def test_uvicorn_drops_its_line_for_a_logged_text_hidden_exception(clock: _Clock) -> None:
+    """Its record carries a text-free stack and no exc_info; the filter still finds the exception (F24g)."""
+    _build_app(clock)  # installs the filter
+    pvue = _pvue_over_a_stamped_error()
+    error_class.log_failure(logging.getLogger(LOGGER), EVENT, pvue, level=logging.ERROR)
+
+    record = _uvicorn_record(pvue)
+    assert record.exc_info is None and "PermissionVerificationUnavailableError: <message omitted>" in record.exc_text
+    assert DRIVER_TEXT not in record.exc_text
+    assert not _uvicorn_keeps(pvue)
+
+
+async def test_control_uvicorn_keeps_its_line_for_an_unlogged_text_hidden_exception(clock: _Clock) -> None:
+    _build_app(clock)
+    pvue = _pvue_over_a_stamped_error()
+    assert _uvicorn_keeps(pvue)
+    assert DRIVER_TEXT not in RedactingFormatter().format(_uvicorn_record(pvue))
 
 
 async def test_a_crash_logs_nothing_else_at_warning_or_above(clock: _Clock, capture) -> None:

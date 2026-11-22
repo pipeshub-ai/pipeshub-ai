@@ -11,7 +11,7 @@ from app.services.graph_db.postgres.kg.model import (
     RECORD_COLLS,
     Key,
 )
-from app.services.graph_db.postgres.kg.reader import load_sks
+from app.services.graph_db.postgres.kg.reader import load_sks, seeks
 
 if TYPE_CHECKING:
     from app.core.db import Tx
@@ -104,14 +104,18 @@ async def children_of(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
         return set()
     colls, ids = _pairs(recs)
     out: set[Key] = set()
-    for r in await tx.fetch("""/* pipeshub:kg.graph_kids */ SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
-            AND EXISTS (SELECT 1 FROM unnest($2::text[], $5::text[]) AS k(c, i) WHERE k.c = e.from_coll AND k.i = e.from_id)
-            AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.to_coll = ANY($4::text[])""", org, colls, list(HIERARCHY), list(RECORD_COLLS), ids):
-        out.add((r[0], r[1]))
-    for r in await tx.fetch("""/* pipeshub:kg.graph_members */ SELECT e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
-            AND EXISTS (SELECT 1 FROM unnest($2::text[], $4::text[]) AS k(c, i) WHERE k.c = e.to_coll AND k.i = e.to_id)
-            AND e.from_coll = ANY($3::text[])""", org, colls, list(RECORD_COLLS), ids):
-        out.add((r[0], r[1]))
+    # One seek per key on its own edges, under reader.seeks and in its index's order (OFFSET 0 keeps each lateral a loop): as a join, the planner reads the org's whole relations
+    # once a key list is long, which a whole-connector restamp page always is. The children by parent in byte order (edges_by_neighbour_out), the members by target with the target
+    # as a range of one value (edges_by_target), as hierarchy.py spells a key.
+    async with seeks(tx):
+        kids = await tx.fetch("""/* pipeshub:kg.graph_kids */ SELECT e.to_coll, e.to_id FROM unnest($2::text[], $5::text[]) AS k(c, i) CROSS JOIN LATERAL (
+            SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = k.c AND e.from_id COLLATE "C" = k.i COLLATE "C"
+            AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.to_coll = ANY($4::text[])
+            ORDER BY e.from_coll, e.from_id COLLATE "C", e.to_coll COLLATE "C", e.to_id COLLATE "C" OFFSET 0) e""", org, colls, list(HIERARCHY), list(RECORD_COLLS), ids)
+        members = await tx.fetch("""/* pipeshub:kg.graph_members */ SELECT e.from_coll, e.from_id FROM unnest($2::text[], $4::text[]) AS k(c, i) CROSS JOIN LATERAL (
+            SELECT e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id >= k.i AND e.to_id <= k.i AND e.to_coll = k.c
+            AND e.from_coll = ANY($3::text[]) ORDER BY e.to_id OFFSET 0) e""", org, colls, list(RECORD_COLLS), ids)
+    out |= {(r[0], r[1]) for r in kids} | {(r[0], r[1]) for r in members}
     sks = sorted((await load_sks(tx, org, recs)).values())
     if sks:
         found: set[int] = set()

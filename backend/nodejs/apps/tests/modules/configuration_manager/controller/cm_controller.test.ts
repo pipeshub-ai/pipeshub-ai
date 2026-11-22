@@ -4149,7 +4149,7 @@ describe('ConfigurationManager Controller', () => {
       expect(err.message).to.include('and 2 more')
     })
 
-    it('should throw InternalServerError (fail-closed) when usage check throws', async () => {
+    it('refuses with 503 (fail-closed) when usage check throws', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -4169,12 +4169,12 @@ describe('ConfigurationManager Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.statusCode).to.equal(500)
-      expect(err.code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
+      expect(err.statusCode).to.equal(503)
+      expect(err.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
       expect(kvs.set.called).to.be.false
     })
 
-    it('should throw InternalServerError (fail-closed) when usage check returns non-200', async () => {
+    it('refuses with 503 (fail-closed) when usage check returns non-200', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -4197,8 +4197,8 @@ describe('ConfigurationManager Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.statusCode).to.equal(500)
-      expect(err.code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
+      expect(err.statusCode).to.equal(503)
+      expect(err.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
       expect(kvs.set.called).to.be.false
     })
   })

@@ -1,11 +1,13 @@
 import pytest
 
+from app.config import file_types
 from app.services.resource_governor.models import ParseTier, Pool
 from app.services.resource_governor.tiers import (
     XL_HEAVY_BYTES,
     classify,
     gate_pool,
     parse_cost,
+    reader_tier,
 )
 
 
@@ -54,7 +56,8 @@ class TestClassify:
         assert classify(None, mime) is ParseTier.HEAVY
 
     def test_extension_takes_priority_over_mime(self) -> None:
-        # Contrived: extension says light, mime says heavy -> extension wins.
+        # The labels alone: `classify` lets the extension win. Admission raises this to the heavy reader's tier
+        # (`reader_tier`, TestReaderTier below), since the PDF reader is what parses it.
         assert classify("txt", "application/pdf") is ParseTier.LIGHT
 
     def test_unknown_defaults_to_heavy(self) -> None:
@@ -64,6 +67,110 @@ class TestClassify:
     def test_leading_dot_and_case_insensitive(self) -> None:
         assert classify(".PDF", None) is ParseTier.HEAVY
         assert classify(".Md", None) is ParseTier.LIGHT
+
+
+_EXTENSIONS = [*sorted({e for ft in file_types.FILE_TYPES for e in ft.extensions if ft.ext_indexable}), "unknown", ""]
+_MIMES = [
+    *sorted({ft.canonical_mime for ft in file_types.FILE_TYPES if ft.mime_indexable and ft.canonical_mime}),
+    "unknown", "", "application/octet-stream", "text/plain",
+]
+
+
+_LIGHT_TEXT = {"csv", "htm", "html", "json", "md", "mdx", "sql_table", "sql_view", "tsv", "txt", "yaml", "yml"}
+# A Google Docs, Slides or Sheets mime is read by its Google reader whatever the extension, source code included.
+_SOURCE = {
+    "bash", "c", "cc", "cjs", "cpp", "cs", "cxx", "dart", "go", "h", "hpp", "hxx", "java", "js", "jsx", "kt", "kts", "mjs",
+    "php", "py", "rb", "rs", "sh", "swift", "ts", "tsx",
+}
+_GOOGLE = (
+    "application/vnd.google-apps.document",
+    "application/vnd.google-apps.presentation",
+    "application/vnd.google-apps.spreadsheet",
+)
+
+
+def _in_process_reader(extension: str, mime_type: str) -> file_types.Tier | None:
+    code_ext = file_types.code_extension(extension, None, f"x.{extension}")
+    return file_types.read_tier(file_types.legacy_route(
+        mime_type, extension, code_ext=code_ext, reads_as_code_file=file_types.reads_as_source(mime_type, code_ext),
+    ))
+
+
+def _service_reader(extension: str, mime_type: str) -> file_types.Tier | None:
+    return file_types.format_tier(file_types.parse_format(mime_type, extension))
+
+
+class TestReaderTier:
+    @pytest.mark.parametrize(("reader", "raised_cells", "raised_extensions"), [
+        (_in_process_reader, 196, _LIGHT_TEXT | _SOURCE),
+        (_service_reader, 196, _LIGHT_TEXT | {"bash", "sh"}),
+    ], ids=["in-process", "service"])
+    def test_every_cell_is_heavy_exactly_when_its_labels_or_its_reader_are(
+        self, reader, raised_cells: int, raised_extensions: set[str],
+    ) -> None:
+        raised: list[tuple[str, str]] = []
+        for extension in _EXTENSIONS:
+            for mime in _MIMES:
+                labels, read_by = classify(extension, mime), reader(extension, mime)
+                tier = reader_tier(extension, mime, read_by)
+                assert tier is (ParseTier.HEAVY if read_by == "heavy" else labels), (extension, mime)
+                if labels is ParseTier.LIGHT and tier is ParseTier.HEAVY:
+                    raised.append((extension, mime))
+        # Pinned: a format that loses its tier, or a reader that changes, moves these.
+        assert len(raised) == raised_cells
+        assert {extension for extension, _ in raised} == raised_extensions
+
+    @pytest.mark.parametrize("reader", [_in_process_reader, _service_reader], ids=["in-process", "service"])
+    def test_a_pdf_labelled_txt_is_admitted_heavy(self, reader) -> None:
+        assert reader("txt", "application/pdf") == "heavy"
+        assert reader_tier("txt", "application/pdf", reader("txt", "application/pdf")) is ParseTier.HEAVY
+
+    @pytest.mark.parametrize(("extension", "mime", "expected"), [
+        ("pdf", "application/octet-stream", ParseTier.HEAVY),  # the extension still decides over a generic mime
+        ("txt", "application/octet-stream", ParseTier.LIGHT),
+        ("py", "text/plain", ParseTier.LIGHT),
+        ("unknown", "unknown", ParseTier.HEAVY),  # an unknown format stays heavy
+        ("txt", "text/plain", ParseTier.LIGHT),
+        ("md", "text/markdown", ParseTier.LIGHT),
+    ])
+    @pytest.mark.parametrize("reader", [_in_process_reader, _service_reader], ids=["in-process", "service"])
+    def test_controls(self, reader, extension: str, mime: str, expected: ParseTier) -> None:
+        assert reader_tier(extension, mime, reader(extension, mime)) is expected
+
+    @pytest.mark.parametrize("mime", _GOOGLE)
+    @pytest.mark.parametrize("reader", [_in_process_reader, _service_reader], ids=["in-process", "service"])
+    def test_a_google_export_labelled_txt_is_admitted_heavy(self, reader, mime: str) -> None:
+        """The Google readers have no tier of their own; they parse as docx, pptx or xlsx."""
+        assert classify("txt", mime) is ParseTier.LIGHT
+        assert reader("txt", mime) == "heavy"
+        assert reader_tier("txt", mime, reader("txt", mime)) is ParseTier.HEAVY
+
+    def test_no_reader_leaves_the_labels_tier(self) -> None:
+        assert reader_tier("txt", "application/pdf", None) is ParseTier.LIGHT
+        assert reader_tier("pdf", None, None) is ParseTier.HEAVY
+
+    def test_a_light_reader_never_lowers_a_heavy_label(self) -> None:
+        assert reader_tier("pdf", "application/pdf", "light") is ParseTier.HEAVY
+
+
+class TestReaderTierTables:
+    def test_the_code_reader_is_light_and_no_reader_has_none(self) -> None:
+        assert file_types.read_tier(file_types.Dispatch(file_types.Route.CODE, None)) == "light"
+        assert file_types.read_tier(None) is None
+
+    def test_no_type_has_two_tiers(self) -> None:
+        for ft in file_types.FILE_TYPES:
+            assert not (ft.tier and ft.mime_tier and ft.tier != ft.mime_tier), ft.key
+
+    def test_every_service_format_has_one_tier(self) -> None:
+        tiers: dict[str, set[str]] = {}
+        for ft in file_types.FILE_TYPES:
+            if ft.format and (ft.tier or ft.mime_tier):
+                tiers.setdefault(ft.format, set()).add(ft.tier or ft.mime_tier)  # type: ignore[arg-type]
+        assert {fmt: t for fmt, t in tiers.items() if len(t) > 1} == {}
+        assert all(file_types.format_tier(fmt) == next(iter(t)) for fmt, t in tiers.items())
+        assert file_types.format_tier(None) is None
+        assert file_types.format_tier("no-such-format") is None
 
 
 class TestParseCost:

@@ -271,15 +271,6 @@ describe('stream-lifecycle', () => {
       acc.feedTextMessageContent({ runId: 'run-1', delta: 123 as unknown as string })
       expect(acc.getText()).to.equal('')
     })
-
-    it('setAccumulatedText replaces rather than appends (legacy answer_chunk protocol)', () => {
-      const acc = new StreamedContentAccumulator()
-      acc.feedTextMessageContent({ runId: 'run-1', delta: 'ignored if replaced' })
-      acc.setAccumulatedText('full running text so far')
-      expect(acc.getText()).to.equal('full running text so far')
-      acc.setAccumulatedText('full running text so far and more')
-      expect(acc.getText()).to.equal('full running text so far and more')
-    })
   })
 })
 

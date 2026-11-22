@@ -1,6 +1,6 @@
-"""Keeps the live ``records`` schema at least as wide as this process's own.
+"""Keeps a live collection schema (``records``, ``apps``) at least as wide as this process's own.
 
-A process that is older than this one applies its own, narrower record schema when it starts. A record that
+A process that is older than this one applies its own, narrower schema when it starts. A document that
 holds a newer field then fails every write with errorNum 1620. This guard:
 
 * reads the schema's generation (a ``$comment`` on the rule) and applies this process's schema only when it reads a
@@ -58,18 +58,18 @@ FORCE_AFTER_SKIPS = 3
 
 REWIDEN_TOTAL = METRICS_BACKEND.counter(
     "pipeshub_record_schema_rewiden_total",
-    "Times this process widened the live records schema; above 0 in steady state means an older image is running",
-    ["trigger"],
+    "Times this process widened a live collection schema; above 0 in steady state means an older image is running",
+    ["collection", "trigger"],
 )
 REWIDEN_CONTENDED_TOTAL = METRICS_BACKEND.counter(
     "pipeshub_record_schema_rewiden_contended_total",
     "Widenings not sent because a stream transaction was still open after the quiet-point wait; the poll tries again",
-    ["trigger"],
+    ["collection", "trigger"],
 )
 REWIDEN_WAIT_SECONDS = METRICS_BACKEND.histogram(
     "pipeshub_record_schema_rewiden_wait_seconds",
     "Time from sending the schema change to its answer or its client timeout",
-    ["trigger"],
+    ["collection", "trigger"],
     (0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10),
 )
 
@@ -157,7 +157,8 @@ LockFactory = Callable[[], Awaitable[Lock | None]]
 
 
 class RecordSchemaGuard:
-    """One per ``ArangoHTTPClient``. ``schema`` is the schema this process applies, ``generation`` its generation."""
+    """One per guarded collection of an ``ArangoHTTPClient``. ``schema`` is the schema this process applies to ``collection``,
+    ``generation`` its generation. Each collection is widened under a lock of its own."""
 
     def __init__(
         self,
@@ -183,7 +184,7 @@ class RecordSchemaGuard:
         self._poller: asyncio.Task[None] | None = None
 
     async def _arango_lock(self) -> Lock:
-        return ArangoLock(self._client)
+        return ArangoLock(self._client, key=f"{self._collection}-schema")
 
     # -- aborted transactions ---------------------------------------------------------------------------------
     def mark_aborted(self, txn_id: str) -> None:
@@ -223,7 +224,7 @@ class RecordSchemaGuard:
         try:
             return await self.live_generation() >= self.generation
         except Exception as error:  # treated as narrow: the caller widens and retries, as for a narrowing
-            self._logger.warning("could not read the records schema generation: %s", error)
+            self._logger.warning("could not read the %s schema generation: %s", self._collection, error)
             return False
 
     async def wait_wide(self, timeout: float = REWIDEN_TIMEOUT_S) -> bool:
@@ -239,7 +240,7 @@ class RecordSchemaGuard:
                     self._narrowed = False
                     return True
             except Exception as error:  # includes the timeout of the read
-                self._logger.warning("could not read the records schema generation: %r", error)
+                self._logger.warning("could not read the %s schema generation: %r", self._collection, error)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
@@ -251,7 +252,7 @@ class RecordSchemaGuard:
 
         Not applied (False) when the schema is already wide, the lock is held elsewhere or cannot be taken or renewed, no quiet point was
         found (up to ``FORCE_AFTER_SKIPS`` times in a row), or the generation turned out wide before the write."""
-        assert transaction is None, "the records schema is never widened inside a transaction"
+        assert transaction is None, "a collection schema is never widened inside a transaction"
         loop = asyncio.get_running_loop()
         local = self._loop_locks.setdefault(loop, asyncio.Lock())
         async with local:
@@ -267,7 +268,7 @@ class RecordSchemaGuard:
                     raise RuntimeError("no lock")
                 acquired = await lock.acquire(LOCK_TTL_MS)
             except Exception as error:
-                self._logger.warning("record schema widening skipped: could not take its lock: %s", error)
+                self._logger.warning("%s schema widening skipped: could not take its lock: %s", self._collection, error)
                 return False
             if not acquired:
                 # another process is fixing it
@@ -285,26 +286,28 @@ class RecordSchemaGuard:
                     self._narrowed = False
                     return False
                 if contended:
-                    REWIDEN_CONTENDED_TOTAL.inc(trigger)
+                    REWIDEN_CONTENDED_TOTAL.inc(self._collection, trigger)
                     if self._skips < FORCE_AFTER_SKIPS:
                         # A schema change waits for every open stream transaction, so one sent now could outlast its 5 s timeout and the
                         # lease. Not sent: the refused write stays refused (transient) and the next try looks for a quiet point again.
                         self._skips += 1
                         self._logger.warning(
-                            "record schema widening skipped: a stream transaction is still open (trigger=%s, skip %d of %d)",
-                            trigger, self._skips, FORCE_AFTER_SKIPS,
+                            "%s schema widening skipped: a stream transaction is still open (trigger=%s, skip %d of %d)",
+                            self._collection, trigger, self._skips, FORCE_AFTER_SKIPS,
                         )
                         return False
-                    self._logger.warning("record schema widening is sent without a quiet point after %d skips (trigger=%s)", self._skips, trigger)
+                    self._logger.warning(
+                        "%s schema widening is sent without a quiet point after %d skips (trigger=%s)", self._collection, self._skips, trigger,
+                    )
                 self._skips = 0
                 # Fencing: the lease is renewed (to a full term, longer than the 5 s write) only while it is still ours and unexpired.
                 try:
                     holding = await lock.renew(LOCK_TTL_MS)
                 except Exception as error:
-                    self._logger.warning("record schema widening skipped: could not renew its lock: %s", error)
+                    self._logger.warning("%s schema widening skipped: could not renew its lock: %s", self._collection, error)
                     return False
                 if not holding:
-                    self._logger.warning("record schema widening skipped: the lock lease was lost")
+                    self._logger.warning("%s schema widening skipped: the lock lease was lost", self._collection)
                     return False
                 # The last look before the write, after the renewal, which is the longest pause before it.
                 # The lease does not fence the write itself: a collection-properties update is not transactional with the lock, so a
@@ -317,7 +320,9 @@ class RecordSchemaGuard:
                         self._narrowed = False
                         return False
                 except Exception as error:
-                    self._logger.warning("record schema widening skipped: could not read the live generation before the write: %s", error)
+                    self._logger.warning(
+                        "%s schema widening skipped: could not read the live generation before the write: %s", self._collection, error,
+                    )
                     return False
                 started = time.monotonic()
                 sent = True
@@ -326,14 +331,14 @@ class RecordSchemaGuard:
                         self._collection, self._schema, timeout=REWIDEN_TIMEOUT_S,
                     )
                 except Exception as error:
-                    self._logger.warning("record schema widening did not finish in %.0fs: %s", REWIDEN_TIMEOUT_S, error)
+                    self._logger.warning("%s schema widening did not finish in %.0fs: %s", self._collection, REWIDEN_TIMEOUT_S, error)
                     applied = False
                 elapsed = time.monotonic() - started
-                REWIDEN_WAIT_SECONDS.observe(trigger, value=elapsed)
-                REWIDEN_TOTAL.inc(trigger)
+                REWIDEN_WAIT_SECONDS.observe(self._collection, trigger, value=elapsed)
+                REWIDEN_TOTAL.inc(self._collection, trigger)
                 self._logger.warning(
-                    "widened the records schema to generation %d (trigger=%s, %.2fs, applied=%s)",
-                    self.generation, trigger, elapsed, applied,
+                    "widened the %s schema to generation %d (trigger=%s, %.2fs, applied=%s)",
+                    self._collection, self.generation, trigger, elapsed, applied,
                 )
                 if applied:
                     self._narrowed = False
@@ -343,7 +348,7 @@ class RecordSchemaGuard:
                     try:
                         await lock.release()
                     except Exception:
-                        self._logger.debug("could not release the record schema lock", exc_info=True)
+                        self._logger.debug("could not release the %s schema lock", self._collection, exc_info=True)
                 # else: the server answered "no", or did not answer in time and may still apply the change; deleting the lock
                 # document now would let another process start while this write may be in flight, so the lease runs out instead.
 
@@ -379,9 +384,9 @@ class RecordSchemaGuard:
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    self._logger.warning("record schema poll failed: %s", error)
+                    self._logger.warning("%s schema poll failed: %s", self._collection, error)
 
-        self._poller = spawn_detached(poll(), name="record-schema-poll")
+        self._poller = spawn_detached(poll(), name=f"{self._collection}-schema-poll")
 
     async def stop(self) -> None:
         if self._poller is not None:

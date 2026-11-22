@@ -32,6 +32,7 @@ from app.events.dedup import (
     select_duplicate,
     will_promote_queued_copies,
 )
+from app.events.emptied_record import drop_previous_vectors_of_emptied_record
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -90,7 +91,6 @@ from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.parsers.worker_verdict import worker_gave_up_on
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
-from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ENRICHMENT_DEFERRED, ENRICHMENT_FOLLOWS
@@ -126,7 +126,7 @@ from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
-from app.services.resource_governor import classify
+from app.services.resource_governor import reader_tier
 from app.services.vector_db.filters import OrgRequired, org_for_filter
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
@@ -612,10 +612,11 @@ class EventProcessor:
                 # second parse would index the record twice.
                 if yielded:
                     raise
-                # Swallowed (the PdfPlumber path runs next), so logged here once, without text.
+                # Swallowed (the PdfPlumber path runs next), so logged here once, without text. A record that waits for
+                # Docling logs at its hand-back's INFO: the client already reported the outage itself at WARNING.
                 log_failure(
-                    self.logger, "index.parse_fallback", exc, parser="docling", reason=exc.reason,
-                    status=exc.status_code, include_error_text=False,
+                    self.logger, "index.parse_fallback", exc, level=getattr(exc, "log_level", None), parser="docling",
+                    reason=exc.reason, status=exc.status_code, include_error_text=False,
                 )
                 if isinstance(exc, DoclingUnavailableError):
                     docling_unavailable = exc
@@ -678,6 +679,36 @@ class EventProcessor:
         return record_type == RecordTypes.CODE_FILE.value and (
             mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
         )
+
+    @staticmethod
+    def _read_plan(
+        record_type: str | None,
+        mime_type: str,
+        extension: str | None,
+        file_path: str | None,
+        record_name: str,
+        gate_route: file_types.Dispatch | None,
+    ) -> tuple[file_types.Dispatch | None, str | None, bool]:
+        """``(dispatch, code_ext, reads_as_code_file)``: how a record is read, from its labels.
+
+        *gate_route* is the reader the record handler's gate accepted the file for; it is used only
+        where the labels name none, so a file the gate accepted is never refused here.
+        """
+        code_ext = file_types.code_extension(extension, file_path, record_name)
+        reads_as_code_file = EventProcessor._reads_as_code_file(
+            record_type, mime_type, code_ext, record_name
+        )
+        dispatch = file_types.legacy_route(
+            mime_type, extension, code_ext=code_ext, reads_as_code_file=reads_as_code_file,
+            is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
+        )
+        if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:
+            # A docm, or a .log a repository stored as text/plain, is not source.
+            reads_as_code_file = False
+        if dispatch is None and gate_route is not None:
+            # What the gate accepted is read as it judged it, never refused here.
+            dispatch, reads_as_code_file = gate_route, gate_route.route is Route.CODE
+        return dispatch, code_ext, reads_as_code_file
 
     async def _dispatch_stages(
         self, record: Record, event_type: str | None, *, defer_classify: bool = False
@@ -1037,58 +1068,14 @@ class EventProcessor:
     async def _drop_the_previous_vectors_of_an_emptied_record(
         self, doc: dict[str, Any], virtual_record_id: str | None, event_type: str | None
     ) -> None:
-        """An update that leaves a record empty must not leave its old content searchable.
-
-        Every type still holds its vectors when this runs: nothing is taken out
-        ahead of the work. A VRID another record also holds is that record's
-        content, so it is left alone.
-        """
-        if not virtual_record_id or event_type not in (
-            EventTypes.UPDATE_RECORD.value,
-            EventTypes.REINDEX_RECORD.value,
-        ):
-            return
-        # An unreadable graph also answers []; raising lets the event retry rather
-        # than reading the failure as "nobody else holds this content".
-        try:
-            holders = await self.graph_provider.get_records_by_virtual_record_id(
-                virtual_record_id, raise_on_error=True
-            )
-        except Exception as e:
-            raise IndexingError(
-                "Could not tell whether another record shares this content",
-                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
-            ) from e
-        if set(holders or []) != {_record_key(doc)}:
-            return
-        pipeline = self._indexing_pipeline()
-        if pipeline is None:
-            # Completing anyway would leave the old content in the vector store for good.
-            raise IndexingError(
-                "No indexing pipeline to delete the previous vectors of an emptied record",
-                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
-            )
-        await pipeline.delete_points_for_virtual_record(
-            virtual_record_id, RecordContext.from_graph_document(doc)
+        await drop_previous_vectors_of_emptied_record(
+            graph_provider=self.graph_provider,
+            pipeline=self._indexing_pipeline(),
+            orchestrator=self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None),
+            doc=doc,
+            virtual_record_id=virtual_record_id,
+            event_type=event_type,
         )
-        # The VRID is kept, so without this the next diff would pair unchanged
-        # blocks with the points just deleted and embed nothing.
-        orchestrator = self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None)
-        try:
-            if orchestrator is None:
-                raise RuntimeError("no sink orchestrator to reset the reconciliation metadata")
-            org_id = doc.get("orgId")
-            await orchestrator.blob_storage.save_reconciliation_metadata(
-                org_id, _record_key(doc), virtual_record_id, ReconciliationMetadata().to_dict(),
-                document_path=await orchestrator.blob_storage.get_actual_content_path(org_id, virtual_record_id),
-                connector_id=doc.get("connectorId"),
-                record_group_id=doc.get("recordGroupId"),
-            )
-        except Exception as e:
-            raise IndexingError(
-                "Could not reset the stored block list of an emptied record",
-                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
-            ) from e
 
     async def mark_record_status(
         self,
@@ -1781,7 +1768,8 @@ class EventProcessor:
                 - signed_url: Signed URL to download the file
                 - connector_name: Name of the connector
                 - metadata_route: Route to get metadata
-                
+                - gateRoute: the reader the record handler's gate accepted the file for, if any
+
         Yields:
             Dict with 'event' key:
             - {'event': 'parsing_complete', 'data': {...}}
@@ -1811,6 +1799,8 @@ class EventProcessor:
                     "Event has no payload",
                     details={"event_type": event_type},
                 )
+            # The reader the record handler's gate accepted the file for, when it judged one.
+            gate_route = event_data.get("gateRoute")
             event_data = payload
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
@@ -1864,24 +1854,11 @@ class EventProcessor:
             record_version = event_data.get("version", 0)
             connector = event_data.get("connectorName", "")
             extension = event_data.get("extension", "unknown")
+            # Resolved by the record handler: the stored mime when the event names none.
             mime_type = event_data.get("mimeType", "unknown")
             origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
-            # A CODE_FILE's mime is not trustworthy: connectors that walk a git
-            # tree default it to text/plain for anything they do not recognise,
-            # and they do not always populate `extension`. Derive a separate
-            # extension for code dispatch and language detection — the original
-            # value must stay intact for reconciliation, tier, and generic dispatch.
-            code_ext = extension
-            if not code_ext or code_ext == "unknown":
-                file_path_raw = event_data.get("filePath") or ""
-                fp_base = file_path_raw.rsplit("/", 1)[-1]
-                rn_base = record_name.rsplit("/", 1)[-1]
-                if "." in fp_base and fp_base.rsplit(".", 1)[-1]:
-                    code_ext = fp_base.rsplit(".", 1)[-1].lower()
-                elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
-                    code_ext = rn_base.rsplit(".", 1)[-1].lower()
             file_content = event_data.get("buffer")
 
             # Connector streaming or JSON API responses may deliver already-parsed
@@ -1904,17 +1881,10 @@ class EventProcessor:
             )
             self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
             record_type = doc.get("recordType")
+            dispatch, code_ext, reads_as_code_file = self._read_plan(
+                record_type, mime_type, extension, event_data.get("filePath"), record_name, gate_route
+            )
             is_code = _is_code_file(mime_type, code_ext)
-            reads_as_code_file = self._reads_as_code_file(
-                record_type, mime_type, code_ext, record_name
-            )
-            dispatch = file_types.legacy_route(
-                mime_type, extension, code_extension=code_ext, reads_as_code_file=reads_as_code_file,
-                is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
-            )
-            if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:
-                # A docm, or a .log a repository stored as text/plain, is not source.
-                reads_as_code_file = False
             scans_for_secrets = self._scans_for_secrets(
                 record_type, reads_as_code_file=reads_as_code_file
             )
@@ -2304,13 +2274,21 @@ class EventProcessor:
                 else content_len
             )
             inspected = InspectedFacts()
+            # The reader that runs decides a heavy tier: a PDF labelled txt is parsed by the PDF reader. On the service
+            # pipeline that is the parser the service resolves from these labels, not the in-process one.
+            reader = (
+                file_types.format_tier(file_types.parse_format(mime_type, extension))
+                if self._use_service_pipeline()
+                else file_types.read_tier(dispatch)
+            )
+            parse_tier = reader_tier(extension, mime_type, reader)
             if wants_inspection(extension, mime_type, file_content):
                 # Before the parse slot: the page count and text layer correct the class the record was admitted
                 # under (a size is rarely known), so a 1000-page file never waits among the small ones.
                 yield PipelineEvent(
                     event=IndexingEvent.START_INSPECT,
                     data=PipelineEventData(
-                        record_id=record_id, tier=classify(extension, mime_type), size_bytes=size_bytes
+                        record_id=record_id, tier=parse_tier, size_bytes=size_bytes
                     ),
                 )
                 inspected = await inspect_facts(
@@ -2320,7 +2298,7 @@ class EventProcessor:
                 event=IndexingEvent.START_PARSING,
                 data=PipelineEventData(
                     record_id=record_id,
-                    tier=classify(extension, mime_type),
+                    tier=parse_tier,
                     size_bytes=size_bytes,
                     **(
                         {"pages": inspected.pages, "scanned": inspected.scanned}

@@ -831,6 +831,115 @@ components:
             mcp:write: Add, configure and authenticate MCP servers
             mcp:delete: Remove MCP servers and their credentials
   schemas:
+    ConnectorUserConnection:
+      type: object
+      description: One user's connection to a per-user connector. The credential is never included.
+      required: [userId, email, sourceUserId, sourceEmail, status, connectedAt]
+      properties:
+        userId:
+          type: string
+        email:
+          type: string
+          description: The user's PipesHub email
+        sourceUserId:
+          type: string
+          description: The account's ID at the source
+        sourceEmail:
+          type: string
+        workspaceId:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [active, revoked]
+          description: '`revoked` when the source refused the credential; the user must connect again.'
+        connectedAt:
+          type: integer
+          format: int64
+        lastCompleteListingAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: When a sync last read everything this account can open (epoch ms)
+        lastError:
+          type: string
+          nullable: true
+        method:
+          type: string
+          enum: [token, oauth]
+          description: '`token` when the user pasted a token, `oauth` when they signed in with the source.'
+    ConnectorUserConnectionStatus:
+      type: object
+      required: [connected, connection, signInAvailable]
+      properties:
+        connected:
+          type: boolean
+        signInAvailable:
+          type: boolean
+          description: True when users can sign in with the source (the connector uses an OAuth app); otherwise they paste a token.
+        connection:
+          allOf:
+            - $ref: '#/components/schemas/ConnectorUserConnection'
+          nullable: true
+    ConnectorUserInvite:
+      type: object
+      description: The invitations sent to one person to connect their account.
+      required: [firstSentAt, lastSentAt, sendCount, optedOut]
+      properties:
+        firstSentAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms; null when nothing was sent yet
+        lastSentAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms; null when nothing was sent yet
+        sendCount:
+          type: integer
+          description: Invitations and reminders sent so far (0 when the person opted out before any)
+        optedOut:
+          type: boolean
+          description: True when the person asked not to be reminded
+    ConnectorUserRosterPerson:
+      type: object
+      required: [name, email, sourceUserId, userId, status, connection, invite]
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: The name at the source, else the PipesHub name
+        email:
+          type: string
+        sourceUserId:
+          type: string
+          nullable: true
+          description: Null for a PipesHub user who is not in the source's member list
+        userId:
+          type: string
+          nullable: true
+          description: Null when no PipesHub account has this email
+        status:
+          type: string
+          enum: [connected, needs_reconnect, invited, not_invited, opted_out, no_account]
+        connection:
+          allOf:
+            - $ref: '#/components/schemas/ConnectorUserConnection'
+          nullable: true
+        invite:
+          allOf:
+            - $ref: '#/components/schemas/ConnectorUserInvite'
+          nullable: true
+    ConnectAccountLinkToken:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 300
+          description: The token from the emailed connect link
     McpAccessPolicy:
       type: object
       description: What an organization's admins allow on the inbound `/mcp` endpoint. Nothing saved means the defaults below.
@@ -867,6 +976,10 @@ components:
         - name
         - title
         - writes
+        - description
+        - arguments
+        - hints
+        - scopes
       properties:
         name:
           type: string
@@ -877,6 +990,59 @@ components:
         writes:
           type: boolean
           description: True for a tool that is left out while `allowWriteTools` is false.
+        description:
+          type: string
+          description: What the AI model reads before it picks the tool, as the MCP server publishes it. Written for the model, so it names arguments and other tools.
+        arguments:
+          type: array
+          description: The tool's arguments, flattened from the input schema it publishes. Empty for a tool that takes none.
+          items:
+            $ref: '#/components/schemas/McpAccessToolArgument'
+        hints:
+          type: object
+          additionalProperties: false
+          description: What the tool declares it does (MCP tool annotations). A hint the tool does not declare is false.
+          required: [readOnly, destructive, idempotent, openWorld]
+          properties:
+            readOnly:
+              type: boolean
+              description: It changes nothing.
+            destructive:
+              type: boolean
+              description: It can change or remove data, for example by running a connected action.
+            idempotent:
+              type: boolean
+              description: Calling it again with the same arguments has no further effect.
+            openWorld:
+              type: boolean
+              description: It reaches outside PipesHub, for example the web.
+        scopes:
+          type: array
+          description: The OAuth scopes an app or access token needs to call it. Empty for a tool that calls nothing in PipesHub.
+          items:
+            type: string
+          example: [kb:upload]
+    McpAccessToolArgument:
+      type: object
+      additionalProperties: false
+      required: [name, type, required]
+      properties:
+        name:
+          type: string
+          example: collectionId
+        type:
+          type: string
+          description: "`string`, `number`, `integer`, `boolean`, `object`, `enum`, `<type>[]` for a list, or `a|b` for a choice of types."
+          example: string
+        required:
+          type: boolean
+        description:
+          type: string
+        values:
+          type: array
+          description: The allowed values, for an enum or a list of one.
+          items:
+            type: string
     AIGatewayIdentityPolicy:
       type: object
       additionalProperties: false
@@ -3559,6 +3725,53 @@ components:
           type: string
         reason:
           type: string
+        createdAt:
+          type: string
+          format: date-time
+    AgentCallEvent:
+      type: object
+      description: One call made with an access token, or the calls of one minute rolled up.
+      required: [id, userId, tokenId, tokenKind, method, route, statusCode, durationMs, scopeDenied, count, createdAt]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        tokenId:
+          type: string
+          description: The id of the stored token (the id the token lists and revocation use). Never the token or a hash of it.
+        tokenKind:
+          type: string
+          enum: [pat, oauth, delegated]
+        oauthClientId:
+          type: string
+          description: Present for tokens issued to an OAuth application.
+        userAgent:
+          type: string
+          description: The product token of the `User-Agent` header.
+        channel:
+          type: string
+          description: The `X-PipesHub-Channel` header, when it is well formed.
+        method:
+          type: string
+        route:
+          type: string
+          description: The route template, with `:name` placeholders; never the URL or query string.
+        mcpTool:
+          type: string
+          description: The tool name, for an MCP `tools/call`.
+        statusCode:
+          type: integer
+        durationMs:
+          type: integer
+        scopeDenied:
+          type: boolean
+          description: The call was refused because the token lacked a required scope.
+        requestId:
+          type: string
+        count:
+          type: integer
+          description: How many calls this row stands for; above 1 only for rolled-up `GET` calls.
         createdAt:
           type: string
           format: date-time
@@ -18235,7 +18448,10 @@ components:
           enum:
             - sync
             - agent
-          description: '''sync'' flips data synchronization; ''agent'' flips use by agents'
+          description: '''sync'' is data synchronization; ''agent'' is use by agents'
+        enabled:
+          type: boolean
+          description: The state wanted. Omitted, the current state is flipped.
         fullSync:
           type: boolean
           description: When turning sync on, start from scratch
@@ -28971,6 +29187,124 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /agent-activity:
+    get:
+      tags:
+        - OAuth Provider
+      summary: List calls made with access tokens
+      description: |
+        The calls made in your organisation with a personal access token, an OAuth access token or
+        a service token, newest first. Organisation administrators only; the organisation is the
+        one on the credential. Calls made from a signed-in browser session are not recorded.
+
+        Every write (any method other than `GET`), every call that ended with status 400 or above,
+        and every MCP tool call is one row. Successful `GET` calls are rolled up into one row per
+        token, route and minute, with `count` giving how many calls it stands for.
+
+        A row keeps who made the call (user, token id and kind, OAuth client), the client's
+        user-agent product token and channel, the method, the route template (for example
+        `/api/v1/knowledgeBase/{kbId}/records` written with a `:kbId` placeholder), the MCP tool
+        name, the status, whether a scope was missing, the duration and the request id. Request and
+        response bodies, query strings, addresses and token values are never stored. Rows are kept
+        for 30 days.
+
+        Pages are cut by an opaque `cursor`: pass the `nextCursor` of one page to get the next.
+      operationId: listAgentActivity
+      security:
+        - bearerAuth: []
+        - oauth2: [org:admin]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Only rows created at or after this time (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Only rows created at or before this time (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+        - name: userId
+          in: query
+          required: false
+          description: Only calls made as this user.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+        - name: tokenId
+          in: query
+          required: false
+          description: Only calls made with this token (its id in the token lists).
+          schema:
+            type: string
+            maxLength: 128
+        - name: tokenKind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pat, oauth, delegated]
+        - name: client
+          in: query
+          required: false
+          description: Only calls from this client, as named by the product token of its `User-Agent`.
+          schema:
+            type: string
+            maxLength: 80
+        - name: status
+          in: query
+          required: false
+          description: Only calls whose status was in this class.
+          schema:
+            type: string
+            enum: [2xx, 4xx, 5xx]
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page.
+          schema:
+            type: string
+            maxLength: 100
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: One page of calls
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentCallEvent'
+                  nextCursor:
+                    type: string
+                    description: Present when there are older rows.
+        '400':
+          description: A filter or the cursor is malformed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not an organisation administrator, or the token lacks `org:admin`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /service-account-delegations/capability:
     get:
       tags:
@@ -33010,6 +33344,7 @@ paths:
             - `password` given for an address outside `@acme-demo.example`
             - `password` fails the complexity rules or is longer than 72 bytes
             - A live account already uses this `email` (`A user with this email already exists`)
+            - Creating an admin would exceed the organization limit of 5 admins
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -33042,6 +33377,23 @@ paths:
             Internal server error (DB save failure or event publish failure).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." No account was created. Retry after the
+            `Retry-After` seconds.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the account
+            was saved (writing its credential, its everyone-group membership or its creation event), the account is
+            removed again; if that removal fails too, the account stays.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -33409,6 +33761,24 @@ paths:
             Internal server error (DB save or event publish failure, including an `address.country` outside the accepted list, which the database refuses).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." The account was not changed (a
+            requested email change's verification mail may already have been sent). Retry after the `Retry-After`
+            seconds. "This administrator change took too long and was not made. Try again." is a demotion that
+            outlived its turn: the account was not changed either, and this 503 is sent without `Retry-After`.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the account
+            was saved (publishing the update event), the saved fields stay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -34196,6 +34566,24 @@ paths:
             - A `groupIds` entry that is not an ObjectId (the group update fails)
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." No account was restored, created or
+            promoted (the restore activity of removed addresses in the batch may already be recorded). Retry after the
+            `Retry-After` seconds.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the accounts
+            were written (group memberships, creation events, invite mail), the restored, created and promoted
+            accounts stay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -40790,6 +41178,78 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/purge-batch:
+    post:
+      tags:
+        - Internal Storage
+      summary: Remove the paid-result folders of up to 100 records in one call (service-to-service)
+      description: |
+        The same removal as `DELETE /document/internal/paid-results/{recordId}` without `before`, for many
+        records at once, so that a re-purge of a large delete costs one request per 100 records instead of
+        one per record. The organization is the scoped token's; a body that names one (or any other field)
+        is refused. Each record gets its own result, so one folder that cannot be removed never hides the
+        others: the caller repeats only the ones that failed. A record with nothing stored is a success,
+        and so is a repeat.
+      operationId: internalPaidResultsPurgeBatch
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - recordIds
+              properties:
+                recordIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  uniqueItems: true
+                  items:
+                    type: string
+                    pattern: '^[A-Za-z0-9_-]{1,128}$'
+                    not:
+                      const: org
+      responses:
+        '200':
+          description: One result per requested record, in request order. The call is 200 even when some records failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - results
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - recordId
+                        - purged
+                      properties:
+                        recordId:
+                          type: string
+                        purged:
+                          type: boolean
+                        error:
+                          type: string
+                          description: Present when `purged` is false.
+        '400':
+          description: A record id is not valid, one is repeated, there are none or more than 100, or the body has a field other than `recordIds` (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /document/internal/paid-results/{recordId}/purge-cutoff:
     post:
       tags:
@@ -58455,6 +58915,673 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/mine:
+    get:
+      tags:
+        - Connector Instances
+      summary: List the per-user connectors you can connect your account to
+      description: |
+        The caller's organization's active team connectors in per-user mode, each with whether
+        the caller has connected their own account. Only ids, names and types are returned. Any
+        member of the organization may call it.
+      operationId: listMyPerUserConnectors
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The per-user connectors
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connectors]
+                properties:
+                  connectors:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/ConnectorUserConnectionStatus'
+                        - type: object
+                          required: [connectorId, name, type, optedOut, invited]
+                          properties:
+                            connectorId:
+                              type: string
+                            name:
+                              type: string
+                            type:
+                              type: string
+                            optedOut:
+                              type: boolean
+                              description: True when the caller asked not to be reminded to connect.
+                            invited:
+                              type: boolean
+                              description: True when an admin has asked the caller to connect.
+  /connectors/{connectorId}/user-access:
+    parameters:
+      - name: connectorId
+        in: path
+        required: true
+        description: Connector instance ID (`_key` of the instance).
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+    get:
+      tags:
+        - Connector Instances
+      summary: Get your own connection to a per-user connector
+      description: |
+        A team connector in per-user mode shows each user only what the source returns to that
+        user's own account. This returns whether the caller has connected their account, without
+        the credential. Any member of the connector's organization may call it. A connector that
+        does not exist, belongs to another organization, or is not in per-user mode gets `404`.
+      operationId: getMyConnectorConnection
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The caller's connection, if any
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorUserConnectionStatus'
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Connector Instances
+      summary: Connect your own account to a per-user connector
+      description: |
+        Stores the caller's own credential for the connector's source (for Notion, a personal
+        access token). It is accepted only when it belongs to the same workspace as the connector
+        and to an account whose email is the caller's PipesHub email, and when no other user has
+        connected that account. A sync is requested so the caller's content appears soon.
+      operationId: connectMyConnectorAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                  description: The caller's own credential for the source. It is never returned.
+      responses:
+        '200':
+          description: Connected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorUserConnectionStatus'
+        '400':
+          description: The credential cannot be connected (another workspace or person, not a personal credential, or refused by the source)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Another user has already connected this source account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The source could not be reached to check the credential. Safe to retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - Connector Instances
+      summary: Disconnect your own account from a per-user connector
+      description: |
+        Deletes the caller's credential and removes their access to the connector's content at
+        once. Content no other connected user can open is deleted at the next sync.
+      operationId: disconnectMyConnectorAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: Disconnected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorUserConnectionStatus'
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/oauth/authorize:
+    parameters:
+      - name: connectorId
+        in: path
+        required: true
+        description: Connector instance ID (`_key` of the instance).
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+    get:
+      tags:
+        - Connector Instances
+      summary: Start signing in to a per-user connector with your own account
+      description: |
+        Returns the source's sign-in URL for the caller, using the connector's own OAuth app. The
+        source sends the browser back to the connector OAuth callback page, which completes the
+        sign-in through `GET /connectors/oauth/callback`; only the user who started the sign-in can
+        complete it. The account is checked as for `POST /connectors/{connectorId}/user-access`.
+        For Notion, the user picks the pages to share, and only those (and their sub-pages) reach them.
+      operationId: startMyConnectorSignIn
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: The sign-in URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl:
+                    type: string
+                    format: uri
+        '400':
+          description: The connector has no OAuth app to sign in with; connect with a token instead
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/users:
+    get:
+      tags:
+        - Connector Instances
+      summary: List who has connected to a per-user connector
+      description: Org admins only. Credentials are never returned. Anyone else gets `404`.
+      operationId: listConnectorUserConnections
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      responses:
+        '200':
+          description: Every user's connection
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connections]
+                properties:
+                  connections:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConnectorUserConnection'
+        '404':
+          description: Not an admin, or no per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/users/{userId}:
+    delete:
+      tags:
+        - Connector Instances
+      summary: Remove a user's connection to a per-user connector
+      description: Org admins only. Deletes the user's credential and removes their access at once.
+      operationId: removeConnectorUserConnection
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed:
+                    type: boolean
+        '404':
+          description: Not an admin, or no per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/roster:
+    get:
+      tags:
+        - Connector Instances
+      summary: List everyone who could connect to a per-user connector
+      description: |
+        Org admins only; anyone else gets `404`. Each person in the source's member list (read at
+        the last sync), plus anyone who connected or was invited, with their connection and
+        invitation state. A PipesHub account that is in none of those is not listed, and neither is
+        the caller. Sorted by status (`needs_reconnect`, `not_invited`, `invited`, `opted_out`,
+        `connected`, `no_account`), then by name or email. Returns one page; `counts` covers everyone
+        and `total` is how many match `q`. Credentials are never returned.
+      operationId: getConnectorUserRoster
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+        - name: q
+          in: query
+          required: false
+          description: Only people whose name or email contains this (case-insensitive)
+          schema:
+            type: string
+            maxLength: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: The roster
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [membersUpdatedAt, people, counts, total]
+                properties:
+                  membersUpdatedAt:
+                    type: integer
+                    format: int64
+                    nullable: true
+                    description: When a sync last read the source's member list (epoch ms); null if never
+                  people:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConnectorUserRosterPerson'
+                  counts:
+                    type: object
+                    description: People per status, over everyone (not only this page or `q`)
+                    additionalProperties:
+                      type: integer
+                  total:
+                    type: integer
+                    description: How many people match `q` (everyone without it)
+        '404':
+          description: Not an admin, or no per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/invites:
+    post:
+      tags:
+        - Connector Instances
+      summary: Ask people to connect their account to a per-user connector
+      description: |
+        Org admins only; anyone else gets `404`. Sends each person an in-app notification and an
+        email (best effort). `all` reaches every person on the roster with a PipesHub account who
+        is not connected, has not opted out and was not sent anything in the last day; listed
+        `userIds` also reach people who opted out.
+      operationId: inviteConnectorUsers
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [userIds]
+                  properties:
+                    userIds:
+                      type: array
+                      minItems: 1
+                      maxItems: 500
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 128
+                - type: object
+                  additionalProperties: false
+                  required: [all]
+                  properties:
+                    all:
+                      type: boolean
+                      enum: [true]
+      responses:
+        '200':
+          description: The invitations sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent, emailed, queued, skipped]
+                properties:
+                  sent:
+                    type: integer
+                  emailed:
+                    type: integer
+                    nullable: true
+                    description: |
+                      Lower than `sent` when email is not set up or failed; the in-app notification still went.
+                      Null when `queued`, as the emails are still being sent.
+                  queued:
+                    type: boolean
+                    description: True for `all`, which is sent in the background.
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      required: [userId, reason]
+                      properties:
+                        userId:
+                          type: string
+                        reason:
+                          type: string
+                          enum: [connected, not_found, opted_out, recently_sent, not_sent]
+        '400':
+          description: Invalid body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not an admin, or no per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/user-access/reminders:
+    post:
+      tags:
+        - Connector Instances
+      summary: Turn reminders to connect your account on or off
+      description: Sets "Don't remind me" for the caller on this connector.
+      operationId: setMyConnectorReminders
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [optedOut]
+              properties:
+                optedOut:
+                  type: boolean
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [optedOut]
+                properties:
+                  optedOut:
+                    type: boolean
+        '404':
+          description: No per-user connector with this ID in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/link/info:
+    post:
+      tags:
+        - Connector Instances
+      summary: Describe an emailed connect link
+      description: Public; the link token is the credential. Rate limited per address.
+      operationId: getConnectAccountLinkInfo
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectAccountLinkToken'
+      responses:
+        '200':
+          description: The connector and account the link is for
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connectorName, sourceType, email, connected, signInAvailable, expiresAt]
+                properties:
+                  connectorName:
+                    type: string
+                  sourceType:
+                    type: string
+                  email:
+                    type: string
+                  connected:
+                    type: boolean
+                  signInAvailable:
+                    type: boolean
+                  expiresAt:
+                    type: integer
+                    format: int64
+                    description: Epoch ms
+        '404':
+          description: The link has expired or was already used
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/link/authorize:
+    post:
+      tags:
+        - Connector Instances
+      summary: Start signing in from an emailed connect link
+      description: Public; the link token is the credential. Returns the source's sign-in URL. Rate limited per address.
+      operationId: authorizeConnectAccountLink
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectAccountLinkToken'
+      responses:
+        '200':
+          description: The sign-in URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl:
+                    type: string
+                    format: uri
+        '400':
+          description: The connector has no OAuth app to sign in with
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The link has expired or was already used
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/link/complete:
+    post:
+      tags:
+        - Connector Instances
+      summary: Finish a sign-in started from an emailed connect link
+      description: |
+        Public; called by the OAuth callback page with the source's `code` and `state`. Always
+        answers 200 with whether the account was connected. Rate limited per address.
+      operationId: completeConnectAccountLink
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, state]
+              properties:
+                code:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+                state:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+      responses:
+        '200':
+          description: The outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success]
+                properties:
+                  success:
+                    type: boolean
+                  connectorName:
+                    type: string
+                  error_message:
+                    type: string
+        '429':
+          description: Too many requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/user-access/link/opt-out:
+    post:
+      tags:
+        - Connector Instances
+      summary: Stop reminders from an emailed connect link
+      description: Public; the link token is the credential. Rate limited per address.
+      operationId: optOutConnectAccountLink
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectAccountLinkToken'
+      responses:
+        '200':
+          description: Reminders stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [optedOut]
+                properties:
+                  optedOut:
+                    type: boolean
+        '404':
+          description: The link has expired or was already used
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/permissions/filter:
     patch:
       tags:
@@ -60068,9 +61195,12 @@ paths:
         - Connector Control
       summary: Toggle connector sync or agent
       description: |
-        Flip a connector's sync or agent use: each call turns it on when it is off and
-        off when it is on. Read <code>isActive</code> / <code>isAgentActive</code> first. Turning sync on
-        starts the first sync.<br><br>
+        Turn a connector's sync or agent use on or off. Send <code>enabled</code> with the state you
+        want: a call for the state the connector is already in changes nothing and answers
+        <code>changed: false</code>, so a request can be sent again safely after a dropped connection
+        or a timeout. Without <code>enabled</code> the call flips the current state (on when off, off
+        when on); sent twice, that turns the connector back, so read <code>isActive</code> /
+        <code>isAgentActive</code> first. Turning sync on starts the first sync.<br><br>
         <b>Toggle Types:</b><br>
         <ul>
         <li><code>sync</code> - data synchronization</li>
@@ -60113,7 +61243,7 @@ paths:
               $ref: '#/components/schemas/ConnectorToggleRequest'
       responses:
         '200':
-          description: Flipped
+          description: The connector is in the requested state
           content:
             application/json:
               schema:
@@ -60121,6 +61251,12 @@ paths:
                 properties:
                   success:
                     type: boolean
+                  enabled:
+                    type: boolean
+                    description: The state sync or agent use is in now
+                  changed:
+                    type: boolean
+                    description: False when the connector was already in the requested state
                   message:
                     type: string
                 required:
@@ -60160,6 +61296,13 @@ paths:
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '504':
+          description: The connector service did not answer in time. The change may still have
+            been made; read the connector before sending a flip again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -60323,11 +61466,15 @@ paths:
                       Only when `success` is `false`. The provider's own code when
                       it was passed in `error`, otherwise one of `invalid_state`,
                       `instance_not_found`, `config_not_found`,
-                      `oauth_config_fetch_error`, `invalid_token` or `server_error`.
+                      `oauth_config_fetch_error`, `invalid_token`, `server_error`, or
+                      `temporarily_unavailable` (PipesHub's own storage did not respond; try again). The
+                      connector's signed-in state is left as it was (an existing sign-in is not cleared), but if
+                      only the final status write failed, the new tokens may already be saved, so don't assume
+                      the old token is still in use.
                     example: "access_denied"
                   errorMessage:
                     type: string
-                    description: Only when `error` is `server_error`. A readable reason for the failed token exchange.
+                    description: Only when `error` is `server_error` or `temporarily_unavailable`. A readable reason for the failed sign-in.
                 required:
                   - success
         '400':
@@ -60876,21 +62023,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '404':
+        '500':
           description: |
-            Google Workspace OAuth is not configured for the organization (client
-            ID or secret missing). Checked before `tempCode` is read, so a body
-            without `tempCode` gets this answer too.
+            The Google Workspace configuration could not be read, or the
+            credentials could not be stored. Also when Google Workspace OAuth is
+            not configured for the organization (client ID or secret missing):
+            that is checked before `tempCode` is read, so a body without
+            `tempCode` gets this answer too.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '500':
+        '503':
           description: |
-            The Google Workspace configuration could not be read, or the
-            credentials could not be stored.
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+            The sync could not be queued (the message broker is unavailable), so nothing was synced.
+            The Google tokens are kept, but the authorization code has been used: the client restarts the
+            Google consent flow and calls this route with the new code, which starts the sync.
           content:
             application/json:
               schema:
@@ -72404,7 +73554,7 @@ paths:
         deleted model, and the empty store is rebuilt for the replacement model.
 
         The agent usage check is fail-closed: when it cannot be made, the model is not
-        deleted (500). Role assignments that point at the deleted model are removed. The
+        deleted (503). Role assignments that point at the deleted model are removed. The
         request body and the query string are not read.
       operationId: deleteAIModelProvider
       security:
@@ -72529,10 +73679,18 @@ paths:
                 error:
                   code: HTTP_CONFLICT
                   message: "Cannot delete model 'gpt-4o-mini': currently in use by agent 'Research Assistant'. Remove it from the agent first."
+        '503':
+          description: |
+            The agent usage check could not be made or did not succeed (unreachable, timed out, a non-200
+            answer, or an answer that is not a list of agents), so the model is kept: `HTTP_SERVICE_UNAVAILABLE`,
+            "We couldn't check which agents use this model, so it wasn't deleted. Please try again in a few seconds."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The agent usage check could not be made or did not succeed, so the model is kept
-            (`Cannot delete this model: unable to verify if it is in use by agents...`).
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73322,6 +74480,15 @@ paths:
                         creatorName:
                           type: string
                           nullable: true
+        '503':
+          description: |
+            The agent usage check could not be made or did not succeed (unreachable, timed out, a non-200
+            answer, or an answer that is not a list of agents), so the provider is kept: `HTTP_SERVICE_UNAVAILABLE`,
+            "We couldn't check which agents use this web search provider, so it wasn't deleted. Please try again in a few seconds."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error.
@@ -73858,7 +75025,7 @@ paths:
       tags:
         - MCP
       summary: List the tools /mcp can serve
-      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, for choosing which ones to turn off. Admins only.
+      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, with what each one tells the AI model, its arguments, the hints it declares and the OAuth scopes it needs, for choosing which ones to turn off. Admins only.
       operationId: listMcpAccessTools
       security:
         - bearerAuth: []
@@ -79042,8 +80209,9 @@ paths:
 
         The provider is trimmed and lower-cased before matching. A provider
         that is not one of the supported ones (`duckduckgo`, `serper`,
-        `tavily`, `exa`) is not an error: the list is simply empty. The list
-        is also empty when the AI backend answers with a non-200 status.
+        `tavily`, `exa`) is not an error: the list is simply empty. A check
+        that fails is an error, never an empty list: the AI backend's `4xx` is
+        passed on with its words, a `5xx` is a `500`, and a `503` stays a `503`.
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
@@ -79097,9 +80265,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The AI backend could not be reached.
+            The AI backend could not read which agents use it.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The AI backend could not be reached or is temporarily unavailable. Try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The AI backend did not answer in time. Try again.
           content:
             application/json:
               schema:
@@ -79116,8 +80296,9 @@ paths:
 
         An agent matches when one of its model entries equals `model_key` or
         starts with `model_key` followed by `_`. An unknown key is not an
-        error: the list is simply empty. The list is also empty when the AI
-        backend answers with a non-200 status.
+        error: the list is simply empty. A check that fails is an error, never
+        an empty list: the AI backend's `4xx` is passed on with its words, a
+        `5xx` is a `500`, and a `503` stays a `503`.
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
@@ -79170,9 +80351,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The AI backend could not be reached.
+            The AI backend could not read which agents use it.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The AI backend could not be reached or is temporarily unavailable. Try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The AI backend did not answer in time. Try again.
           content:
             application/json:
               schema:

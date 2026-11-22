@@ -21,6 +21,8 @@ import {
   oid,
 } from './chat-test-harness'
 import { AGENT_KEY, ORG, OWNER, appConfig, seedConversation } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /**
  * The four non-streaming chat routes, run end to end against the in-memory
@@ -140,6 +142,9 @@ async function run(
 }
 
 describe('es_controller non-streaming chat routes', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })

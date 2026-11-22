@@ -1,0 +1,10 @@
+{
+  "name": "pipeshub-native-launcher",
+  "private": true,
+  "type": "module",
+  "description": "Starts PipesHub without Docker: PostgreSQL, the schema steps, the services and the API. Runs on Node 24.12 or later (TypeScript without a build step).",
+  "engines": { "node": ">=24.12" },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 --test-timeout=90000 test/*.test.ts"
+  }
+}

@@ -8,9 +8,11 @@ import { getMailLogRepository } from '../../../libs/repositories/mail-log';
 import { forOrg, getCurrentOrgId } from '../../../libs/context/orgContext';
 import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { getEmailContent } from '../utils/email-content';
+import { classifyError, levelFor } from '../../../libs/utils/error-class';
 import { smtpTransportOptions } from '../utils/smtp-transport';
 import {
   classifyMailError,
+  mailErrorClass,
   MailSendResult,
   SMTP_CONNECTION_ERROR_CODES,
   SMTP_DEADLINE_ERROR_CODE,
@@ -62,6 +64,8 @@ export interface MailSendHeaders {
   'List-Unsubscribe'?: string;
   'List-Unsubscribe-Post'?: string;
   'Auto-Submitted'?: string;
+  /** The message's origination date, for mail sent after the moment it describes. Unset, the transport uses the time of sending. */
+  Date?: Date;
 }
 
 const ALLOWED_MAIL_HEADERS = [
@@ -69,7 +73,15 @@ const ALLOWED_MAIL_HEADERS = [
   'List-Unsubscribe',
   'List-Unsubscribe-Post',
   'Auto-Submitted',
+  'Date',
 ] as const;
+/**
+ * How far a caller's `Date` may be from the time of sending. Mail clients sort by `Date`, so a date far in the past buries the message and
+ * one in the future pins it above newer mail; spam filters also score a `Date` that is days older than its delivery. The past bound
+ * covers a send retried for a day; the future bound covers clock skew between hosts.
+ */
+export const MAX_MESSAGE_DATE_AGE_MS = 48 * 60 * 60 * 1000;
+export const MAX_MESSAGE_DATE_AHEAD_MS = 5 * 60 * 1000;
 const MAX_HEADER_VALUE_LENGTH = 998;
 // `<left@right>`, each side a dot-atom (RFC 5322 3.6.4): one or more nonempty atoms joined by single dots, so `a..b`, `.a` and `a.` are refused.
 // The lookaheads keep the length bounds: the left side at most 200 characters, the right side at most 253.
@@ -79,19 +91,37 @@ const MESSAGE_ID_PATTERN =
 /** The nodemailer options for the extra headers, or the reason they are refused. */
 export function buildMailHeaders(
   extra?: MailSendHeaders,
+  now: number = Date.now(),
 ):
-  { messageId?: string; headers?: Record<string, string> } | { error: string } {
+  | { messageId?: string; date?: Date; headers?: Record<string, string> }
+  | { error: string } {
   if (!extra) {
     return {};
   }
   const out: Record<string, string> = {};
   let messageId: string | undefined;
+  let date: Date | undefined;
   for (const [name, value] of Object.entries(extra)) {
     if (!(ALLOWED_MAIL_HEADERS as readonly string[]).includes(name)) {
       return { error: 'Mail header is not allowed' };
     }
     if (value === undefined) {
       // An optional header left unset is an omitted header, not an invalid one.
+      continue;
+    }
+    if (name === 'Date') {
+      if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+        return { error: 'Date is not valid' };
+      }
+      const ahead = value.getTime() - now;
+      if (
+        ahead < -MAX_MESSAGE_DATE_AGE_MS ||
+        ahead > MAX_MESSAGE_DATE_AHEAD_MS
+      ) {
+        return { error: 'Date is too far from the time of sending' };
+      }
+      // a copy: the send awaits the stored settings before the transport reads it, and a caller's later change must not reach the message
+      date = new Date(value.getTime());
       continue;
     }
     if (
@@ -113,6 +143,7 @@ export function buildMailHeaders(
   }
   return {
     ...(messageId ? { messageId } : {}),
+    ...(date ? { date } : {}),
     ...(Object.keys(out).length ? { headers: out } : {}),
   };
 }
@@ -226,9 +257,11 @@ export class MailSenderService {
     // cooldown trips straight back instead of needing N more failures.
     if (this.circuit.failures >= SMTP_CIRCUIT_FAILURE_THRESHOLD) {
       this.circuit.openUntil = Date.now() + SMTP_CIRCUIT_COOLDOWN_MS;
-      this.logger.error('SMTP server unreachable; pausing sends', {
-        consecutiveFailures: this.circuit.failures,
-        cooldownMs: SMTP_CIRCUIT_COOLDOWN_MS,
+      // The server's fault, not ours: WARNING (`unavailable`); the jobs it fails report their own outcome.
+      this.logger.warn('SMTP server unreachable; pausing sends', {
+        error_class: 'unavailable',
+        consecutive_failures: this.circuit.failures,
+        cooldown_ms: SMTP_CIRCUIT_COOLDOWN_MS,
       });
     }
   }
@@ -272,9 +305,10 @@ export class MailSenderService {
             this.logger.warn(
               'SMTP send completed after deadline; skipped retry to avoid duplicate',
             ),
+          // The class only: the server's reply quotes the recipient.
           (err) =>
             this.logger.warn('SMTP send failed after deadline', {
-              error: err instanceof Error ? err.message : String(err),
+              error_class: mailErrorClass(err),
             }),
         );
       }
@@ -289,13 +323,21 @@ export class MailSenderService {
    * spend the send budget or turn a delivery into a failed, retried send.
    */
   private recordAudit(bodyData: MailBody, smtpConfig: SmtpConfig): void {
-    const logFailure = (persistError: unknown) =>
-      this.logger.error('Mail sent but audit record failed to save', {
-        error:
-          persistError instanceof Error
-            ? persistError.message
-            : String(persistError),
-      });
+    // The class and type only: a store's error message can quote the record it refused, recipients included.
+    const logFailure = (persistError: unknown) => {
+      const errorClass = classifyError(persistError);
+      this.logger[levelFor(errorClass)](
+        'Mail sent but audit record failed to save',
+        {
+          error_class: errorClass,
+          error_type:
+            persistError instanceof Error
+              ? persistError.name
+              : typeof persistError,
+          outcome: 'failure',
+        },
+      );
+    };
     try {
       const write = (): Promise<void> =>
         getMailLogRepository().record({
@@ -327,7 +369,11 @@ export class MailSenderService {
   ): Promise<MailSendResult> {
     const mailHeaders = buildMailHeaders(extraHeaders);
     if ('error' in mailHeaders) {
-      return { status: 'permanent', error: mailHeaders.error };
+      return {
+        status: 'permanent',
+        error: mailHeaders.error,
+        errorClass: 'internal',
+      };
     }
     let smtpConfig = requestedConfig;
     if (this.readStoredSmtpConfig) {
@@ -335,21 +381,22 @@ export class MailSenderService {
       try {
         stored = await this.readStoredSmtpConfig();
       } catch (error) {
-        this.logger.warn(
+        // DEBUG: every attempt reads the store, and the job's mail.send.end reports the outcome (`unavailable`).
+        this.logger.debug(
           'Could not read the stored SMTP settings before sending',
-          {
-            error: error instanceof Error ? error.message : String(error),
-          },
+          { error },
         );
         return {
           status: 'transient',
           error: 'Could not read the SMTP settings',
+          errorClass: 'unavailable',
         };
       }
       if (!stored) {
         return {
           status: 'permanent',
           error: 'Email is turned off or not configured',
+          errorClass: 'misconfigured',
         };
       }
       // The caller's copy can predate a host or credential change saved on another replica.
@@ -369,8 +416,8 @@ export class MailSenderService {
           : typeof error === 'string'
             ? error
             : 'Failed to render email template';
-      this.logger.error('Mail template error', { error: message });
-      return { status: 'permanent', error: message };
+      // Not logged here: the caller reports the outcome once.
+      return { status: 'permanent', error: message, errorClass: 'internal' };
     }
 
     const key = smtpConfigKey(smtpConfig);
@@ -380,6 +427,7 @@ export class MailSenderService {
         status: 'unavailable',
         problem: 'unreachable',
         error: `SMTP server unreachable; sending paused until ${new Date(openUntil).toISOString()}`,
+        errorClass: 'unavailable',
       };
     }
 
@@ -419,18 +467,29 @@ export class MailSenderService {
         // The server answered, so it is reachable: the streak is not consecutive.
         this.recordSuccess(key);
       }
+      // Not logged here: the caller reports the outcome once, and the message (the server's reply) quotes the recipient.
+      const errorClass = mailErrorClass(error);
+      const replyCode = Number(
+        (error as { responseCode?: unknown } | null)?.responseCode,
+      );
+      const smtpCode =
+        Number.isInteger(replyCode) && replyCode >= 200 && replyCode < 600
+          ? replyCode
+          : undefined;
       if (code === SMTP_DEADLINE_ERROR_CODE) {
-        this.logger.error('Mail send deadline exceeded; not retrying', {
-          error: message,
-        });
-        return { status: 'indeterminate', error: message };
+        return { status: 'indeterminate', error: message, errorClass };
       }
       // An unknown template is a caller bug; replaying it fails identically.
       const kind =
         typeof error === 'string' ? 'permanent' : classifyMailError(error);
       const problem = smtpProblemOf(error);
-      this.logger.error('Mail send error', { error: message, kind, problem });
-      return { status: kind, error: message, ...(problem && { problem }) };
+      return {
+        status: kind,
+        error: message,
+        errorClass,
+        ...(smtpCode !== undefined && { smtpCode }),
+        ...(problem && { problem }),
+      };
     }
   }
 }

@@ -115,6 +115,7 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -2250,7 +2251,8 @@ class RecordEventHandler(BaseEventService):
                         )
                     elif payload.get("phase") == repurge_window.PHASE_HOP:
                         await repurge_window.handle_page_hop(
-                            self.producer, batch_org, payload, purge=paid_cache.purge_record, loop=self._producer_loop,
+                            self.producer, batch_org, payload, purge=paid_cache.purge_record, purge_many=paid_cache.purge_records,
+                            loop=self._producer_loop,
                         )
                     else:
                         raise repurge_window.BatchPayloadError("purgePaidResultsBatch has no known phase")
@@ -2666,11 +2668,19 @@ class RecordEventHandler(BaseEventService):
                 for field in ("recordName", "origin", "version", "filePath"):
                     if payload.get(field) is None and record.get(field) is not None:
                         payload[field] = record[field]
-                if extension in (None, "", "unknown") and record.get("extension"):
-                    extension = payload["extension"] = record["extension"]
                 begin_run(ParseNowRun(store_only=store_only, content_rev=record.get("contentRev")))
                 # A marker left by an earlier attempt must not read as this one's outcome.
                 await self._mark_parse_now(record_id, record, ParseNowStatus.IN_PROGRESS)
+
+            # Parse-now, recovery and republish build their event from the RECORDS document, which has no extension:
+            # a file's is on its FILES document. Read before anything is purged and before the budget and the gate use
+            # it. An outage raises (retried) rather than reading as "no extension", which would refuse or misjudge it.
+            if extension in (None, "", "unknown") and record.get("recordType") == RecordTypes.FILE.value:
+                file_doc = await self.event_processor.graph_provider.get_document(
+                    record_id, CollectionNames.FILES.value, raise_on_error=True
+                )
+                if file_doc and file_doc.get("extension"):
+                    extension = payload["extension"] = file_doc["extension"]
 
             # After the parse-now refusal above, which writes nothing: a refused event never purges.
             if paid_cache_run.refresh_requested(payload):
@@ -2706,7 +2716,10 @@ class RecordEventHandler(BaseEventService):
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
-                mime_type = record.get("mimeType") or "unknown"
+                # The dispatch reads the payload's mime: it must be the one judged here.
+                mime_type = payload["mimeType"] = record.get("mimeType") or "unknown"
+            # The consumer sized the budget from the event's labels; the parsing client sizes it from these.
+            record_budget.resize_to(extension, mime_type)
 
             # CODE_FILE records always carry text/plain as their mime type, so the
             # mime-based extension fallback below would resolve to "txt" for every
@@ -2777,6 +2790,7 @@ class RecordEventHandler(BaseEventService):
                 record_name=payload.get("recordName"),
                 is_code_file=is_code_file,
                 code_file_extension=code_file_extension,
+                file_path=payload.get("filePath"),
                 size_bytes=known_size,
                 disabled=await self._disabled_file_types(),
             )
@@ -2820,6 +2834,9 @@ class RecordEventHandler(BaseEventService):
                 file_types.TEXT_LOG_HARD_LIMIT_BYTES if decision.limited_as is not None else None
             )
 
+            # The same payload object on either download path; the gate's reader goes with it.
+            event_data_for_processor = {"eventType": event_type, "payload": payload, "gateRoute": decision.route}
+
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
 
@@ -2847,10 +2864,6 @@ class RecordEventHandler(BaseEventService):
                 else:
                     payload["buffer"] = response
                     note(size_bytes=len(response))
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload
-                    }
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
@@ -2908,11 +2921,6 @@ class RecordEventHandler(BaseEventService):
                         return
                     if is_deferred(record):
                         await self._end_rate_limit_wait(record_id)
-
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload
-                    }
 
                     event_data_for_processor["payload"]["buffer"] = response["data"]
                     if isinstance(response["data"], (bytes, bytearray)):

@@ -83,6 +83,11 @@ It is not needed for the cost: the check is a fixed statement already.
   child past the bound.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
 - **One request asks about a row once** (a memo shared by the listing and the arrows).
+- **A numbered page** is reached by reading the rows before it, 1,000 at a time (`kh_browse_skip_rows`), then the page. Those reads decide
+  the listing (steps 1-5) once between them and skip step 7, since none of their rows is shown (`KH_SKIP_READS`, set by
+  `KnowledgeHubService._walk_pages` for that request alone and keyed by the viewer's access). The page itself decides afresh, so page 50 costs
+  two decisions, not fifty, and lists only what the viewer may open when it is read
+  (`tests/integration/graph_db/test_kh_split_numbered_pages_real_neo4j.py`).
 
 Shortcuts, each bounded by the above:
 

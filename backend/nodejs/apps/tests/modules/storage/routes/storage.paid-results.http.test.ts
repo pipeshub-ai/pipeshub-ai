@@ -21,6 +21,7 @@ import { scopedStorageServiceJwtGenerator } from '../../../../src/libs/utils/cre
 import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeKeyValueStore } from '../../knowledge_base/routes/kb-http-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 const JWT_SECRET = 'paid-results-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'paid-results-http-test-scoped-secret'
@@ -126,12 +127,14 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     baseUrl = `${origin}/api/v1/document`
     kv.values.set(ENDPOINTS_KEY, JSON.stringify({ cm: { endpoint: backend.url }, storage: { endpoint: origin } }))
+    registerUpstreams({ nodejs: [backend.url, origin] })
     kv.changed(storageEtcdPaths)
   })
 
   afterEach(async () => {
     kv.changed(storageEtcdPaths)
     sinon.restore()
+    registerUpstreams({})
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await backend.stop()
     fs.rmSync(home, { recursive: true, force: true })
@@ -235,6 +238,100 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect(filesOnDisk()).to.deep.equal(
         [onDisk(ORG_A, REC, page('c')), onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
       )
+    })
+
+    it('a batch purge removes the named records\' folders and nothing else, with one result per id in request order', async () => {
+      const purged = await call('POST', '/internal/paid-results/purge-batch', { recordIds: [REC_2, 'never-stored', REC] })
+      expect(purged).to.deep.equal({
+        status: 200,
+        body: { results: [
+          { recordId: REC_2, purged: true },
+          { recordId: 'never-stored', purged: true },
+          { recordId: REC, purged: true },
+        ] },
+      })
+      // Org B's folder of the same record id stays: the org is the token's.
+      expect(filesOnDisk()).to.deep.equal([onDisk(ORG_B, REC, page('a'))])
+      // A repeat is a success too.
+      expect((await call('POST', '/internal/paid-results/purge-batch', { recordIds: [REC] })).status).to.equal(200)
+    })
+
+    it('a batch purge reports a failed id as its own result and still purges the others', async () => {
+      const real = StorageServiceAdapter.prototype.deleteTree
+      const stub = sinon.stub(StorageServiceAdapter.prototype, 'deleteTree').callsFake(async function (this: any, root: string) {
+        if (root.endsWith(`/${REC}`)) throw new Error('store down: secret-detail')
+        return real.call(this, root)
+      })
+      const res = await call('POST', '/internal/paid-results/purge-batch', { recordIds: [REC, REC_2] })
+      stub.restore()
+      expect(res.status).to.equal(200)
+      expect(res.body.results).to.deep.equal([
+        { recordId: REC, purged: false, error: 'purge failed' },
+        { recordId: REC_2, purged: true },
+      ])
+      expect(JSON.stringify(res.body)).to.not.include('secret-detail')
+      expect(filesOnDisk()).to.include(onDisk(ORG_A, REC, page('a')))
+      expect(filesOnDisk()).to.not.include(onDisk(ORG_A, REC_2, page('a')))
+    })
+
+    it('a batch purge takes the org from the token only: another org\'s token never reaches org A\'s folders', async () => {
+      const res = await call('POST', '/internal/paid-results/purge-batch', { recordIds: [REC, REC_2] }, ORG_B)
+      expect(res.status).to.equal(200)
+      expect(filesOnDisk()).to.deep.equal(
+        [onDisk(ORG_A, REC, page('a')), onDisk(ORG_A, REC, page('b')), onDisk(ORG_A, REC, 'manifests/rev1/parse.json'), onDisk(ORG_A, REC_2, page('a'))].sort(),
+      )
+    })
+
+    it('a batch purge refuses a missing or wrong token', async () => {
+      const url = `${baseUrl}/internal/paid-results/purge-batch`
+      const init = { method: 'POST', body: JSON.stringify({ recordIds: [REC] }) }
+      expect((await fetch(url, { ...init, headers: { 'content-type': 'application/json' } })).status).to.equal(401)
+      expect((await fetch(url, { ...init, headers: { 'content-type': 'application/json', authorization: 'Bearer not-a-token' } })).status).to.equal(401)
+      expect(filesOnDisk()).to.have.length(5)
+    })
+
+    it('a batch purge refuses a bad id, the reserved `org`, a repeat, an empty list and more than 100 ids, and removes nothing', async () => {
+      const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `r${i}`)
+      const bad: Array<[string, unknown]> = [
+        ['traversal', { recordIds: [REC, '../x'] }],
+        ['slash', { recordIds: ['a/b'] }],
+        ['dot', { recordIds: ['.hidden'] }],
+        ['long', { recordIds: ['x'.repeat(129)] }],
+        ['reserved org', { recordIds: [REC, 'org'] }],
+        ['empty id', { recordIds: [''] }],
+        ['non-string', { recordIds: [5] }],
+        ['repeat', { recordIds: [REC, REC] }],
+        ['empty list', { recordIds: [] }],
+        ['over the cap', { recordIds: ids(101) }],
+        ['no ids', {}],
+        ['org in the body', { recordIds: [REC], orgId: ORG_A }],
+        ['org in the body (other spelling)', { recordIds: [REC], org: ORG_A }],
+      ]
+      for (const [name, body] of bad) {
+        expect((await call('POST', '/internal/paid-results/purge-batch', body)).status, name).to.equal(400)
+      }
+      expect(filesOnDisk()).to.have.length(5)
+      // Exactly at the cap is fine.
+      expect((await call('POST', '/internal/paid-results/purge-batch', { recordIds: ids(100) })).status).to.equal(200)
+    })
+
+    it('a batch purge keeps at most 8 folder deletes in flight', async () => {
+      const real = StorageServiceAdapter.prototype.deleteTree
+      let inFlight = 0
+      let peak = 0
+      const stub = sinon.stub(StorageServiceAdapter.prototype, 'deleteTree').callsFake(async function (this: any, root: string) {
+        inFlight++
+        peak = Math.max(peak, inFlight)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        inFlight--
+        return real.call(this, root)
+      })
+      const ids = Array.from({ length: 40 }, (_, i) => `r${i}`)
+      const res = await call('POST', '/internal/paid-results/purge-batch', { recordIds: ids })
+      stub.restore()
+      expect(res.status).to.equal(200)
+      expect(res.body.results).to.have.length(40)
+      expect(peak).to.be.within(2, 8)
     })
 
     it('purge-cutoff refuses a missing or wrong token, and a token acts only inside its own org', async () => {

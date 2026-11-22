@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import {
   USER_AUDIT_REASONS,
   auditMemberships,
+  auditTeamMembers,
   auditUserChange,
   foundGroupIds,
 } from '../../../../src/modules/user_management/utils/user-audit';
@@ -12,6 +13,7 @@ import * as seam from '../../../../src/libs/services/structured-logging';
 
 const USER = '64f0c0ffee0000000000000b';
 const GROUP = '64f0c0ffee0000000000000d';
+const TEAM = '3f2b8c1e-9a4d-4c7b-8e2f-1a2b3c4d5e6f';
 
 describe('user-audit', () => {
   afterEach(() => {
@@ -35,6 +37,8 @@ describe('user-audit', () => {
   for (const [name, write, event] of [
     ['auditUserChange', () => auditUserChange('user.delete', USER), 'user.delete'],
     ['auditMemberships', () => auditMemberships('group.member.add', [USER], [GROUP], new Set([GROUP])), 'group.member.add'],
+    ['auditTeamMembers', () => auditTeamMembers('team.member.add', TEAM, [USER]), 'team.member.add'],
+    ['auditUserChange (service account)', () => auditUserChange('service_account.delete', USER), 'service_account.delete'],
   ] as const) {
     it(`${name} shows the target as a user, so a provider that hides user ids hides it`, () => {
       const provider = Object.assign(new seam.DefaultLoggingProvider(), {
@@ -64,5 +68,17 @@ describe('user-audit', () => {
     const found = await foundGroupIds([GROUP, 'not-an-id', GROUP, '64f0c0ffee0000000000000e'], find);
     expect([...found]).to.deep.equal([GROUP]);
     expect(find.args.map((a) => a[0])).to.deep.equal([GROUP, '64f0c0ffee0000000000000e']);
+  });
+  it('auditTeamMembers writes one line per distinct user, with team_id, and skips values that are not strings', () => {
+    const provider = Object.assign(new seam.DefaultLoggingProvider(), { fileLoggingEnabled: () => false });
+    sinon.stub(seam, 'getProvider').callsFake(() => provider);
+    (Logger as any).instance = null;
+    const log = sinon.stub((Logger.getInstance() as any).logger, 'log');
+    const OTHER = '64f0c0ffee0000000000000f';
+    auditTeamMembers('team.member.remove', TEAM, [USER, undefined, USER, 42, '', OTHER]);
+    expect(log.args.map((a) => [a[0].message, a[0].target, a[0].team_id, a[0].outcome])).to.deep.equal([
+      ['team.member.remove', USER, TEAM, 'success'],
+      ['team.member.remove', OTHER, TEAM, 'success'],
+    ]);
   });
 });

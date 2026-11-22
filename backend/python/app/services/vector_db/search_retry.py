@@ -28,6 +28,7 @@ import os
 import time
 from typing import TYPE_CHECKING
 
+from app.core.db.errors import TooManyConnections
 from app.services.vector_db.models import SearchFailureKind
 from app.telemetry.modules.vector_search_metrics import record_search_retry
 from app.utils.request_deadline import seconds_left
@@ -158,7 +159,9 @@ async def _query_with_retry(
         return await asyncio.wait_for(call, timeout=max(0.0, until - time.monotonic()))
 
     def _should_retry(error: Exception) -> bool:
-        if classify_search_error(service, error) is None:
+        # A full PostgreSQL (53300) is unavailable but not retried: another attempt forks a backend on it. Other connection
+        # losses are retried, as a read search can always run again.
+        if classify_search_error(service, error) is None or isinstance(error, TooManyConnections):
             return False
         if deadline - time.monotonic() < MIN_RETRY_SECONDS:
             record_search_retry(_provider_name(service), "skipped_budget")
