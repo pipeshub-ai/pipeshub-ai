@@ -64,6 +64,9 @@ RECORD_PROPERTIES = frozenset({
     # The virtual record a record is writing a replacement copy into while it keeps serving the old one (keep_old_copy). This
     # release accepts it and its writes are off by default (INDEXING_KEEP_OLD_COPY); the next turns them on.
     "pendingVirtualRecordId",
+    # The parser that built a record's indexed copy, with the timestamp and virtual record it was written with and the source of
+    # the label. This release accepts them and writes none unless RECORD_PARSER_IDENTITY_WRITE is on (off by default).
+    "indexedParser", "indexedParserAt", "indexedParserVrid", "indexedParserSource",
 })
 
 
