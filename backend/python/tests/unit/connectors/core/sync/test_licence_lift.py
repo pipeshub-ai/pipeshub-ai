@@ -103,6 +103,15 @@ async def test_a_connector_whose_full_sync_ended_still_limited_is_queued_again_u
 
 
 @pytest.mark.asyncio
+async def test_a_limited_connector_still_queued_is_drained_again_on_a_later_check(drain: AsyncMock) -> None:
+    # The earlier drain may have published nothing (no dispatcher, a lost claim, a refused submit); no finishing sync drains it.
+    gp = _graph([{**_app("a", status="QUEUED"), FULL: True}])
+    assert await queue_limited_full_syncs(gp, _LOG) is False
+    gp.update_node.assert_not_awaited()
+    drain.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_a_disabled_connector_already_owing_a_full_sync_is_not_written_again(drain: AsyncMock) -> None:
     gp = _graph([{**_app("off", active=False), FULL: True}])
     assert await queue_limited_full_syncs(gp, _LOG) is True

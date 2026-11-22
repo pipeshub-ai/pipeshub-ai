@@ -61,7 +61,7 @@ def _owed_full_sync(app: dict[str, Any], tries: dict[str, int]) -> tuple[dict[st
 
 async def _queue_org(
     graph_provider: IGraphDBProvider, logger: logging.Logger, tries: dict[str, int], queued: list[str],
-    failed: list[str], watched: list[str], org_id: str,
+    failed: list[str], watched: list[str], parked: list[str], org_id: str,
 ) -> None:
     for app in await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []:
         cid = app.get("_key") or app.get("id")
@@ -70,6 +70,8 @@ async def _queue_org(
         updates, watch = _owed_full_sync(app, tries)
         if watch:
             watched.append(cid)
+            if app.get("status") == AppStatus.QUEUED.value:
+                parked.append(cid)
         elif tries.get(cid, 0) == MAX_QUEUED_FULL_SYNCS and app.get("status") == AppStatus.IDLE.value:
             tries[cid] += 1                         # said once
             logger.warning("Still limited after the full syncs queued for it; left to its schedule or a person",
@@ -98,13 +100,15 @@ async def queue_limited_full_syncs(
     queued: list[str] = []
     failed: list[str] = []
     watched: list[str] = []
+    parked: list[str] = []          # limited and already QUEUED: an earlier drain may not have published them
     failed_orgs = await for_each_org(
         graph_provider, "licence_lift",
-        functools.partial(_queue_org, graph_provider, logger, tries, queued, failed, watched), logger,
+        functools.partial(_queue_org, graph_provider, logger, tries, queued, failed, watched, parked), logger,
         active=True, raise_on_error=True,
     )
     if queued:
         logger.info("Licensed: full syncs owed by limited connectors", extra={"target_connector_ids": ",".join(queued)})
+    if queued or parked:
         await drain_queued_syncs(graph_provider, logger)
     return not failed and not failed_orgs and not watched
 
