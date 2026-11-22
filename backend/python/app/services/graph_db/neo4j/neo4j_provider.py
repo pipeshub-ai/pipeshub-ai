@@ -21047,11 +21047,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         deadline = time.monotonic() + self._KH_PLAN_WAIT_S
         # shortcut: a text is trusted as planned for the life of the process; a plan Neo4j evicts later is planned again
         # by every request at once (bounded by the query timeout). Track evictions if that shows up again.
+        text = self._kh_text(query)
         while key not in planned:
             task = planning.get(key)
             if task is None or task.done():
                 task = spawn_in_request(
-                    self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S),
+                    self.client.execute_query(text, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S),
                     name="kh-plan",
                 )
                 planning[key] = task
@@ -21069,8 +21070,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The client may wait for a pooled connection and retry a lost one with the limit it was given: the request is
         # answered at its deadline whichever it is doing, and a statement already sent ends at that limit on the server.
         return await self._kh_timed(self._kh_until_deadline(
-            self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._kh_time_left(self._KH_QUERY_TIMEOUT_S))
+            self.client.execute_query(text, parameters=parameters, plain=True, timeout=self._kh_time_left(self._KH_QUERY_TIMEOUT_S))
         ))
+
+    # A listing statement keeps its cached plan whatever the counts have done since (`replan=skip`): the plan is the
+    # same query over the same schema, and a request never pays for planning it again. `kh_refresh_plans` plans it again
+    # off the request path, so a plan made on very different data (an org before its first sync) does not stay.
+    # NEO4J_KH_KEEP_PLANS=0 leaves Neo4j's own staleness test on.
+    _KH_KEEP_PLANS = os.getenv("NEO4J_KH_KEEP_PLANS", "1").strip() != "0"
+
+    @classmethod
+    def _kh_text(cls, query: str) -> str:
+        return "CYPHER replan=skip " + query.lstrip() if cls._KH_KEEP_PLANS else query
 
     @staticmethod
     def _kh_time_left(limit: float | None) -> float | None:
