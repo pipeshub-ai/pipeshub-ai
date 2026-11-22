@@ -95,6 +95,7 @@ describe('OAuthProviderController', () => {
       createAuthorization: sinon.stub(),
       getConsentData: sinon.stub(),
       approve: sinon.stub(),
+      allowedScopesOf: sinon.stub().callsFake((a: any) => a.allowedScopes),
     }
     controller = new OAuthProviderController(
       mockLogger,
@@ -1112,6 +1113,26 @@ describe('OAuthProviderController', () => {
       await controller.token(req, mockRes, mockNext)
       const args = mockOAuthTokenService.refreshTokens.firstCall.args
       expect(args[2]).to.deep.equal(['org:read'])
+    })
+
+    it('refreshes against the scopes the app may grant now (the agent app is cut to MCP_SCOPES), not its stored list', async () => {
+      const agent = { clientId: 'pipeshub-agent', orgId: 'o1', isConfidential: false, allowedScopes: ['user:read', 'code:write'] }
+      mockOAuthAppService.getAppByClientId.resolves(agent)
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockOAuthDeviceService.allowedScopesOf.callsFake(() => ['user:read'])
+      mockOAuthTokenService.refreshTokens.resolves({
+        accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'user:read',
+      })
+      const req = {
+        body: { grant_type: 'refresh_token', client_id: 'pipeshub-agent', refresh_token: 'rt' },
+        headers: {},
+      } as any
+
+      await controller.token(req, mockRes, mockNext)
+      const [app] = mockOAuthTokenService.refreshTokens.firstCall.args
+      expect(app.allowedScopes).to.deep.equal(['user:read'])
+      expect(app.clientId).to.equal('pipeshub-agent')
+      expect(agent.allowedScopes).to.deep.equal(['user:read', 'code:write']) // the stored app is left as it is
     })
   })
 

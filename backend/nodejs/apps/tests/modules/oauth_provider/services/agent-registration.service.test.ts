@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import jwt from 'jsonwebtoken';
 import { AgentRegistrationService } from '../../../../src/modules/oauth_provider/services/agent-registration.service';
+import { FirstPartyDeviceAppService } from '../../../../src/modules/oauth_provider/services/oauth.first_party_device.service';
 import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service';
 import {
   AgentRegistrationStatus,
@@ -128,10 +129,12 @@ describe('AgentRegistrationService', () => {
   let generate: sinon.SinonStub;
   let user: { fullName: string } | null;
   let app: { clientId: string; allowedScopes: string[] };
+  let cap: string[] | null;
 
   beforeEach(() => {
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT;
     app = { clientId: 'pipeshub-agent', allowedScopes: [...SCOPES] };
+    cap = null;
     repo = new FakeRepo();
     setOAuthTokenRepository(repo as any);
     user = { fullName: 'Ada' };
@@ -163,7 +166,14 @@ describe('AgentRegistrationService', () => {
         resolveGrantedScopes: (r: string[]) => ({ granted: r, notGranted: [] }),
         getScopeDefinitions: (s: string[]) => s.map((name) => ({ name })),
       } as any,
-      { getOrCreate: sinon.stub().resolves('pipeshub-agent') } as any,
+      {
+        getOrCreate: sinon.stub().resolves('pipeshub-agent'),
+        // The real cap over a stubbed preset: the current MCP_SCOPES when set, else whatever the app holds.
+        resolveScopes: () => cap ?? app.allowedScopes,
+        capScopes(a: any) {
+          return FirstPartyDeviceAppService.prototype.capScopes.call(this as any, a);
+        },
+      } as any,
       { frontendUrl: 'https://app.test', oauthIssuer: ISSUER } as any,
     );
   });
@@ -514,6 +524,28 @@ describe('AgentRegistrationService', () => {
         service.jwtBearerGrant(out.identity_assertion!),
         'invalid_grant',
       );
+    });
+
+    it('approves and mints only what MCP_SCOPES allows now, not the agent app\'s stored list', async () => {
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      cap = ['org:read', 'offline_access'];
+      const r = await claimed();
+      const out = await service.claimGrant(r.claim_token);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+      generate.resetHistory();
+      await service.jwtBearerGrant(out.identity_assertion!);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+    });
+
+    it('drops a scope MCP_SCOPES lost after the approval, at the claim and at every assertion', async () => {
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      const r = await claimed(); // approved with org:read and kb:read
+      cap = ['org:read', 'offline_access'];
+      const out = await service.claimGrant(r.claim_token);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+      generate.resetHistory();
+      await service.jwtBearerGrant(out.identity_assertion!);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
     });
 
     it('works once: afterwards invalid_grant', async () => {

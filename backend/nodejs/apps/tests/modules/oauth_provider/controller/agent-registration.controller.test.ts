@@ -248,7 +248,7 @@ describe('agent registration HTTP surface', () => {
         { getAlgorithm: () => 'HS256' } as any,
         { getAllScopes: () => [] } as any,
         { oauthIssuer: 'https://pipeshub.test', mcpScopes: [] } as any,
-        { getOrCreate: sinon.stub().resolves(clientId) } as any,
+        { getOrCreate: sinon.stub().resolves(clientId), capScopes: (a: any) => a.allowedScopes } as any,
         false,
       );
     const config = async (c: OIDCProviderController) => {

@@ -436,10 +436,14 @@ export class AgentRegistrationService {
     return this.oauthAppService.getAppByClientId(FIRST_PARTY_DEVICE_CLIENT_ID);
   }
 
-  /** What a device sign-in by the agent app grants, less offline_access: these grants never issue a refresh token. */
+  /**
+   * What a device sign-in by the agent app grants under the current MCP_SCOPES (`capScopes`), less offline_access: these
+   * grants never issue a refresh token.
+   */
   private scopesOf(app: OAuthAppDto): string[] {
+    const allowed = this.firstPartyDeviceAppService.capScopes(app);
     return this.scopeValidatorService
-      .resolveGrantedScopes(app.allowedScopes, app.allowedScopes)
+      .resolveGrantedScopes(allowed, allowed)
       .granted.filter((scope) => scope !== 'offline_access');
   }
 

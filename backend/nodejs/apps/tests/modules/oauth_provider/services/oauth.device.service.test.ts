@@ -5,6 +5,7 @@ import crypto from 'crypto'
 import { Types } from 'mongoose'
 import { OAuthDeviceService } from '../../../../src/modules/oauth_provider/services/oauth.device.service'
 import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
+import { FirstPartyDeviceAppService } from '../../../../src/modules/oauth_provider/services/oauth.first_party_device.service'
 import {
   OAuthDeviceCode,
   OAuthDeviceCodeStatus,
@@ -81,6 +82,10 @@ describe('OAuthDeviceService', () => {
     mockFirstPartyDeviceAppService = {
       getOrCreate: sinon.stub().resolves('pipeshub-agent'),
       resolveScopes: sinon.stub().returns(['user:read']),
+      // The real cap, over the stubbed preset.
+      capScopes(a: any) {
+        return FirstPartyDeviceAppService.prototype.capScopes.call(this as any, a)
+      },
     }
     mockLogger = createMockLogger()
     service = new OAuthDeviceService(

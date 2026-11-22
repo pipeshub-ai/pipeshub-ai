@@ -142,7 +142,7 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
         resolveGrantedScopes: (r: string[]) => ({ granted: r, notGranted: [] }),
         getScopeDefinitions: (s: string[]) => s.map((name) => ({ name })),
       } as any,
-      { getOrCreate: sinon.stub().resolves('pipeshub-agent') } as any,
+      { getOrCreate: sinon.stub().resolves('pipeshub-agent'), capScopes: (a: any) => a.allowedScopes } as any,
       { frontendUrl: 'https://app.test', oauthIssuer: ISSUER } as any,
     );
   });

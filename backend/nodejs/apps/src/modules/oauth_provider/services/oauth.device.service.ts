@@ -303,16 +303,9 @@ export class OAuthDeviceService {
     }
   }
 
-  /**
-   * The scopes a device login of this app may hold now. The agent app's stored list only ever grows, so a narrower
-   * MCP_SCOPES since it was created binds here, both when the code is created and when its tokens are minted.
-   */
-  private allowedScopesOf(app: OAuthAppDto): string[] {
-    if (app.clientId !== FIRST_PARTY_DEVICE_CLIENT_ID) {
-      return app.allowedScopes;
-    }
-    const cap = new Set(this.firstPartyDeviceAppService.resolveScopes());
-    return app.allowedScopes.filter((s) => cap.has(s));
+  /** The scopes a grant of this app may carry now, both when a code is created and when its tokens are minted (`capScopes`). */
+  allowedScopesOf(app: OAuthAppDto): string[] {
+    return this.firstPartyDeviceAppService.capScopes(app);
   }
 
   private async findPendingByUserCode(userCodeRaw: string) {
