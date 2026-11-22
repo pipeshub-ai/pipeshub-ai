@@ -331,6 +331,46 @@ async def test_a_run_that_fails_after_its_licence_lapsed_still_leaves_the_connec
     assert await _readable(sync, sync.bob) == set()
 
 
+async def test_a_run_killed_right_after_its_first_skipped_write_leaves_the_connector_limited(sync: _Sync) -> None:
+    """No end of run at all (a crash or a kill), so the end-of-run backstop never runs: the first skipped write
+    itself must have set the limit. Restarted licensed, the connector stays limited until a licensed full sync."""
+    await _synced_before_the_upgrade(sync)
+    _licence(sync.processor, LICENSED)
+    assert await sync.processor.apply_licence_gate(sync.connector_id, full_sync=True) is False, "no limit to lift"
+    _licence(sync.processor, UNLICENSED)
+    await sync.processor.on_new_records([sync.message("m1", readers=(sync.alice,), inherit=False)])
+    # The process dies here: no finalizer, no end of run.
+
+    _restart(sync, LICENSED)
+    assert await _limit(sync) == "CREATOR"
+    assert await _readable(sync, sync.bob) == set(), "nobody outside the limit reads anything"
+    assert await _readable(sync, sync.alice) == set(NAMES)
+    assert await sync.processor.apply_licence_gate(sync.connector_id, full_sync=False) is False
+    assert await _limit(sync) == "CREATOR", "an incremental sync does not lift it"
+
+    await _run(sync, _source({"m1": (sync.alice,), "m2": (sync.alice, sync.bob), "m3": (sync.alice,)}))
+    assert await _limit(sync) is None
+    assert await _readable(sync, sync.bob) == {"m2"}
+
+
+async def test_a_limit_that_cannot_be_set_at_the_first_skipped_write_fails_the_run_before_more_content(
+    sync: _Sync,
+) -> None:
+    await _synced_before_the_upgrade(sync)
+
+    async def script(s: _Sync) -> None:
+        await s.processor.on_new_record_groups([s.channel(readers=())])
+        _licence(s.processor, UNLICENSED)
+        await s.processor.on_new_records([s.message("m4", readers=(s.alice,), inherit=False)])
+
+    _licence(sync.processor, LICENSED)
+    with patch.object(DataSourceEntitiesProcessor, "set_access_limit", AsyncMock(side_effect=ConnectionError("x"))):
+        await _run(sync, script)
+    assert await sync.graph.get_record_by_external_id(sync.connector_id, f"m4-{sync.connector_id}") is None, (
+        "no record is written under access that could not be limited"
+    )
+
+
 async def test_a_licence_returning_mid_sync_writes_access_again_but_does_not_lift(sync: _Sync) -> None:
     await _synced_before_the_upgrade(sync)
 

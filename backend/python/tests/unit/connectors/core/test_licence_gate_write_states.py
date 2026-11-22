@@ -138,3 +138,68 @@ async def test_the_end_of_a_run_leaves_a_limited_or_open_connector_alone(app: di
     proc._permissions_skipped = {"conn-1"}
     await proc.limit_after_skipped_writes("conn-1")
     proc.limit_unlicensed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["true", "allowed", ["x"], [], 1, 0, True, {}, {"allowed": "true"}, {"allowed": 1}])
+async def test_a_licence_value_that_is_present_but_not_allowed_true_is_unlicensed(value: object) -> None:
+    """Only a missing key keeps the transition shortcut (licensed); anything else stored must say allowed: true."""
+    assert await permission_sync_licensed(_config(value)) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "licensed"), [(None, True), ({"allowed": True}, True), ({"allowed": False}, False)])
+async def test_a_missing_key_or_allowed_true_is_licensed(value: object, licensed: bool) -> None:
+    assert await permission_sync_licensed(_config(value)) is licensed
+
+
+def _unlimited_run(proc) -> None:  # noqa: ANN001
+    """A run that began licensed on a connector with no limit (``apply_licence_gate`` limited nothing)."""
+    proc.limit_unlicensed = AsyncMock()
+
+
+@pytest.mark.asyncio
+async def test_the_first_write_a_run_skips_on_an_unlimited_connector_limits_it_before_the_skip_returns() -> None:
+    proc, _ = _gate_processor(LICENSED, _app())
+    _unlimited_run(proc)
+    assert await proc.apply_licence_gate("conn-1", full_sync=False) is False
+    proc.config_service = _config(UNLICENSED)                      # the licence lapsed partway
+
+    assert await proc.skips_permission_writes("conn-1") is True
+    proc.limit_unlicensed.assert_awaited_once()
+    assert await proc.skips_permission_writes("conn-1") is True
+    proc.limit_unlicensed.assert_awaited_once()                    # once per run, not per write
+
+
+@pytest.mark.asyncio
+async def test_a_limit_that_cannot_be_set_at_the_first_skip_fails_the_write() -> None:
+    proc, tx_store = _gate_processor(UNLICENSED, _app())
+    proc.limit_unlicensed = AsyncMock(side_effect=ConnectionError("write refused"))
+    with pytest.raises(ConnectionError):
+        await proc.skips_permission_writes("conn-1")
+    user = AppUser(app_name=Connectors.JIRA, connector_id="conn-1", source_user_id="s", email="a@x.com", full_name="A")
+    with pytest.raises(ConnectionError):
+        await proc.on_new_app_users([user])
+    tx_store.batch_upsert_app_users.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_connector_limited_at_the_start_of_the_run_is_not_limited_again_at_its_skips() -> None:
+    proc, _ = _gate_processor(UNLICENSED, _app())
+    _unlimited_run(proc)
+    await proc.apply_licence_gate("conn-1", full_sync=True)
+    proc.limit_unlicensed.assert_awaited_once()                    # at the start
+    assert await proc.skips_permission_writes("conn-1") is True
+    proc.limit_unlicensed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_after_a_lift_the_next_skip_limits_again() -> None:
+    proc, _ = _gate_processor(LICENSED, _app(limit=AccessLimit.CREATOR.value))
+    _unlimited_run(proc)
+    assert await proc.apply_licence_gate("conn-1", full_sync=True) is True
+    assert await proc.lift_access_limit("conn-1", PermissionModel.RECORD_LEVEL) is True
+    proc.data_store_provider.graph_provider.get_document = AsyncMock(return_value=_app())   # stored: lifted
+    proc.config_service = _config(UNLICENSED)
+    assert await proc.skips_permission_writes("conn-1") is True
+    proc.limit_unlicensed.assert_awaited_once()
