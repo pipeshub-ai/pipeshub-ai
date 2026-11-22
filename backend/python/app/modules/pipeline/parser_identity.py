@@ -59,6 +59,9 @@ SOURCE_ADOPTED: Final = "adopted"
 #: The copy is another record's, attached or promoted with that record's identity.
 SOURCE_TWIN: Final = "twin"
 
+#: The key of a copy whose parser the file path chose and that is not tracked; no name-derived key equals it.
+PATH_UNTRACKED_KEY: Final = "path_untracked@1"
+
 PIPELINE_IN_PROCESS: Final = "inproc"
 PIPELINE_SERVICE: Final = "svc"
 
@@ -153,9 +156,11 @@ def parser_identity(
     """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or None when not tracked."""
     # With the file path the dispatch used: when the path decided the parser, the identity is that parser's key, which the
     # name-derived key of any graph record then differs from (such a copy is never taken for the name's parser).
-    key = parser_key(
-        mime_type, extension, record_name, record_type, service=pipeline == PIPELINE_SERVICE, file_path=file_path,
-    )
+    service = pipeline == PIPELINE_SERVICE
+    key = parser_key(mime_type, extension, record_name, record_type, service=service, file_path=file_path)
+    if key is None and path_decides(mime_type, extension, record_name, record_type, file_path, service=service):
+        # The path chose a parser that is not tracked (source, SQL): the copy still must not read as the name's parser.
+        key = PATH_UNTRACKED_KEY
     return None if key is None else f"{pipeline}:{key}"
 
 

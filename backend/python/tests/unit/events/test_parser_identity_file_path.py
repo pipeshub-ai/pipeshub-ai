@@ -145,3 +145,22 @@ async def test_a_path_decided_record_never_skips_even_when_a_stored_key_equals_i
     await world.run(event)
 
     assert world.parses == parses + 1
+
+
+@pytest.mark.asyncio
+async def test_a_text_record_is_not_attached_to_a_copy_the_path_made_by_the_source_parser() -> None:
+    """text/plain named ``notes`` at ``src/x.py`` is read as source, which is not tracked; its copy must not read as text."""
+    identity = pi.parser_identity("text/plain", None, "notes", "FILE", pipeline=pi.PIPELINE_IN_PROCESS, file_path="src/x.py")
+    assert identity == f"inproc:{pi.PATH_UNTRACKED_KEY}"
+    world = World()
+    world.files = {"_key": "rec-1", "extension": "txt"}
+    doc = {"_key": "rec-1", "mimeType": "text/plain", "recordName": "notes.txt", "recordType": "FILE"}
+    twin = {
+        "_key": "rec-9", "mimeType": "text/plain", "recordName": "notes", "recordType": "FILE", "virtualRecordId": "v9",
+        "lastIndexTimestamp": 7, pi.IDENTITY_FIELD: identity, pi.IDENTITY_AT_FIELD: 7, pi.IDENTITY_VRID_FIELD: "v9",
+        pi.IDENTITY_SOURCE_FIELD: pi.SOURCE_PARSED,
+    }
+
+    assert await world.ep._twin_shares_parser(doc, twin) is False
+    queued = {"_key": "q", "mimeType": "text/plain", "recordName": "q.txt", "recordType": "FILE"}
+    assert pi.promotion_fields(twin, queued, {"extension": "txt"}, at=9, vrid="v9") is None
