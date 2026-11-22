@@ -10,7 +10,11 @@ import pytest
 from reportlab.pdfgen import canvas
 
 from app.modules.parsers.pdf import page_ocr
-from app.modules.parsers.pdf.pdf_inspection import extract_pages, textless_pages
+from app.modules.parsers.pdf.pdf_inspection import (
+    DrawnContent,
+    extract_pages,
+    textless_pages,
+)
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
@@ -193,7 +197,7 @@ async def test_no_provider_changes_nothing_and_logs_once(pdf: bytes, caplog: pyt
         assert await page_ocr.ocr_textless_pages(pdf, parsed, config, logging.getLogger("t")) == []
     after = await proc.create_blocks(parsed, skip_llm_enrichment=True)
     assert [b.data for b in before.blocks] == [b.data for b in after.blocks]
-    assert sum("no OCR provider" in r.getMessage() for r in caplog.records) == 1
+    assert sum("no VLM OCR provider" in r.getMessage() for r in caplog.records) == 1
 
 
 @pytest.mark.asyncio
@@ -277,11 +281,10 @@ def test_ocr_text_takes_the_place_of_the_first_replaced_region() -> None:
     assert [r.text for r in page_ocr._with_ocr_text(only_pictures, new)] == ["i1", "i2", "OCR1", "OCR2"]
 
 
-def _fake_page(chars_drawn: int = 0, image_share: float = 0.0) -> SimpleNamespace:
-    images = [{"x0": 0, "x1": 100 * image_share, "top": 0, "bottom": 100}] if image_share else []
-    return SimpleNamespace(
-        curves=[0] * chars_drawn, rects=[], lines=[], images=images, width=100.0, height=100.0
-    )
+def _fake_page(chars_drawn: int = 0, image_share: float = 0.0) -> DrawnContent:
+
+    images = ((0.0, 0.0, 100 * image_share, 100.0),) if image_share else ()
+    return DrawnContent(paths=chars_drawn, images=images, width=100.0, height=100.0)
 
 
 def test_score_boundaries() -> None:
@@ -345,12 +348,12 @@ def test_a_mostly_image_page_with_a_short_caption_is_selected() -> None:
 def test_overlapping_images_count_their_shared_area_once() -> None:
     from app.modules.parsers.pdf import pdf_inspection as pi
 
-    half = {"x0": 0, "x1": 50, "top": 0, "bottom": 100}
-    twice = SimpleNamespace(curves=[], rects=[], lines=[], images=[half, dict(half)], width=100.0, height=100.0)
+    half = (0.0, 0.0, 50.0, 100.0)
+    twice = pi.DrawnContent(paths=0, images=(half, half), width=100.0, height=100.0)
     assert pi.textless_page_score(twice, 10) == 0
     # Images are clipped to the page: one bleeding past every edge covers the page once.
-    bleed = {"x0": -50, "x1": 150, "top": -50, "bottom": 150}
-    page = SimpleNamespace(curves=[], rects=[], lines=[], images=[bleed, dict(bleed)], width=100.0, height=100.0)
+    bleed = (-50.0, -50.0, 150.0, 150.0)
+    page = pi.DrawnContent(paths=0, images=(bleed, bleed), width=100.0, height=100.0)
     assert pi.textless_page_score(page, 10) == 1000
     assert pi.textless_page_score(_fake_page(0, 1.0), 10) == 1000
 
@@ -422,3 +425,105 @@ async def test_no_multimodal_model_keeps_the_pages(pdf: bytes) -> None:
     handler.process_document = AsyncMock(side_effect=MultimodalModelNotConfiguredError("none"))
     with patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=handler)):
         assert await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t")) == []
+
+
+def _with_mediabox(content: bytes, x0: float, y0: float, x1: float, y1: float) -> bytes:
+    """*content* with its one page's MediaBox moved to (x0, y0, x1, y1), rewritten by pdfium."""
+    import re
+
+    import pypdfium2
+
+    moved = re.sub(rb"/MediaBox \[[^\]]*\]", f"/MediaBox [ {x0} {y0} {x1} {y1} ]".encode(), content)
+    document = pypdfium2.PdfDocument(moved)
+    out = io.BytesIO()
+    document.save(out)
+    document.close()
+    return out.getvalue()
+
+
+def _picture_page(origin: tuple[float, float], size: tuple[float, float], rotate: int = 0) -> bytes:
+    """One page of *size* at *origin* covered by a picture, with a short caption."""
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+
+    buf = io.BytesIO()
+    width, height = size
+    c = canvas.Canvas(buf, pagesize=(origin[0] + width, origin[1] + height))
+    c.setPageRotation(rotate)
+    c.drawImage(ImageReader(Image.new("RGB", (50, 50), (200, 200, 200))), origin[0], origin[1], width=width, height=height)
+    c.drawString(origin[0] + 20, origin[1] + 20, "Fig 1")
+    c.showPage()
+    c.save()
+    return _with_mediabox(buf.getvalue(), origin[0], origin[1], origin[0] + width, origin[1] + height)
+
+
+@pytest.mark.parametrize(
+    ("origin", "rotate"), [((0, 0), 0), ((50, 0), 0), ((50, 40), 0), ((50, 40), 90), ((30, 60), 270)]
+)
+def test_a_full_page_picture_covers_the_page_whatever_the_mediabox_origin(origin, rotate) -> None:
+    import pdfplumber
+
+    from app.modules.parsers.pdf import pdf_inspection as pi
+
+    content = _picture_page(origin, (300.0, 500.0), rotate)
+    with pdfplumber.open(io.BytesIO(content)) as doc:
+        assert pi.image_share(pi.drawn_content(doc.pages[0])) == pytest.approx(1.0, abs=0.002)
+    assert textless_pages(content, 25) == ([1], 1)
+
+
+def test_drawn_content_counts_what_pdfplumber_would_build(pdf: bytes) -> None:
+    import pdfplumber
+
+    from app.modules.parsers.pdf import pdf_inspection as pi
+
+    for content in (pdf, _chart_pdf()):
+        with pdfplumber.open(io.BytesIO(content)) as doc:
+            for page in doc.pages:
+                drawn = pi.drawn_content(page)
+                assert drawn.paths == len(page.curves) + len(page.rects) + len(page.lines)
+                assert len(drawn.images) == len(page.images)
+                assert (drawn.width, drawn.height) == (float(page.width), float(page.height))
+
+
+def test_page_selection_builds_no_layout_objects(pdf: bytes, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An outlined page holds hundreds of thousands of paths; building an object for each stalls the worker."""
+    from pdfplumber.page import Page
+
+    def refuse(self: Page) -> None:
+        raise AssertionError("page selection must not build layout objects")
+
+    for name in ("objects", "curves", "rects", "lines", "images", "layout"):
+        monkeypatch.setattr(Page, name, property(refuse))
+    assert textless_pages(pdf, 25) == ([2], 1)
+    assert textless_pages(_chart_pdf(), 25) == ([2], 1)
+
+
+def _admission_timeout() -> Exception:
+    from app.services.messaging.consumer_concurrency import ParseAdmissionTimeout
+
+    return ParseAdmissionTimeout("parsing", 30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call", [1, 2], ids=["detect", "extract"])
+@pytest.mark.parametrize("make_error", ["abandoned", "admission"])
+async def test_a_parse_that_was_not_admitted_is_raised_for_a_requeue(pdf: bytes, call: int, make_error: str) -> None:
+    """Both parse calls run before parsing is reported complete: a page left empty would be indexed for good."""
+    from app.modules.parsers import parse_pool
+
+    error = parse_pool.ParseAbandonedError("gone") if make_error == "abandoned" else _admission_timeout()
+    _, parsed = await _parse(pdf)
+    real_submit = parse_pool.submit
+    calls = 0
+
+    async def submit(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == call:
+            raise error
+        return await real_submit(*args, **kwargs)
+
+    with patch.object(page_ocr.parse_pool, "submit", side_effect=submit), \
+         patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=_stub_handler())), \
+         pytest.raises(type(error)):
+        await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t"))

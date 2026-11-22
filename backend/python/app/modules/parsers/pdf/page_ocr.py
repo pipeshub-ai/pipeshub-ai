@@ -38,6 +38,17 @@ DEFAULT_PAGE_OCR_MAX_PAGES = 25
 _PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n")
 
 
+def _must_propagate(error: Exception) -> bool:
+    """True for the errors that send the record back instead of indexing it without these pages.
+
+    A settings store that did not answer, a parse the pool gave up on, and a parse that waited out its
+    slot are all retried; nothing has been indexed yet, so the pages are read on the next attempt.
+    """
+    from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+
+    return isinstance(error, (AISettingsUnavailableError, parse_pool.ParseAbandonedError, RequeueWithoutAttempt))
+
+
 def page_ocr_max_pages() -> int:
     return max(0, env_int(PAGE_OCR_MAX_PAGES_ENV, DEFAULT_PAGE_OCR_MAX_PAGES))
 
@@ -106,9 +117,9 @@ async def ocr_textless_pages(
 ) -> list[int]:
     """Replace the regions of the text-less pages of *parsed_data* with their OCR text; the pages changed.
 
-    The pages stay as parsed when nothing is configured or the OCR fails. Raises only
-    ``AISettingsUnavailableError`` (the settings store did not answer), so the record is retried instead
-    of being indexed without these pages.
+    The pages stay as parsed when nothing is configured or the OCR fails. Raises only what
+    ``_must_propagate`` names (the settings store did not answer, or the parse pool did not run the
+    work), so the record is retried instead of being indexed without these pages.
     """
     cap = page_ocr_max_pages()
     if cap <= 0 or not pdf_bytes:
@@ -118,6 +129,8 @@ async def ocr_textless_pages(
             textless_pages, pdf_bytes, cap, label="page-ocr-detect", size=len(pdf_bytes), kind=ParseKind.INSPECT
         )
     except Exception as e:
+        if _must_propagate(e):
+            raise
         logger.warning("Could not look for pages without a text layer: %s", type(e).__name__)
         return []
     if not numbers:
@@ -135,7 +148,7 @@ async def ocr_textless_pages(
         handler = await _vlm_ocr_handler(config, logger)
         if handler is None:
             logger.info(
-                "Page OCR: %d pages without a text layer left as parsed, no OCR provider or multimodal model is configured",
+                "Page OCR: %d pages without a text layer left as parsed, no VLM OCR provider or multimodal model is configured",
                 len(numbers),
             )
             return []
@@ -143,9 +156,9 @@ async def ocr_textless_pages(
             extract_pages, pdf_bytes, numbers, label="page-ocr-extract", size=len(pdf_bytes), kind=ParseKind.INSPECT
         )
         result = await handler.process_document(subset)
-    except AISettingsUnavailableError:
-        raise
     except Exception as e:
+        if _must_propagate(e):
+            raise
         logger.warning("Page OCR failed, the pages stay as parsed: %s", type(e).__name__)
         return []
     replaced: list[int] = []
