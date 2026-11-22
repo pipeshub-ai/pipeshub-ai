@@ -42,6 +42,7 @@ SITES: dict[tuple[str, str, str], str] = {
     ("indexing_main.py", "recover_in_progress_records", "update_node"): QUEUE_NO_FILL,
     ("modules/indexing/duplicate_reconcile.py", "DuplicateReconciler.reconcile", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("modules/indexing/duplicate_reconcile.py", "_retry_one", "update_node_fields_if_match"): NO_RUN_FIELDS,
+    ("modules/indexing/duplicate_reconcile.py", "rearm_failed_reconcile", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("modules/transformers/pipeline.py", "IndexingPipeline.apply", "update_node"): NO_RUN_FIELDS,
     ("modules/transformers/sink_orchestrator.py", "SinkOrchestrator._update_indexing_status", "batch_update_nodes"): NO_RUN_FIELDS,
     ("modules/transformers/swap_commit.py", "SwapCommitter.commit", "update_node"): NO_RUN_FIELDS,  # the retired mark on the old copy's mapping row, not a record write

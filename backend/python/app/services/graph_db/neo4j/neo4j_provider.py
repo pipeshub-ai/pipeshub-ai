@@ -21734,6 +21734,27 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   WHERE {cls._kh_v3_hidden_above(og, tag, from_depth=0)}
               }}"""
 
+    def _kh_v3_check_hop(self, c: str, p: str, h: str, *, grant_once: bool) -> str:
+        """One hop of the batch check's walk from the App, from ``c`` up to its parent ``p`` over ``h``: a hierarchy edge, ``p`` no declared
+        group of this App (``app`` in scope), and the hop rule without navigation."""
+        return (
+            f"{h}.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']"
+            f" AND NOT ({p}:RecordGroup"
+            f" AND coalesce({p}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
+            f" AND coalesce({p}.connectorId, '') = app.id)"
+            f" AND {self._kh_v3_granted_hop(c, p, navigation=False, grant_once=grant_once)}"
+        )
+
+    def _kh_v3_check_parameters(self, access: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """The grant parameters the batch check reads for ``access``, and whether it tests grants from the nodes (``probe``)."""
+        parameters: dict[str, Any] = {"gatedAppIds": access["gated_app_ids"], "kh_cross": access.get("cross")}
+        probe = access.get("probe")
+        if probe:
+            parameters.update(kh_conn=probe["connector_id"], kh_grantees=probe["grantees"])
+        else:
+            parameters["grantedIds"] = [g for ids_ in access["by_connector"].values() for g in ids_]
+        return parameters, bool(probe)
+
     @staticmethod
     def _kh_v3_reached(start: str, hop: str, tag: str, *, child: str, parent: str, rel: str, hops: int = 50) -> str:
         """The nodes a walk up the hierarchy from ``start`` reaches in 1 to ``hops`` steps, each step from ``child`` to ``parent`` over
@@ -21779,13 +21800,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         def from_app(v: str, tag: str) -> str:
             c, p, h = f"kh_c{tag}", f"kh_p{tag}", f"kh_h{tag}"
-            hop = (
-                f"{h}.relationshipType {hierarchy}"
-                f" AND NOT ({p}:RecordGroup"
-                f" AND coalesce({p}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
-                f" AND coalesce({p}.connectorId, '') = app.id)"
-                f" AND {self._kh_v3_granted_hop(c, p, navigation=False, grant_once=bool(access.get('probe')))}"
-            )
+            hop = self._kh_v3_check_hop(c, p, h, grant_once=bool(access.get("probe")))
             return f"app IN {self._kh_v3_reached(v, hop, tag, child=c, parent=p, rel=h)}"
 
         def in_declared_scope(v: str, tag: str) -> str:
@@ -21876,19 +21891,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         isPlaceholder: coalesce(ok.isPlaceholder, false),
                         groupIds: [(ok)-[:BELONGS_TO]->(kh_og:RecordGroup) | kh_og.id]}}) AS items
         """
-        parameters = {
-            "kh_ids": ids, "kh_vrids": vrids, "org_id": org_id,
-            "gatedAppIds": access["gated_app_ids"], "granteeIds": access["grantee_ids"],
-        }
-        probe = access.get("probe")
-        # The grants of the other connectors, tested on their nodes, when ``by_connector`` holds one connector's alone.
-        parameters["kh_cross"] = access.get("cross")
+        # The grants of the other connectors (``kh_cross``) are tested on their nodes, when ``by_connector`` holds one connector's alone; a
+        # browse inside one connector tests grants from the nodes (``probe``).
+        grants, probe = self._kh_v3_check_parameters(access)
         if probe:
-            # A browse inside one connector: grants are tested from the nodes.
             query = self._kh_grants_by_probe(query)
-            parameters.update(kh_conn=probe["connector_id"], kh_grantees=probe["grantees"])
-        else:
-            parameters["grantedIds"] = [g for ids_ in access["by_connector"].values() for g in ids_]
+        parameters = {"kh_ids": ids, "kh_vrids": vrids, "org_id": org_id, "granteeIds": access["grantee_ids"], **grants}
         rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
         return (rows or [{}])[0].get("items") or []
 
@@ -22216,6 +22224,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """, parameters={"ids": asked, "org_id": org_id, "folder_mime_types": FOLDER_MIME_TYPES}, txn_id=transaction)
         return [r["id"] for r in rows]
 
+    async def _kh_split_admitted_by_hop(
+        self, start_id: str, ids: list[str], *, app_id: str, org_id: str, access: dict[str, Any], transaction: str | None,
+    ) -> frozenset[str]:
+        """Of ``ids``, children of ``start_id``, those the batch check admits by its walk from the App through the start: the start is the App
+        or that walk reaches it within one hop of the walk's cap, and the child's own hop up to the start passes. That is the check's own
+        arm with the part above the start read once for every child, where the check walks it again for each: siblings share their
+        ancestors. Every child it leaves out is for the check, so together they admit exactly what the check admits."""
+        if not ids:
+            return frozenset()
+        grants, probe = self._kh_v3_check_parameters(access)
+        query = f"""
+        MATCH (app:App {{id: $app_id}})
+        WHERE app.orgId = $org_id AND app.id IN $gatedAppIds
+        WITH app, (coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB') AS appOpensEverything
+        MATCH (start:App|Record|RecordGroup {{id: $start_id}})
+        WHERE start = app
+           // Read a level at a time from the start, as the check's walks are: its plan cannot start at the App, nor read every route.
+           OR app IN {self._kh_v3_reached("start", self._kh_v3_check_hop("kh_c", "kh_p", "kh_h", grant_once=probe), "r", child="kh_c", parent="kh_p", rel="kh_h", hops=49)}
+        // Collected, so the walk above the start is read once, not once for each child the planner might start from.
+        WITH app, appOpensEverything, collect(start) AS reached
+        UNWIND reached AS start
+        MATCH (start)-[kh_e:NODE_RELATION]->(kh_x:Record|RecordGroup)
+        WHERE kh_x.id IN $ids AND kh_x.orgId = $org_id AND kh_x.connectorId = app.id AND NOT coalesce(kh_x.isPlaceholder, false)
+          AND {self._kh_v3_check_hop("kh_x", "start", "kh_e", grant_once=probe)}
+        RETURN collect(DISTINCT kh_x.id) AS ids
+        """
+        if probe:
+            query = self._kh_grants_by_probe(query)
+        rows = await self._kh_query(query, parameters={"app_id": app_id, "org_id": org_id, "start_id": start_id, "ids": sorted(ids), **grants},
+                                    txn_id=transaction)
+        return frozenset((rows or [{}])[0].get("ids") or [])
+
     async def _kh_split_listed(
         self, start_id: str, *, app_id: str, org_id: str, access: dict[str, Any], placed: list[str], transaction: str | None,
         memo: dict[str, bool],
@@ -22226,8 +22266,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if len(kids) > self._KH_SPLIT_MAX_CHILDREN:
             raise _KhSplitUndecided("the start has more children than the split browse reads")
         visible = [k for k in kids if not k["hidden"]]
-        admitted = await self._kh_v3_admitted([k["id"] for k in visible if not k["stub"]], org_id=org_id, access=access,
-                                              transaction=transaction)
+        real = [k["id"] for k in visible if not k["stub"]]
+        by_hop = await self._kh_split_admitted_by_hop(start_id, real, app_id=app_id, org_id=org_id, access=access, transaction=transaction)
+        admitted = by_hop | await self._kh_v3_admitted([i for i in real if i not in by_hop], org_id=org_id, access=access,
+                                                       transaction=transaction)
         opens = await self._kh_split_opens([k["id"] for k in visible if k["stub"]], app_id=app_id, org_id=org_id, access=access,
                                            transaction=transaction, memo=memo)
         stubs = await self._kh_split_lists(sorted(opens), app_id=app_id, org_id=org_id, access=access, transaction=transaction, memo=memo)

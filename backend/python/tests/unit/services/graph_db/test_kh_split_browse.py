@@ -25,8 +25,10 @@ class World:
     the walk places under them."""
 
     def __init__(self, children: dict[str, list[tuple[str, bool, bool]]], admitted: set[str], *, groups: set[str] = frozenset(),
-                 held: set[str] = frozenset(), tops_under: set[str] = frozenset(), refused_stubs: set[str] = frozenset()) -> None:
+                 held: set[str] = frozenset(), tops_under: set[str] = frozenset(), refused_stubs: set[str] = frozenset(),
+                 by_hop: set[str] = frozenset()) -> None:
         self.children, self.admitted, self.groups, self.held, self.tops_under = children, admitted, set(groups), set(held), set(tops_under)
+        self.by_hop = set(by_hop)      # children the check's walk from the App admits through the start (a subset of admitted)
         self.refused_stubs = set(refused_stubs)      # stubs a browse of would refuse to open (the rest open by the walk from the App)
         self.checked: list[set[str]] = []
         self.walked: list[str] = []
@@ -46,6 +48,8 @@ def _provider(world: World) -> Neo4jProvider:
             return [{"id": i} for i in ids if i in world.groups]
         if "RETURN start.id AS id" in query:
             return [{"id": i} for i in ids if i not in world.refused_stubs]
+        if "collect(start) AS reached" in query:
+            return [{"ids": [i for i in ids if i in world.by_hop]}]
         if "RETURN node.id AS id" in query:
             return [{"id": i} for i in ids if i in world.held]
         raise AssertionError(query)
@@ -65,13 +69,16 @@ def _provider(world: World) -> Neo4jProvider:
     return p
 
 
+ACCESS = {"gated_app_ids": ["A"], "grantee_ids": ["u"], "by_connector": {"A": []}}
+
+
 async def _listed(world: World, start: str = "N", placed: list[str] | None = None) -> list[str]:
-    return await _provider(world)._kh_split_listed(start, app_id="A", org_id="o", access={}, placed=placed or [], transaction=None,
+    return await _provider(world)._kh_split_listed(start, app_id="A", org_id="o", access=ACCESS, placed=placed or [], transaction=None,
                                                     memo={})
 
 
 async def _lists(world: World, ids: list[str]) -> set[str]:
-    return await _provider(world)._kh_split_lists(ids, app_id="A", org_id="o", access={}, transaction=None, memo={})
+    return await _provider(world)._kh_split_lists(ids, app_id="A", org_id="o", access=ACCESS, transaction=None, memo={})
 
 
 @pytest.mark.asyncio
@@ -97,6 +104,14 @@ async def test_a_stub_the_browse_refuses_to_open_is_not_listed_and_lights_no_arr
                    "r": [("s", True, False)]}, admitted={"z", "y"}, refused_stubs={"s"})
     assert await _listed(world) == ["t"]
     assert await _lists(world, ["r"]) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_child_its_hop_admits_is_listed_without_asking_the_check_and_only_the_rest_are_asked() -> None:
+    world = World({"N": [("a", False, False), ("b", False, False), ("c", False, False), ("s", True, False)], "s": [("d", False, False)]},
+                  admitted={"a", "b", "d"}, by_hop={"a"})
+    assert await _listed(world) == ["a", "b", "s"]
+    assert world.checked[0] == {"b", "c"}
 
 
 @pytest.mark.asyncio
@@ -133,7 +148,7 @@ async def test_one_request_asks_about_a_row_once() -> None:
     world = World({"r": [("a", False, False)]}, admitted={"a"})
     p, memo = _provider(world), {}
     for _ in range(3):
-        assert await p._kh_split_lists(["r"], app_id="A", org_id="o", access={}, transaction=None, memo=memo) == {"r"}
+        assert await p._kh_split_lists(["r"], app_id="A", org_id="o", access=ACCESS, transaction=None, memo=memo) == {"r"}
     assert len(world.checked) == 1
 
 
@@ -143,7 +158,7 @@ async def test_a_start_with_more_children_than_the_bound_is_left_to_legacy() -> 
                   admitted={"c0", "d0"})
     p = _provider(world)
     p._KH_SPLIT_MAX_CHILDREN = 3
-    kw = {"app_id": "A", "org_id": "o", "access": {}, "placed": [], "transaction": None, "memo": {}}
+    kw = {"app_id": "A", "org_id": "o", "access": ACCESS, "placed": [], "transaction": None, "memo": {}}
     with pytest.raises(_KhSplitUndecided):
         await p._kh_split_listed("N", **kw)
     assert await p._kh_split_listed("M", **kw) == ["d0"]
@@ -158,12 +173,12 @@ async def test_an_arrow_past_the_bound_is_decided_by_an_admitted_child_or_left_t
     p = _provider(world)
     p._KH_SPLIT_MAX_CHILDREN = 3
     with pytest.raises(_KhSplitUndecided):
-        await p._kh_split_lists(["r"], app_id="A", org_id="o", access={}, transaction=None, memo={})
+        await p._kh_split_lists(["r"], app_id="A", org_id="o", access=ACCESS, transaction=None, memo={})
     assert set().union(*world.checked) == {"k0", "k1", "k2"}
     world = World({"r": [(f"k{i}", False, False) for i in range(5)]}, admitted={"k1"})
     p = _provider(world)
     p._KH_SPLIT_MAX_CHILDREN = 3
-    assert await p._kh_split_lists(["r"], app_id="A", org_id="o", access={}, transaction=None, memo={}) == {"r"}
+    assert await p._kh_split_lists(["r"], app_id="A", org_id="o", access=ACCESS, transaction=None, memo={}) == {"r"}
 
 
 @pytest.mark.asyncio
@@ -174,10 +189,10 @@ async def test_a_stub_left_unfollowed_at_the_depth_cap_is_undecided_not_empty() 
     p._KH_SPLIT_STUB_DEPTH = 1
     memo: dict = {}
     with pytest.raises(_KhSplitUndecided):
-        await p._kh_split_lists(["N"], app_id="A", org_id="o", access={}, transaction=None, memo=memo)
+        await p._kh_split_lists(["N"], app_id="A", org_id="o", access=ACCESS, transaction=None, memo=memo)
     assert "N" not in memo and "s1" not in memo
     p._KH_SPLIT_STUB_DEPTH = 2
-    assert await p._kh_split_lists(["N"], app_id="A", org_id="o", access={}, transaction=None, memo={}) == {"N"}
+    assert await p._kh_split_lists(["N"], app_id="A", org_id="o", access=ACCESS, transaction=None, memo={}) == {"N"}
 
 
 def test_the_mode_is_split_unless_legacy_or_shadow_is_asked(monkeypatch: pytest.MonkeyPatch) -> None:
