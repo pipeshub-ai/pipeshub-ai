@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -171,12 +172,24 @@ def test_hint_shows_matched_text():
 
 
 class TestCapGrepOutput:
-    def test_zero_counts_dropped(self) -> None:
-        assert _cap_grep_output('grep -rci "x" .') == "grep -rci \"x\" . | grep -v ':0$'"
+    def test_a_counting_grep_lists_matching_files_instead(self) -> None:
+        assert _cap_grep_output('grep -rci "x" .') == 'grep -rcil "x" .'
+        assert _cap_grep_output('grep -rli "x" .') == 'grep -rli "x" .'
+        assert _cap_grep_output('grep -r --count -e "x" .') == 'grep -rl --count -e "x" .'
+
+    @pytest.mark.parametrize("command", [
+        'rg -c "x" .',
+        'grep -rcL "x" .',
+        'grep -rcZ "x" .',
+        'grep -rn "x" .',
+        'grep -rliZ "x" . | xargs -0 ls',
+    ])
+    def test_otherwise_zero_counts_are_filtered(self, command: str) -> None:
+        assert _cap_grep_output(command) == command + " | grep -v ':0$'"
 
     def test_a_head_or_tail_cut_is_dropped(self) -> None:
         assert _cap_grep_output('grep -rliZ "x" . | head -5 | xargs -0 grep -Hci "y" | tail -3') == (
-            "grep -rliZ \"x\" . | xargs -0 grep -Hci \"y\" | grep -v ':0$'"
+            'grep -rliZ "x" . | xargs -0 grep -Hcil "y"'
         )
 
     @pytest.mark.parametrize("command", [
@@ -213,8 +226,7 @@ async def test_match_after_many_non_matching_files_is_found(tmp_path):
     )
 
     assert ok
-    assert "record_ffffffff-0000-0000-0000-000000000000.json:1" in output
-    assert ":0\n" not in output
+    assert output.split() == ["./zzz-last/record_ffffffff-0000-0000-0000-000000000000.json"]
 
 
 class TestResolveSearchPaths:
@@ -713,3 +725,100 @@ class TestMergeMatchesFetchRules:
 
         assert sorted(r["virtual_record_id"] for r in results) == ["v-demo", "v-ok"]
         lookup.assert_not_awaited()
+
+
+class TestOneGrepForAllConnectors:
+    """run_pattern_match greps every connector with one run of the command."""
+
+    @staticmethod
+    def _setup(tmp_path) -> tuple[MagicMock, Callable[[object, str], Awaitable[tuple[str | None, str | None]]]]:
+        base = tmp_path / "records"
+        for cid, vrid in (("c1", "a0a0a0a0"), ("c2", "b0b0b0b0")):
+            (base / cid / "doc").mkdir(parents=True)
+            (base / cid / "doc" / f"record_{vrid}.json").write_text(_record_json(cid, "pipeshub valuation"))
+        graph = MagicMock()
+        graph.get_accessible_containers = AsyncMock(return_value=AccessibleContainers())
+        graph.filter_accessible_virtual_record_ids = AsyncMock(
+            side_effect=lambda vrids, *_a, **_k: {v: f"rec-{v}" for v in vrids}
+        )
+        graph.get_records_by_record_ids = AsyncMock(side_effect=lambda record_ids, **_k: [
+            {"_key": r, "recordName": r} for r in record_ids
+        ])
+
+        async def resolve(_self, cid) -> tuple[str | None, str | None]:
+            path = base / cid
+            return (str(path), None) if path.is_dir() else (None, "Error: no records directory")
+
+        return graph, resolve
+
+    @pytest.mark.skipif(shutil.which("grep") is None, reason="needs grep")
+    @pytest.mark.asyncio
+    async def test_one_run_one_access_check_and_no_per_connector_runs(self, tmp_path) -> None:
+        graph, resolve = self._setup(tmp_path)
+        real_run = _run_subprocess
+        runs = []
+
+        # Run unconfined so the test needs no Landlock; the confined batch has its own tests.
+        async def spy(command, **kwargs) -> tuple[bool, str]:
+            runs.append((command, kwargs["confine_to"]))
+            return await real_run(command, **{**kwargs, "confine_to": None})
+
+        with patch.object(StoragePatternMatch, "_resolve_connector_path", resolve), \
+             patch.object(StoragePatternMatch, "find_records", AsyncMock()) as per_cid, \
+             patch("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 7), \
+             patch("app.agents.actions.storage_search.storage_search._run_subprocess", side_effect=spy):
+            records = await run_pattern_match(
+                config_service=MagicMock(), org_id="org1", user_id="u1", graph_provider=graph,
+                command='grep -rli "valuation" .', connector_ids=["c1", "missing", "c2"],
+                logger_instance=MagicMock(),
+            )
+
+        assert [r["virtual_record_id"] for r in records] == ["a0a0a0a0", "b0b0b0b0"]
+        assert runs == [(
+            'grep -rli "valuation" ./c1 ./c2',
+            (str(tmp_path / "records" / "c1"), str(tmp_path / "records" / "c2")),
+        )]
+        per_cid.assert_not_awaited()
+        assert graph.filter_accessible_virtual_record_ids.await_count == 1
+        assert graph.get_records_by_record_ids.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_a_run_per_connector_with_a_records_directory(self, tmp_path) -> None:
+        graph, resolve = self._setup(tmp_path)
+
+        async def find_records(connector_id, command, **_kwargs) -> tuple[bool, str]:
+            return True, json.dumps({"records": [{"virtual_record_id": connector_id}]})
+
+        with patch.object(StoragePatternMatch, "_resolve_connector_path", resolve), \
+             patch.object(StoragePatternMatch, "find_records_batch", AsyncMock(return_value=None)), \
+             patch.object(StoragePatternMatch, "find_records", AsyncMock(side_effect=find_records)) as per_cid:
+            records = await run_pattern_match(
+                config_service=MagicMock(), org_id="org1", user_id="u1", graph_provider=graph,
+                command='grep -rli "valuation" .', connector_ids=["c1", "missing", "c2"],
+                logger_instance=MagicMock(),
+            )
+
+        assert [r["virtual_record_id"] for r in records] == ["c1", "c2"]
+        assert [c.kwargs["connector_id"] for c in per_cid.await_args_list] == ["c1", "c2"]
+
+    @pytest.mark.asyncio
+    async def test_group_rows_are_fetched_once_for_every_connector(self, tmp_path) -> None:
+        containers = AccessibleContainers(record_group_ids_trusted=frozenset({"rg1"}))
+        graph = MagicMock()
+        graph.get_accessible_containers = AsyncMock(return_value=containers)
+        graph.get_nodes_by_field_in = AsyncMock(return_value=[])
+
+        with patch("app.utils.pattern_match.StoragePatternMatch") as spm, \
+             patch("app.utils.pattern_match._validate_command", return_value=(True, "")):
+            tool = spm.return_value
+            tool._resolve_connector_path = AsyncMock(return_value=(str(tmp_path), None))
+            tool.find_records_batch = AsyncMock(return_value=None)
+            tool.find_records = AsyncMock(return_value=(True, json.dumps({"records": []})))
+            await run_pattern_match(
+                config_service=MagicMock(), org_id="org1", user_id="u1",
+                graph_provider=graph, command='grep -rci "x" .', connector_ids=["c1", "c2", "c3"],
+                logger_instance=MagicMock(),
+            )
+
+        assert graph.get_nodes_by_field_in.await_count == 1
+        assert tool.find_records.await_count == 3

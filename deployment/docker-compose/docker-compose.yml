@@ -334,6 +334,11 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Stored-record cache: memory (default, per worker, up to 512 MiB) | redis.
+      - PIPESHUB_RECORD_CACHE_BACKEND=${PIPESHUB_RECORD_CACHE_BACKEND:-memory}
+      - PIPESHUB_RECORD_CACHE_BYTES=${PIPESHUB_RECORD_CACHE_BYTES:-}
+      # ripgrep threads per search; blank = half the container's CPUs (also the cap).
+      - GREP_THREADS=${GREP_THREADS:-}
       # Most characters one agent turn may stream before it is stopped as a
       # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
       - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
@@ -611,10 +616,15 @@ services:
         reservations:
           memory: ${MONGO_MEMORY_RESERVATION:-512M}
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      # mongosh boots a whole Node.js runtime per check. Under load that alone
+      # can outlast a 3s timeout while mongod keeps serving, so give each check
+      # 10s and tolerate about a minute of slow checks before calling it
+      # unhealthy. (start_interval would shorten the first wait but needs
+      # Docker Engine 25+.)
+      test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 10s
+      retries: 4
 
   redis:
     image: redis:7.4-bookworm
@@ -861,10 +871,11 @@ services:
     networks:
       - pipeshub
     healthcheck:
+      # arangosh is a full JavaScript shell; same budget as mongodb's check.
       test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-}' --javascript.execute-string 'db._version()' || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      interval: 15s
+      timeout: 10s
+      retries: 4
 
   # ---------------------------------------------------------------------------
   # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j)

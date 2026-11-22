@@ -23,6 +23,7 @@ import pytest
 from aiokafka import TopicPartition
 
 from app.services.messaging import consumer_concurrency as concurrency
+from app.services.messaging.backpressure import BACKPRESSURE_CLEAR_SETTLE_SECONDS
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer import indexing_consumer as ic
 from app.services.messaging.kafka.consumer.indexing_consumer import (
@@ -191,13 +192,13 @@ class TestSettleTime:
     async def test_a_gap_just_shorter_than_the_settle_time_stays_in_the_episode(
         self, consumer: IndexingKafkaConsumer, clock: _Clock, caplog_info: pytest.LogCaptureFixture
     ) -> None:
-        assert ic._BACKPRESSURE_CLEAR_SETTLE_SECONDS >= 1
+        assert BACKPRESSURE_CLEAR_SETTLE_SECONDS >= 1
         await _saturate(consumer)
         _turn(consumer)
         clock.now = 2048.0
         _drain(consumer)
         _turn(consumer)
-        clock.now = 2048.0 + ic._BACKPRESSURE_CLEAR_SETTLE_SECONDS - TICK
+        clock.now = 2048.0 + BACKPRESSURE_CLEAR_SETTLE_SECONDS - TICK
         _turn(consumer)
         await _saturate(consumer)
         _turn(consumer)
@@ -229,7 +230,7 @@ class TestSettleTime:
         clock.now = 2048.0
         _drain(consumer)
         _turn(consumer)
-        clock.now = 2048.0 + ic._BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        clock.now = 2048.0 + BACKPRESSURE_CLEAR_SETTLE_SECONDS
         _turn(consumer)
 
         assert _count(caplog_info, logging.INFO, CLEARED) == 1

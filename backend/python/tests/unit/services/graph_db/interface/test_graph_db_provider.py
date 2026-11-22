@@ -367,7 +367,6 @@ class TestAbstractMethodInventory:
         "get_kb_permissions",
         "update_kb_permission",
         "list_kb_permissions",
-        "list_kb_records",
         "list_accessible_artifacts",
         "get_artifact_detail",
         # KB migration and legacy operations

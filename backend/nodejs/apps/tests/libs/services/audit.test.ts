@@ -12,6 +12,8 @@ const ORG = '64f0c0ffee0000000000000a'
 const USER = '64f0c0ffee0000000000000b'
 const TARGET = '64f0c0ffee0000000000000c'
 const GROUP = '64f0c0ffee0000000000000d'
+const TEAM = '3f2b8c1e-9a4d-4c7b-8e2f-1a2b3c4d5e6f'
+const KEY = '64f0c0ffee0000000000000e'
 
 describe('audit(): one fixed-shape line per security event', () => {
   let log: sinon.SinonStub
@@ -239,5 +241,65 @@ describe('audit(): membership group and refusal targets', () => {
   it('U4 [guard: type-only change] auditRefusal carries the target of the refused change', () => {
     auditRefusal('user.role.change', refusal(new Error('x'), 'last_admin'), { actor: USER, org: ORG, target: TARGET, targetIsUser: true }, ['last_admin'])
     expect(record()).to.include({ message: 'user.role.change', outcome: 'failure', reason: 'last_admin', target: TARGET })
+  })
+  it('U5 shows team_id and key_id after group_id, scopes after them, in text and JSON; absent when unset', () => {
+    audit('team.member.add', { actor: USER, org: ORG, target: TARGET, targetIsUser: true, team: TEAM, outcome: 'success' })
+    expect(record()).to.include({ team_id: TEAM, target: TARGET })
+    expect(record()).to.not.have.any.keys('group_id', 'key_id', 'scopes')
+    expect(consoleLine(record())).to.include(`target=${TARGET} team_id=${TEAM}`)
+    audit('service_account.token.create', { actor: USER, org: ORG, target: TARGET, targetIsUser: true, key: KEY, scopes: ['kb:read'], outcome: 'success' })
+    expect(consoleLine(record())).to.include(`target=${TARGET} key_id=${KEY} scopes=kb:read`)
+    freshRoot('json')
+    audit('service_account.token.create', { actor: USER, org: ORG, target: TARGET, key: KEY, scopes: ['kb:read'], outcome: 'success' })
+    expect(JSON.parse(consoleLine(record()))).to.include({ key_id: KEY, scopes: 'kb:read' })
+  })
+
+  it("U6 the org's All team is a team id, as team_id and as a team target; never as another id", () => {
+    const all = `all_${ORG}`
+    audit('team.member.add', { actor: USER, org: ORG, target: TARGET, team: all, outcome: 'success' })
+    expect(record()).to.include({ team_id: all, reason: null })
+    audit('team.update', { actor: USER, org: ORG, target: all, targetIsTeam: true, outcome: 'success' })
+    expect(record()).to.include({ target: all, reason: null })
+    audit('user.delete', { actor: USER, org: ORG, target: all, outcome: 'success' })
+    expect(record()).to.include({ target: null, reason: 'invalid_id' })
+    audit('team.update', { actor: USER, org: ORG, target: 'all_Engineering', targetIsTeam: true, outcome: 'success' })
+    expect(record()).to.include({ target: null, reason: 'invalid_id' })
+  })
+
+  it('U7 a team or key that is not an id is rejected: reason invalid_id, nothing of it printed', () => {
+    audit('team.member.add', { actor: USER, org: ORG, target: TARGET, team: 'Platform <ops@acme.test>', outcome: 'success' })
+    expect(record()).to.include({ reason: 'invalid_id' })
+    expect(JSON.stringify(record())).to.not.include('acme.test')
+    audit('service_account.token.revoke', { actor: USER, org: ORG, target: TARGET, key: 'phsvc_secretvalue', outcome: 'success' })
+    expect(record()).to.include({ reason: 'invalid_id' })
+    expect(JSON.stringify(record())).to.not.include('phsvc_')
+  })
+
+  it('U8 scopes are sorted and deduplicated; anything that is not a scope name makes them other', () => {
+    audit('service_account.token.create', { actor: USER, org: ORG, scopes: ['semantic:write', 'kb:read', 'kb:read'], outcome: 'success' })
+    expect(record()).to.include({ scopes: 'kb:read,semantic:write' })
+    audit('service_account.token.create', { actor: USER, org: ORG, scopes: ['kb:read', 'Bearer abc.def'], outcome: 'success' })
+    expect(record()).to.include({ scopes: 'other' })
+    audit('service_account.token.create', { actor: USER, org: ORG, scopes: [], outcome: 'success' })
+    expect(record()).to.include({ scopes: 'other' })
+  })
+
+  it('U9 [guard] key_id is a typed field and prints; a tokenId in metadata is still redacted', () => {
+    audit('service_account.token.revoke', { actor: USER, org: ORG, target: TARGET, key: KEY, outcome: 'success' })
+    expect(consoleLine(record())).to.include(`key_id=${KEY}`)
+    Logger.getInstance({ service: 'x' }).info('revoked', { tokenId: KEY })
+    expect(record().metadata).to.deep.equal({ tokenId: '[REDACTED]' })
+  })
+
+  it('U10 [guard] a log call that passes scopes as an array keeps it in metadata, as before', () => {
+    Logger.getInstance({ service: 'x' }).info('granted', { scopes: ['kb:read', 'semantic:write'] })
+    expect(record()).to.not.have.property('scopes')
+    expect(record().metadata).to.deep.equal({ scopes: ['kb:read', 'semantic:write'] })
+    expect(consoleLine(record())).to.not.include(' scopes=')
+  })
+
+  it('U11 auditRefusal carries the key of the refused change', () => {
+    auditRefusal('service_account.token.revoke', refusal(new Error('x'), 'not_found'), { actor: USER, org: ORG, target: TARGET, key: KEY }, ['not_found'])
+    expect(record()).to.include({ message: 'service_account.token.revoke', outcome: 'failure', reason: 'not_found', key_id: KEY })
   })
 })

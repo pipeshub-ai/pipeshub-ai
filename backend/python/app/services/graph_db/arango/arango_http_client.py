@@ -34,6 +34,9 @@ from app.utils.db_query_log import query_ended, query_logged
 # ArangoDB Error Code Constants
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
 ARANGO_ERROR_SCHEMA_DUPLICATE = 1207
+# A read answered with one of these found no document: not found, or a key or handle no document can have.
+# 1203 (collection not found) is not one: ArangoDB also answers it for a missing collection.
+_ABSENT_DOCUMENT_ERROR_NUMS = frozenset({ARANGO_ERROR_DOCUMENT_NOT_FOUND, 1205, 1221})
 
 # Maximum open connections for each event loop's session (aiohttp's default).
 # The client holds one session per loop, so its total is this times the
@@ -303,6 +306,8 @@ class ArangoHTTPClient:
         self.logger = logger
         # Set by the provider that knows the records schema; None leaves every write as it was.
         self.record_guard: RecordSchemaGuard | None = None
+        # The same for the apps schema, applied at start and by the poll only (an apps write refused meanwhile is not sent again).
+        self.apps_guard: RecordSchemaGuard | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """
@@ -354,7 +359,7 @@ class ArangoHTTPClient:
                     return False
 
         except Exception as e:
-            error_class.log_failure(self.logger, "db.connect.failed", e, backend="arango")
+            error_class.log_failure(self.logger, "db.connect.failed", e, backend="arango", include_error_text=False)  # names the host
             return False
 
     async def disconnect(self) -> None:
@@ -595,14 +600,19 @@ class ArangoHTTPClient:
             collection: Collection name
             key: Document key
             txn_id: Optional transaction ID
-            raise_on_error: Propagate anything that is not a 404 instead of
-                answering None. Only a 404 is an absent document; a 503 from a
-                restarting server, or a connection that never landed, is the
-                server failing to answer and must not read as a deletion.
+            raise_on_error: Propagate anything that is not an absent document
+                instead of answering None. An empty key, an answer with an
+                errorNum in _ABSENT_DOCUMENT_ERROR_NUMS, or a 404 with an empty
+                body is an absent document; a 404 for a missing collection or
+                with any other body, a 503 from a restarting server, or a
+                connection that never landed is the server failing to answer
+                and must not read as a deletion.
 
         Returns:
             Optional[Dict]: Document data or None if not found
         """
+        if not key:
+            return None  # names no document; ArangoDB would answer the path `<collection>/` with 1203, as for a missing collection
         url = f"{self.base_url}/_db/{self.database}/_api/document/{collection}/{key}"
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
@@ -611,29 +621,27 @@ class ArangoHTTPClient:
         try:
             session = await self._get_session()
             async with session.get(url, headers=headers) as resp:
-                if resp.status == HttpStatusCode.NOT_FOUND.value:
-                    absent = ArangoQueryError("Get document", resp.status, await resp.text())
-                    if absent.error_num not in (None, ARANGO_ERROR_DOCUMENT_NOT_FOUND):  # 1203: the collection is missing, not the document
-                        query_ended(self.logger, "arango", "get_document", started, absent, describe=describe_arango_error, skip=_SKIP)
-                    else:  # an absent document is an answer: only a slow lookup writes a record
-                        query_ended(self.logger, "arango", "get_document", started, describe=describe_arango_error, skip=_SKIP)
-                    return None
-                elif resp.status == HttpStatusCode.OK.value:
+                if resp.status == HttpStatusCode.OK.value:
                     document = await resp.json()
                     query_ended(self.logger, "arango", "get_document", started, describe=describe_arango_error, skip=_SKIP)  # slow only
                     return document
-                else:
-                    failed = ArangoQueryError("Get document", resp.status, await resp.text())
-                    query_ended(self.logger, "arango", "get_document", started, failed, describe=describe_arango_error, skip=_SKIP)
-                    if raise_on_error:
-                        unreadable = GraphQueryError(
-                            f"Could not read {collection}/{key}: "
-                            f"ArangoDB answered {resp.status}"
-                        )
-                        # Not chained (a 410 cause would count as a lost attempt in the KB push retry): the class only.
-                        error_class.mark_error(unreadable, error_class.classify_error(failed))
-                        raise unreadable
+                body = await resp.text()
+                failed = ArangoQueryError("Get document", resp.status, body)
+                if failed.error_num in _ABSENT_DOCUMENT_ERROR_NUMS or (resp.status == HttpStatusCode.NOT_FOUND.value and not body):
+                    # an absent document is an answer: only a slow lookup writes a record
+                    query_ended(self.logger, "arango", "get_document", started, describe=describe_arango_error, skip=_SKIP)
                     return None
+                # A 404 with 1203 is a missing collection, and one with any other body (a proxy's page) is not ArangoDB's answer.
+                query_ended(self.logger, "arango", "get_document", started, failed, describe=describe_arango_error, skip=_SKIP)
+                if raise_on_error:
+                    unreadable = GraphQueryError(
+                        f"Could not read {collection}/{key}: "
+                        f"ArangoDB answered {resp.status}"
+                    )
+                    # Not chained (a 410 cause would count as a lost attempt in the KB push retry): the class only.
+                    error_class.mark_error(unreadable, error_class.classify_error(failed))
+                    raise unreadable
+                return None
 
         except GraphQueryError:
             # Raised just above; the generic handler would log it a second time

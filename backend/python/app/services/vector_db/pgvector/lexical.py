@@ -13,7 +13,7 @@ import logging
 import math
 from typing import TYPE_CHECKING
 
-from app.core.db import DbError, DbTimeout
+from app.core.db import ConnectionLost, DbError, DbTimeout
 from app.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
@@ -82,7 +82,8 @@ async def search(
 ) -> tuple[list[tuple[int, str]], str | None]:
     """``(rows, degraded)``: the lexical leg's points in order, and why it is incomplete: ``timeout`` (it ran out of time, or no
     connection was free in time) and ``error`` (any other database failure, logged as an error) answer nothing, ``partial`` answers
-    what was found within ``MAX_LEG`` rows. The dense leg still answers in every case. A malformed query raises."""
+    what was found within ``MAX_LEG`` rows. The dense leg still answers in every other case. A malformed query, and a database that cannot
+    be reached (``ConnectionLost``), raise."""
     if not 1 <= leg <= MAX_LEG:
         raise ValueError(f"a lexical leg is 1..{MAX_LEG} rows")
     terms_of(sparse)             # validated before any statement
@@ -98,6 +99,8 @@ async def search(
         telemetry.TIMEOUT.inc("lexical", "lexical")
         logger.warning("lexical leg ran out of time; answering from the dense leg alone")
         reason = "timeout"
+    except ConnectionLost:
+        raise                   # the database is out: the whole search answers unavailable rather than half of it
     except DbError:
         logger.error("lexical leg failed; answering from the dense leg alone", exc_info=True)
         reason = "error"

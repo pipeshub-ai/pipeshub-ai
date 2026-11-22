@@ -29,6 +29,7 @@ EDITED = {
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
         # Read-only admission explain: a rule tag on the returned state, no change to any limit.
         "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
+        "_feedback_for", "assign:SERVICE_POOL",  # a Docling-only report brakes INDEX_HEAVY only; no memory gate reads feedback
         "resolve_ceilings",  # two keyword arguments (cells, profile); profile="legacy" (the default) runs the old body, so the capacity-profile test pins the equality
     },
     "memory_budget.py": {
@@ -39,6 +40,7 @@ EDITED = {
     "consumer_concurrency.py": {
         "reserve_record_memory", "acquire_parsing_slot",  # optional kind; no kind or no excess = the old path
         "record_parse_kind",
+        "wait_out_held_service",  # new; waits out a held service's pause before the parse permit and reserves nothing (test_docling_hold_recheck)
         "parse_ceiling", "parse_lease_pool",  # one heavy lease for both tiers, only with USE_PARSING_SERVICE and PARSING_SERVICE_CONCURRENCY set; otherwise unchanged
         "RequeueWithoutAttempt.pauses_consumer",  # read only by the PostgreSQL consumer's stage admission, not by a memory gate
         "RequeueWithoutAttempt.__init__",  # adds the level the consumer logs the hand-back at; reserves nothing
@@ -85,6 +87,8 @@ EDITED = {
         # still swallowed; it runs after settlement and reserves nothing (tests/unit/services/messaging/test_indexing_end.py::
         # test_redis_retry_tracker_failure_after_the_ack_is_a_second_line).
         "clear_retry_tracking",
+        # A Docling 429 holds only the records that call Docling (F57f): read and dispatch decisions, no gate or memory charge.
+        "downstream_read_pause", "read_pausing_services", "held_pools", "held_downstream",
     },
     "controller.py": {
         "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",

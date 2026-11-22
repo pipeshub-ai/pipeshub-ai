@@ -489,7 +489,6 @@ EXERCISED_HERE: dict[str, str] = {
     "get_records_by_record_group": "test_reindex_walks",
     "get_records_by_parent_record": "test_reindex_walks",
     "get_linked_records": "test_linked_records",
-    "list_kb_records": "test_kb_listings",
     "get_kb_children": "test_kb_listings",
     "get_folder_children": "test_kb_listings",
     "get_connector_stats": "test_connector_stats",
@@ -917,14 +916,6 @@ async def test_organization_record_reach(world: _World) -> None:
 
 async def test_kb_listings(world: _World) -> None:
     g = world.graph
-    kb_records, _, _ = await g.list_kb_records(
-        world.kb_id, world.user_key, world.org_id, 0, 100,
-        None, None, None, None, None, None, None, "recordName", "asc",
-    )
-    got = _ids_anywhere(kb_records)
-    assert world.ids["kb_live"] in got and world.ids["kb_child_live"] in got
-    assert not {world.ids["kb_trashed"], world.ids["kb_child_trashed"]} & got
-
     root = _ids_anywhere(await g.get_kb_children(world.kb_id, 0, 100))
     assert world.ids["kb_live"] in root and world.ids["kb_trashed"] not in root
 

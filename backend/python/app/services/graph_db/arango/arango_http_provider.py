@@ -13,10 +13,10 @@ import bisect
 import contextlib
 import functools
 import json
+import logging
 import random
 import re
 import time
-import traceback
 import unicodedata
 import uuid
 from collections import defaultdict
@@ -101,6 +101,7 @@ from app.modules.indexing.record_diagnostics import WriteKind, aql_parts
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.schema.arango.documents import (
+    APP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
     agent_schema,
     agent_skill_candidates_schema,
@@ -1234,7 +1235,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not all([arango_url, arango_user, arango_password, arango_db]):
                 raise ValueError("Missing required ArangoDB configuration values")
 
-            await self._stop_record_guard()  # a second connect() replaces the client; its guard's poller would otherwise run on
+            await self._stop_schema_guards()  # a second connect() replaces the client; its guards' pollers would otherwise run on
             # Create HTTP client
             self.http_client = ArangoHTTPClient(
                 base_url=arango_url,
@@ -1249,6 +1250,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise Exception("Failed to connect to ArangoDB")
             self.http_client.record_guard = RecordSchemaGuard(
                 self.http_client, self.logger, schema=record_schema, generation=RECORD_SCHEMA_GENERATION,
+            )
+            self.http_client.apps_guard = RecordSchemaGuard(
+                self.http_client, self.logger, schema=app_schema, generation=APP_SCHEMA_GENERATION,
+                collection=CollectionNames.APPS.value,
             )
 
             # Ensure database exists
@@ -1268,16 +1273,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to connect to ArangoDB via HTTP: {str(e)}")
-            await self._stop_record_guard()
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="connect")
+            await self._stop_schema_guards()
             self.http_client = None
             return False
 
-    async def _stop_record_guard(self) -> None:
-        """Cancel the poll of the current client's records-schema guard (it holds the client, so it would keep polling after a disconnect)."""
-        guard = self.http_client.record_guard if self.http_client else None
-        if guard is not None:
-            await guard.stop()
+    async def _stop_schema_guards(self) -> None:
+        """Cancel the polls of the current client's schema guards (they hold the client, so they would keep polling after a disconnect)."""
+        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
+            if guard is not None:
+                await guard.stop()
 
     async def disconnect(self) -> bool:
         """
@@ -1288,31 +1293,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             self.logger.info("🚀 Disconnecting from ArangoDB via HTTP API")
-            await self._stop_record_guard()
+            await self._stop_schema_guards()
             if self.http_client:
                 await self.http_client.disconnect()
             self.http_client = None
             self.logger.info("✅ Disconnected from ArangoDB via HTTP API")
             return True
         except Exception as e:
-            self.logger.error(f"❌ Failed to disconnect: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="disconnect")
             return False
 
     async def _apply_schema(self, name: str, schema: dict[str, Any]) -> bool:
-        """Apply ``schema`` to a collection. The records schema is applied only while the live generation is
+        """Apply ``schema`` to a collection. The records and apps schemas are applied only while the live generation is
         lower than this process's, through the guard's lock and last-look checks. That narrows, but cannot close, the window in which an
         older start puts its schema over a newer one (a schema change is not transactional with the lock); the newer process's poll
         repairs it, eventually (see ``record_schema_guard``)."""
         client = self.http_client
-        if client is not None and name == CollectionNames.RECORDS.value and client.record_guard is not None:
+        guard = None
+        if client is not None and name == CollectionNames.RECORDS.value:
             guard = client.record_guard
+        elif client is not None and name == CollectionNames.APPS.value:
+            guard = client.apps_guard
+        if guard is not None:
             # The guard's locked recheck decides from reads that can be out of date by the time the schema is written; the schema
             # update itself is not fenced, so a paused older start can still overwrite a newer schema, and the newer process's
             # later checks and writes repair it. An unreadable live schema is not written over (this attempt of the start fails).
             try:
                 await guard.ensure_wide("startup")
             except Exception as error:
-                self.logger.warning("could not apply the records schema: %s", error)
+                error_class.log_failure(self.logger, "graph.provider.failed", error, include_error_text=False,
+                                        op="_apply_schema")
                 return False
             return await guard.is_wide()
         return await client.update_collection_schema(name, schema)
@@ -1323,10 +1333,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return bool(guard and await guard.ensure_wide(trigger))
 
     def start_record_schema_poll(self, interval: float = 10.0) -> None:
-        """Check the live records schema every ``interval`` seconds on the running loop and widen it when it is
+        """Check the live records and apps schemas every ``interval`` seconds on the running loop and widen each when it is
         narrower than this process's."""
-        if self.http_client and self.http_client.record_guard:
-            self.http_client.record_guard.start(interval)
+        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
+            if guard is not None:
+                guard.start(interval)
 
     async def ensure_schema(self) -> bool:
         """
@@ -1409,7 +1420,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return apps_schema_applied
 
         except Exception as e:
-            self.logger.error(f"❌ Error ensuring schema: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="ensure_schema")
             return False
 
     @override
@@ -1495,7 +1506,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             edge_col, resp.status, body,
                         )
         except Exception as e:
-            self.logger.warning("Edge definition migration failed (non-fatal): %s", e)
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="_ensure_edge_definitions_up_to_date", step="edge_definition_migration")
 
     async def _add_edge_definition(self, graph_name: str, desired: dict) -> None:
         edge_col = desired["edge_collection"]
@@ -1943,7 +1955,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     if index.get("fields") == ["orgId", "email"] and index.get("unique") and not index.get("sparse"):
                         await self.http_client.drop_index(index["id"])
             except Exception as exc:  # the sourceKey index below must still be created
-                self.logger.error("Could not drop the non-sparse people (orgId, email) index; drop it by hand: %s", exc)
+                # ERROR whatever the class: someone has to drop it by hand.
+                error_class.log_failure(self.logger, "graph.provider.step_failed", exc, include_error_text=False, level=logging.ERROR,
+                                        op="_ensure_indexes", step="drop_people_email_index")
         await self.http_client.ensure_persistent_index(
             CollectionNames.PEOPLE.value, ["orgId", "sourceKey"], unique=True, sparse=True,
         )
@@ -1969,13 +1983,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 for i in await self.http_client.get_indexes(CollectionNames.ENTITY_RELATIONS.value)
             )
         except Exception as exc:  # unknown: clean up anyway, it is idempotent and bounded
-            self.logger.warning("Could not read the entityRelations indexes: %s", exc)
+            error_class.log_failure(self.logger, "graph.provider.step_failed", exc, include_error_text=False,
+                                    op="_ensure_indexes", step="read_entity_relation_indexes")
             indexed = False
         if not indexed:
             try:
                 await self._dedupe_entity_relations()
             except Exception as exc:  # the index build below then fails and logs; startup goes on
-                self.logger.error("Could not remove duplicate entityRelations edges: %s", exc)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", exc, include_error_text=False,
+                                        op="_ensure_indexes", step="entity_relation_dedup")
         await self.http_client.ensure_persistent_index(
             CollectionNames.ENTITY_RELATIONS.value, entity_fields, unique=True,
         )
@@ -2015,7 +2031,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 self.logger.info("✅ Departments seed completed")
         except Exception as e:
-            self.logger.warning(f"Departments seed failed (non-fatal): {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="_ensure_departments_seed", step="departments_seed")
 
     # ==================== Transaction Management ====================
 
@@ -2108,9 +2125,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return self._translate_node_from_arango(doc)
             return None
         except Exception as e:
-            self.logger.error(f"❌ Failed to get document: {str(e)}")
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_document")
             return None
 
     async def get_record_by_id(
@@ -2156,7 +2173,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
-            self.logger.error("Failed to get record by id %s: %s", record_id, type(e).__name__)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_id", record_id=record_id)
             return None
         if not results:
             return None
@@ -2168,8 +2186,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
         except Exception as e:
             # The builder's error quotes the whole type document.
-            self.logger.error("Failed to build record %s of type %s: %s",
-                              record_id, result["record"].get("recordType"), type(e).__name__)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_id", record_id=record_id)
             return None
 
     async def page_record_ids_by_type(
@@ -2253,7 +2271,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.warning("get_typed_records_batch failed: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_typed_records_batch")
             return {}
 
     async def get_node_depths_batch(
@@ -2360,7 +2379,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     depth_map[rid] = lvl
             return depth_map
         except Exception as e:
-            self.logger.error(f"get_node_depths_batch failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_node_depths_batch")
             return {}
 
     # ==================== Connector Registry Operations ====================
@@ -2424,7 +2444,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return len(results) > 0
 
         except Exception as e:
-            self.logger.error(f"Failed to check connector name exists: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_connector_name_exists")
             return False
 
     async def batch_update_connector_status(
@@ -2464,7 +2485,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return len(results)
 
         except Exception as e:
-            self.logger.error(f"Failed to batch update connector status: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="batch_update_connector_status")
             return 0
 
     async def normalize_folder_mime_types(self, batch_size: int = 1000) -> dict:
@@ -2839,7 +2861,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results or []
 
         except Exception as e:
-            self.logger.error(f"Failed to get user connector instances: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_user_connector_instances")
             return []
 
     async def _get_user_accessible_team_app_keys(
@@ -3053,7 +3076,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return documents, total_count
 
         except Exception as e:
-            self.logger.error(f"Failed to get filtered connector instances: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_filtered_connector_instances")
             return [], 0
 
     async def reindex_record_group_records(
@@ -3106,8 +3130,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 allowed = record_group_id in (await self.check_access(
                     user_key, org_id, node_ids=[record_group_id],
                 )).node_ids
-            except Exception:
-                self.logger.exception("❌ Access check failed for record group %s", record_group_id)
+            except Exception as exc:
+                error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                        op="reindex_record_group_records")
                 return {"success": False, "code": 500, "reason": action_failed("check access to this record group")}
             if not allowed:
                 return {
@@ -3134,7 +3159,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "userKey": user_key
             }
         except Exception as e:
-            self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reindex_record_group_records")
             return {"success": False, "code": 500, "reason": str(e)}
 
     async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
@@ -3172,7 +3198,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             if isinstance(e, RecordSchemaNarrowError):
                 raise
-            self.logger.error("❌ Failed to update records to %s: %s", status, str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
 
     async def reset_indexing_status_for_connector(
         self,
@@ -3796,7 +3822,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             found = await self.http_client.execute_aql(query, bind_vars, transaction)
             return {k for k in (found or []) if isinstance(k, str)}
         except Exception as e:
-            self.logger.error("❌ Failed to check record existence: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_existing_record_keys")
             return set()
 
     async def get_existing_keys(
@@ -4004,7 +4031,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 }
 
             except Exception as event_error:
-                self.logger.error(f"❌ Failed to create reindex event data: {str(event_error)}")
+                error_class.log_failure(self.logger, "graph.provider.failed", event_error, include_error_text=False,
+                                        op="reindex_single_record")
                 # Return success but indicate event data creation failed
                 return {
                     "success": True,
@@ -4016,7 +4044,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "eventError": str(event_error)
                 }
         except Exception as e:
-            self.logger.error("❌ Failed to reindex record %s: %s", record_id, str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reindex_single_record", record_id=record_id)
             return {"success": False, "code": 500, "reason": str(e)}
 
     async def batch_upsert_nodes(
@@ -4657,9 +4686,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return self._translate_edge_from_arango(results[0])
             return None
         except Exception as e:
-            self.logger.error(f"❌ Get edge failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_edge")
             return None
 
     async def delete_edge(
@@ -4961,7 +4990,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     self.logger.debug(f"🗑️ Deleted {deleted_count} edges from {edge_collection}")
 
             except Exception as e:
-                self.logger.error(f"❌ Error deleting edges from {edge_collection}: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_delete_all_edges_for_nodes", step="edge_delete", collection=edge_collection)
                 failed_collections.append(edge_collection)
                 # Continue with other collections
 
@@ -5047,9 +5077,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results or []
         except Exception as e:
-            self.logger.error(f"❌ Get nodes by filters failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_nodes_by_filters")
             return []
 
     async def filter_linked_record_ids(
@@ -5141,9 +5171,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results or []
         except Exception as e:
-            self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_nodes_by_field_in")
             return []
 
     @staticmethod
@@ -5194,9 +5225,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, bind_vars=bind_vars, txn_id=transaction
             ) or []
         except Exception as e:
-            self.logger.error(f"❌ Get nodes by field prefix failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_nodes_by_field_prefix")
             return []
 
     async def search_nodes_by_field_terms(
@@ -5232,9 +5264,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, bind_vars=bind_vars, txn_id=transaction
             ) or []
         except Exception as e:
-            self.logger.error(f"❌ Search nodes by field terms failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="search_nodes_by_field_terms")
             return []
 
     async def delete_edges_touching_nodes(
@@ -5345,7 +5378,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             ) or []
         except Exception as e:
-            self.logger.error(f"❌ Get edge rollup by file prefix failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_edge_rollup_by_file_prefix")
             return []
 
     async def find_uncalled_blocks(
@@ -5394,9 +5428,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ) or []
             return page, (page[-1].get("_key") if len(page) == limit else None)
         except Exception as e:
-            self.logger.error("Find uncalled blocks failed: %s", e)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="find_uncalled_blocks")
             return [], None
 
     async def get_file_paths_for_records(
@@ -5447,9 +5481,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if row.get("recordId") and row.get("filePath")
             }
         except Exception as e:
-            self.logger.error(f"❌ Get file paths for records failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_file_paths_for_records")
             return {}
 
     async def find_blocks_by_external_ref_prefix(
@@ -5489,9 +5524,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             ) or []
         except Exception as e:
-            self.logger.error(f"Find blocks by external ref failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_blocks_by_external_ref_prefix")
             return []
 
     async def get_edges_by_target_keys(
@@ -5524,9 +5560,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ) or []
             return [row for row in rows if isinstance(row, str)]
         except Exception as e:
-            self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_edges_by_target_keys")
             return []
 
     async def delete_edges_by_source_keys(
@@ -5645,9 +5682,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, bind_vars=bind_vars, txn_id=transaction
             ) or []
         except Exception as e:
-            self.logger.error(f"❌ Get nodes updated since failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_nodes_updated_since")
             return []
 
     async def remove_nodes_by_field(
@@ -5720,9 +5758,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ) or []
             return results
         except Exception as e:
-            self.logger.error(f"❌ Get edges to node failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_edges_to_node")
             return []
 
     async def get_edges_from_node(
@@ -5758,9 +5796,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ) or []
             return results
         except Exception as e:
-            self.logger.error(f"❌ Get edges from node failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_edges_from_node")
             return []
 
     async def get_edges_from_node_with_target_name(
@@ -5807,9 +5845,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ) or []
             return results
         except Exception as e:
-            self.logger.error(f"❌ Get edges from node with target name failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_edges_from_node_with_target_name")
             return []
 
     async def get_neighbors_by_relationship_types(
@@ -5868,7 +5907,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return list(results) if results else []
         except Exception as e:
-            self.logger.error(f"❌ Get neighbors by relationship types failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_neighbors_by_relationship_types")
             return []
 
     async def get_neighbors_for_nodes_by_relationship_types(
@@ -5962,11 +6002,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return list(results) if results else []
         except Exception as e:
-            self.logger.error(
-                f"❌ Get neighbors for nodes by relationship types failed: {str(e)}"
-            )
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_neighbors_for_nodes_by_relationship_types")
             return []
 
     async def get_related_node_field(
@@ -6017,7 +6056,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results or []
         except Exception as e:
-            self.logger.error(f"❌ Get related node field failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_related_node_field")
             return []
 
     # ==================== Placeholder Methods ====================
@@ -6130,7 +6170,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             row = results[0]
             return MessageRecord.from_arango_record(row["message"], row["record"])
         except Exception as exc:
-            self.logger.error(f"❌ find_slack_burst_record_by_ts({ts}) failed: {exc}")
+            error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                    op="find_slack_burst_record_by_ts")
             return None
 
     async def get_record_path(
@@ -6196,7 +6237,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get record path for {record_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_path", record_id=record_id)
             return None
 
     async def get_record_path_segments(
@@ -6258,16 +6300,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         names[r["parent"]] = r.get("name")
                         frontier.append(r["parent"])
         except Exception as e:
-            self.logger.error(f"❌ Failed to get record path segments for {record_id}: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_path_segments", record_id=record_id)
             return []
         try:
             rows = ancestor_chain_rows(record_id, links, max_depth=100)
         except AncestorChainLimitError as e:
-            self.logger.error(f"❌ Failed to get record path segments for {record_id}: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_path_segments", record_id=record_id)
             return []
         return select_canonical_chain_names(
             [{"ids": ids, "names": [names.get(k) for k in ids]} for ids in rows], ("names",),
@@ -6397,9 +6441,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     txn_id=transaction,
                 ) or []
         except Exception as e:
-            self.logger.error(f"❌ Get record group path failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_group_path")
             return []
         if not nodes:
             return []
@@ -6407,9 +6452,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             rows = ancestor_chain_rows(record_group_id, links, max_depth=50)
         except AncestorChainLimitError as e:
-            self.logger.error(f"❌ Get record group path failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_group_path")
             return []
         return select_canonical_chain_names(
             [
@@ -6455,7 +6501,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return Record.from_arango_base_record(record_data)
             return None
         except Exception as e:
-            self.logger.error(f"❌ Get record by external revision ID failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_external_revision_id")
             return None
 
     async def get_child_record_ids_by_relation_type(
@@ -6505,11 +6552,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return list(results) if results else []
         except Exception as e:
-            self.logger.warning(
-                "Failed to get child record IDs by relation type for record %s: %s",
-                record_id,
-                str(e),
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_child_record_ids_by_relation_type", record_id=record_id)
             return []
 
     async def get_node_relations_batch(
@@ -6579,9 +6623,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     bucket["children"].append(edge)
             return out
         except Exception as e:
-            self.logger.warning(
-                "Failed to batch record relations for %d records: %s", len(record_ids), str(e),
-            )
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="get_node_relations_batch", step="batch_query")
             return await super().get_node_relations_batch(
                 record_ids, relation_types, transaction, limit_per_direction,
             )
@@ -6633,11 +6676,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return list(results) if results else []
         except Exception as e:
-            self.logger.warning(
-                "Failed to get parent record IDs by relation type for record %s: %s",
-                record_id,
-                str(e),
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_parent_record_ids_by_relation_type", record_id=record_id)
             return []
 
     async def get_virtual_record_ids_for_record_ids(
@@ -6671,9 +6711,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return {row["_key"]: row["virtualRecordId"] for row in (results or [])}
         except Exception as e:
-            self.logger.warning(
-                "Failed to get virtual_record_ids for record_ids: %s", str(e)
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_virtual_record_ids_for_record_ids")
             return {}
 
     async def get_record_key_by_external_id(
@@ -6701,7 +6740,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results[0] if results else None
 
         except Exception as e:
-            self.logger.error(f"❌ Get record key by external ID failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_key_by_external_id")
             return None
 
     async def get_record_by_path(
@@ -7051,8 +7091,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def _abort_quietly(self, txn: str) -> None:
         try:
             await self.http_client.abort_transaction(txn)
-        except Exception:
-            self.logger.warning("could not abort stream transaction %s; ArangoDB drops it after its idle timeout", txn, exc_info=True)
+        except Exception as e:  # ArangoDB drops it after its idle timeout
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="_abort_quietly", step="abort_transaction")
 
     @staticmethod
     def _condition_filters(conditions: Sequence[Cond]) -> tuple[list[str], dict[str, Any]]:
@@ -7538,10 +7579,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return typed_records
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to retrieve records by record group {record_group_id}, connector {connector_id}: {str(e)}",
-                exc_info=True
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_records_by_record_group", connector_id=connector_id)
             return []
 
     async def get_records_by_parent_record(
@@ -7715,10 +7754,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return typed_records
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to retrieve records by parent record {parent_record_id}: {str(e)}",
-                exc_info=True
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_records_by_parent_record")
             return []
 
     async def get_documents_by_status(
@@ -7754,7 +7791,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results if results else []
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get documents by status from {collection}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_documents_by_status", collection=collection)
             return []
 
     def _create_typed_record_from_arango(self, record_dict: dict, type_doc: dict | None) -> Record:
@@ -7882,7 +7920,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
         except Exception as e:
-            self.logger.error(f"❌ Get record by conversation index failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_conversation_index")
             return None
 
     async def get_record_by_issue_key(
@@ -7946,9 +7985,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
 
         except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve record for Jira issue key %s %s: %s", connector_id, issue_key, str(e)
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_by_issue_key", connector_id=connector_id)
             return None
 
     async def get_record_by_weburl(
@@ -8009,7 +8047,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
 
         except Exception as e:
-            self.logger.error("❌ Failed to retrieve record by weburl %s: %s", weburl, str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_record_by_weburl")
             return None
 
     async def get_records_by_weburls(
@@ -8336,7 +8374,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
         except Exception as e:
-            self.logger.error(f"❌ Get record group by ID failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_group_by_id")
             return None
 
     async def get_file_record_by_id(
@@ -8401,9 +8440,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 found.setdefault(row["email"].lower(), User.from_arango_user(self._translate_node_from_arango(row)))
             return found
         except Exception as e:
-            self.logger.error(f"❌ Get users by emails failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_users_by_emails")
             return {}
 
     async def get_user_by_email(
@@ -8443,9 +8482,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
         except Exception as e:
-            self.logger.error(f"❌ Get user by email failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_user_by_email")
             return None
 
     async def get_user_by_source_id(
@@ -8511,11 +8550,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to get user by source_id {source_user_id}: {str(e)}"
-            )
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_user_by_source_id")
             return None
 
     async def get_user_by_user_id(
@@ -8541,9 +8579,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return result[0] if result else None
         except Exception as e:
-            self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_user_by_user_id")
             return None
 
     async def apply_verified_user_email(
@@ -8743,9 +8781,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.execute_query(query, bind_vars={"user_key": user_id}, transaction=transaction)
             return [a for a in results or [] if a]
         except Exception as e:
-            self.logger.error("❌ Failed to get user apps: %s", str(e))
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_user_apps")
             return []
 
     async def _get_user_app_ids(
@@ -8765,9 +8803,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
         except Exception as e:
-            self.logger.error("❌ Failed to get user app ids: %s", str(e))
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="_get_user_app_ids")
             return []
 
     async def get_users(
@@ -8811,9 +8849,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results if results else []
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch users: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_users")
             return []
 
     async def get_app_user_by_email(
@@ -8875,8 +8913,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
 
         except Exception as e:
-            error_class.log_failure(self.logger, "graph.get_app_user_by_email.failed", e, include_error_text=False,  # the lookup is by email
-                                    connector_id=connector_id)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,  # the lookup is by email
+                                    op="get_app_user_by_email", connector_id=connector_id)
             return None
 
     async def get_app_users(
@@ -8944,9 +8982,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results if results else []
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch users for {connector_id}: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_app_users", connector_id=connector_id)
             return []
 
     async def get_app_user_links(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
@@ -9002,9 +9041,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
         except Exception as e:
-            self.logger.error(f"❌ Get user group by external ID failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_user_group_by_external_id")
             return None
 
     async def get_user_directory_groups(
@@ -9109,11 +9149,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return groups
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to retrieve user groups for connector {connector_id}: {str(e)}"
-            )
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_user_groups", connector_id=connector_id)
             return []
 
     async def batch_upsert_people(
@@ -9162,9 +9201,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return Person.from_arango_person(results[0]) if results else None
         except Exception as e:
-            self.logger.error(f"❌ Get person by email failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_person_by_email")
             return None
 
     async def upsert_person_by_email(
@@ -9204,9 +9243,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results[0] if results else None
         except Exception as e:
-            self.logger.error(f"❌ Upsert person by email failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="upsert_person_by_email")
             return None
 
 
@@ -9223,9 +9263,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return Person.from_arango_person(rows[0]) if rows else None
         except Exception as e:
-            self.logger.error(f"❌ Get person by source key failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_person_by_source_key")
             return None
 
     async def upsert_person_by_source_key(
@@ -9254,9 +9295,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results[0] if results else None
         except Exception as e:
-            self.logger.error(f"❌ Upsert person by source key failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="upsert_person_by_source_key")
             return None
     async def ensure_app_membership(
         self,
@@ -9496,7 +9538,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     await self.rollback_transaction(txn)
                 except Exception as rb_err:
-                    self.logger.warning(f"⚠️ Rollback of person migration failed: {rb_err}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", rb_err, include_error_text=False,
+                                            op="migrate_person_to_user", step="rollback")
             raise
 
     async def _move_entity_relations_to_user(self, person_id: str, user_id: str, txn: str | None) -> int:
@@ -9611,9 +9654,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return count
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Reap stale external app relations failed for {connector_id}: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reap_stale_external_app_relations", connector_id=connector_id)
             return 0
 
     async def get_app_role_by_external_id(
@@ -9655,9 +9697,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
         except Exception as e:
-            self.logger.error(f"❌ Get app role by external ID failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_app_role_by_external_id")
             return None
 
     async def get_all_orgs(
@@ -9702,9 +9745,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.http_client.execute_aql(query, txn_id=transaction)
             return results if results else []
         except Exception as e:
-            self.logger.error(f"❌ Get all orgs failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_all_orgs")
             return []
 
     async def batch_upsert_records(
@@ -9955,7 +9998,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results if results else []
         except Exception as e:
-            self.logger.error(f"❌ Failed to get all documents from collection: {collection}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_all_documents", collection=collection)
             return []
 
     async def get_documents_paginated(
@@ -10019,13 +10063,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results if results else []
         except Exception as e:
-            self.logger.error(
-                "Failed to get paginated documents from collection %s: %s",
-                collection,
-                str(e),
-            )
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_documents_paginated", collection=collection)
             return []
 
     async def get_app_creator_user(
@@ -10056,7 +10097,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 user = user_doc
             return user
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch user for {connector_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_app_creator_user", connector_id=connector_id)
             return None
 
     async def get_org_apps(
@@ -10093,9 +10135,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.http_client.execute_aql(query, bind_vars=bind_vars or None)
             return results if results else []
         except Exception as e:
-            self.logger.error(f"❌ Get org apps failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_org_apps")
             return []
 
     # ==================== KB Apps Migration (legacy recordGroup -> app) ====================
@@ -10115,7 +10157,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results if results else []
         except Exception as e:
-            self.logger.error(f"❌ Get legacy KB record groups failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_legacy_kb_record_groups")
             return []
 
     async def migrate_legacy_relation_edge(
@@ -10368,12 +10411,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return {"success": True}
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to migrate legacy KB {kb_key} to app: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="migrate_legacy_kb_to_app", kb_id=kb_key)
             if txn_id is not None:
                 try:
                     await self.rollback_transaction(txn_id)
                 except Exception as rb_err:
-                    self.logger.warning(f"Rollback failed for KB {kb_key}: {rb_err}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", rb_err, include_error_text=False,
+                                            op="migrate_legacy_kb_to_app", step="rollback", kb_id=kb_key)
             return {"success": False, "reason": str(e)}
 
     async def count_legacy_kb_record_groups(self, org_id: str) -> int:
@@ -10394,7 +10439,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results[0] if results else 0
         except Exception as e:
-            self.logger.error(f"❌ Count legacy KB record groups failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="count_legacy_kb_record_groups")
             return -1
 
     async def delete_kb_hub_app(self, org_id: str) -> bool:
@@ -10459,7 +10505,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self.execute_query(delete_query, bind_vars={"hub_app_key": hub_app_key})
             return True
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete legacy KB hub app for org {org_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_kb_hub_app")
             return False
 
     @staticmethod
@@ -10593,7 +10639,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return {"agents_migrated": agents_migrated, "knowledge_nodes_created": knowledge_nodes_created}
         except Exception as e:
-            self.logger.error(f"❌ Failed to migrate agent hub knowledge for org {org_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="migrate_agent_hub_knowledge")
             return {"agents_migrated": 0, "knowledge_nodes_created": 0, "error": str(e)}
 
     async def get_departments(
@@ -10629,7 +10676,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
             return list(results) if results else []
         except Exception as e:
-            self.logger.error(f"❌ Get departments failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_departments")
             return []
 
     async def update_queued_duplicates_status(
@@ -10807,9 +10854,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return len(queued_records)
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to update queued duplicates status: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_queued_duplicates_status")
             return -1
 
     async def batch_upsert_record_permissions(
@@ -10876,7 +10922,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
         except Exception as e:
-            self.logger.error(f"❌ Get first user with permission to node failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_first_user_with_permission_to_node")
             return None
 
     async def get_users_with_permission_to_node(
@@ -10920,9 +10967,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return [User.from_arango_user(self._translate_node_from_arango(result)) for result in results]
 
         except Exception as e:
-            self.logger.error(f"❌ Get users with permission to node failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_users_with_permission_to_node")
             return []
 
     async def get_groups_with_permission_to_node(
@@ -10955,9 +11003,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ]
 
         except Exception as e:
-            self.logger.error(f"❌ Get groups with permission to node failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_groups_with_permission_to_node")
             return []
 
     async def get_record_owner_source_user_email(
@@ -10989,9 +11038,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results[0] if results else None
 
         except Exception as e:
-            self.logger.error(f"❌ Get record owner source user email failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_owner_source_user_email")
             return None
 
     async def get_sync_point(
@@ -11021,9 +11071,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results[0] if results else None
 
         except Exception as e:
-            self.logger.error(f"❌ Get sync point failed: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_sync_point")
             return None
 
     async def upsert_sync_point(
@@ -11199,9 +11249,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             user.email, user.id, org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
-                        self.logger.error(
-                            "Person adoption failed for user %s in org %s: %s", user.id, org_id, migrate_err
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", migrate_err, include_error_text=False,
+                                                op="batch_upsert_app_users", step="person_adoption")
 
                     # A guest is saved so grants to them resolve, but org membership
                     # would hand them every org-wide grant.
@@ -11338,7 +11387,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         )
                         self.logger.debug(f"✅ Updated team createdBy to {user_key}")
                     except Exception as e:
-                        self.logger.warning(f"Failed to update createdBy for team {team_key}: {e}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                                op="ensure_all_team_with_users", step="team_created_by")
 
                 permission_edge = {
                     "from_id": user_key,
@@ -11421,7 +11471,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
                     self.logger.debug(f"Updated team createdBy to {user_key}")
                 except Exception as e:
-                    self.logger.warning(f"Failed to update createdBy for team {team_key}: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="add_user_to_all_team", step="team_created_by")
 
             # 5. Create PERMISSION edge
             permission_edge = {
@@ -11732,7 +11783,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return None
         except Exception as e:
-            self.logger.error(f"❌ Get entity ID by email failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_entity_id_by_email")
             return None
 
     async def bulk_get_entity_ids_by_email(
@@ -11792,7 +11844,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
                 self.logger.debug(f"✅ Found {len(users)} users")
             except Exception as e:
-                self.logger.error(f"❌ Error querying users: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="bulk_get_entity_ids_by_email", step="users_lookup")
 
             # QUERY 2: Check groups collection (only for remaining emails)
             remaining_emails = [e for e in unique_emails if e not in result_map]
@@ -11816,7 +11869,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         )
                     self.logger.debug(f"✅ Found {len(groups)} groups")
                 except Exception as e:
-                    self.logger.error(f"❌ Error querying groups: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="bulk_get_entity_ids_by_email", step="groups_lookup")
 
             # QUERY 3: Check people collection (only for remaining emails)
             remaining_emails = [e for e in unique_emails if e not in result_map]
@@ -11840,7 +11894,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         )
                     self.logger.debug(f"✅ Found {len(people)} people")
                 except Exception as e:
-                    self.logger.error(f"❌ Error querying people: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="bulk_get_entity_ids_by_email", step="people_lookup")
 
             self.logger.debug(
                 f"✅ Bulk lookup complete: found {len(result_map)}/{len(unique_emails)} entities"
@@ -11849,7 +11904,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result_map
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to bulk get entity IDs: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="bulk_get_entity_ids_by_email")
             return {}
 
     async def delete_records_and_relations(
@@ -11933,9 +11989,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete node {node_key}: {str(e)}")
-            if transaction:
+            if transaction:  # the caller owns the transaction: it handles the failure and logs it once
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_records_and_relations")
             return False
 
     async def delete_record(
@@ -12000,7 +12056,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete record {record_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_record", record_id=record_id)
             return {
                 "success": False,
                 "code": 500,
@@ -12177,6 +12234,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return len(result or [])
+
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on."""
+        query = """
+        FOR perm IN permission
+            FILTER perm._from == @user
+            FILTER PARSE_IDENTIFIER(perm._to).collection == @records
+            LET r = DOCUMENT(perm._to)
+            FILTER r != null AND r.connectorId == @connector_id
+            RETURN DISTINCT {id: r._key, externalRecordId: r.externalRecordId, recordType: r.recordType}
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
+                       "records": CollectionNames.RECORDS.value},
+            txn_id=transaction,
+        )
+        return list(result or [])
 
     async def _collect_connector_entities(
         self,
@@ -12436,7 +12516,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     self.logger.debug(f"🗑️ Deleted {collection_deleted} edges from {edge_collection}")
 
             except Exception as e:
-                self.logger.error(f"❌ Error deleting edges from {edge_collection}: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_delete_edges_by_connector_id", step="edge_delete", collection=edge_collection)
                 failed_collections.append(edge_collection)
                 # Continue with other collections
 
@@ -12487,9 +12568,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # it again; swallowed here it would read as a plain failure.
                 if self._is_write_conflict(str(e)):
                     raise
-                self.logger.error(f"❌ Error deleting edges from {edge_collection}: {str(e)}")
                 if raise_on_error:
                     raise
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_delete_edges_by_node_ids", step="edge_delete", collection=edge_collection)
                 failed_collections.append(edge_collection)
         return (total_deleted, failed_collections)
 
@@ -12543,7 +12625,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"📊 Collected {len(targets)} isOfType targets before edge deletion")
             return (targets, True)
         except Exception as e:
-            self.logger.error(f"❌ Error collecting isOfType targets: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_collect_isoftype_targets")
             return ([], False)
 
     async def _collect_isoftype_targets_for_keys(
@@ -12702,7 +12785,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     targets[collection] = keys
             return (targets, True)
         except Exception as e:
-            self.logger.error(f"❌ Error collecting taxonomy targets: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_collect_connector_taxonomy_targets")
             return ({}, False)
 
     async def _delete_unlinked_taxonomy_nodes(
@@ -12874,9 +12958,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 deleted = len(results or [])
                 total_deleted += deleted
             except Exception as e:
-                self.logger.error(f"❌ Error deleting batch {i//batch_size + 1}/{total_batches} from {collection}: {str(e)}")
                 if raise_on_error:
                     raise
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_delete_nodes_by_keys", step="batch_delete", collection=collection)
                 failed_batches += 1
                 # Continue with next batch even if one fails
 
@@ -12918,7 +13003,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.debug(f"🗑️ Deleted {deleted} documents from {collection}")
             return (deleted, True)
         except Exception as e:
-            self.logger.error(f"❌ Error deleting from {collection}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_delete_nodes_by_connector_id", collection=collection)
             return (0, False)
 
     async def sweep_deleted_connector_writes(
@@ -12995,7 +13081,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 removed += found
             except Exception as e:
                 left = None
-                self.logger.warning(f"Sweep of what indexing wrote during delete of {connector_id} failed: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_sweep_writes_during_delete", step="late_write_sweep", connector_id=connector_id)
             if left == 0:
                 break
             if attempt + 1 < CASCADE_ATTEMPTS:
@@ -13069,7 +13156,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if self.is_write_conflict(e):
                 # The transaction is aborted; raised as it is, the cascade runs again.
                 raise
-            self.logger.error(f"❌ Failed to delete the stage states of connector {connector_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_delete_stage_states_by_connector_id", connector_id=connector_id)
             return (total, False)
 
     async def delete_sync_points_by_connector_id(
@@ -13129,7 +13217,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"Deleted {deleted_count} sync edges for connector {connector_id}")
             return (deleted_count, True)
         except Exception as e:
-            self.logger.error(f"Error deleting connector sync edges for {connector_id}: {e}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_connector_sync_edges", connector_id=connector_id)
             return (0, False)
 
     async def unlink_nodes_missed_by_full_sync(
@@ -13183,9 +13272,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
             return (unlinked + ungranted, not failed and not failed_grants)
         except Exception as e:
-            self.logger.error(
-                f"Error unlinking nodes missed by the full sync of {connector_id}: {e}", exc_info=True
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="unlink_nodes_missed_by_full_sync", connector_id=connector_id)
             return (0, False)
 
     async def _node_fields_by_key(
@@ -13526,29 +13614,27 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                         and row["virtualRecordId"]
                                     )
                         except Exception as late_err:
-                            self.logger.warning(
-                                f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
-                            )
+                            error_class.log_failure(self.logger, "graph.provider.step_failed", late_err, include_error_text=False,
+                                                    op="delete_connector_instance", step="late_write_removal",
+                                                    connector_id=connector_id)
                         leftover = await self._sweep_writes_during_delete(
                             connector_id, collected["record_group_keys"],
                         )
                         try:
                             orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                         except Exception as sweep_err:
-                            self.logger.warning(
-                                f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
-                                f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                            )
+                            error_class.log_failure(self.logger, "graph.provider.step_failed", sweep_err, include_error_text=False,
+                                                    op="delete_connector_instance", step="orphan_type_sweep",
+                                                    connector_id=connector_id)
                         try:
                             if taxonomy_collect_success:
                                 orphan_labels = await self._delete_unlinked_taxonomy_nodes(
                                     org_id, taxonomy_targets
                                 )
                         except Exception as sweep_err:
-                            self.logger.warning(
-                                f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
-                                f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                            )
+                            error_class.log_failure(self.logger, "graph.provider.step_failed", sweep_err, include_error_text=False,
+                                                    op="delete_connector_instance", step="orphan_taxonomy_sweep",
+                                                    connector_id=connector_id)
 
                     self.logger.debug(
                         f"✅ Connector instance {connector_id} deleted successfully. "
@@ -13597,24 +13683,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         try:
                             await self.rollback_transaction(transaction)
                         except Exception as abort_error:
-                            self.logger.error(
-                                f"❌ Failed to abort transaction during connector deletion: {abort_error}. "
-                                f"Original error: {tx_error}"
-                            )
+                            error_class.log_failure(self.logger, "graph.provider.step_failed", abort_error, include_error_text=False,
+                                                    op="delete_connector_instance", step="rollback")
                     if owns_transaction and attempt + 1 < CASCADE_ATTEMPTS and self.is_write_conflict(tx_error):
                         # A concurrent writer (a push into the KB being deleted) won this round;
                         # the steps are idempotent, so run them again in a fresh transaction.
                         cascade_retries += 1
-                        self.logger.warning(
-                            "Connector %s delete lost to a concurrent write (attempt %d); retrying",
-                            connector_id, attempt + 1,
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", tx_error, include_error_text=False,
+                                                op="delete_connector_instance", step="cascade", connector_id=connector_id,
+                                                attempt=attempt + 1)
                         await cascade_backoff(attempt, base=CONNECTOR_DELETE_BASE_SECONDS)
                         continue
                     raise tx_error
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete connector instance {connector_id}: {str(e)}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_connector_instance", connector_id=connector_id)
             return {
                 "success": False,
                 "error": f"Failed to delete connector instance: {str(e)}"
@@ -13744,7 +13828,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete KB record: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_knowledge_base_record")
             return {
                 "success": False,
                 "code": 500,
@@ -13793,7 +13878,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return await self._execute_drive_record_deletion(record_id, record, user_role, transaction)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete Drive record: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_google_drive_record")
             return {
                 "success": False,
                 "code": 500,
@@ -13843,7 +13929,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return await self._execute_gmail_record_deletion(record_id, record, user_role, transaction)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete Gmail record: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_gmail_record")
             return {
                 "success": False,
                 "code": 500,
@@ -13893,7 +13979,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return await self._execute_outlook_record_deletion(record_id, record, transaction)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete Outlook record: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_outlook_record")
             return {
                 "success": False,
                 "code": 500,
@@ -13960,7 +14047,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return await self._execute_local_fs_record_deletion(record_id, record, transaction)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete Local FS record: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_local_fs_record")
             return {
                 "success": False,
                 "code": 500,
@@ -13989,7 +14077,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
         except Exception as e:
-            self.logger.error(f"❌ Failed to read connector {connector_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_is_connector_creator", connector_id=connector_id)
             return False
         if not app_doc:
             return False
@@ -14034,7 +14123,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 else:
                     event_data = None
             except Exception as e:
-                self.logger.error(f"❌ Failed to create Local FS deletion event payload: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_execute_local_fs_record_deletion", step="deletion_event_payload")
                 event_data = None
 
             return {
@@ -14045,7 +14135,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Local FS deletion failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_execute_local_fs_record_deletion")
             return {
                 "success": False,
                 "reason": f"Transaction failed: {str(e)}"
@@ -14103,9 +14194,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to retrieve internal key for external file ID {external_file_id}: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_key_by_external_file_id")
             return None
 
     async def get_key_by_external_message_id(
@@ -14152,9 +14242,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to retrieve internal key for external message ID {external_message_id}: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_key_by_external_message_id")
             return None
 
     async def get_message_id_header_by_key(
@@ -14203,9 +14292,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to get messageIdHeader for record {record_key}: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_message_id_header_by_key", record_id=record_key)
             return None
 
     async def get_related_mails_by_message_id_header(
@@ -14260,9 +14348,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return []
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to get related mails by messageIdHeader: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_related_mails_by_message_id_header")
             return []
 
     async def count_connector_instances_by_scope(
@@ -14317,7 +14404,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return count
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to count connector instances by scope: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="count_connector_instances_by_scope")
             return 0
 
     async def check_connector_name_uniqueness(
@@ -14398,7 +14486,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return is_unique
 
         except Exception as e:
-            self.logger.error(f"❌ Error checking name uniqueness: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_connector_name_uniqueness")
             # On error, allow the operation (fail-open to avoid blocking)
             return True
 
@@ -14494,7 +14583,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return documents, total_count
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get connector instances with filters: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_connector_instances_with_filters")
             return [], 0
 
     async def get_connector_instances_by_scope_and_user(
@@ -14548,7 +14638,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return documents
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get connector instances by scope and user: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_connector_instances_by_scope_and_user")
             return []
 
     async def get_user_sync_state(
@@ -14595,7 +14686,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return results[0] if results else None
         except Exception as e:
-            self.logger.error(f"❌ Get user sync state failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_user_sync_state")
             return None
 
     async def update_user_sync_state(
@@ -14666,8 +14757,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
         except Exception as e:
-            error_class.log_failure(self.logger, "graph.update_user_sync_state.failed", e, include_error_text=False,  # the lookup is by email
-                                    service_type=service_type)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,  # the lookup is by email
+                                    op="update_user_sync_state", service_type=service_type)
             return None
 
     async def get_drive_sync_state(
@@ -14721,7 +14812,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 }
             )
         except Exception as e:
-            self.logger.error(f"❌ Update drive sync state failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_drive_sync_state")
 
     # ==================== Connector Registry Operations ====================
 
@@ -14767,7 +14858,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results[0] if results else None
 
         except Exception as e:
-            self.logger.error(f"❌ Error storing page token: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="store_page_token")
             return None
 
     async def get_page_token_db(
@@ -14817,7 +14908,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
         except Exception as e:
-            self.logger.error(f"❌ Error getting page token: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_page_token_db")
             return None
 
     async def check_collection_has_document(
@@ -14859,7 +14950,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return len(results) > 0
         except Exception as e:
-            self.logger.error(f"❌ Check edge exists failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="check_edge_exists")
             return False
 
 
@@ -14911,7 +15002,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return len(results) > 0
 
         except Exception as e:
-            self.logger.error(f"❌ Organization exists check failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="organization_exists")
             return False
 
     async def delete_edges_to_groups(
@@ -14966,7 +15057,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return count
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete edges from {from_key} to groups in {collection}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_edges_to_groups", collection=collection)
             return 0
 
     async def delete_edges_between_collections(
@@ -15185,7 +15277,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     await self.rollback_transaction(txn)
                 except Exception as rb_err:
-                    self.logger.warning(f"⚠️ Rollback of node delete failed: {rb_err}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", rb_err, include_error_text=False,
+                                            op="delete_nodes_and_edges", step="rollback")
             raise
 
     async def update_edge(
@@ -15216,7 +15309,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return len(results) > 0
 
         except Exception as e:
-            self.logger.error(f"❌ Update edge failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_edge")
             return False
 
     # ==================== Helper Methods for Deletion ====================
@@ -15261,7 +15354,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result[0] if result else None
 
         except Exception as e:
-            self.logger.error(f"Failed to check record permission: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_check_record_permission")
             return None
 
     async def _check_drive_permissions(
@@ -15330,7 +15424,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result[0] if result else None
 
         except Exception as e:
-            self.logger.error(f"Failed to check Drive permissions: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_check_drive_permissions")
             return None
 
     async def _check_gmail_permissions(
@@ -15411,7 +15506,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result[0] if result else None
 
         except Exception as e:
-            self.logger.error(f"Failed to check Gmail permissions: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_check_gmail_permissions")
             return None
 
     async def _get_kb_context_for_record(
@@ -15453,7 +15549,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result[0] if result else None
 
         except Exception as e:
-            self.logger.error(f"Failed to get KB context: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_get_kb_context_for_record")
             return None
 
     async def get_user_kb_permission(
@@ -16195,9 +16292,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to get KB children with folders_first pagination: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_kb_children")
             return {"success": False, "reason": str(e)}
 
     async def get_folder_children(
@@ -16477,9 +16572,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to get folder children with folders_first pagination: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_folder_children")
             return {"success": False, "reason": str(e)}
 
     def _normalize_name(self, name: str | None) -> str | None:
@@ -16568,9 +16661,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if r.get("name_lower")
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_fetch_existing_file_names_in_parent")
             return set()
 
     async def kb_exists(self, kb_id: str) -> bool:
@@ -16728,7 +16822,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "recordType": record.get("recordType"),
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_create_deleted_record_event_payload")
             return {}
 
 
@@ -16784,7 +16879,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             )
                         }
                     except Exception as decode_error:
-                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", decode_error, include_error_text=False,
+                                                op="_create_reindex_event_payload", step="decode_file_content")
 
             return {
                 "orgId": record.get("orgId"),
@@ -16843,7 +16939,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return {"valid": False, "success": False, "code": 403, "reason": reason}
             return {"valid": True, "user": user, "user_key": user_key, "user_role": user_role}
         except Exception as e:
-            self.logger.error(f"❌ Unexpected error in folder creation validation for KB {kb_id}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_validate_folder_creation", kb_id=kb_id)
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
 
     async def find_folder_by_name_in_parent(
@@ -16946,9 +17043,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
             return results[0] if results else None
         except Exception as e:
-            self.logger.error(f"❌ Failed to find folder by name: {str(e)}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_folder_by_name_in_parent")
             return None
 
     async def find_file_by_name_in_parent(
@@ -17039,7 +17137,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
             return results[0] if results else None
         except Exception as e:
-            self.logger.error(f"❌ Failed to find file by name: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_file_by_name_in_parent")
             return None
 
     async def get_and_validate_folder_in_kb(
@@ -17094,7 +17193,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results[0] if results else None
         except Exception as e:
-            self.logger.error(f"❌ Failed to get and validate folder in KB: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_and_validate_folder_in_kb")
             return None
 
 
@@ -17143,7 +17243,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return bool(results and results[0])
         except Exception as e:
-            self.logger.error(f"❌ Failed to validate folder in KB: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="validate_folder_in_kb")
             return False
 
     async def validate_folder_exists_in_kb(
@@ -17614,7 +17715,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="_delete_records_recursive_once", step="deletion_event_payload")
                 event_data = {
                     "eventType": "deleteRecord",
                     "topic": "record-events",
@@ -17647,7 +17749,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # and to retry (a deadlock, or an Arango write-write conflict).
             if transaction is not None:
                 raise
-            self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_delete_records_recursive_once")
             if isinstance(e, FolderChangedDuringDelete):
                 return {
                     "success": False, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "code": 409, "eventData": None,
@@ -18565,7 +18668,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="_delete_single_record_once", step="deletion_event_payload")
                 event_data = {
                     "eventType": "deleteRecord",
                     "topic": "record-events",
@@ -18597,7 +18701,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # and to retry a deadlock (retry_on_deadlock matches on the exception type).
             if transaction is not None:
                 raise
-            self.logger.error(f"❌ Failed to delete single record: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_delete_single_record_once")
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
 
@@ -18645,7 +18750,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Create KB permissions failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="create_kb_permissions")
             return {"success": False, "reason": str(e)}
 
     async def count_kb_owners(
@@ -18676,7 +18782,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results[0] if results else 0
         except Exception as e:
-            self.logger.error(f"❌ Failed to count KB owners: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="count_kb_owners")
             return 0
 
     async def remove_kb_permission(
@@ -18718,7 +18824,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.warning(f"⚠️ No permissions found to remove from KB {kb_id}")
             return False
         except Exception as e:
-            self.logger.error(f"❌ Failed to remove KB permissions: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="remove_kb_permission")
             return False
 
     async def get_kb_permissions(
@@ -18895,7 +19001,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update KB permission optimistically: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_kb_permission")
             return {
                 "success": False,
                 "reason": str(e),
@@ -18962,7 +19068,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return results or []
         except Exception as e:
-            self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="list_kb_permissions")
             return []
 
     def _artifact_gallery_sort_expr(self, sort_by: str) -> str:
@@ -19139,135 +19245,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not results:
                 return None
             return results[0]
-        except Exception:
-            raise
-
-    async def list_kb_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: str | None,
-        record_types: list[str] | None,
-        origins: list[str] | None,
-        connectors: list[str] | None,
-        indexing_status: list[str] | None,
-        date_from: int | None,
-        date_to: int | None,
-        sort_by: str,
-        sort_order: str,
-        folder_id: str | None = None,
-    ) -> tuple[list[dict], int, dict]:
-        """List records in a KB. Returns (records, total_count, available_filters)."""
-        try:
-            user_perm = await self.get_user_kb_permission(kb_id, user_id)
-            if not user_perm:
-                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
-            filter_conditions = []
-            filter_bind: dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@node_relations": CollectionNames.NODE_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
-            if search:
-                filter_conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
-                filter_bind["search"] = f"%{(search or '').lower()}%"
-            if record_types:
-                filter_conditions.append("record.recordType IN @record_types")
-                filter_bind["record_types"] = record_types
-            if origins:
-                filter_conditions.append("record.origin IN @origins")
-                filter_bind["origins"] = origins
-            if connectors:
-                filter_conditions.append("record.connectorName IN @connectors")
-                filter_bind["connectors"] = connectors
-            if indexing_status:
-                filter_conditions.append("record.indexingStatus IN @indexing_status")
-                filter_bind["indexing_status"] = indexing_status
-            if date_from:
-                filter_conditions.append("record.createdAtTimestamp >= @date_from")
-                filter_bind["date_from"] = date_from
-            if date_to:
-                filter_conditions.append("record.createdAtTimestamp <= @date_to")
-                filter_bind["date_to"] = date_to
-            record_filter = " AND " + " AND ".join(filter_conditions) if filter_conditions else ""
-            folder_filter = " AND folder_record._key == @folder_id" if folder_id else ""
-            if folder_id:
-                filter_bind["folder_id"] = folder_id
-            sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus") else "recordName"
-            sort_direction = "DESC" if (sort_order or "").lower() == "desc" else "ASC"
-            # A folder filter lists that folder's children only, so the KB-root arm runs without one.
-            root_records = "[]" if folder_id else f"""(
-                FOR belongsEdge IN @@belongs_to_kb
-                    FILTER belongsEdge._to == kb._id
-                    LET record = DOCUMENT(belongsEdge._from)
-                    FILTER record != null
-                    FILTER record.isDeleted != true
-                    FILTER record.orgId == @org_id
-                    FILTER record.mimeType NOT IN {_FOLDER_MIMES_AQL}
-                    FILTER LENGTH(FOR parentEdge IN @@node_relations FILTER parentEdge._to == record._id AND parentEdge.relationshipType == "PARENT_CHILD" AND STARTS_WITH(parentEdge._from, "records/") LIMIT 1 RETURN 1) == 0
-                    {record_filter}
-                    RETURN {{ record: record, folder_id: null, folder_name: null, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
-            )"""
-            main_query = f"""
-            LET kb = DOCUMENT("apps", @kb_id)
-            FILTER kb != null AND kb.type == "KB"
-            LET kbFolders = (
-                FOR belongsEdge IN @@belongs_to_kb
-                    FILTER belongsEdge._to == kb._id
-                    LET folder_record = DOCUMENT(belongsEdge._from)
-                    FILTER folder_record != null
-                    FILTER folder_record.mimeType IN {_FOLDER_MIMES_AQL}
-                    {folder_filter}
-                    RETURN {{ folder: folder_record, folder_id: folder_record._key, folder_name: folder_record.recordName }}
-            )
-            LET folder_ids = kbFolders[*].folder._id
-            // Keyed lookup: a FIRST(FOR ... FILTER) per record is O(records x folders).
-            LET folder_by_id = MERGE(FOR f IN kbFolders RETURN {{ [f.folder._id]: f }})
-            LET folder_records = (
-                FOR relEdge IN @@node_relations
-                    FILTER relEdge._from IN folder_ids
-                    FILTER relEdge.relationshipType == "PARENT_CHILD"
-                    LET record = DOCUMENT(relEdge._to)
-                    FILTER record != null
-                    FILTER record.isDeleted != true
-                    FILTER record.orgId == @org_id
-                    FILTER record.mimeType NOT IN {_FOLDER_MIMES_AQL}
-                    {record_filter}
-                    LET folder_info = folder_by_id[relEdge._from]
-                    RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
-            )
-            LET all_records_data = APPEND(folder_records, {root_records})
-            LET page = (
-            FOR item IN all_records_data
-                LET record = item.record
-                SORT record.{sort_field} {sort_direction}, record._key
-                LIMIT @skip, @limit
-                // File details only for the page: matching every record's file against every record ran before LIMIT.
-                LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
-                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: item.folder_id != null ? {{ id: item.folder_id, name: item.folder_name }} : null }}
-            )
-            RETURN {{ records: page, total: LENGTH(all_records_data) }}
-            """
-            result = await self.execute_query(main_query, bind_vars=filter_bind)
-            page = result[0] if result else {"records": [], "total": 0}
-            folders_query = """
-            LET kb = DOCUMENT("apps", @kb_id)
-            FILTER kb != null AND kb.type == "KB"
-            LET folder_list = (
-                FOR belongsEdge IN @@belongs_to_kb
-                    FILTER belongsEdge._to == kb._id
-                    LET folder_record = DOCUMENT(belongsEdge._from)
-                    FILTER folder_record != null
-                    FILTER folder_record.mimeType IN @folder_mime_types
-                    RETURN { id: folder_record._key, name: folder_record.recordName }
-            )
-            RETURN folder_list
-            """
-            folders_result = await self.execute_query(folders_query, bind_vars={
-                "kb_id": kb_id, "folder_mime_types": FOLDER_MIME_TYPES, "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
-            })
-            folder_list = folders_result[0] if folders_result and isinstance(folders_result[0], list) else []
-            available = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [user_perm] if user_perm else [], "folders": folder_list}
-            return page["records"], page["total"], available
         except Exception:
             raise
 
@@ -19568,7 +19545,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Outlook deletion failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_execute_outlook_record_deletion")
             return {
                 "success": False,
                 "reason": f"Transaction failed: {str(e)}"
@@ -19777,7 +19755,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 else:
                     event_data = None
             except Exception as e:
-                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_execute_gmail_record_deletion", step="deletion_event_payload")
                 event_data = None
 
             return {
@@ -19789,7 +19768,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Gmail deletion failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_execute_gmail_record_deletion")
             return {
                 "success": False,
                 "reason": f"Transaction failed: {str(e)}"
@@ -19839,7 +19819,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 else:
                     event_data = None
             except Exception as e:
-                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_execute_drive_record_deletion", step="deletion_event_payload")
                 event_data = None
 
             return {
@@ -19851,7 +19832,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Drive deletion failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_execute_drive_record_deletion")
             return {
                 "success": False,
                 "reason": f"Transaction failed: {str(e)}"
@@ -22428,7 +22410,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return {"nodes": nodes, "parents": parents}
         except Exception as exc:
-            self.logger.warning("get_record_parent_adjacency: AQL failed — %s", exc)
+            error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                    op="get_record_parent_adjacency")
             return {"nodes": {}, "parents": {}}
 
     # ------------------------------------------------------------------
@@ -24112,7 +24095,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except ValueError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub context permissions failed: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_context_permissions")
             return {
                 "role": "READER",
                 "canUpload": False,
@@ -24197,7 +24181,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
-            self.logger.error("❌ get_knowledge_hub_node_access failed: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_node_access")
             return None
 
     async def get_linked_records(
@@ -24257,7 +24242,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
-            self.logger.error("❌ get_linked_records failed: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_linked_records")
             return []
 
     async def _kh_v3_child_ids(
@@ -24434,7 +24419,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"get_knowledge_hub_filter_options finished in {elapsed * 1000} ms")
             return {"apps": apps}
         except Exception as e:
-            self.logger.exception(f"❌ Failed to get knowledge hub filter options: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_filter_options")
             return {"apps": []}
 
     async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
@@ -24490,21 +24476,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"🚀 Checking record access for user {user_id}, record {record_id}")
 
             # Get user document to verify user exists
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
             if not user:
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return None
 
             # Get user's accessible apps and extract connector IDs (_key)
             # Note: _get_user_app_ids accepts external userId and converts to user_key internally
-            user_apps_ids = await self._get_user_app_ids(user_id, org_id)
+            user_apps_ids = await self._get_user_app_ids(user_id, org_id, raise_on_error=True)
 
             # Get record to verify it exists before running complex query
-            record_doc = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
-            if not record_doc:
+            record = await self.get_document(
+                record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True,
+            )
+            if not record:
                 self.logger.warning(f"⚠️ Record not found: {record_id}")
                 return None
-            if not is_live_record(record_doc):
+            if not is_live_record(record):
                 self.logger.info("Record %s is in the trash; no access", record_id)
                 return None
 
@@ -24779,28 +24767,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # access, and the UI shows a null role as Owner.
                 access_result = [{"type": "CONNECTOR", "role": "READER"}]
 
-            # If we have access, get the complete record details
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
-            if not record:
-                return None
-
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                return None
-
             # Get file or mail details based on record type
             additional_data = None
             if record.get("recordType") == RecordTypes.FILE.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.FILES.value, transaction
+                    record_id, CollectionNames.FILES.value, transaction, raise_on_error=True,
                 )
             elif record.get("recordType") == RecordTypes.MAIL.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.MAILS.value, transaction
+                    record_id, CollectionNames.MAILS.value, transaction, raise_on_error=True,
                 )
             elif record.get("recordType") == RecordTypes.TICKET.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.TICKETS.value, transaction
+                    record_id, CollectionNames.TICKETS.value, transaction, raise_on_error=True,
                 )
 
             connector_name = record.get("connectorName")
@@ -25025,7 +25004,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get account type: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_account_type")
             return None
 
     async def get_connector_stats(
@@ -25111,7 +25090,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get connector stats: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_connector_stats")
             return {
                 "success": False,
                 "message": str(e),
@@ -25719,7 +25698,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return is_descendant
         except Exception as e:
-            self.logger.error(f"Failed to check descendant relationship: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="is_record_descendant_of")
             return False
 
     async def get_folder_depth(
@@ -25820,7 +25800,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return result[0] if result and result[0] else None
         except Exception as e:
-            self.logger.error(f"Failed to get record parent info: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_parent_info")
             return None
 
     async def delete_parent_child_edge_to_record(
@@ -25866,9 +25847,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"Deleted {deleted_count} PARENT_CHILD edge(s) to record {record_id}")
             return deleted_count
         except Exception as e:
-            self.logger.error(f"Failed to delete parent-child edge: {e}")
-            if transaction:
+            if transaction:  # the caller owns the transaction: it handles the failure and logs it once
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_parent_child_edge_to_record")
             return 0
 
 
@@ -25913,7 +25894,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return result[0] if result else False
         except Exception as e:
-            self.logger.error(f"Failed to check if record is folder: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="is_record_folder")
             return False
 
     # ==================== Duplicate Detection & Relationship Management ====================
@@ -25995,7 +25976,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return duplicate_records
 
         except Exception as e:
-            self.logger.error(f"❌ Error finding duplicate records: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_duplicate_records")
             return []
 
     async def find_next_queued_duplicate(
@@ -26114,11 +26096,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to find next queued duplicate: {str(e)}"
-            )
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="find_next_queued_duplicate")
             return None
 
     async def copy_document_relationships(
@@ -26204,9 +26185,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return True
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to copy document relationships: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="copy_document_relationships")
             return False
 
     @staticmethod
@@ -26525,11 +26505,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return virtual_id_to_record_id
 
         except Exception as e:
-            self.logger.error(
-                f"Failed to get virtual IDs for connector {connector_id}: {e}\n{traceback.format_exc()}"
-            )
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_get_virtual_ids_for_connector", connector_id=connector_id)
             return {}
 
     async def _get_kb_virtual_ids(
@@ -26723,9 +26702,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return virtual_id_to_record_id
 
         except Exception as e:
-            self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="_get_kb_virtual_ids")
             return {}
 
     async def get_accessible_connector_types(
@@ -26752,7 +26731,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             # Narrowing is an optimization; a failure costs a wider search, not
             # a wrong one, so it must never fail the query.
-            self.logger.warning("Could not resolve accessible connector types: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_accessible_connector_types")
             return []
 
     def permission_hierarchy_view(self) -> ArangoHierarchyView:
@@ -26806,9 +26786,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
         except Exception as e:
-            self.logger.error(f"❌ Get structure of nodes failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_structure_of_nodes")
             return {}
         out: dict[str, frozenset] = {}
         for r in rows or []:
@@ -26878,7 +26859,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 },
             ) or []
         except Exception as exc:
-            self.logger.error("get_accessible_containers: failed — %s", exc)
+            error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                    op="get_accessible_containers")
             return AccessibleContainers(fallback_reason="query_failed")
 
         # Points of an App whose membership arrays were never written carry no
@@ -26983,7 +26965,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     kb_app_ids = set(kb_app_keys or [])
                 except Exception as e:
                     kb_types_known = False
-                    self.logger.warning(f"⚠️ Failed to fetch KB app types for filtering, treating all apps as connectors: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="get_accessible_virtual_record_ids", step="kb_app_types")
 
             connector_app_ids = [cid for cid in user_apps_ids if cid not in kb_app_ids]
 
@@ -27091,9 +27074,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return virtual_id_to_record_id
 
         except Exception as e:
-            self.logger.error(f"Get accessible virtual record IDs failed: {e}", exc_info=True)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_accessible_virtual_record_ids")
             return {}
 
     async def get_entity_access_context(
@@ -27346,9 +27330,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return [r for r in results if r] if results else []
 
         except Exception as e:
-            self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_records_by_record_ids")
             return []
 
     async def get_virtual_record_holders(
@@ -27503,13 +27488,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return record_keys
 
         except Exception as e:
-            self.logger.error(
-                "❌ Error finding records with virtualRecordId %s: %s",
-                virtual_record_id,
-                str(e)
-            )
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_records_by_virtual_record_id")
             return []
 
     # ==================== Team Operations ====================
@@ -27652,7 +27634,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return team
 
         except Exception as e:
-            self.logger.error(f"Error in get_team_with_users: {str(e)}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_team_with_users")
             return None
 
     async def get_user_teams(
@@ -27810,7 +27792,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result_list, total_count
 
         except Exception as e:
-            self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_user_teams")
             return [], 0
 
     async def find_team_by_name(
@@ -27939,7 +27921,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return team
 
         except Exception as e:
-            self.logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_team_users")
             return None
 
     async def delete_team_member_edges(
@@ -27951,28 +27933,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Delete edges to remove team members.
         """
-        try:
-            delete_query = f"""
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            REMOVE permission IN {CollectionNames.PERMISSION.value}
-            RETURN OLD
-            """
+        delete_query = f"""
+        FOR permission IN {CollectionNames.PERMISSION.value}
+        FILTER permission._to == @teamId
+        FILTER SPLIT(permission._from, '/')[1] IN @userIds
+        REMOVE permission IN {CollectionNames.PERMISSION.value}
+        RETURN OLD
+        """
 
-            deleted_list = await self.execute_query(
-                delete_query,
-                bind_vars={
-                    "userIds": user_ids,
-                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-                },
-                transaction=transaction
-            )
-            return deleted_list if deleted_list else []
-
-        except Exception as e:
-            self.logger.error(f"Error in delete_team_member_edges: {str(e)}", exc_info=True)
-            return []
+        deleted_list = await self.execute_query(
+            delete_query,
+            bind_vars={
+                "userIds": user_ids,
+                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
+            },
+            transaction=transaction
+        )
+        return deleted_list if deleted_list else []
 
     async def batch_update_team_member_roles(
         self,
@@ -27984,40 +27961,35 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Batch update user roles in a team.
         """
-        try:
-            batch_update_query = f"""
-            FOR user_role IN @user_roles
-                LET user_id = user_role.userId
-                LET new_role = user_role.role
-                FOR permission IN {CollectionNames.PERMISSION.value}
-                    FILTER permission._to == @team_id
-                    FILTER SPLIT(permission._from, '/')[1] == user_id
-                    UPDATE permission WITH {{
-                        role: new_role,
-                        updatedAtTimestamp: @timestamp
-                    }} IN {CollectionNames.PERMISSION.value}
-                    RETURN {{
-                        _key: NEW._key,
-                        _from: NEW._from,
-                        role: NEW.role,
-                        updatedAt: NEW.updatedAtTimestamp
-                    }}
-            """
+        batch_update_query = f"""
+        FOR user_role IN @user_roles
+            LET user_id = user_role.userId
+            LET new_role = user_role.role
+            FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == @team_id
+                FILTER SPLIT(permission._from, '/')[1] == user_id
+                UPDATE permission WITH {{
+                    role: new_role,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.PERMISSION.value}
+                RETURN {{
+                    _key: NEW._key,
+                    _from: NEW._from,
+                    role: NEW.role,
+                    updatedAt: NEW.updatedAtTimestamp
+                }}
+        """
 
-            updated_permissions = await self.execute_query(
-                batch_update_query,
-                bind_vars={
-                    "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
-                    "user_roles": user_roles,
-                    "timestamp": timestamp
-                },
-                transaction=transaction
-            )
-            return updated_permissions if updated_permissions else []
-
-        except Exception as e:
-            self.logger.error(f"Error in batch_update_team_member_roles: {str(e)}", exc_info=True)
-            return []
+        updated_permissions = await self.execute_query(
+            batch_update_query,
+            bind_vars={
+                "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
+                "user_roles": user_roles,
+                "timestamp": timestamp
+            },
+            transaction=transaction
+        )
+        return updated_permissions if updated_permissions else []
 
     async def delete_all_team_permissions(
         self,
@@ -28245,7 +28217,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result_list if result_list else [], total_count
 
         except Exception as e:
-            self.logger.error(f"Error in get_organization_users: {str(e)}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_organization_users")
             return [], 0
 
     async def check_toolset_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
@@ -28604,7 +28577,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return agent
 
         except Exception as e:
-            self.logger.error(f"Failed to get agent: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_agent")
             return None
 
     async def check_agent_permission(
@@ -28666,129 +28639,122 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result[0]
 
         except Exception as e:
-            self.logger.error(f"Failed to check agent permission: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_agent_permission")
             return None
 
     async def get_agents_by_web_search_provider(
         self, org_id: str, provider: str
     ) -> list[dict]:
-        try:
-            query = f"""
-            // Collect user keys that belong to this org
-            LET org_user_keys = (
-                FOR bt IN {CollectionNames.BELONGS_TO.value}
-                    FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
-                    RETURN PARSE_IDENTIFIER(bt._from).key
-            )
+        query = f"""
+        // Collect user keys that belong to this org
+        LET org_user_keys = (
+            FOR bt IN {CollectionNames.BELONGS_TO.value}
+                FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
+                RETURN PARSE_IDENTIFIER(bt._from).key
+        )
 
-            // Find agents owned by those users that use this web search provider
-            LET user_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm.type == 'USER'
-                    FILTER perm.role == 'OWNER'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    LET owner_key = PARSE_IDENTIFIER(perm._from).key
-                    FILTER owner_key IN org_user_keys
-                    RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
-            )
+        // Find agents owned by those users that use this web search provider
+        LET user_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm.type == 'USER'
+                FILTER perm.role == 'OWNER'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                LET owner_key = PARSE_IDENTIFIER(perm._from).key
+                FILTER owner_key IN org_user_keys
+                RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
+        )
 
-            // Also include agents shared directly with the org
-            LET org_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER perm.type == 'ORG'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    RETURN PARSE_IDENTIFIER(perm._to).key
-            )
+        // Also include agents shared directly with the org
+        LET org_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER perm.type == 'ORG'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                RETURN PARSE_IDENTIFIER(perm._to).key
+        )
 
-            LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
+        LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
 
-            FOR agent_key IN all_agent_keys
-                LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
-                FILTER agent != null
-                FILTER agent.isDeleted != true
-                FILTER agent.webSearch == @provider
-                LET creator = agent.createdBy != null
-                    ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
-                    : null
-                RETURN {{
-                    name: agent.name,
-                    _key: agent._key,
-                    creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
-                }}
-            """
-            result = await self.execute_query(
-                query, bind_vars={"org_id": org_id, "provider": provider}
-            )
-            return result or []
-        except Exception as e:
-            self.logger.error(f"Failed to get agents by web search provider: {str(e)}")
-            return []
+        FOR agent_key IN all_agent_keys
+            LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
+            FILTER agent != null
+            FILTER agent.isDeleted != true
+            FILTER agent.webSearch == @provider
+            LET creator = agent.createdBy != null
+                ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
+                : null
+            RETURN {{
+                name: agent.name,
+                _key: agent._key,
+                creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
+            }}
+        """
+        result = await self.execute_query(
+            query, bind_vars={"org_id": org_id, "provider": provider}
+        )
+        return result or []
 
     async def get_agents_by_model_key(
         self, org_id: str, model_key: str
     ) -> list[dict]:
-        try:
-            query = f"""
-            // Collect user keys that belong to this org
-            LET org_user_keys = (
-                FOR bt IN {CollectionNames.BELONGS_TO.value}
-                    FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
-                    RETURN PARSE_IDENTIFIER(bt._from).key
-            )
+        query = f"""
+        // Collect user keys that belong to this org
+        LET org_user_keys = (
+            FOR bt IN {CollectionNames.BELONGS_TO.value}
+                FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
+                RETURN PARSE_IDENTIFIER(bt._from).key
+        )
 
-            // Find agents owned by those users
-            LET user_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm.type == 'USER'
-                    FILTER perm.role == 'OWNER'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    LET owner_key = PARSE_IDENTIFIER(perm._from).key
-                    FILTER owner_key IN org_user_keys
-                    RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
-            )
+        // Find agents owned by those users
+        LET user_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm.type == 'USER'
+                FILTER perm.role == 'OWNER'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                LET owner_key = PARSE_IDENTIFIER(perm._from).key
+                FILTER owner_key IN org_user_keys
+                RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
+        )
 
-            // Also include agents shared directly with the org
-            LET org_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER perm.type == 'ORG'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    RETURN PARSE_IDENTIFIER(perm._to).key
-            )
+        // Also include agents shared directly with the org
+        LET org_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER perm.type == 'ORG'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                RETURN PARSE_IDENTIFIER(perm._to).key
+        )
 
-            LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
+        LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
 
-            LET model_key_prefix = CONCAT(@model_key, "_")
+        LET model_key_prefix = CONCAT(@model_key, "_")
 
-            FOR agent_key IN all_agent_keys
-                LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
-                FILTER agent != null
-                FILTER agent.isDeleted != true
-                FILTER LENGTH(
-                    FOR m IN (agent.models != null ? agent.models : [])
-                        FILTER m == @model_key OR STARTS_WITH(m, model_key_prefix)
-                        LIMIT 1
-                        RETURN 1
-                ) > 0
-                LET creator = agent.createdBy != null
-                    ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
-                    : null
-                RETURN {{
-                    name: agent.name,
-                    _key: agent._key,
-                    creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
-                }}
-            """
-            result = await self.execute_query(
-                query, bind_vars={"org_id": org_id, "model_key": model_key}
-            )
-            return result or []
-        except Exception as e:
-            self.logger.error(f"Failed to get agents by model key: {str(e)}")
-            return []
+        FOR agent_key IN all_agent_keys
+            LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
+            FILTER agent != null
+            FILTER agent.isDeleted != true
+            FILTER LENGTH(
+                FOR m IN (agent.models != null ? agent.models : [])
+                    FILTER m == @model_key OR STARTS_WITH(m, model_key_prefix)
+                    LIMIT 1
+                    RETURN 1
+            ) > 0
+            LET creator = agent.createdBy != null
+                ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
+                : null
+            RETURN {{
+                name: agent.name,
+                _key: agent._key,
+                creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
+            }}
+        """
+        result = await self.execute_query(
+            query, bind_vars={"org_id": org_id, "model_key": model_key}
+        )
+        return result or []
 
     async def get_all_agents(
         self,
@@ -29097,7 +29063,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return payload.get("agents", [])
 
         except Exception as e:
-            self.logger.error(f"Failed to get all agents: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_all_agents")
             return []
 
     async def update_agent(self, agent_id: str, agent_updates: dict[str, Any], user_id: str, org_id: str, transaction: str | None = None) -> bool | None:
@@ -29191,7 +29157,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to update agent: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_agent")
             return False
 
     async def delete_agent(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> bool | None:
@@ -29235,7 +29201,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to delete agent: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_agent")
             return False
 
     async def hard_delete_agent(self, agent_id: str, transaction: str | None = None) -> dict[str, int]:
@@ -29566,7 +29532,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to hard delete agent {agent_id}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="hard_delete_agent", agent_id=agent_id)
             return {
                 "agents_deleted": 0,
                 "toolsets_deleted": 0,
@@ -29875,7 +29842,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to hard delete all agents: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="hard_delete_all_agents")
             return {
                 "agents_deleted": 0,
                 "toolsets_deleted": 0,
@@ -29955,7 +29923,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to update agent permission: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_agent_permission")
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
     async def get_all_agent_templates(self, user_id: str, transaction: str | None = None) -> list[dict]:
@@ -30039,7 +30008,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result if result else []
 
         except Exception as e:
-            self.logger.error("❌ Failed to get all agent templates: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_all_agent_templates")
             return []
 
     async def get_template(self, template_id: str, user_id: str, transaction: str | None = None) -> dict | None:
@@ -30128,7 +30098,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result[0]
 
         except Exception as e:
-            self.logger.error("❌ Failed to get template access: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_template")
             return None
 
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
@@ -30159,7 +30129,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return None
             return template_key
         except Exception as e:
-            self.logger.error("❌ Failed to clone agent template: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="clone_agent_template")
             return None
 
     async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None = None) -> bool | None:
@@ -30225,7 +30195,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return True
 
         except Exception as e:
-            self.logger.error("❌ Failed to delete agent template: %s", str(e), exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_agent_template")
             return False
 
     async def update_agent_template(self, template_id: str, template_updates: dict[str, Any], user_id: str, transaction: str | None = None) -> bool | None:
@@ -30291,5 +30262,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return True
 
         except Exception as e:
-            self.logger.error("❌ Failed to update agent template: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_agent_template")
             return False

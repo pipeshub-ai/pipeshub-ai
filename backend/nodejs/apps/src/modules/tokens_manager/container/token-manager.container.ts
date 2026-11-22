@@ -170,9 +170,7 @@ export class TokenManagerContainer {
         .toConstantValue(authMiddleware);
     } catch (error) {
       const logger = container.get<Logger>('Logger');
-      logger.error('Failed to initialize services', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
+      logger.error('Failed to initialize services', { error });
       throw error;
     }
   }
@@ -219,9 +217,7 @@ export class TokenManagerContainer {
 
         this.logger.info('All services disconnected successfully');
       } catch (error) {
-        this.logger.error('Error while disconnecting services', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
+        this.logger.error('Error while disconnecting services', { error });
       } finally {
         this.instance = null!;
       }

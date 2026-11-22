@@ -7,6 +7,7 @@ in the parse-now marker rather than in the record's status.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -15,30 +16,41 @@ import pytest
 from app.config.constants.arangodb import CollectionNames, EventTypes
 from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.indexing.parse_now_marker import current_run, store_only_active
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
     StreamMessage,
+    messaging_env,
 )
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
 from tests.unit.attempt_start import attempt_start_via
 
 RECORDS = CollectionNames.RECORDS.value
+FILES = CollectionNames.FILES.value
 APPS = CollectionNames.APPS.value
 REV = "rev-1"
 PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
 def _record(**overrides: Any) -> dict[str, Any]:  # noqa: ANN401
+    """The RECORDS document. It has no `extension`: that is on the FILES document (`_file`)."""
     record = {
         "_key": "rec-1", "orgId": "org-1", "connectorId": "conn-1", "origin": "CONNECTOR", "recordName": "deck.pptx",
-        "mimeType": PPTX, "extension": "pptx", "indexingStatus": "AUTO_INDEX_OFF", "isFile": True,
+        "recordType": "FILE", "mimeType": PPTX, "indexingStatus": "AUTO_INDEX_OFF", "isFile": True,
         "virtualRecordId": "vr-1", "contentRev": REV, "version": 3,
     }
     record.update(overrides)
     return record
+
+
+def _file(**overrides: Any) -> dict[str, Any]:  # noqa: ANN401
+    """The FILES document of the same key, as `FileRecord.to_arango_record` writes it."""
+    file = {"_key": "rec-1", "orgId": "org-1", "name": "deck.pptx", "isFile": True, "extension": "pptx", "path": None}
+    file.update(overrides)
+    return file
 
 
 def _payload(**overrides: Any) -> dict[str, Any]:  # noqa: ANN401
@@ -53,8 +65,13 @@ def _payload(**overrides: Any) -> dict[str, Any]:  # noqa: ANN401
 class Harness:
     """A handler over a fake graph, with the event processor's run recorded."""
 
-    def __init__(self, record: dict[str, Any] | None, *, connector: dict[str, Any] | None = None, access: bool = True) -> None:
+    def __init__(
+        self, record: dict[str, Any] | None, *, connector: dict[str, Any] | None = None, access: bool = True,
+        file: dict[str, Any] | None = None,
+    ) -> None:
         self.record = record
+        self.file = _file() if file is None else file
+        self.files_error: Exception | None = None
         self.connector = {"_key": "conn-1", "isActive": True, "name": "Slack"} if connector is None else connector
         self.runs: list[dict[str, Any]] = []
         self.fail_with: Exception | None = None
@@ -80,9 +97,16 @@ class Harness:
         self.graph = graph
         self.pipeline = pipeline
 
-    async def _get(self, key: str, collection: str, **_: object) -> dict[str, Any] | None:
+    async def _get(self, key: str, collection: str, *, raise_on_error: bool = False, **_: object) -> dict[str, Any] | None:
         if collection == APPS:
             return self.connector
+        if collection == FILES:
+            if self.files_error is not None:
+                # As every graph backend does: a failed read is logged and returns None unless asked to raise.
+                if raise_on_error:
+                    raise self.files_error
+                return None
+            return dict(self.file) if self.file else None
         return None if self.record is None else dict(self.record)
 
     async def _on_event(self, event_data: dict[str, Any]):  # noqa: ANN202
@@ -236,8 +260,79 @@ class TestStoreOnlyRun:
         sent = harness.runs[0]["payload"]
         assert sent["recordName"] == "deck.pptx" and sent["origin"] == "CONNECTOR" and sent["extension"] == "pptx"
 
+    async def test_an_octet_stream_file_is_judged_by_the_extension_on_its_files_document(self) -> None:
+        harness = Harness(
+            _record(mimeType="application/octet-stream", recordName="Report.pdf"),
+            file=_file(extension="pdf", name="Report.pdf"),
+        )
+
+        with patch.object(record_module.file_types, "gate_decision", wraps=record_module.file_types.gate_decision) as gate:
+            await harness.run(_payload(mimeType="application/octet-stream"))
+
+        assert gate.call_args.kwargs["extension"] == "pdf"
+        assert harness.runs[0]["payload"]["extension"] == "pdf"
+
+    async def test_a_files_document_that_names_another_type_decides_before_the_download(self) -> None:
+        # FILES `zip`, name `Report.pdf`: refused as its sync event is, not accepted by the name and downloaded.
+        harness = Harness(
+            _record(mimeType="application/zip", recordName="Report.pdf"), file=_file(extension="zip", name="Report.pdf")
+        )
+
+        events = await harness.run(_payload(mimeType="application/zip"))
+
+        assert events == DRAINED
+        harness.download.assert_not_awaited()
+        assert harness.runs == []
+        assert [w["parseNowStatus"] for w in harness.writes()] == ["IN_PROGRESS", "FILE_TYPE_NOT_SUPPORTED"]
+        assert ".zip" in harness.writes()[-1]["parseNowReason"]
+
+    @pytest.mark.parametrize("file", [{}, _file(extension=None), _file(extension="")], ids=["no-files-doc", "none", "empty"])
+    async def test_a_file_with_no_extension_on_its_files_document_is_sent_as_before(self, file: dict[str, Any]) -> None:
+        harness = Harness(_record(), file=file)
+
+        await harness.run()
+
+        assert harness.runs[0]["payload"].get("extension", "unknown") == "unknown"
+
+    async def test_a_files_document_the_graph_cannot_read_fails_the_event_instead_of_dropping_the_extension(self) -> None:
+        harness = Harness(_record())
+        harness.files_error = ConnectionError("graph down")
+
+        with pytest.raises(ConnectionError):
+            await harness.run()
+
+        assert harness.runs == []
+        harness.download.assert_not_awaited()
+        files_reads = [c for c in harness.graph.get_document.await_args_list if c.args[1] == FILES]
+        assert [c.kwargs.get("raise_on_error") for c in files_reads] == [True]
+
+    async def test_a_code_file_is_judged_by_its_name_without_reading_files(self) -> None:
+        harness = Harness(_record(recordType="CODE_FILE", recordName="main.py", mimeType="text/plain"))
+
+        await harness.run(_payload(mimeType="text/plain"))
+
+        assert all(c.args[1] != FILES for c in harness.graph.get_document.await_args_list)
+
+    async def test_an_extension_the_event_carries_is_kept(self) -> None:
+        harness = Harness(_record(), file=_file(extension="ppt"))
+
+        await harness.run(_payload(extension="pptx"))
+
+        assert harness.runs[0]["payload"]["extension"] == "pptx"
+        assert all(c.args[1] != FILES for c in harness.graph.get_document.await_args_list)
+
+    @pytest.mark.parametrize("mime", [None, "", "unknown"])
+    async def test_an_event_without_a_mime_is_read_with_the_stored_one(self, mime: str | None) -> None:
+        harness = Harness(_record())
+
+        await harness.run(_payload(mimeType=mime))
+
+        assert harness.runs[0]["payload"]["mimeType"] == PPTX
+
     async def test_an_unsupported_type_is_marked_and_its_status_is_left_alone(self) -> None:
-        harness = Harness(_record(mimeType="application/x-unknown", extension="xyz", recordName="data.xyz"))
+        harness = Harness(
+            _record(mimeType="application/x-unknown", recordName="data.xyz"), file=_file(extension="xyz", name="data.xyz")
+        )
 
         events = await harness.run(_payload(mimeType="application/x-unknown"))
 
@@ -309,6 +404,36 @@ class TestFailuresEndInTheMarker:
         assert all("indexingStatus" not in w and "extractionStatus" not in w for w in harness.writes() if "parseNowStatus" in w)
         assert harness.runs == []  # the pipeline was never reached
 
+    # (status, final) -> (parseNowStatus written last, or None for no write; the record's status written, or None)
+    _UNANSWERED_CHECK = {
+        ("AUTO_INDEX_OFF", False): ("QUEUED", None),
+        ("AUTO_INDEX_OFF", True): ("FAILED", None),
+        ("QUEUED", False): (None, None),
+        ("QUEUED", True): ("FAILED", "FAILED"),
+    }
+
+    @pytest.mark.parametrize(("status", "final"), _UNANSWERED_CHECK, ids=["store_only-retry", "store_only-final", "indexed-retry", "indexed-final"])
+    async def test_an_access_check_the_graph_could_not_answer_fails_the_event_not_the_reader(
+        self, status: str, final: bool,
+    ) -> None:
+        """Not "no access" (which writes nothing): the event fails as any failure before the run does, with nothing parsed.
+
+        On the final attempt a record that is indexed as usual is marked FAILED with a reason, as for any failure before
+        the run; a store-only record keeps its status and only its marker ends.
+        """
+        marker, record_status = self._UNANSWERED_CHECK[(status, final)]
+        harness = Harness(_record(indexingStatus=status))
+        harness.graph.check_record_access_with_details = AsyncMock(side_effect=ConnectionError("graph down"))
+        with pytest.raises(ConnectionError):
+            await harness.run(_payload(is_final_failure=final))
+
+        harness.download.assert_not_awaited()
+        assert harness.runs == []
+        writes = harness.writes()
+        assert (writes[-1]["parseNowStatus"] if writes else None) == marker
+        status_writes = [(w["indexingStatus"], w["extractionStatus"], bool(w["reason"])) for w in writes if "indexingStatus" in w]
+        assert status_writes == ([(record_status, record_status, True)] if record_status else [])
+
     async def test_a_password_protected_file_ends_at_once_without_a_retry(self) -> None:
         harness = await self._fail(PasswordProtectedError("needs a password"), final=False)
 
@@ -355,3 +480,16 @@ class TestFailuresEndInTheMarker:
 
         assert not any("parseNowStatus" in write for write in harness.writes())
 
+
+@pytest.mark.parametrize("stored", ["application/pdf", "application/octet-stream"])
+async def test_a_parse_now_event_gets_the_budget_its_client_sends(stored: str) -> None:
+    """RECORDS and FILES documents as production stores them (the extension only on FILES) and the payload
+    `parse_now_event` builds: the consumer's budget after the handler equals what the parsing client sends (F23g), and
+    an octet-stream PDF gets the PDF budget on both sides from its FILES extension."""
+    harness = Harness(_record(mimeType=stored, recordName="report.pdf"), file=_file(extension="pdf", name="report.pdf"))
+    general = messaging_env.record_processing_timeout
+    async with asyncio.timeout(general) as timeout, record_budget.armed(timeout, general) as budget:
+        await harness.run(_payload(mimeType=stored))
+    sent = harness.runs[0]["payload"]
+    client = messaging_env.record_processing_timeout_for(sent.get("extension"), sent.get("mimeType"))
+    assert budget.seconds == client == messaging_env.pdf_record_processing_timeout

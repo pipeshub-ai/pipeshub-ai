@@ -55,7 +55,7 @@ VECTOR_PROVIDERS = ("services/vector_db/qdrant", "services/vector_db/opensearch"
 FENCED = {  # the points of a record being indexed: under the virtual record's lease, confirmed before the call
     ("modules/transformers/vectorstore.py", "delete_blocks_by_ids"),
     ("modules/transformers/vectorstore.py", "delete_embeddings"),
-    ("modules/transformers/vectorstore.py", "_fence_and_verify"),
+    ("modules/transformers/vectorstore.py", "_drop_points_of_other_runs"),
     ("modules/indexing/run.py", "delete_points_for_virtual_record"),
 }
 SWEEP = {("modules/indexing/stray_sweep.py", "sweep_stray_points")}   # runs under apply's lease, with a fence around each call
@@ -135,7 +135,7 @@ def test_every_delete_of_points_in_the_application_is_listed_and_the_record_writ
         text = (APP / file).read_text(encoding="utf-8")
         node = next(n for n in ast.walk(ast.parse(text)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function)
         assert "_fenced(" in ast.get_source_segment(text, node) or "fenced_delete(" in ast.get_source_segment(text, node), f"{file}:{function}"
-    assert fenced_calls >= {"delete_blocks_by_ids", "delete_embeddings", "_fence_and_verify"}
+    assert fenced_calls >= {"delete_blocks_by_ids", "delete_embeddings", "_drop_points_of_other_runs"}
 
 
 def test_every_collection_drop_in_the_application_is_listed() -> None:

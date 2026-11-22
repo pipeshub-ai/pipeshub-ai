@@ -585,6 +585,14 @@ class TestChainHas:
         assert EC.chain_has(outer, KeyError, ValueError) is True
         assert EC.chain_has(outer, KeyError) is False
 
+    def test_chain_link_is_the_first_match(self) -> None:
+        inner = OSError("inner")
+        middle = _chained(ValueError("middle"), inner)
+        outer = _chained(RuntimeError("outer"), middle)
+        assert EC.chain_link(outer, OSError) is inner
+        assert EC.chain_link(outer, OSError, ValueError) is middle
+        assert EC.chain_link(outer, KeyError) is None
+
 
 class TestChainHelpers:
     def test_has_chain(self) -> None:
