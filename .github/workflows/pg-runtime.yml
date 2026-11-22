@@ -86,7 +86,8 @@ concurrency:
 jobs:
   python:
     runs-on: ubuntu-latest
-    # shard 1 is the not-current adversarial worlds, ~22-26 min serial in six cases of two worlds each (one case alone ran past its timeout locally)
+    # The not-current adversarial worlds took ~22-26 min serial on CI as one case (2 min a world; ~10 min a world on a loaded workstation, past the
+    # case's hour). They are now six cases of two worlds, two cases to a shard (1, 6, 7), so each of those shards stays well inside its cap.
     timeout-minutes: ${{ matrix.shard == 1 && 60 || 45 }}
     strategy:
       fail-fast: false
@@ -96,19 +97,26 @@ jobs:
         # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once. Shard 5 runs
         # the folder minus what the others name, so a new test file runs there. scripts/test_pg_runtime_shards.py checks that
         # every case runs exactly once; each shard checks its run against its own collection, so no count is written here.
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7]
         include:
-          # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own
+          # test_conformance_kh_pg.py alone is longer than a shard should be: its not-current adversarial cases run two to a shard (1, 6, 7),
+          # the current adversarial ones in shard 2
           - shard: 1
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: '[not_current-adversarial-'
+            graph_k: '[not_current-adversarial-1of6] or [not_current-adversarial-2of6]'
           # also runs tests/integration/db and tests/integration/pg_runtime
           - shard: 2
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial- and [current-adversarial-
+            graph_k: 'not ([not_current-adversarial-1of6] or [not_current-adversarial-2of6]) and not ([not_current-adversarial-3of6] or [not_current-adversarial-4of6]) and not ([not_current-adversarial-5of6] or [not_current-adversarial-6of6]) and [current-adversarial-'
           - shard: 3
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial- and not [current-adversarial-
+            graph_k: 'not ([not_current-adversarial-1of6] or [not_current-adversarial-2of6]) and not ([not_current-adversarial-3of6] or [not_current-adversarial-4of6]) and not ([not_current-adversarial-5of6] or [not_current-adversarial-6of6]) and not [current-adversarial-'
+          - shard: 6
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: 'not ([not_current-adversarial-1of6] or [not_current-adversarial-2of6]) and ([not_current-adversarial-3of6] or [not_current-adversarial-4of6])'
+          - shard: 7
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: 'not ([not_current-adversarial-1of6] or [not_current-adversarial-2of6]) and not ([not_current-adversarial-3of6] or [not_current-adversarial-4of6]) and ([not_current-adversarial-5of6] or [not_current-adversarial-6of6])'
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4
@@ -243,7 +251,7 @@ jobs:
           python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-graph.collected" "${args[@]}"
           python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
 
-      # One job is enough: the split is the same in every job. Collecting the folder and the five shards takes a few minutes.
+      # One job is enough: the split is the same in every job. Collecting the folder and the seven shards takes a few minutes.
       - name: Every graph case runs in exactly one shard
         if: ${{ matrix.shard == 3 && matrix.pg == '17' }}
         run: python scripts/test_pg_runtime_shards.py --collect
