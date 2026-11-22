@@ -13,6 +13,7 @@ import pytest
 
 from app.modules.agents.enumeration.run import (
     EnumerationFinalizationError,
+    _record_lookup_factory,
     try_answer_enumeration,
 )
 
@@ -275,3 +276,42 @@ class TestAScopedQuestionIsLeftToTheAgent:
         )
 
         graph.get_accessible_virtual_record_ids.assert_awaited_once()
+
+
+class TestTheListedPageIsReadOnceWithinTheOrg:
+    """The page is hydrated in one read pinned to the org, as search hydrates
+    its hits, not one unscoped node read per record."""
+
+    @pytest.mark.asyncio
+    async def test_one_org_pinned_read_and_a_failed_read_defers(self) -> None:
+        graph = MagicMock()
+        graph.get_accessible_virtual_record_ids = AsyncMock(return_value={"vr2": "rec2", "vr1": "rec1"})
+        graph.get_records_by_record_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        graph.get_document = AsyncMock()
+        context = SimpleNamespace(tool_state={}, org_id="org-1", user_id="user-1")
+
+        answered = await try_answer_enumeration(
+            query="How many documents do we have?",
+            context=context,
+            retrieval_service=MagicMock(),
+            graph_provider=graph,
+            filters={"apps": ["drive"]},
+            event_sink=MagicMock(),
+            log=MagicMock(),
+        )
+
+        assert answered is False
+        graph.get_records_by_record_ids.assert_awaited_once_with(
+            ["rec1", "rec2"], "org-1", raise_on_error=True,
+        )
+        graph.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_record_the_read_did_not_return_is_not_listed(self) -> None:
+        lookup = _record_lookup_factory(
+            [{"_key": "rec1", "recordName": "Plan.pdf", "orgId": "org-1"}], "org-1", {"vr1": "A plan."},
+        )
+
+        listed = await lookup("vr1", "rec1")
+        assert (listed["id"], listed["record_name"], listed["summary"]) == ("rec1", "Plan.pdf", "A plan.")
+        assert await lookup("vr2", "rec-elsewhere") is None

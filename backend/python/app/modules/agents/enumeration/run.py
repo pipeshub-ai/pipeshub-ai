@@ -98,31 +98,27 @@ async def _fetch_summaries(
     return summaries
 
 
-async def _record_lookup_factory(
-    graph_provider: IGraphDBProvider,
+def _record_lookup_factory(
+    records: list[dict[str, Any]],
     org_id: str,
     summaries: dict[str, str] | None = None,
 ) -> RecordLookup:
     """Resolve a record id to the fields an enumeration answer needs.
 
-    Reads the record node directly rather than going through retrieval: this
+    `records` is the listed page, read in one call pinned to the org. This
     path is a census over the record set, so it must not depend on a document
-    having matched a query. Records that cannot be read are left out of the
+    having matched a query. Records that were not returned are left out of the
     listing by the caller, because a row nobody can cite is the failure this
     module exists to remove -- but they stay in the total, which is the size of
     the permission-filtered record set, and the answer says how many were left
     out.
     """
-    from app.config.constants.arangodb import CollectionNames
+    by_id = {
+        doc.get("_key") or doc.get("id"): doc for doc in records if isinstance(doc, dict)
+    }
 
     async def lookup(vrid: str, record_id: str) -> dict[str, Any] | None:
-        try:
-            doc = await graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-        except Exception as exc:  # one bad record must not fail the count
-            logger.debug("enumeration: record fetch failed for %s: %s", record_id, exc)
-            return None
+        doc = by_id.get(record_id)
         if not isinstance(doc, dict) or not doc:
             return None
         name = doc.get("recordName") or doc.get("record_name") or record_id
@@ -252,7 +248,17 @@ async def try_answer_enumeration(
     from app.modules.agents.enumeration.answer import MAX_LISTED
     listed_ids = [vrid for vrid, _ in sorted(accessible.items())[:MAX_LISTED]]
     summaries = await _fetch_summaries(retrieval_service, org_id, listed_ids)
-    lookup = await _record_lookup_factory(graph_provider, org_id, summaries)
+    # One read for the whole page, pinned to the org and to live records, as
+    # search hydrates its hits. A failed read defers, like the lookup above.
+    try:
+        records = await graph_provider.get_records_by_record_ids(
+            list(dict.fromkeys(accessible[vrid] for vrid in listed_ids)), org_id,
+            raise_on_error=True,
+        )
+    except Exception as exc:
+        log.warning("enumeration: record read failed, deferring: %s", exc)
+        return False
+    lookup = _record_lookup_factory(records or [], org_id, summaries)
     # A filter narrows what "all documents" means, and the answer has to say so.
     narrowed = bool(
         (filters or {}).get("apps") or (filters or {}).get("kb")
