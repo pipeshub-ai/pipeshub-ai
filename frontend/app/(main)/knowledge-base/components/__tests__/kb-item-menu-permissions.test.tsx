@@ -15,9 +15,13 @@ vi.mock('@/config', () => ({
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
-import { getKbItemMenuActions } from '../kb-list-view';
+import { getKbItemMenuActions, type TableItem } from '../kb-list-view';
 import { ItemActionMenu } from '../item-action-menu';
-import { isReindexPermissionLocked } from '../../hooks/use-collection-group-permissions';
+import {
+  isReindexPermissionLocked,
+  type CollectionGroupPermissions,
+} from '../../hooks/use-collection-group-permissions';
+import { hubNode } from '../../__tests__/kb-page-harness';
 
 afterEach(cleanup);
 
@@ -39,24 +43,12 @@ const handlers = {
   onMove: noop,
   onDelete: noop,
 };
-const node = (overrides: Record<string, unknown>) =>
-  ({
-    id: 'n1',
-    name: 'Node',
-    parentId: null,
-    origin: 'COLLECTION',
-    connector: 'KB',
-    hasChildren: true,
-    permission: { role: 'OWNER', canEdit: true, canDelete: true },
-    sharingStatus: 'private',
-    indexingStatus: 'COMPLETED',
-    ...overrides,
-  }) as any;
-const collection = node({ id: 'kb1', nodeType: 'app' });
-const folder = node({ id: 'f1', nodeType: 'folder' });
+const shared = { name: 'Node', connector: 'KB', hasChildren: true, indexingStatus: 'COMPLETED' } as const;
+const collection = hubNode({ ...shared, id: 'kb1', nodeType: 'app' });
+const folder = hubNode({ ...shared, id: 'f1', nodeType: 'folder' });
 
-const actionsOf = (item: unknown, groupPermissions?: { canEdit: boolean; canDelete: boolean; canManageSync: boolean }) =>
-  (getKbItemMenuActions(item as any, t, { ...handlers, groupPermissions }).filter(Boolean) as MenuAction[]);
+const actionsOf = (item: TableItem, groupPermissions?: CollectionGroupPermissions) =>
+  getKbItemMenuActions(item, t, { ...handlers, groupPermissions }).filter(Boolean) as MenuAction[];
 const byLabel = (actions: MenuAction[], label: string) => actions.find((a) => a.label === label);
 const reindexActions = (actions: MenuAction[]) =>
   actions.filter((a) => !['kb.rowActions.open', 'menu.rename', 'action.replace', 'action.move', 'action.delete'].includes(a.label));
