@@ -144,6 +144,18 @@ def _gemini(**kwargs: object):  # noqa: ANN202
     return ChatGoogleGenerativeAI(model=kwargs.pop("model", "gemini-test"), google_api_key="offline", **kwargs)
 
 
+def _openai(**kwargs: object):  # noqa: ANN202
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(api_key="offline", **kwargs)
+
+
+def _anthropic(**kwargs: object):  # noqa: ANN202
+    from langchain_anthropic import ChatAnthropic
+
+    return ChatAnthropic(model=kwargs.pop("model", "claude-test"), api_key="offline", max_tokens=64000, **kwargs)
+
+
 RESERVE = streaming.REASONING_OUTPUT_RESERVE
 CEILING = table_enrichment.TABLE_CALL_MAX_OUTPUT_TOKENS
 
@@ -170,7 +182,7 @@ CEILING = table_enrichment.TABLE_CALL_MAX_OUTPUT_TOKENS
         pytest.param(lambda: _gemini(model="gemini-2.0-flash"), 0, id="gemini-2.0-flash"),
         pytest.param(lambda: _gemini(model="gemini-2.5-flash", thinking_budget=0), 0, id="thinking-budget-0"),
         pytest.param(lambda: _openai(model="gpt-6-luna", reasoning_effort="none"), 0, id="reasoning-none"),
-        pytest.param(lambda: _anthropic(), 0, id="claude-no-thinking"),
+        pytest.param(_anthropic, 0, id="claude-no-thinking"),
         pytest.param(lambda: _anthropic(thinking={"type": "enabled", "budget_tokens": 3000}), 3000, id="claude-thinking-budget"),
     ],
 )
@@ -221,18 +233,6 @@ def test_no_cap_is_sent_when_the_models_limit_is_unknown(llm) -> None:
     model = llm()
     # The model itself: nothing changes in the request, and the raw reply is still read.
     assert streaming.with_output_cap(model, CEILING) is model
-
-
-def _openai(**kwargs: object):  # noqa: ANN202
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(api_key="offline", **kwargs)
-
-
-def _anthropic(**kwargs: object):  # noqa: ANN202
-    from langchain_anthropic import ChatAnthropic
-
-    return ChatAnthropic(model=kwargs.pop("model", "claude-test"), api_key="offline", max_tokens=64000, **kwargs)
 
 
 def test_a_lower_limit_of_the_models_own_stands() -> None:
