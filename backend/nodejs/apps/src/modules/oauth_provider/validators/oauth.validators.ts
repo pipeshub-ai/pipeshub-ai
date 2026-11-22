@@ -221,6 +221,8 @@ export const agentClaimCompleteSchema = z.object({
     claim_attempt_token: z.string().min(1).max(256),
     user_code: z.string().max(32).optional(),
     action: z.enum(['approve', 'deny']),
+    // The scope names the claim page showed; an approval records exactly these.
+    scopes: z.array(z.string().max(64)).max(64).optional(),
   }),
 });
 

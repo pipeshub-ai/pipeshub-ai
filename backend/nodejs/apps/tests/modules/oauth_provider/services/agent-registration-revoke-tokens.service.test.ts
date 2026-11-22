@@ -159,12 +159,9 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
     new URL(uri).searchParams.get('claim_attempt_token')!;
   const claimed = async () => {
     const r = await service.register('service_auth', 'ada@example.com');
-    await service.completeClaim(
-      attemptToken(r.claim.verification_uri),
-      r.claim.user_code,
-      'approve',
-      USER,
-    );
+    const token = attemptToken(r.claim.verification_uri);
+    const shown = (await service.getClaimContext(token, USER)).scopes.map((s) => s.name);
+    await service.completeClaim(token, r.claim.user_code, 'approve', USER, shown);
     return r;
   };
 
