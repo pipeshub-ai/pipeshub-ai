@@ -370,11 +370,24 @@ async def hide_names_the_viewer_cannot_open(
     reads. The limit is weighed by the connector list a member gets (``apply_access_limit``), asked only when a source is limited.
     A failed lookup admits nothing, so it hides the name. The node titles saved in ``filters`` and ``filtersParsed`` are left out
     with it. An admin of the request's org sees every name, as on the connectors page."""
+    for k in await _refused_sources(graph_provider, knowledge_lists, user_id, org_id, is_admin=is_admin):
+        k["name"] = k["displayName"] = k.get("connectorId")
+        # The folder and file titles the agent builder saved go too; the ids that limit the search stay.
+        for key in ("filters", "filtersParsed"):
+            if key in k:
+                k[key] = _without_titles(k[key])
+
+
+async def _refused_sources(
+    graph_provider: IGraphDBProvider, knowledge_lists: Iterable[Sequence[object]], user_id: str, org_id: str, *, is_admin: bool,
+) -> list[dict[str, Any]]:
+    """The knowledge sources whose connector is limited and does not admit the user; none for an admin. A failed lookup admits
+    nothing."""
     if is_admin:
-        return
+        return []
     limited = [k for ks in knowledge_lists for k in ks or [] if isinstance(k, dict) and k.get("accessLimit") is not None]
     if not limited:
-        return
+        return []
     try:
         listed = await graph_provider.get_user_connector_instances(
             collection=CollectionNames.APPS.value, user_id=user_id, org_id=org_id, team_scope=ConnectorScope.TEAM.value,
@@ -383,13 +396,48 @@ async def hide_names_the_viewer_cannot_open(
     except Exception:  # a failed lookup admits nothing
         listed = []
     opens = {str(d.get("_key") or d.get("id")) for d in listed if isinstance(d, dict)}
-    for k in limited:
-        if str(k.get("connectorId") or "") not in opens:
-            k["name"] = k["displayName"] = k.get("connectorId")
-            # The folder and file titles the agent builder saved go too; the ids that limit the search stay.
-            for field in ("filters", "filtersParsed"):
-                if field in k:
-                    k[field] = _without_titles(k[field])
+    return [k for k in limited if str(k.get("connectorId") or "") not in opens]
+
+
+async def keep_hidden_titles(
+    graph_provider: IGraphDBProvider,
+    incoming: dict[str, dict[str, Any]],
+    stored_knowledge: Sequence[object],
+    user_id: str,
+    org_id: str,
+    *,
+    is_admin: bool,
+) -> None:
+    """On an agent save, keep in ``incoming`` (``_parse_knowledge_sources``' output) the saved node titles of every source the
+    limit refuses the editor: the editor was shown that source with its titles left out (``hide_names_the_viewer_cannot_open``),
+    so their copy must not erase them. Their ids and choices stand; a node the source had saved keeps its stored title. When the
+    stored ``filters`` cannot be read, the stored value is kept as it is. An admin, or an editor the limit admits, saves as sent."""
+    stored = {str(k.get("connectorId")): k for k in stored_knowledge or [] if isinstance(k, dict) and k.get("connectorId")}
+    touched = [stored[cid] for cid in incoming if cid in stored]
+    for k in await _refused_sources(graph_provider, [touched], user_id, org_id, is_admin=is_admin):
+        cid = str(k["connectorId"])
+        raw = k.get("filters")
+        saved: object = raw if isinstance(raw, dict) else None
+        if isinstance(raw, str):
+            try:
+                saved = json.loads(raw) if raw.strip() else {}
+            except ValueError:
+                saved = None
+        elif raw is None:
+            saved = {}
+        if not isinstance(saved, dict):
+            incoming[cid]["filters"] = raw  # unreadable: what is stored stays
+            continue
+        titles = {n["id"]: n for n in saved.get("nodes") or [] if isinstance(n, dict) and isinstance(n.get("id"), str) and n.get("name")}
+        if not titles:
+            continue
+        filters = incoming[cid]["filters"]
+        nodes = [dict(n, name=titles[n["id"]]["name"]) if isinstance(n, dict) and n.get("id") in titles else n
+                 for n in filters.get("nodes") or []]
+        present = {n.get("id") for n in nodes if isinstance(n, dict)}
+        chosen = [i for key in ("recordGroups", "records") for i in filters.get(key) or [] if isinstance(i, str)]
+        nodes += [dict(titles[i]) for i in dict.fromkeys(chosen) if i in titles and i not in present]
+        incoming[cid]["filters"] = {**filters, "nodes": nodes}
 
 
 def _without_titles(filters: object) -> object:
@@ -416,6 +464,7 @@ __all__ = [
     "UnreadableSourceLimitError",
     "admit_caller_project_collections",
     "hide_names_the_viewer_cannot_open",
+    "keep_hidden_titles",
     "project_files_knowledge",
     "read_source_limit",
     "resolve_agent_filters",

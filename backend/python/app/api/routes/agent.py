@@ -61,6 +61,7 @@ from app.modules.agents.knowledge_scope import (
     UnreadableSourceLimitError,
     admit_caller_project_collections,
     hide_names_the_viewer_cannot_open,
+    keep_hidden_titles,
     project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
@@ -3932,6 +3933,11 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
             await _refuse_limit_over_the_cap(
                 knowledge_sources, services["graph_provider"], user_context["orgId"], logger,
+            )
+            # A source the limit refuses this editor came to them without its saved titles: keep the stored ones.
+            await keep_hidden_titles(
+                services["graph_provider"], knowledge_sources, agent.get("knowledge") or [], user_context["userId"], org_key,
+                is_admin=is_request_admin(request),
             )
 
             graph_provider = services["graph_provider"]

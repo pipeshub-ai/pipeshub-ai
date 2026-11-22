@@ -15,6 +15,7 @@ import pytest
 from app.modules.agents.knowledge_scope import (
     _without_titles,
     hide_names_the_viewer_cannot_open,
+    keep_hidden_titles,
 )
 from tests.support.agent_routes import (
     AGENTS,
@@ -223,3 +224,79 @@ def test_titles_are_left_out_of_either_form_and_an_unreadable_limit_stays_as_it_
     assert _without_titles(copy.deepcopy(_SAVED)) == as_text
     for value in ("not json", "", None, {"recordGroups": ["x"]}, ["x"]):
         assert _without_titles(value) == value
+
+
+def _stored_filters(graph: InMemoryGraph, connector_id: str) -> dict[str, Any]:
+    (node,) = [n for n in graph.nodes["agentKnowledge"].values() if n["connectorId"] == connector_id]
+    return json.loads(node["filters"]) if isinstance(node["filters"], str) else node["filters"]
+
+
+def _titles(filters: dict[str, Any]) -> dict[str, str | None]:
+    return {n["id"]: n.get("name") for n in filters.get("nodes", [])}
+
+
+def _save(graph: InMemoryGraph, viewer: str, edit: Any) -> None:  # noqa: ANN401 - a callable over the knowledge list
+    """``viewer`` opens the shared agent, changes its knowledge with ``edit`` and saves it, as the agent builder does."""
+    graph.add_edge("permission", {"_from": "users/k-bob", "_to": f"{AGENTS}/shared", "type": "USER", "role": "WRITER"})
+    graph.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": []})  # the size check, not tested here
+    client, user = _client(graph, viewer)
+    knowledge = client.get("/api/v1/agent/shared", headers=as_user(user)).json()["agent"]["knowledge"]
+    body = [{"connectorId": k["connectorId"], "filters": k.get("filters") or {}} for k in knowledge]
+    edit(body)
+    assert client.put("/api/v1/agent/shared", headers=as_user(user), json={"knowledge": body}).status_code == 200
+
+
+def _by_alice(body: list[dict[str, Any]]) -> dict[str, Any]:
+    (entry,) = [k for k in body if k["connectorId"] == "byAlice"]
+    entry["filters"] = json.loads(entry["filters"]) if isinstance(entry["filters"], str) else entry["filters"]
+    return entry["filters"]
+
+
+def test_a_refused_editor_saving_what_they_were_shown_keeps_the_titles(graph: InMemoryGraph) -> None:
+    _save(graph, "bob", lambda body: None)
+    saved = _stored_filters(graph, "byAlice")
+    assert _titles(saved) == {"rg-board": TITLE} and saved["recordGroups"] == ["rg-board"]
+    for viewer in ("alice", "bob-admin"):      # the creator and an admin read the original title back
+        client, user = _client(graph, viewer)
+        assert TITLE in json.dumps(client.get("/api/v1/agent/shared", headers=as_user(user)).json())
+
+
+def test_a_refused_editor_who_adds_a_node_keeps_the_stored_titles(graph: InMemoryGraph) -> None:
+    def add(body: list[dict[str, Any]]) -> None:
+        filters = _by_alice(body)
+        filters["recordGroups"].append("rg-new")
+        filters["nodes"].append({"id": "rg-new", "name": "New folder", "nodeType": "recordGroup"})
+    _save(graph, "bob", add)
+    saved = _stored_filters(graph, "byAlice")
+    assert _titles(saved) == {"rg-board": TITLE, "rg-new": "New folder"}
+    assert saved["recordGroups"] == ["rg-board", "rg-new"]
+
+
+def test_a_refused_editor_who_drops_the_nodes_list_still_keeps_the_titles_of_what_stays_chosen(graph: InMemoryGraph) -> None:
+    _save(graph, "bob", lambda body: _by_alice(body).pop("nodes"))
+    assert _titles(_stored_filters(graph, "byAlice")) == {"rg-board": TITLE}
+
+
+@pytest.mark.parametrize("viewer", ["alice", "bob-admin"])
+def test_an_editor_the_limit_admits_saves_a_renamed_title_as_sent(graph: InMemoryGraph, viewer: str) -> None:
+    def rename(body: list[dict[str, Any]]) -> None:
+        _by_alice(body)["nodes"][0]["name"] = "Renamed folder"
+    if viewer == "alice":
+        graph.add_edge("permission", {"_from": "users/k-alice", "_to": f"{AGENTS}/shared", "type": "USER", "role": "OWNER"})
+    _save(graph, viewer, rename)
+    assert _titles(_stored_filters(graph, "byAlice")) == {"rg-board": "Renamed folder"}
+
+
+async def test_a_stored_limit_that_cannot_be_read_stays_as_it_is() -> None:
+    graph = AsyncMock()
+    graph.get_user_connector_instances.return_value = []
+    incoming = {"lim": {"connectorId": "lim", "filters": {"recordGroups": ["x"]}},
+                "open": {"connectorId": "open", "filters": {"recordGroups": ["y"]}}}
+    stored = [{"connectorId": "lim", "accessLimit": "ORG", "filters": "not json"},
+              {"connectorId": "open", "accessLimit": None, "filters": "not json"}]
+    await keep_hidden_titles(graph, incoming, stored, "u-1", "org-1", is_admin=False)
+    assert incoming["lim"]["filters"] == "not json"
+    assert incoming["open"]["filters"] == {"recordGroups": ["y"]}        # unlimited: saved as sent
+    admin = {"lim": {"connectorId": "lim", "filters": {"recordGroups": ["x"]}}}
+    await keep_hidden_titles(graph, admin, stored, "u-1", "org-1", is_admin=True)
+    assert admin["lim"]["filters"] == {"recordGroups": ["x"]}
