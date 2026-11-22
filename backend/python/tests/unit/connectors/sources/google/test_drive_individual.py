@@ -1,16 +1,21 @@
 """Tests for GoogleDriveIndividualConnector (app/connectors/sources/google/drive/individual/connector.py)."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.connectors.core.registry.filters import FilterCollection
 from app.models.entities import FileRecord, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -820,10 +825,10 @@ class TestPersonalDriveSharedWith:
         return metadata
 
     @staticmethod
-    def _parent(grants: list[dict]):
+    def _parent(grants: list[dict]) -> tuple[Callable[..., Awaitable[dict]], list[str]]:
         calls: list[str] = []
 
-        async def files_get(**params):
+        async def files_get(**params: object) -> dict:
             calls.append(params["fileId"])
             return {"id": params["fileId"], "permissions": grants}
 
@@ -902,9 +907,45 @@ class TestPersonalDriveSharedWith:
         assert result.record.owners[0].email == "alice@example.com"
 
 
+class TestPersonalSharedDriveItemSharedWith:
+    """A shared-drive item synced by the personal connector reads its own list, with which grants were made on it."""
+
+    @staticmethod
+    def _item() -> dict:
+        metadata = _make_file_metadata(parents=["sd-1"])
+        metadata["driveId"] = "sd-1"
+        return metadata
+
+    async def test_a_direct_grant_is_shared_with_and_a_member_grant_is_not(self, connector) -> None:
+        async def permissions_list(**params: object) -> dict:
+            return {"permissions": [
+                {"id": "p-bob", "type": "user", "role": "writer", "emailAddress": "bob@example.com",
+                 "permissionDetails": [{"permissionType": "file", "inherited": False}]},
+                {"id": "p-cat", "type": "user", "role": "reader", "emailAddress": "cat@example.com",
+                 "permissionDetails": [{"permissionType": "member", "inherited": True}]},
+            ]}
+
+        connector.drive_data_source.permissions_list = permissions_list
+
+        result = await connector._process_drive_item(
+            metadata=self._item(), user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        assert [p.email for p in result.record.shared_with] == ["bob@example.com"]
+
+    async def test_an_unreadable_list_leaves_shared_with_unknown(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+
+        result = await connector._process_drive_item(
+            metadata=self._item(), user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        assert result.record.shared_with is None
+
+
 def test_personal_listing_asks_for_permissions() -> None:
     from app.connectors.sources.google.common import drive_file_fields as fields
 
     for mask in (fields.DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS, fields.DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
                  fields.DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS):
-        assert "permissions(id, type, role, emailAddress, displayName, deleted)" in mask
+        assert "permissions(id, type, role, emailAddress, displayName, deleted, view)" in mask

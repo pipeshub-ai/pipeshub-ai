@@ -4,7 +4,11 @@ connector read who it is shared with has its person edges rewritten there too.""
 from unittest.mock import AsyncMock, patch
 
 from app.models.entities import SourcePerson
-from tests.unit.connectors.core.test_permission_change_cache_invalidation import _NOTIFY, _processor, _record
+from tests.unit.connectors.core.test_permission_change_cache_invalidation import (
+    _NOTIFY,
+    _processor,
+    _record,
+)
 
 _LINK = "app.connectors.core.base.data_processor.data_source_entities_processor.link_record_people"
 

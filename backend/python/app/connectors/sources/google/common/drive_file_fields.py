@@ -20,7 +20,7 @@ DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS = (
     "headRevisionId, version, shared, owners, lastModifyingUser, md5Checksum, sha1Checksum, "
     "sha256Checksum, parents, "
     f"driveId, {_DRIVE_FILE_ACCESS_FIELDS}, "
-    "permissions(id, type, role, emailAddress, displayName, deleted)"
+    "permissions(id, type, role, emailAddress, displayName, deleted, view)"
 )
 
 DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS = (

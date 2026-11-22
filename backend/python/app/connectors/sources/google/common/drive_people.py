@@ -60,6 +60,8 @@ def _person_grants(grants: list[dict]) -> list[dict]:
     return [
         g for g in grants
         if isinstance(g, dict) and g.get("type") == "user" and not g.get("deleted")
+        # A limited folder lists the people its limit cut out with view "metadata": they see the name, not the content.
+        and g.get("view") != "metadata"
         and (g.get("id") or g.get("emailAddress"))
     ]
 
@@ -97,8 +99,10 @@ def drive_shared_with(
             held = max(parent_rank.get(g.get("id") or "", 0), parent_rank.get((g.get("emailAddress") or "").lower(), 0))
             if held >= ROLE_RANK.get(g.get("role", ""), 0):
                 continue
+        email = g.get("emailAddress") or None
         shared.append(SourcePerson(
-            source_id=g.get("id") or None, email=g.get("emailAddress") or None,
+            source_id=g.get("id") or None, email=email,
             display_name=g.get("displayName") or None,
+            is_service_account=bool(email and email.lower().endswith(_SERVICE_ACCOUNT_EMAIL_SUFFIX)),
         ))
     return shared

@@ -193,3 +193,20 @@ def test_non_person_grants_are_ignored() -> None:
     ]
 
     assert drive_shared_with(grants, owner_ids=set(), parent_grants=[], has_details=False) == []
+
+
+def test_a_metadata_only_grant_neither_shares_nor_ranks_on_the_parent() -> None:
+    limited = _grant("1", "bob@x.test", "reader", view="metadata")
+
+    assert drive_shared_with([limited], owner_ids=set(), parent_grants=[], has_details=False) == []
+    assert [p.email for p in drive_shared_with(
+        [_grant("1", "bob@x.test", "reader")], owner_ids=set(), parent_grants=[limited], has_details=False,
+    )] == ["bob@x.test"]
+
+
+def test_a_service_account_sharee_is_marked_and_not_identifiable() -> None:
+    shared = drive_shared_with(
+        [_grant("9", "bot@proj.iam.gserviceaccount.com", "writer")], owner_ids=set(), parent_grants=[], has_details=False,
+    )
+
+    assert shared is not None and shared[0].is_service_account and not shared[0].identifiable
