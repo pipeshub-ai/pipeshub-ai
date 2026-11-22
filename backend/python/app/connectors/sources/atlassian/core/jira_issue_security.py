@@ -768,13 +768,14 @@ def level_readers(
     grants: list[Permission], group_members: dict[str, Any], role_members: dict[str, Any],
 ) -> frozenset[tuple[str, str]] | None:
     """The people a level's record group grants (``level_group_grants``), with each group and role expanded to the
-    members the sync read. None when a group or role among them was not read: no one is matched through it."""
+    members the sync read. None when a group or role among them was not read: no one is matched through it. A level that
+    holds ``anyone`` names every reader, whatever its other members are."""
+    if any(grant.entity_type == EntityType.ORG for grant in grants):
+        return frozenset({_ANY_READER})
     keys: set[tuple[str, str]] = set()
     for grant in grants:
         if grant.entity_type == EntityType.USER:
             keys.add(_grant_key(grant))
-        elif grant.entity_type == EntityType.ORG:
-            keys.add(_ANY_READER)
         else:
             members = (group_members if grant.entity_type == EntityType.GROUP else role_members).get(str(grant.external_id))
             if not isinstance(members, list):
@@ -999,7 +1000,14 @@ def _reads_alone(
     readers = context.level_readers.get(level_id) if tracked else None
     if readers is not None:
         named |= readers
-    alone = [g for g in browse if _grant_key(g) in named or (readers is not None and _ANY_READER in readers)]
+    anyone = readers is not None and _ANY_READER in readers
+    # A grant goes to an email, so an email two synced accounts share cannot tell the account Browse names from the one the
+    # level names: that person needs the project, as for anyone the level does not name.
+    held_by: dict[str, set[int]] = {}
+    for u in users.values():
+        if email := (getattr(u, "email", None) or "").lower():
+            held_by.setdefault(email, set()).add(id(u))
+    alone = [g for g in browse if anyone or (_grant_key(g) in named and len(held_by.get((g.email or "").lower(), ())) < 2)]
     # Not read: someone Browse names may be a member, unless the level has no holder beyond its users.
     unread = tracked and readers is None and len(alone) < len(browse) and any(g.entity_type != EntityType.USER for g in static)
     return alone, unread

@@ -1198,6 +1198,36 @@ class TestBrowseNamedAndInTheLevelThroughItsMembers:
         assert level_readers(grants, {"g-1": None}, roles) is None
         assert level_readers(grants, groups, {"JUNI_10002": []}) is None
 
+    def test_a_level_holding_anyone_names_every_reader_beside_a_group_not_read(self) -> None:
+        """``anyone`` already admits whoever Browse names on the issue; a group whose members were not read changes nothing."""
+        grants, _ = level_group_grants([{"type": "anyone"}, self.HOLDERS[0]], project_key="JUNI", user_by_id={},
+                                       app_roles_mapping={})
+        readers = level_readers(grants, {"g-1": None}, {})
+        assert readers is not None and len(readers) == 1
+        rec, granted, skipped = self._apply(self.HOLDERS[0], {"7": readers})
+        assert (rec.access_rule, [g.email for g in granted], skipped) == (AccessRule.OPEN, ["in@x.com"], [])
+
+    def test_an_email_two_accounts_share_does_not_match_the_level_member_to_the_browse_named_account(self) -> None:
+        """Account acc-a is in the level's group and acc-b reports the issue; both hold in@x.com. A grant reaches the email, so it
+        cannot tell them apart: the reporter needs the project, never a grant of their own through acc-a's membership."""
+        def user(account: str) -> object:
+            return type("U", (), {"email": "in@x.com", "source_user_id": account, "is_active": True})()
+
+        users = {"acc-a": user("acc-a"), "acc-b": user("acc-b")}
+        context = _present(members={"7": [self.HOLDERS[0]]})
+        context.browse_holders = [{"type": "reporter"}]
+        context.level_readers = {"7": frozenset({user_grant_key("in@x.com", "acc-a")})}
+        rec = _record()
+        grants, skipped, settled = apply_issue_access_settled(
+            rec, {"security": {"id": "7"}, "reporter": {"accountId": "acc-b"}}, is_subtask=False, project_key="JUNI",
+            context=context, project_id="p-1", user_by_account_id=users)
+        assert (rec.access_rule, grants, skipped, settled) == (AccessRule.STRICT, [], [], True)
+        del users["acc-a"]  # one account holds the email: matched as before
+        grants, _, _ = apply_issue_access_settled(
+            rec, {"security": {"id": "7"}, "reporter": {"accountId": "acc-b"}}, is_subtask=False, project_key="JUNI",
+            context=context, project_id="p-1", user_by_account_id=users)
+        assert (rec.access_rule, [g.email for g in grants]) == (AccessRule.OPEN, ["in@x.com"])
+
     def test_a_reader_alone_beside_a_grant_that_needs_the_project_stays_strict(self) -> None:
         """Browse names the reporter, who is in the level's group, but not the assignee, whom the level names: the assignee's grant
         needs the project, so the issue is STRICT and the reporter, who reads it alone in Jira, needs the project too (DELTA-18).
