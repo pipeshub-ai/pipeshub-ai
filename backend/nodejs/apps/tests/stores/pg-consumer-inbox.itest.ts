@@ -12,6 +12,7 @@ import {
   configureInbox,
   replayWindowSeconds,
   withDeliveryRecorded,
+  runWithEnvelope,
 } from '../../src/libs/context/envelope';
 import { PgInbox, inboxMessageId } from '../../src/libs/services/consumer-inbox';
 import {
@@ -24,7 +25,8 @@ import { setNotificationRepository } from '../../src/libs/repositories/notificat
 import { PgUnitOfWork, kernelTx } from '../../src/libs/repositories/pg';
 import { NotificationConsumer } from '../../src/modules/notification/service/notification.consumer';
 import { Logger } from '../../src/libs/services/logger.service';
-import { withUow } from '../../src/libs/db';
+import { activeUnit, withUow } from '../../src/libs/db';
+import { isRetryableStoreError } from '../../src/libs/repositories/errors';
 import { PG_BINS, PgStack, haveStack, inOrg, newId, startPgStack } from './pg-store-harness';
 
 const suite = haveStack ? describe : describe.skip;
@@ -200,6 +202,71 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       }
       expect((refused as { sqlstate?: string })?.sqlstate).to.equal('42501');
       expect(await inbox.seen('g', fresh, A)).to.equal(true);
+    });
+
+    describe('a store refusal while the notification is being stored is retryable, not acknowledged', () => {
+      const group = 'notification-consumer-group';
+      // A broker like Kafka or Redis Streams: the message is acknowledged when the callback resolves, delivered again when it rejects.
+      const fakeBroker = () => {
+        let cb: ((m: { value: unknown }) => Promise<void>) | undefined;
+        const broker = {
+          isConnected: () => true,
+          connect: async () => {},
+          disconnect: async () => {},
+          subscribe: async () => {},
+          consume: async (h: typeof cb) => { cb = h; },
+        };
+        const deliver = (value: unknown) => runWithEnvelope('notification', JSON.parse(JSON.stringify(value)), (v) => cb!({ value: v }), group);
+        return { broker, deliver };
+      };
+      const outcome = async (p: Promise<unknown>): Promise<'acked' | 'redelivered'> => {
+        try {
+          await p;
+          return 'acked';
+        } catch (e) {
+          expect(isRetryableStoreError(e), `expected a retryable store error, got ${String(e)}`).to.equal(true);
+          return 'redelivered';
+        }
+      };
+      afterEach(() => setNotificationRepository(notifications));
+
+      for (const cause of ['the store fence refuses the write', 'a statement times out after the inbox insert'] as const) {
+        it(`${cause}: the delivery is redelivered, nothing is stored or recorded, and the redelivery stores once`, async () => {
+          configureInbox(inbox);
+          const { broker, deliver } = fakeBroker();
+          const consumer = new NotificationConsumer(broker as never, logger, { sendToUser: () => {} } as never);
+          await consumer.consume(async () => {});
+          const type = `refused-${randomUUID().slice(0, 8)}`;
+          const event = { orgId: A, type, recipientUserIds: [newId()], title: 't', eventId: randomUUID() };
+          let fail = true;
+          if (cause === 'the store fence refuses the write') {
+            await sql('UPDATE platform.store_epoch SET epoch = epoch + 1');
+          } else {
+            setNotificationRepository({
+              insertMany: async (docs: never[]) => {
+                if (fail) {
+                  const tx = activeUnit()!;
+                  await tx.query("/* pipeshub:test.inbox_slow */ SELECT set_config('statement_timeout', '50', true)");
+                  await tx.query('/* pipeshub:test.inbox_slow */ SELECT pg_sleep(1)');
+                }
+                return notifications.insertMany(docs);
+              },
+            } as never);
+          }
+          try {
+            expect(await outcome(deliver(event))).to.equal('redelivered');
+          } finally {
+            if (cause === 'the store fence refuses the write') await sql('UPDATE platform.store_epoch SET epoch = epoch - 1');
+            fail = false;
+          }
+          expect(await stored(A, type)).to.equal(0);
+          expect(await inbox.seen(group, event.eventId, A)).to.equal(false);
+          expect(await outcome(deliver(event))).to.equal('acked');
+          expect(await outcome(deliver(event))).to.equal('acked');
+          expect(await stored(A, type)).to.equal(1);
+          expect(await inbox.seen(group, event.eventId, A)).to.equal(true);
+        });
+      }
     });
 
     it('withDeliveryRecorded outside a delivery runs the effect alone', async () => {

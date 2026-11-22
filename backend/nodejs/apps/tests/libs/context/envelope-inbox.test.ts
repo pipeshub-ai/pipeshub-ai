@@ -135,6 +135,20 @@ describe('envelope: durable consumer inbox', () => {
     expect(runs).to.have.length(1)
   })
 
+  it('a handler recording in its own unit that fails records nothing, so its retry runs and records', async () => {
+    const m = signed()
+    let fail = true
+    const inUnit = async (v: unknown) => withDeliveryRecorded(async () => { runs.push(v); if (fail) throw new Error('store away'); return 'stored' })
+    let thrown: unknown
+    try { await deliver(m, G, inUnit) } catch (e) { thrown = e }
+    expect((thrown as Error).message).to.equal('store away')
+    expect(inbox.rows.size).to.equal(0)
+    fail = false
+    expect(await deliver(m, G, inUnit)).to.equal('stored')
+    expect(await deliver(m, G, inUnit)).to.equal(undefined)
+    expect(runs).to.have.length(2)
+  })
+
   it('outside a delivery, withDeliveryRecorded just runs its function', async () => {
     expect(await withDeliveryRecorded(async () => 7)).to.equal(7)
     expect(inbox.calls).to.deep.equal([])

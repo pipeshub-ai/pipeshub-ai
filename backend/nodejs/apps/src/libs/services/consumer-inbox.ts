@@ -14,6 +14,7 @@
 import { forOrg } from '../context/orgContext';
 import { DuplicateEnvelope, Inbox, inboxFailed } from '../context/envelope';
 import { Tx, withUow } from '../db';
+import { mapPgStoreError } from '../repositories/pg';
 
 const SEEN = `/* pipeshub:platform.consumer_inbox_seen */ SELECT EXISTS
   (SELECT 1 FROM platform.consumer_inbox WHERE org_id = $1 AND message_id = $2) AS seen`;
@@ -61,25 +62,31 @@ export class PgInbox implements Inbox {
 
   /**
    * The record goes first: a second delivery of the event waits on its key until this unit ends, then finds it and rolls
-   * back. A failed record (in a savepoint) leaves the effect to run unrecorded, as if there were no inbox.
+   * back. A failed record (in a savepoint) leaves the effect to run unrecorded, as if there were no inbox. The unit is the
+   * effect's own, so its failures are mapped as the store's unit of work maps them: a fence refusal or a timeout stays a
+   * retryable store error, and the consumer leaves the message to be delivered again.
    */
-  recordWith<T>(
+  async recordWith<T>(
     consumer: string,
     eventId: string,
     orgId: string,
     fn: () => Promise<T>,
   ): Promise<T> {
-    return withUow({ write: true }, async (tx) => {
-      let fresh = true;
-      try {
-        fresh = await tx.savepoint('consumer_inbox', () =>
-          insert(tx, consumer, eventId, orgId),
-        );
-      } catch (e) {
-        inboxFailed('record', consumer, e);
-      }
-      if (!fresh) throw new DuplicateEnvelope(eventId);
-      return fn();
-    });
+    try {
+      return await withUow({ write: true }, async (tx) => {
+        let fresh = true;
+        try {
+          fresh = await tx.savepoint('consumer_inbox', () =>
+            insert(tx, consumer, eventId, orgId),
+          );
+        } catch (e) {
+          inboxFailed('record', consumer, e);
+        }
+        if (!fresh) throw new DuplicateEnvelope(eventId);
+        return fn();
+      });
+    } catch (error) {
+      throw mapPgStoreError(error);
+    }
   }
 }

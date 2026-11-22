@@ -22,8 +22,15 @@ export class MemInbox implements Inbox {
 
   async recordWith<R>(c: string, e: string, o: string, fn: () => Promise<R>): Promise<R> {
     this.calls.push('recordWith');
-    if (this.rows.has(this.key(c, e, o))) throw new DuplicateEnvelope(e);
-    this.rows.add(this.key(c, e, o));
-    return fn();
+    const k = this.key(c, e, o);
+    if (this.rows.has(k)) throw new DuplicateEnvelope(e);
+    this.rows.add(k);
+    try {
+      return await fn();
+    } catch (err) {
+      // PostgreSQL rolls the record back with the failed effect, so a retry must not be skipped
+      this.rows.delete(k);
+      throw err;
+    }
   }
 }
