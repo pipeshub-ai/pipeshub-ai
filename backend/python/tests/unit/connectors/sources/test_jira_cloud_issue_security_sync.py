@@ -732,7 +732,7 @@ class TestReindexAppliesTheLevel:
         c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, self.MEMBERS)])
         c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
         saved = TestTheRetryListKeepsWhatAReindexAdds._store(c, ["7"])
-        await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        written, _ = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
         assert (json.loads(saved["issues_to_retry"]), TestTheRetryListKeepsWhatAReindexAdds._queued(saved)) == (["7"], ["1001"])
 
         # The next sync reads group-1 (the reporter is in it). The level and Browse digests match what it saved, and the walk
@@ -761,9 +761,10 @@ class TestReindexAppliesTheLevel:
         nxt.issues_sync_point.update_sync_point = AsyncMock(side_effect=write_point)
         nxt._load_issue_security = AsyncMock(return_value=_present(level))
         nxt.data_source = MagicMock()
-        # The stored issue, as the reindex left it: its time reads as changed.
+        # The stored issue, with the time the reindex wrote: only that time makes the next sync rebuild it.
         nxt.data_entities_processor.get_record_by_external_id = AsyncMock(
-            side_effect=lambda **kw: _stored_ticket(source_updated_at=1) if kw.get("external_record_id") == "1001" else None)
+            side_effect=lambda **kw: _stored_ticket(source_updated_at=written.source_updated_at)
+            if kw.get("external_record_id") == "1001" else None)
         read: list = []
 
         async def search(**kw: object) -> MagicMock:
