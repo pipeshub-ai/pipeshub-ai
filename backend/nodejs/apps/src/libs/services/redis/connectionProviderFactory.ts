@@ -257,7 +257,7 @@ export async function checkRedisEvictionPolicy(
     policy = /^maxmemory_policy:(\S+)/m.exec(info)?.[1]?.toLowerCase() ?? '';
   } catch (error) {
     logger.warn('Redis eviction policy not read', {
-      error: (error as Error)?.name,
+      error: (error as Error).name,
     });
     return;
   }

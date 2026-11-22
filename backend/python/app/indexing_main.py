@@ -2610,7 +2610,10 @@ async def _check_redis_eviction_policy(app_container: Any, logger: logging.Logge
     record handler uses under the PostgreSQL broker). Best effort: a Redis that cannot be read leaves the warning
     unset and indexing starts anyway. An ``allkeys-*`` policy stops the start.
     """
-    from app.modules.indexing.replay_set import UnsafeEvictionPolicyError, check_eviction_policy
+    from app.modules.indexing.replay_set import (
+        UnsafeEvictionPolicyError,
+        check_eviction_policy,
+    )
     from app.services.vector_db.rebuild_state import redis_from_config_service
 
     redis = None
