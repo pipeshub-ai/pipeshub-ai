@@ -243,3 +243,23 @@ async def test_a_source_that_moved_to_another_copy_leaves_every_duplicate_queued
     assert d["indexingStatus"] == "QUEUED" and d.get("virtualRecordId") != f"{run}-written-elsewhere"
     # the legitimate promotion with the source's own copy still works afterwards
     assert await provider.update_queued_duplicates_status(ref, "COMPLETED", f"{run}-v") == 1
+
+
+async def test_a_queued_duplicate_nothing_tracked_reads_stays_queued(world: tuple) -> None:
+    """The graph cannot say which parser an untracked duplicate's labels mean: it stays QUEUED for its own event, even behind a finished copy."""
+    provider, run = world
+    ref = await finished_reference(provider, run, **known("inproc:txt@1", vrid=f"{run}-v", at=500))
+    await put(provider, f"{run}-q1", name="q1.py", mime="text/plain", extension="py")
+    assert await provider.update_queued_duplicates_status(ref, "COMPLETED", f"{run}-v") == 0
+    assert (await provider.get_document(f"{run}-q1", RECORDS))["indexingStatus"] == "QUEUED"
+
+
+async def test_a_copy_an_untracked_parser_built_promotes_no_tracked_duplicate(world: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    provider, run = world
+    monkeypatch.setenv("USE_PARSING_SERVICE", "false")
+    identity = pi.parser_identity("text/plain", "py", "x.py", "FILE", pipeline=pi.PIPELINE_IN_PROCESS)
+    assert identity == "inproc:untracked.code@1"
+    ref = await finished_reference(provider, run, **known(identity, vrid=f"{run}-v", at=500))
+    await put(provider, f"{run}-q1", name="q1.txt", mime="text/plain", extension="txt")
+    assert await provider.update_queued_duplicates_status(ref, "COMPLETED", f"{run}-v") == 0
+    assert (await provider.get_document(f"{run}-q1", RECORDS))["indexingStatus"] == "QUEUED"

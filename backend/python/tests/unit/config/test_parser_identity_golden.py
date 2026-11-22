@@ -46,10 +46,38 @@ def test_the_route_map_is_pinned(mime: str, ext: str | None, name: str, record_t
     assert pi.parser_key(mime, ext, name, record_type) == expected
 
 
+# (mime, extension, name, record type, in process, service): the key of a run no tracked parser answers; it names the parser.
+UNTRACKED_GOLDEN = [
+    ("text/plain", "py", "a.py", "FILE", "untracked.code@1", "untracked.code@1"),
+    ("text/x-python", "py", "a.py", "FILE", "untracked.code@1", "untracked.code@1"),
+    ("text/plain", None, "a.txt", "CODE_FILE", "untracked.code@1", "untracked.txt@1"),
+    ("application/xml", "sql", "a.sql", "FILE", "untracked.unknown@1", "untracked.txt@1"),
+    ("application/xml", None, "a.b.docx", "FILE", "untracked.unknown@1", "untracked.docx@1"),
+    ("application/octet-stream", None, "a", "FILE", "untracked.unknown@1", "untracked.unknown@1"),
+    ("unknown", "unknown", "a", "FILE", "untracked.unknown@1", "untracked.unknown@1"),
+    ("application/vnd.sql.table", None, "t", "FILE", "untracked.sql_table@1", "untracked.sql_table@1"),
+]
+
+
+@pytest.mark.parametrize(("mime", "ext", "name", "record_type", "in_process", "service"), UNTRACKED_GOLDEN)
+def test_the_untracked_key_names_the_parser(
+    mime: str, ext: str | None, name: str, record_type: str, in_process: str, service: str,
+) -> None:
+    assert pi.parser_key(mime, ext, name, record_type, service=False) is None
+    assert pi.parser_key(mime, ext, name, record_type, service=True) is None
+    assert pi.untracked_key(mime, ext, name, record_type, service=False) == in_process
+    assert pi.untracked_key(mime, ext, name, record_type, service=True) == service
+
+
+def test_two_different_untracked_parsers_have_different_keys() -> None:
+    assert pi.untracked_key("text/plain", "py", "a.py", "FILE", service=True) != pi.untracked_key(
+        "application/xml", "sql", "a.sql", "FILE", service=True)
+
+
 @pytest.mark.parametrize("pipeline", [pi.PIPELINE_IN_PROCESS, pi.PIPELINE_SERVICE])
 def test_the_identity_is_the_pipeline_and_the_key(pipeline: str) -> None:
     assert pi.parser_identity("text/plain", "txt", "a.txt", "FILE", pipeline=pipeline) == f"{pipeline}:txt@1"
-    assert pi.parser_identity("text/plain", "py", "a.py", "FILE", pipeline=pipeline) == f"{pipeline}:{pi.UNTRACKED_KEY}"
+    assert pi.parser_identity("text/plain", "py", "a.py", "FILE", pipeline=pipeline) == f"{pipeline}:untracked.code@1"
 
 
 def test_the_pipeline_is_not_part_of_what_is_compared() -> None:
@@ -82,7 +110,9 @@ def test_the_payload_and_the_graph_give_the_same_identity(name: str, extension: 
     )
     from_graph = pi.graph_parser_key(node, file_doc)
     # A type nothing tracks reads as None on the graph side and is labelled ``untracked`` by the run that parsed it.
-    assert pi.key_of(from_payload) == (from_graph if from_graph is not None else pi.UNTRACKED_KEY)
+    expected = from_graph if from_graph is not None else pi.graph_untracked_key(node, file_doc)
+    assert pi.key_of(from_payload) == expected
+    assert (from_graph is None) == pi.key_of(from_payload).startswith(pi.UNTRACKED_PREFIX)
 
 
 def test_a_graph_read_without_the_files_document_differs_from_the_payload_for_octet_stream() -> None:

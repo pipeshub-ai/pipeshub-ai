@@ -295,9 +295,8 @@ class EventProcessor:
         stored = record.get(parser_identity.IDENTITY_FIELD)
         has_stored = isinstance(stored, str) and bool(stored)
         try:
-            key = parser_identity.graph_parser_key(
-                record, await self._files_document(record_id), service=self._use_service_pipeline(),
-            )
+            file_doc = await self._files_document(record_id)
+            key = parser_identity.graph_parser_key(record, file_doc, service=self._use_service_pipeline())
         except Exception as exc:
             self.logger.warning(
                 "Record %s: the parser of its indexed copy could not be checked (%s); running it in full",
@@ -309,7 +308,9 @@ class EventProcessor:
             if not has_stored:
                 return True, None
             known = parser_identity.known_identity(record)
-            return (known is not None and parser_identity.key_of(known) == parser_identity.UNTRACKED_KEY), None
+            # It is skipped only against a copy the same untracked parser built: the stored key names its parser.
+            untracked = parser_identity.graph_untracked_key(record, file_doc, service=self._use_service_pipeline())
+            return (known is not None and parser_identity.key_of(known) == untracked), None
         if not has_stored:
             return True, f"{self._pipeline_label()}:{key}"
         known = parser_identity.known_identity(record)

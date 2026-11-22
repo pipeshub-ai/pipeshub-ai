@@ -199,32 +199,69 @@ async def test_what_is_not_tracked_stores_nothing_and_skips_as_before() -> None:
     assert pi.IDENTITY_FIELD not in world.state
 
 
+# The record as the graph holds it that no parser is tracked for, per pipeline, with the untracked key its own run stores.
+# The service reads ``application/xml`` named ``a.sql`` as text; in process nothing reads it (``unknown``).
+UNTRACKED_RECORDS = [
+    pytest.param(False, "inproc", "text/plain", "py", "a.py", "untracked.code@1", id="inproc-source"),
+    pytest.param(True, "svc", "text/plain", "py", "a.py", "untracked.code@1", id="service-source"),
+    pytest.param(False, "inproc", "application/xml", "sql", "a.sql", "untracked.unknown@1", id="inproc-xml-sql"),
+    pytest.param(True, "svc", "application/xml", "sql", "a.sql", "untracked.txt@1", id="service-xml-sql"),
+]
+
+
+def _untracked_world(monkeypatch: pytest.MonkeyPatch, service: bool, mime: str, ext: str, name: str) -> World:
+    world = World(node={"mimeType": mime, "recordName": name}, file_doc={"_key": "rec-1", "extension": ext})
+    monkeypatch.setattr(world.ep, "_use_service_pipeline", lambda: service)
+    assert pi.parser_key(mime, ext, name, "FILE", service=service) is None
+    return world
+
+
 @pytest.mark.asyncio
-async def test_a_copy_a_tracked_parser_built_is_not_skipped_for_a_record_that_is_source_now() -> None:
-    from unittest.mock import MagicMock
+@pytest.mark.parametrize(("service", "pipeline", "mime", "ext", "name", "own"), UNTRACKED_RECORDS)
+async def test_the_gate_does_not_skip_a_copy_a_tracked_parser_built_for_a_record_nothing_tracked_reads(
+    monkeypatch: pytest.MonkeyPatch, service: bool, pipeline: str, mime: str, ext: str, name: str, own: str,
+) -> None:
+    """The gate itself, past the code-file exclusion in front of it: a record with no tracked key is skipped only against a copy of an untracked parser."""
+    world = _untracked_world(monkeypatch, service, mime, ext, name)
+    world.identified(f"{pipeline}:txt@1")
 
-    from app.events.processor import Processor
-
-    world = World(node={"mimeType": "text/plain", "recordName": "notes.py"}, file_doc={"_key": "rec-1", "extension": "py"})
-    for name in dir(Processor):
-        if name.startswith("process_"):
-            setattr(world.processor, name, MagicMock(side_effect=world._parse))
-    world.identified("inproc:txt@1")
-
-    await world.run(world.event(mime="text/plain", ext="py", name="notes.py"))
-
-    assert world.parses == 1
-    assert world.state[pi.IDENTITY_FIELD] == f"inproc:{pi.UNTRACKED_KEY}"
+    assert await world.ep._parser_gate(dict(world.state), "rec-1") == (False, None)
 
 
 @pytest.mark.asyncio
-async def test_a_copy_an_untracked_parser_built_is_skipped_for_a_record_nothing_tracked_reads() -> None:
-    world = World(node={"mimeType": "text/plain", "recordName": "notes.py"}, file_doc={"_key": "rec-1", "extension": "py"})
-    world.identified(f"inproc:{pi.UNTRACKED_KEY}")
+@pytest.mark.parametrize(("service", "pipeline", "mime", "ext", "name", "own"), UNTRACKED_RECORDS)
+async def test_the_gate_skips_a_copy_the_same_untracked_parser_built_and_adopts_nothing(
+    monkeypatch: pytest.MonkeyPatch, service: bool, pipeline: str, mime: str, ext: str, name: str, own: str,
+) -> None:
+    world = _untracked_world(monkeypatch, service, mime, ext, name)
+    world.identified(f"{pipeline}:{own}")
 
-    await world.run(world.event(mime="text/plain", ext="py", name="notes.py"))
+    assert await world.ep._parser_gate(dict(world.state), "rec-1") == (True, None)
 
-    assert world.parses == 0
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("service", "pipeline", "mime", "ext", "name", "own"), UNTRACKED_RECORDS)
+async def test_the_gate_does_not_skip_a_copy_another_untracked_parser_built(
+    monkeypatch: pytest.MonkeyPatch, service: bool, pipeline: str, mime: str, ext: str, name: str, own: str,
+) -> None:
+    """``untracked@1`` named no parser: a copy the service built as source was skipped by a record it reads as text."""
+    world = _untracked_world(monkeypatch, service, mime, ext, name)
+    other = "untracked.sql_table@1"
+    assert other != own
+    world.identified(f"{pipeline}:{other}")
+
+    assert await world.ep._parser_gate(dict(world.state), "rec-1") == (False, None)
+
+
+@pytest.mark.asyncio
+async def test_a_source_copy_is_not_skipped_by_the_same_bytes_the_service_reads_as_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The case of the round: a copy built as source, then the same bytes labelled ``application/xml`` / ``sql``."""
+    world = World(node={"mimeType": "application/xml", "recordName": "a.sql"}, file_doc={"_key": "rec-1", "extension": "sql"})
+    monkeypatch.setattr(world.ep, "_use_service_pipeline", lambda: True)
+    world.identified(pi.parser_identity("text/plain", "py", "a.py", "FILE", pipeline=pi.PIPELINE_SERVICE))
+    assert world.state[pi.IDENTITY_FIELD] == "svc:untracked.code@1"
+
+    assert await world.ep._parser_gate(dict(world.state), "rec-1") == (False, None)
 
 
 @pytest.mark.asyncio

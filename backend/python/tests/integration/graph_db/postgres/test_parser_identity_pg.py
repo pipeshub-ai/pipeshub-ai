@@ -166,3 +166,21 @@ async def test_a_source_that_moved_to_another_copy_leaves_every_duplicate_queued
     assert await w.p.update_queued_duplicates_status("ref", "COMPLETED", "elsewhere") == 0
     assert (await doc(w, "q1"))["indexingStatus"] == "QUEUED"
     assert await w.p.update_queued_duplicates_status("ref", "COMPLETED", "v1") == 1
+
+
+async def test_a_queued_duplicate_nothing_tracked_reads_stays_queued(w) -> None:
+    """The graph cannot say which parser an untracked duplicate's labels mean: it stays QUEUED for its own event, even behind a finished copy."""
+    await reference(w, **known("inproc:txt@1", vrid="v1", at=500))
+    await put(w, "q1", name="q1.py", mime="text/plain", extension="py")
+    assert await w.p.update_queued_duplicates_status("ref", "COMPLETED", "v1") == 0
+    assert (await doc(w, "q1"))["indexingStatus"] == "QUEUED"
+
+
+async def test_a_copy_an_untracked_parser_built_promotes_no_tracked_duplicate(w, monkeypatch) -> None:
+    monkeypatch.setenv("USE_PARSING_SERVICE", "false")
+    identity = pi.parser_identity("text/plain", "py", "x.py", "FILE", pipeline=pi.PIPELINE_IN_PROCESS)
+    assert identity == "inproc:untracked.code@1"
+    await reference(w, **known(identity, vrid="v1", at=500))
+    await put(w, "q1", name="q1.txt", mime="text/plain", extension="txt")
+    assert await w.p.update_queued_duplicates_status("ref", "COMPLETED", "v1") == 0
+    assert (await doc(w, "q1"))["indexingStatus"] == "QUEUED"

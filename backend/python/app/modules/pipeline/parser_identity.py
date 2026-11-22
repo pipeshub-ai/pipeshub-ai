@@ -18,7 +18,7 @@ promotion is judged. The graph keeps ``mimeType``, ``recordName`` and ``recordTy
 file's ``extension`` on its ``files`` document, so callers read that document too.
 
 ``None`` as a graph key means "not tracked" (code, SQL, an unnamed route, anything unknown). A run of such a parser stores
-``<pipeline>:untracked@1``, so a rename to a tracked type does not read as a copy that was never labelled. A record whose own
+``<pipeline>:untracked.<parser>@1`` (the parser is named, so two untracked parsers never match), so a rename to a tracked type does not read as a copy that was never labelled. A record whose own
 graph key is not tracked never attaches to a twin (the graph cannot say which parser its labels mean) and adopts nothing.
 
 Known limit: the graph record holds no file path. A record whose own event path decides its parser never skips, attaches or
@@ -65,8 +65,9 @@ SOURCE_ADOPTED: Final = "adopted"
 #: The copy is another record's, attached or promoted with that record's identity.
 SOURCE_TWIN: Final = "twin"
 
-#: The key of a copy built by a parser that is not tracked (source, SQL, or a path-chosen one); no tracked key equals it.
-UNTRACKED_KEY: Final = "untracked@1"
+#: The key of a copy built by a parser that is not tracked (source, SQL, or a path-chosen one) is ``untracked.<parser>@1``
+#: (:func:`untracked_key`): it names the parser, so two different untracked parsers never match, and no tracked key equals it.
+UNTRACKED_PREFIX: Final = "untracked."
 
 PIPELINE_IN_PROCESS: Final = "inproc"
 PIPELINE_SERVICE: Final = "svc"
@@ -163,18 +164,57 @@ def parser_key(
     if mime in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value):
         return None
     if service:
-        # The service is sent the file as prepared (a macro-enabled or template package as the plain one it holds).
-        sent_ext, sent_mime = prepared_labels(dispatch.file_type, extension, mime)  # the raw extension: "unknown" is sent as it is
-        fmt = file_types.parse_format(sent_mime, file_types.service_extension(sent_mime, sent_ext, name))
+        fmt = _service_format(dispatch, extension, mime, name)
         return None if not fmt or fmt == "code" else f"{fmt}@{PARSER_ROUTE_REV.get(fmt, 1)}"
     return f"{dispatch_name(dispatch, mime)}@{PARSER_ROUTE_REV.get(dispatch.route, 1)}"
+
+
+def _service_format(dispatch: file_types.Dispatch | None, extension: str | None, mime: str | None, name: str) -> str | None:
+    # The service is sent the file as prepared (a macro-enabled or template package as the plain one it holds).
+    file_type = dispatch.file_type if dispatch is not None else None
+    sent_ext, sent_mime = prepared_labels(file_type, extension, mime)  # the raw extension: "unknown" is sent as it is
+    return file_types.parse_format(sent_mime, file_types.service_extension(sent_mime, sent_ext, name))
+
+
+def untracked_key(
+    mime_type: str | None, extension: str | None, record_name: str | None, record_type: str | None,
+    *, service: bool | None = None, file_path: str | None = None,
+) -> str:
+    """``"untracked.<parser>@1"``: the key a run of a parser that :func:`parser_key` does not track stores.
+
+    ``<parser>`` is the route of the dispatch that runs (in process) or the parsing service's format, so two different untracked
+    parsers (a source file and a text file the service reads from an ``.sql`` name) never share a key and never skip against each other.
+    """
+    if service is None:
+        service = service_pipeline_configured()
+    mime, ext, name = _known(mime_type), _known(extension), record_name or ""
+    code_ext = file_types.code_extension(ext, file_path, name)
+    as_code = reads_as_code_file(record_type, mime or "", code_ext, name)
+    dispatch = file_types.legacy_route(
+        mime, ext, code_ext=code_ext, reads_as_code_file=as_code,
+        is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
+    )
+    if service:
+        parser = _service_format(dispatch, extension, mime, name)
+    elif dispatch is None:
+        parser = None
+    elif dispatch.route in _UNTRACKED_ROUTES:
+        parser = dispatch.route.value
+    elif (as_code and not (dispatch.file_type is not None and dispatch.file_type.ext_wins)) or is_code_file(mime, code_ext) \
+            or record_type == RecordTypes.CODE_FILE.value:
+        parser = Route.CODE.value
+    elif mime in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value):
+        parser = Route.SQL_TABLE.value if mime == MimeTypes.SQL_TABLE.value else Route.SQL_VIEW.value
+    else:
+        parser = dispatch.route.value
+    return f"{UNTRACKED_PREFIX}{parser or 'unknown'}@1"
 
 
 def parser_identity(
     mime_type: str | None, extension: str | None, record_name: str | None, record_type: str | None, *, pipeline: str,
     file_path: str | None = None,
 ) -> str:
-    """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or ``<pipeline>:untracked@1``.
+    """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or ``<pipeline>:untracked.<parser>@1``.
 
     Built with the file path the dispatch used: when the path decided the parser, the identity is that parser's key, which the
     name-derived key of any graph record then differs from (such a copy is never taken for the name's parser).
@@ -183,7 +223,7 @@ def parser_identity(
     key = parser_key(mime_type, extension, record_name, record_type, service=service, file_path=file_path)
     # A parser that is not tracked (source, SQL) still labels its copy, so that a rename to a tracked type does not read as
     # a never-identified copy and a record of another parser does not take it.
-    return f"{pipeline}:{key or UNTRACKED_KEY}"
+    return f"{pipeline}:{key or untracked_key(mime_type, extension, record_name, record_type, service=service, file_path=file_path)}"
 
 
 def path_decides(
@@ -209,6 +249,16 @@ def graph_parser_key(
 ) -> str | None:
     """The key of a record as the graph holds it: its ``records`` node and the ``files`` document with the same key."""
     return parser_key(
+        record.get("mimeType"), (file_doc or {}).get("extension"), record.get("recordName"), record.get("recordType"),
+        service=service,
+    )
+
+
+def graph_untracked_key(
+    record: Mapping[str, Any], file_doc: Mapping[str, Any] | None, *, service: bool | None = None,
+) -> str:
+    """The untracked key of a record as the graph holds it (meaningful when :func:`graph_parser_key` is None)."""
+    return untracked_key(
         record.get("mimeType"), (file_doc or {}).get("extension"), record.get("recordName"), record.get("recordType"),
         service=service,
     )

@@ -132,7 +132,7 @@ async def test_the_in_process_run_identity_matches_the_dispatch_that_ran() -> No
         key = pi.parser_key(mime, ext, name, "FILE", service=False, file_path=path)
         if ident is None:
             continue  # not tracked
-        if ident == f"inproc:{pi.UNTRACKED_KEY}":
+        if ident.startswith(f"inproc:{pi.UNTRACKED_PREFIX}"):
             assert path is not None and key is None  # the path chose a parser that is not tracked
             continue
         assert ident.startswith("inproc:") and dispatch is not None, (mime, ext, name, ident)
@@ -152,7 +152,7 @@ async def test_the_service_run_identity_matches_the_format_the_service_resolves(
             checked += 1
             if ident is None:
                 continue
-            if ident == f"svc:{pi.UNTRACKED_KEY}":
+            if ident.startswith(f"svc:{pi.UNTRACKED_PREFIX}"):
                 assert path is not None  # the path chose a parser that is not tracked
                 continue
             real = file_types.parse_format(s_mime, file_types.service_extension(s_mime, s_ext, name))

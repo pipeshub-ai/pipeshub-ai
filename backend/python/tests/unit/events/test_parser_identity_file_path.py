@@ -152,7 +152,7 @@ async def test_a_path_decided_record_never_skips_even_when_a_stored_key_equals_i
 async def test_a_text_record_is_not_attached_to_a_copy_the_path_made_by_the_source_parser() -> None:
     """text/plain named ``notes`` at ``src/x.py`` is read as source, which is not tracked; its copy must not read as text."""
     identity = pi.parser_identity("text/plain", None, "notes", "FILE", pipeline=pi.PIPELINE_IN_PROCESS, file_path="src/x.py")
-    assert identity == f"inproc:{pi.UNTRACKED_KEY}"
+    assert identity == "inproc:untracked.code@1"
     world = World()
     world.files = {"_key": "rec-1", "extension": "txt"}
     doc = {"_key": "rec-1", "mimeType": "text/plain", "recordName": "notes.txt", "recordType": "FILE"}
@@ -172,7 +172,7 @@ async def test_a_same_bytes_rename_from_source_to_markdown_runs_in_full_and_is_l
     world = World(node={"contentRev": "older", "mimeType": "text/plain", "recordName": "notes.py"}, file_doc={"_key": "rec-1", "extension": "py"})
     _every_handler_parses(world)
     await world.run(world.event(mime="text/plain", ext="py", name="notes.py"))
-    assert world.parses == 1 and world.state[pi.IDENTITY_FIELD] == f"inproc:{pi.UNTRACKED_KEY}"
+    assert world.parses == 1 and world.state[pi.IDENTITY_FIELD] == "inproc:untracked.code@1"
     world.state.update({"mimeType": "text/markdown", "recordName": "notes.md"})
     world.files = {"_key": "rec-1", "extension": "md"}
 
