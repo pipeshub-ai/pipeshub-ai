@@ -707,7 +707,8 @@ class KnowledgeHubService:
 
     async def _resolve_user(self, user_id: str, org_id: str) -> Any | None:
         """Resolve graph user node from external userId. EE overrides for org-scoped lookup."""
-        return await get_caller_user(self.graph_provider, user_id)
+        # A lookup that failed is not a missing user: the error reaches get_nodes, which answers busy or failed.
+        return await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
 
     async def _get_user_app_ids(
         self, user_key: str, org_id: str
